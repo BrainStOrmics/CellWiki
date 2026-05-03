@@ -1,0 +1,1341 @@
+{
+  "nodes": [
+    {
+      "id": "cd8_naive_t_cell",
+      "label": "CD8 Naive T Cell",
+      "cl_id": "CL:0000898"
+    },
+    {
+      "id": "cd8_central_memory_t_cell",
+      "label": "CD8 Central Memory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd8_effector_memory_t_cell",
+      "label": "CD8 Effector Memory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd8_effector_memory_ra_t_cell",
+      "label": "CD8 Effector Memory Ra T Cell",
+      "cl_id": "CL:4030002"
+    },
+    {
+      "id": "cd8_tissue_resident_memory_t_cell",
+      "label": "CD8 Tissue Resident Memory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd8_intraepithelial_lymphocyte",
+      "label": "CD8 Intraepithelial Lymphocyte",
+      "cl_id": "CL:0002496"
+    },
+    {
+      "id": "cd8_exhausted_t_cell",
+      "label": "CD8 Exhausted T Cell",
+      "cl_id": "CL:0011025"
+    },
+    {
+      "id": "cd4_naive_t_cell",
+      "label": "CD4 Naive T Cell",
+      "cl_id": "CL:0000898"
+    },
+    {
+      "id": "cd4_effector_memory_t_cell",
+      "label": "CD4 Effector Memory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd4_effector_memory_ra_t_cell",
+      "label": "CD4 Effector Memory Ra T Cell",
+      "cl_id": "CL:4030002"
+    },
+    {
+      "id": "th1_like_t_cell",
+      "label": "Th1 Like T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "th17_cell",
+      "label": "Th17 Cell",
+      "cl_id": "CL:0000899"
+    },
+    {
+      "id": "follicular_helper_t_cell",
+      "label": "Follicular Helper T Cell",
+      "cl_id": "CL:0002038"
+    },
+    {
+      "id": "regulatory_t_cell",
+      "label": "Regulatory T Cell",
+      "cl_id": "CL:0000815"
+    },
+    {
+      "id": "mucosal_associated_invariant_t_cell",
+      "label": "Mucosal Associated Invariant T Cell",
+      "cl_id": "CL:0000940"
+    },
+    {
+      "id": "t_helper_1_like_cell",
+      "label": "T Helper 1 Like Cell",
+      "cl_id": null
+    },
+    {
+      "id": "t_helper_17_cell",
+      "label": "T Helper 17 Cell",
+      "cl_id": "CL:0000899"
+    },
+    {
+      "id": "cd8_temra_cell",
+      "label": "CD8 Temra Cell",
+      "cl_id": "CL:4030002"
+    },
+    {
+      "id": "cd8_effector_t_cell",
+      "label": "CD8 Effector T Cell",
+      "cl_id": "CL:0000911"
+    },
+    {
+      "id": "intraepithelial_lymphocyte",
+      "label": "Intraepithelial Lymphocyte",
+      "cl_id": "CL:0002496"
+    },
+    {
+      "id": "cd4_memory_t_cell",
+      "label": "CD4 Memory T Cell",
+      "cl_id": "CL:0000813"
+    },
+    {
+      "id": "gnly_positive_cd4_t_cell",
+      "label": "GNLY Positive CD4 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "tumor_infiltrating_t_cell",
+      "label": "Tumor Infiltrating T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "t_cell",
+      "label": "T Cell",
+      "cl_id": "CL:0000084"
+    },
+    {
+      "id": "cd8_positive_t_cell",
+      "label": "CD8 Positive T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd4_positive_t_cell",
+      "label": "CD4 Positive T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "chronically_stimulated_cd8_t_cell",
+      "label": "Chronically Stimulated CD8 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "double_negative_t_cell",
+      "label": "Double Negative T Cell",
+      "cl_id": "CL:0002489"
+    },
+    {
+      "id": "double_positive_t_cell",
+      "label": "Double Positive T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "invariant_natural_killer_t_cell",
+      "label": "Invariant Natural Killer T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "proliferative_exhausted_cd8_t_cell",
+      "label": "Proliferative Exhausted CD8 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd8_positive_cd4_negative_t_cell",
+      "label": "CD8 Positive CD4 Negative T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd4_positive_cd8_negative_t_cell",
+      "label": "CD4 Positive CD8 Negative T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "th1_like_cell",
+      "label": "Th1 Like Cell",
+      "cl_id": null
+    },
+    {
+      "id": "proliferative_t_cell",
+      "label": "Proliferative T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "naive_t_cell",
+      "label": "Naive T Cell",
+      "cl_id": "CL:0000898"
+    },
+    {
+      "id": "effector_memory_t_cell",
+      "label": "Effector Memory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "exhausted_t_cell",
+      "label": "Exhausted T Cell",
+      "cl_id": "CL:0011025"
+    },
+    {
+      "id": "cd8_positive_cd4_positive_t_cell",
+      "label": "CD8 Positive CD4 Positive T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd8_negative_cd4_negative_t_cell",
+      "label": "CD8 Negative CD4 Negative T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd8_t_cell",
+      "label": "CD8 T Cell",
+      "cl_id": "CL:0000084"
+    },
+    {
+      "id": "cd4_t_cell",
+      "label": "CD4 T Cell",
+      "cl_id": "CL:0000084"
+    },
+    {
+      "id": "cd8_temra_t_cell",
+      "label": "CD8 Temra T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd4_central_memory_t_cell",
+      "label": "CD4 Central Memory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd4_temra_t_cell",
+      "label": "CD4 Temra T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd4_tissue_resident_memory_t_cell",
+      "label": "CD4 Tissue Resident Memory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "peripheral_regulatory_t_cell",
+      "label": "Peripheral Regulatory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "normal_regulatory_t_cell",
+      "label": "Normal Regulatory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "tumor_regulatory_t_cell",
+      "label": "Tumor Regulatory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "high_proliferative_cd8_exhausted_t_cell",
+      "label": "High Proliferative CD8 Exhausted T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "low_proliferative_cd8_exhausted_t_cell",
+      "label": "Low Proliferative CD8 Exhausted T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "conventional_cd8_t_cell",
+      "label": "Conventional CD8 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cd8_stem_like_t_cell",
+      "label": "CD8 Stem Like T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "proliferative_cd8_exhausted_t_cell",
+      "label": "Proliferative CD8 Exhausted T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "activated_cd4_t_cell",
+      "label": "Activated CD4 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cytotoxic_t_cell",
+      "label": "Cytotoxic T Cell",
+      "cl_id": "CL:0000910"
+    },
+    {
+      "id": "helper_t_cell",
+      "label": "Helper T Cell",
+      "cl_id": "CL:0000912"
+    },
+    {
+      "id": "ror_gamma_positive_regulatory_t_cell",
+      "label": "Ror Gamma Positive Regulatory T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "tumor_associated_macrophage",
+      "label": "Tumor Associated Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "spp1_positive_tumor_associated_macrophage",
+      "label": "SPP1 Positive Tumor Associated Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "cxcl10_positive_tumor_associated_macrophage",
+      "label": "Cxcl10 Positive Tumor Associated Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "c1qc_positive_tumor_associated_macrophage",
+      "label": "C1Qc Positive Tumor Associated Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "lyve1_positive_tumor_associated_macrophage",
+      "label": "Lyve1 Positive Tumor Associated Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "proliferating_tumor_associated_macrophage",
+      "label": "Proliferating Tumor Associated Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "macrophage_signature_tumor_associated_macrophage",
+      "label": "Macrophage Signature Tumor Associated Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "monocyte",
+      "label": "Monocyte",
+      "cl_id": "CL:0000576"
+    },
+    {
+      "id": "cd16_positive_monocyte",
+      "label": "Cd16 Positive Monocyte",
+      "cl_id": null
+    },
+    {
+      "id": "cd14_positive_monocyte",
+      "label": "Cd14 Positive Monocyte",
+      "cl_id": "CL:0001054"
+    },
+    {
+      "id": "neutrophil",
+      "label": "Neutrophil",
+      "cl_id": "CL:0000775"
+    },
+    {
+      "id": "dendritic_cell",
+      "label": "Dendritic Cell",
+      "cl_id": "CL:0000451"
+    },
+    {
+      "id": "th1_like_cd4_t_cell",
+      "label": "Th1 Like CD4 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "natural_killer_cell",
+      "label": "Natural Killer Cell",
+      "cl_id": "CL:0000623"
+    },
+    {
+      "id": "b_cell",
+      "label": "B Cell",
+      "cl_id": "CL:0000236"
+    },
+    {
+      "id": "myeloid_derived_suppressor_cell",
+      "label": "Myeloid Derived Suppressor Cell",
+      "cl_id": null
+    },
+    {
+      "id": "endothelial_cell",
+      "label": "Endothelial Cell",
+      "cl_id": "CL:0000115"
+    },
+    {
+      "id": "cancer_associated_fibroblast",
+      "label": "Cancer Associated Fibroblast",
+      "cl_id": null
+    },
+    {
+      "id": "malignant_cell",
+      "label": "Malignant Cell",
+      "cl_id": "CL:0001064"
+    },
+    {
+      "id": "bone_marrow_derived_macrophage",
+      "label": "Bone Marrow Derived Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "myeloid_cell",
+      "label": "Myeloid Cell",
+      "cl_id": "CL:0000763"
+    },
+    {
+      "id": "cancer_cell",
+      "label": "Cancer Cell",
+      "cl_id": "CL:0001064"
+    },
+    {
+      "id": "cd45_negative_cell",
+      "label": "Cd45 Negative Cell",
+      "cl_id": null
+    },
+    {
+      "id": "naive_cd4_positive_t_cell",
+      "label": "Naive CD4 Positive T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "naive_cd8_positive_t_cell",
+      "label": "Naive CD8 Positive T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "macrophage",
+      "label": "Macrophage",
+      "cl_id": "CL:0000235"
+    },
+    {
+      "id": "stromal_cell",
+      "label": "Stromal Cell",
+      "cl_id": "CL:0000499"
+    },
+    {
+      "id": "colon_carcinoma_cell_line",
+      "label": "Colon Carcinoma Cell Line",
+      "cl_id": null
+    },
+    {
+      "id": "spp1_positive_macrophage",
+      "label": "SPP1 Positive Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "m1_macrophage",
+      "label": "M1 Macrophage",
+      "cl_id": "CL:0000863"
+    },
+    {
+      "id": "il1b_positive_macrophage",
+      "label": "Il1B Positive Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "profibrotic_macrophage",
+      "label": "Profibrotic Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "exhausted_cd8_t_cell",
+      "label": "Exhausted CD8 T Cell",
+      "cl_id": "CL:0020031"
+    },
+    {
+      "id": "conventional_cd4_t_cell",
+      "label": "Conventional CD4 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "cytotoxic_t_lymphocyte",
+      "label": "Cytotoxic T Lymphocyte",
+      "cl_id": "CL:0000910"
+    },
+    {
+      "id": "tumor_cell",
+      "label": "Tumor Cell",
+      "cl_id": "CL:0001063"
+    },
+    {
+      "id": "thymic_stromal_cell",
+      "label": "Thymic Stromal Cell",
+      "cl_id": "CL:4030001"
+    },
+    {
+      "id": "naive_cd4_t_cell",
+      "label": "Naive CD4 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "naive_cd8_t_cell",
+      "label": "Naive CD8 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "th1_cell",
+      "label": "Th1 Cell",
+      "cl_id": "CL:0000545"
+    },
+    {
+      "id": "cytotoxic_cd8_t_cell",
+      "label": "Cytotoxic CD8 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "lung_carcinoma_cell_line",
+      "label": "Lung Carcinoma Cell Line",
+      "cl_id": null
+    },
+    {
+      "id": "m2_macrophage",
+      "label": "M2 Macrophage",
+      "cl_id": "CL:0000890"
+    },
+    {
+      "id": "unpolarized_macrophage",
+      "label": "Unpolarized Macrophage",
+      "cl_id": null
+    },
+    {
+      "id": "th1_cd4_t_cell",
+      "label": "Th1 CD4 T Cell",
+      "cl_id": null
+    },
+    {
+      "id": "immune_cell",
+      "label": "Immune Cell",
+      "cl_id": "CL:0000738"
+    }
+  ],
+  "edges": [
+    {
+      "source": "cd8_naive_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_central_memory_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_effector_memory_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_effector_memory_ra_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_tissue_resident_memory_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_intraepithelial_lymphocyte",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_exhausted_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_naive_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_effector_memory_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_effector_memory_ra_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th1_like_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th17_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "follicular_helper_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "regulatory_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_c11-il10",
+      "target": "regulatory_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_c10-foxp3",
+      "target": "regulatory_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_c12-ctla4",
+      "target": "regulatory_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "mucosal_associated_invariant_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "t_helper_1_like_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "t_helper_17_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_temra_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_effector_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "intraepithelial_lymphocyte",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_memory_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "gnly_positive_cd4_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "tumor_infiltrating_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_temra_cell",
+      "target": "tumor_infiltrating_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "t_helper_17_cell",
+      "target": "tumor_infiltrating_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_effector_memory_t_cell",
+      "target": "tumor_infiltrating_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "gnly_positive_cd4_t_cell",
+      "target": "tumor_infiltrating_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "t_helper_1_like_cell",
+      "target": "tumor_infiltrating_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_exhausted_t_cell",
+      "target": "tumor_infiltrating_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_effector_t_cell",
+      "target": "tumor_infiltrating_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "regulatory_t_cell",
+      "target": "tumor_infiltrating_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "t_cell",
+      "target": "lymphocyte",
+      "relation": "is_a"
+    },
+    {
+      "source": "double_negative_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "mucosal_associated_invariant_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "invariant_natural_killer_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_positive_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_positive_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "double_positive_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_positive_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "mucosal_associated_invariant_t_cell",
+      "target": "cd8_positive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "chronically_stimulated_cd8_t_cell",
+      "target": "cd8_positive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "proliferative_exhausted_cd8_t_cell",
+      "target": "cd8_positive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_positive_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "regulatory_t_cell",
+      "target": "cd4_positive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th1_like_cd4_t_cell",
+      "target": "cd4_positive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "chronically_stimulated_cd8_t_cell",
+      "target": "cd8_positive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "double_negative_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "double_positive_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "invariant_natural_killer_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "proliferative_exhausted_cd8_t_cell",
+      "target": "cd8_positive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_positive_cd4_negative_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "mucosal_associated_invariant_t_cell",
+      "target": "cd8_positive_cd4_negative_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "exhausted_t_cell",
+      "target": "cd8_positive_cd4_negative_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "effector_memory_t_cell",
+      "target": "cd8_positive_cd4_negative_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "proliferative_t_cell",
+      "target": "cd8_positive_cd4_negative_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_positive_cd8_negative_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th17_cell",
+      "target": "cd4_positive_cd8_negative_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th1_like_cell",
+      "target": "cd4_positive_cd8_negative_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "proliferative_t_cell",
+      "target": "cd4_positive_cd8_negative_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th1_like_cell",
+      "target": "cd4_positive_cd8_negative_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "proliferative_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "naive_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "naive_cd8_t_cell",
+      "target": "naive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "naive_cd4_t_cell",
+      "target": "naive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "effector_memory_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "exhausted_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_positive_cd4_positive_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_negative_cd4_negative_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "mucosal_associated_invariant_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_naive_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_tissue_resident_memory_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_effector_memory_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_temra_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_exhausted_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_intraepithelial_lymphocyte",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_central_memory_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th17_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th1_like_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_effector_memory_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "follicular_helper_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_central_memory_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_naive_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_tissue_resident_memory_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "regulatory_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_temra_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_temra_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_central_memory_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_temra_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd4_tissue_resident_memory_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "peripheral_regulatory_t_cell",
+      "target": "regulatory_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "normal_regulatory_t_cell",
+      "target": "regulatory_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "tumor_regulatory_t_cell",
+      "target": "regulatory_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "high_proliferative_cd8_exhausted_t_cell",
+      "target": "cd8_exhausted_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "low_proliferative_cd8_exhausted_t_cell",
+      "target": "cd8_exhausted_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "conventional_cd8_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd8_stem_like_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "proliferative_cd8_exhausted_t_cell",
+      "target": "cd8_exhausted_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "activated_cd4_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cytotoxic_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "helper_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "ror_gamma_positive_regulatory_t_cell",
+      "target": "regulatory_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "tumor_associated_macrophage",
+      "target": "macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "c1qc_positive_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "proliferating_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "spp1_positive_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "lyve1_positive_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "cxcl10_positive_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "macrophage_signature_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "spp1_positive_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "cxcl10_positive_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "c1qc_positive_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "lyve1_positive_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "proliferating_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "macrophage_signature_tumor_associated_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "monocyte",
+      "target": "myeloid_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd16_positive_monocyte",
+      "target": "monocyte",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd14_positive_monocyte",
+      "target": "monocyte",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd16_positive_monocyte",
+      "target": "monocyte",
+      "relation": "is_a"
+    },
+    {
+      "source": "cd14_positive_monocyte",
+      "target": "monocyte",
+      "relation": "is_a"
+    },
+    {
+      "source": "neutrophil",
+      "target": "myeloid_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "dendritic_cell",
+      "target": "myeloid_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th1_like_cd4_t_cell",
+      "target": "cd4_positive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "natural_killer_cell",
+      "target": "lymphoid_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "b_cell",
+      "target": "lymphoid_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "myeloid_derived_suppressor_cell",
+      "target": "myeloid_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "endothelial_cell",
+      "target": "stromal_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cancer_associated_fibroblast",
+      "target": "stromal_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "bone_marrow_derived_macrophage",
+      "target": "macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "tumor_associated_macrophage",
+      "target": "myeloid_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "monocyte",
+      "target": "myeloid_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "naive_cd4_positive_t_cell",
+      "target": "cd4_positive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "naive_cd8_positive_t_cell",
+      "target": "cd8_positive_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "macrophage",
+      "target": "myeloid_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "bone_marrow_derived_macrophage",
+      "target": "macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "tumor_associated_macrophage",
+      "target": "macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "stromal_cell",
+      "target": "connective_tissue_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "colon_carcinoma_cell_line",
+      "target": "epithelial_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "spp1_positive_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "m1_macrophage",
+      "target": "macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "il1b_positive_macrophage",
+      "target": "tumor_associated_macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "profibrotic_macrophage",
+      "target": "macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "exhausted_cd8_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "conventional_cd4_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cytotoxic_t_lymphocyte",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "thymic_stromal_cell",
+      "target": "stromal_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "naive_cd4_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th1_cell",
+      "target": "naive_cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "regulatory_t_cell",
+      "target": "naive_cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "naive_cd8_t_cell",
+      "target": "t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cytotoxic_cd8_t_cell",
+      "target": "naive_cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "th1_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "cytotoxic_cd8_t_cell",
+      "target": "cd8_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "lung_carcinoma_cell_line",
+      "target": "tumor_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "m2_macrophage",
+      "target": "macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "unpolarized_macrophage",
+      "target": "macrophage",
+      "relation": "is_a"
+    },
+    {
+      "source": "th1_cd4_t_cell",
+      "target": "cd4_t_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "t_cell",
+      "target": "immune_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "myeloid_cell",
+      "target": "immune_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "b_cell",
+      "target": "immune_cell",
+      "relation": "is_a"
+    },
+    {
+      "source": "natural_killer_cell",
+      "target": "immune_cell",
+      "relation": "is_a"
+    }
+  ]
+}

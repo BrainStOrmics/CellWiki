@@ -1,0 +1,24 @@
+# Secrets
+.env
+
+# local files 
+local_test/
+
+# pytest
+.pytest_cache
+
+# Runtime data (can be regenerated)
+data/extraction/
+# data/references/
+
+# Generated wiki (derived from extractions)
+# wiki/
+
+# Python
+__pycache__/
+*.pyc
+
+# IDE
+.vscode/
+.idea/
+.claude/
