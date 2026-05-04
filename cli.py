@@ -14,6 +14,17 @@ from cellwiki.llm_extract import extract_cell_types_from_paper
 from cellwiki.wiki import generate_cell_type_page, generate_index_page, _proper_title_case
 
 
+# v2.0 LangGraph imports
+try:
+    from cellwiki.ingest_graph import run_ingest
+    from cellwiki.query_graph import run_query
+    from cellwiki.lint_graph import run_lint
+    from cellwiki.graph_analysis import build_and_analyze, CellWikiGraph
+    HAS_LANGGRAPH = True
+except ImportError:
+    HAS_LANGGRAPH = False
+
+
 def _collect_pdfs(paths: list[Path]) -> list[Path]:
     """Collect all PDF files from a list of paths (files and directories)."""
     pdfs = []
@@ -399,6 +410,133 @@ def cmd_review(args):
         console.print("No corrections made.")
 
 
+
+
+def cmd_ingest(args):
+    """Ingest a paper using the LangGraph two-step chain."""
+    from cellwiki.ingest_graph import run_ingest
+    pdfs = _collect_pdfs(args.files)
+    if not pdfs:
+        print("No PDF files found.")
+        sys.exit(1)
+    ensure_dirs()
+    for pdf_path in pdfs:
+        dest = settings.references_dir / pdf_path.name
+        if not dest.exists():
+            shutil.copy2(pdf_path, dest)
+            print(f"Copied {pdf_path.name}")
+        no_review = getattr(args, "no_review", False)
+        result = run_ingest(source_path=str(dest), source_type="paper", no_review=no_review)
+        print(f"Ingest complete: status={result.get('status', 'unknown')}")
+        if result.get("errors"):
+            print(f"  Errors: {result['errors']}")
+
+
+def cmd_query_v2(args):
+    """Query the wiki using the LangGraph retrieval pipeline."""
+    from cellwiki.query_graph import run_query
+    question = " ".join(args.question)
+    result = run_query(question=question, max_tokens=getattr(args, "max_tokens", 8000))
+    print(result.get("answer", "No answer found."))
+    if result.get("citations"):
+        print("\nSources:")
+        for c in result["citations"]:
+            print(f"  [{c['index']}] {c['page_id']}")
+
+
+def cmd_lint_v2(args):
+    """Run lint checks with auto-fix using LangGraph."""
+    from cellwiki.lint_graph import run_lint
+    result = run_lint(auto_fix=not getattr(args, "no_fix", False), max_iterations=getattr(args, "max_iterations", 3))
+    summary = result.get("summary", {})
+    print(f"  Total issues: {summary.get('total_issues', 0)}")
+    print(f"  Fixes applied: {summary.get('fixes_applied', 0)}")
+    print(f"  Remaining for review: {summary.get('remaining_for_review', 0)}")
+
+
+def cmd_memory(args):
+    """Manage LangGraph checkpoint memory."""
+    from graphs.checkpointer import list_threads, get_thread_history, delete_thread, cleanup_old_threads, get_db_stats, get_db_path
+    action = args.action
+    if action == "list":
+        threads = list_threads(limit=getattr(args, "limit", 50))
+        if not threads:
+            print("No checkpoint threads found.")
+            return
+        print(f"Checkpoint Threads (DB: {get_db_path()})")
+        print(f"{'Thread ID':<40} {'Count':>8}")
+        print("-" * 50)
+        for t in threads:
+            if "error" in t:
+                print(f"  Error: {t['error']}")
+                continue
+            print(f"{str(t['thread_id'])[:38]:<40} {t['checkpoint_count']:>8}")
+    elif action == "history":
+        history = get_thread_history(args.thread_id)
+        if not history:
+            print(f"No history for thread: {args.thread_id}")
+            return
+        print(f"State History: {args.thread_id}")
+        for i, e in enumerate(history):
+            print(f"  [{i+1:3}] {str(e.get('created_at',''))[:19]} | {e.get('node','unknown')}")
+    elif action == "delete":
+        print("Deleted" if delete_thread(args.thread_id) else "Failed to delete", f"thread: {args.thread_id}")
+    elif action == "cleanup":
+        print(f"Cleaned up {cleanup_old_threads(getattr(args, 'days', 30))} old checkpoints")
+    elif action == "stats":
+        stats = get_db_stats()
+        for k, v in stats.items():
+            if isinstance(v, list):
+                print(f"  {k}:")
+                for item in v:
+                    print(f"    {item}")
+            else:
+                print(f"  {k}: {v}")
+
+
+def cmd_debug(args):
+    """Debug CellWiki LangGraph execution."""
+    action = args.action
+    if action == "graph":
+        from graphs.debug import visualize_graph
+        cmd = args.command
+        build_fns = {"ingest": "cellwiki.ingest_graph:build_ingest_graph", "query": "cellwiki.query_graph:build_query_graph",
+                     "lint": "cellwiki.lint_graph:build_lint_graph", "research": "cellwiki.research_graph:build_research_graph",
+                     "orchestrator": "cellwiki.orchestrator:build_orchestrator"}
+        if cmd in build_fns:
+            mod_name, func_name = build_fns[cmd].split(":")
+            import importlib
+            mod = importlib.import_module(mod_name)
+            graph = getattr(mod, func_name)()
+            print(visualize_graph(graph, output_format=getattr(args, "format", "text") or "text"))
+        else:
+            print(f"Unknown command: {cmd}")
+    elif action == "trace":
+        from graphs.debug import trace_execution
+        cmd = args.command
+        if cmd == "query":
+            from cellwiki.query_graph import build_query_graph
+            graph = build_query_graph()
+            q = " ".join(getattr(args, "question", []) or ["What are Treg markers?"])
+            initial = {"question": q, "max_context_tokens": 8000, "identified_entities": [], "initial_matches": [], "expanded_matches": [], "selected_pages": [], "used_tokens": 0, "budget_exceeded": False, "answer": "", "citations": [], "confidence": "medium", "status": "parsing", "needs_research": False}
+        elif cmd == "lint":
+            from cellwiki.lint_graph import build_lint_graph
+            graph = build_lint_graph()
+            initial = {"issues": [], "auto_fixable": [], "manual_review": [], "fixes_applied": [], "remaining_issues": [], "iteration": 0, "max_iterations": 3, "status": "scanning"}
+        else:
+            print(f"Trace not supported for: {cmd}"); return
+        trace_execution(graph, initial, thread_id="debug_trace")
+    elif action == "memory":
+        from graphs.debug import get_memory_usage
+        mem = get_memory_usage()
+        print("Memory Usage")
+        for k, v in mem.items():
+            print(f"  {k}: {v}")
+    elif action == "history":
+        from graphs.debug import visualize_state_history
+        print(visualize_state_history(args.thread_id))
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="cellwiki",
@@ -441,6 +579,38 @@ def main():
 
     p_review = sub.add_parser("review", help="Interactive review of audit issues")
     p_review.set_defaults(func=cmd_review)
+
+
+    # v2.0 commands
+    p_ingest = sub.add_parser("ingest", help="Ingest papers using LangGraph two-step chain")
+    p_ingest.add_argument("files", nargs="+", type=Path, help="PDF files to ingest")
+    p_ingest.add_argument("--no-review", action="store_true", help="Skip human review (batch mode)")
+    p_ingest.set_defaults(func=cmd_ingest)
+
+    p_query_v2 = sub.add_parser("query-v2", help="Query wiki using LangGraph pipeline")
+    p_query_v2.add_argument("question", nargs="+", help="Question to ask")
+    p_query_v2.add_argument("--max-tokens", type=int, default=8000, help="Max context tokens")
+    p_query_v2.set_defaults(func=cmd_query_v2)
+
+    p_lint_v2 = sub.add_parser("lint-v2", help="Run lint checks with auto-fix")
+    p_lint_v2.add_argument("--no-fix", action="store_true", help="Don't auto-fix, just report")
+    p_lint_v2.add_argument("--max-iterations", type=int, default=3, help="Max auto-fix iterations")
+    p_lint_v2.set_defaults(func=cmd_lint_v2)
+
+    p_memory = sub.add_parser("memory", help="Manage LangGraph checkpoint memory")
+    p_memory.add_argument("action", choices=["list", "history", "delete", "cleanup", "stats"], help="Action")
+    p_memory.add_argument("--thread-id", type=str, help="Thread ID for history/delete")
+    p_memory.add_argument("--limit", type=int, default=50, help="Max threads to list")
+    p_memory.add_argument("--days", type=int, default=30, help="Days for cleanup")
+    p_memory.set_defaults(func=cmd_memory)
+
+    p_debug = sub.add_parser("debug", help="Debug LangGraph execution")
+    p_debug.add_argument("action", choices=["graph", "trace", "memory", "history"], help="Action")
+    p_debug.add_argument("--command", type=str, choices=["ingest", "query", "lint", "research", "orchestrator"], help="Command to debug")
+    p_debug.add_argument("--format", type=str, choices=["text", "mermaid"], help="Output format")
+    p_debug.add_argument("--thread-id", type=str, help="Thread ID for history view")
+    p_debug.add_argument("question", nargs="*", help="Query question for trace")
+    p_debug.set_defaults(func=cmd_debug)
 
     args = parser.parse_args()
     if hasattr(args, "func"):

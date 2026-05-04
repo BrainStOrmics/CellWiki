@@ -243,3 +243,78 @@ def generate_index_page(wiki: dict[str, WikiCellType] | None = None):
 
     with open(dest, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
+
+
+def generate_marker_gene_page(symbol: str, mg: dict):
+    """Generate a marker gene wiki page."""
+    import json
+    from cellwiki.config import settings
+
+    dest = settings.wiki_marker_genes_dir / f"{symbol}.md"
+
+    frontmatter = {
+        "entity_type": "marker_gene",
+        "gene_symbol": mg.get("gene_symbol", symbol),
+        "gene_name": mg.get("gene_name", ""),
+        "specificity": mg.get("specificity", ""),
+        "evidence_tier": mg.get("evidence_tier", 5),
+        "source_count": mg.get("source_count", 0),
+        "last_updated": mg.get("last_updated", ""),
+    }
+
+    lines = []
+    lines.append(f"# {symbol}")
+    lines.append("")
+
+    if mg.get("description"):
+        lines.append(f"> {mg['description']}")
+        lines.append("")
+
+    if mg.get("cell_types_expressed"):
+        lines.append("## Expression")
+        lines.append("")
+        lines.append("| Cell Type | Level | Evidence |")
+        lines.append("|-----------|-------|----------|")
+        for ct in mg["cell_types_expressed"]:
+            lines.append(f"| [[{ct}]] | | |")
+        lines.append("")
+
+    if mg.get("negative_evidence"):
+        lines.append("## Negative Evidence")
+        lines.append("")
+        lines.append("| Cell Type | Evidence | Sources |")
+        lines.append("|-----------|----------|---------|")
+        for ne in mg["negative_evidence"]:
+            lines.append(f"| {ne.get('cell_type', '')} | {ne.get('evidence', '')} | {', '.join(ne.get('sources', []))} |")
+        lines.append("")
+
+    if mg.get("co_expression"):
+        lines.append("## Co-expression")
+        lines.append("")
+        lines.append("| Gene | Cell Type | Correlation |")
+        lines.append("|------|-----------|-------------|")
+        for ce in mg["co_expression"]:
+            lines.append(f"| {ce.get('gene', '')} | {ce.get('cell_type', '')} | {ce.get('correlation', '')} |")
+        lines.append("")
+
+    lines.append("## Related Pages")
+    lines.append("")
+    for ct in mg.get("cell_types_expressed", [])[:5]:
+        lines.append(f"- [[{ct}]]")
+    lines.append("")
+
+    if mg.get("sources"):
+        lines.append("## Sources")
+        lines.append("")
+        for s in mg["sources"]:
+            lines.append(f"- {s}")
+        lines.append("")
+
+    header = "---\n"
+    for k, v in frontmatter.items():
+        header += f"{k}: {json.dumps(v) if isinstance(v, (list, dict)) else v}\n"
+    header += "---\n\n"
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(header + "\n".join(lines), encoding="utf-8")
+

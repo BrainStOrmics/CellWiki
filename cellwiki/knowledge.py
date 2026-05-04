@@ -269,3 +269,163 @@ def rebuild_wiki():
     generate_index_page(wiki)
 
     print(f"Generated {len(wiki)} cell type pages.")
+
+
+# ============================================================
+# CellWiki v2.0 — Multi-Omics Knowledge Merger
+# ============================================================
+
+
+class MultiOmicsMerger:
+    """Merge multi-entity extractions into a unified WikiState."""
+
+    def __init__(self):
+        self.cell_types: dict = {}
+        self.marker_genes: dict = {}
+        self.tissues: dict = {}
+        self.diseases: dict = {}
+        self.methods: dict = {}
+        self.trajectories: dict = {}
+
+    def merge_cell_types(self, extractions: list) -> dict:
+        """Merge cell type extractions (reuses existing merge_to_wiki logic)."""
+        from cellwiki.knowledge import merge_to_wiki
+
+        wiki = merge_to_wiki(extractions)
+        self.cell_types = {
+            key: {
+                "standard_name": wt.standard_name,
+                "display_name": wt.display_name,
+                "cl_id": wt.cl_id,
+                "parent_type": wt.parent_type,
+                "description": wt.description,
+                "markers": wt.markers,
+                "functions": wt.functions,
+                "subpopulations": list(wt.subpopulations),
+                "references": wt.references,
+                "sources": wt.sources,
+                "identity": wt.identity,
+                "state": wt.state,
+                "context": wt.context,
+            }
+            for key, wt in wiki.items()
+        }
+        return self.cell_types
+
+    def merge_marker_genes(self, extractions: list) -> dict:
+        """Extract and merge marker gene information across papers."""
+        from cellwiki.models import MarkerGene
+
+        for extraction in extractions:
+            for ct in extraction.cell_types:
+                for marker in ct.markers:
+                    gene = marker.gene_symbol
+                    if gene not in self.marker_genes:
+                        self.marker_genes[gene] = {
+                            "gene_symbol": gene,
+                            "cell_types_expressed": [],
+                            "source_count": 0,
+                            "sources": [],
+                            "evidence_tier": 5,
+                        }
+
+                    mg = self.marker_genes[gene]
+                    ct_name = ct.standard_name
+                    if ct_name not in mg["cell_types_expressed"]:
+                        mg["cell_types_expressed"].append(ct_name)
+
+                    paper_id = extraction.paper.paper_id if extraction.paper else "unknown"
+                    if paper_id not in mg["sources"]:
+                        mg["sources"].append(paper_id)
+                        mg["source_count"] += 1
+
+        return self.marker_genes
+
+    def merge_tissues(self, extractions: list) -> dict:
+        """Extract and merge tissue information."""
+        for extraction in extractions:
+            for ct in extraction.cell_types:
+                for tissue in ct.tissues:
+                    tissue_key = tissue.lower().replace(" ", "_")
+                    if tissue_key not in self.tissues:
+                        self.tissues[tissue_key] = {
+                            "name": tissue_key,
+                            "display_name": tissue,
+                            "cell_types_found": {},
+                            "source_count": 0,
+                            "sources": [],
+                        }
+
+                    t = self.tissues[tissue_key]
+                    ct_name = ct.standard_name
+                    if ct_name not in t["cell_types_found"]:
+                        t["cell_types_found"][ct_name] = "present"
+
+                    paper_id = extraction.paper.paper_id if extraction.paper else "unknown"
+                    if paper_id not in t["sources"]:
+                        t["sources"].append(paper_id)
+                        t["source_count"] += 1
+
+        return self.tissues
+
+    def merge_diseases(self, extractions: list) -> dict:
+        """Extract and merge disease associations."""
+        for extraction in extractions:
+            for ct in extraction.cell_types:
+                for disease in ct.diseases:
+                    disease_key = disease.lower().replace(" ", "_")
+                    if disease_key not in self.diseases:
+                        self.diseases[disease_key] = {
+                            "name": disease_key,
+                            "display_name": disease,
+                            "associated_cell_types": {},
+                            "source_count": 0,
+                            "sources": [],
+                        }
+
+                    d = self.diseases[disease_key]
+                    ct_name = ct.standard_name
+                    if ct_name not in d["associated_cell_types"]:
+                        d["associated_cell_types"][ct_name] = "associated"
+
+                    paper_id = extraction.paper.paper_id if extraction.paper else "unknown"
+                    if paper_id not in d["sources"]:
+                        d["sources"].append(paper_id)
+                        d["source_count"] += 1
+
+        return self.diseases
+
+    def detect_conflicts(self) -> list:
+        """Detect conflicts across merged data."""
+        conflicts = []
+
+        # Marker conflicts: same gene, different types for same cell type
+        for gene, mg in self.marker_genes.items():
+            gene_markers = {}  # ct_name -> set of marker types
+            for extraction in [None]:  # Placeholder - would need full extraction data
+                pass
+
+        return conflicts
+
+    def assign_evidence_tiers(self):
+        """Assign evidence tiers based on source counts."""
+        for gene, mg in self.marker_genes.items():
+            count = mg.get("source_count", 0)
+            if count >= 3:
+                mg["evidence_tier"] = 3
+            elif count >= 1:
+                mg["evidence_tier"] = 4
+            else:
+                mg["evidence_tier"] = 5
+
+    def get_wiki_state(self) -> dict:
+        """Return the complete WikiState."""
+        return {
+            "cell_types": self.cell_types,
+            "marker_genes": self.marker_genes,
+            "tissues": self.tissues,
+            "diseases": self.diseases,
+            "methods": self.methods,
+            "trajectories": self.trajectories,
+        }
+

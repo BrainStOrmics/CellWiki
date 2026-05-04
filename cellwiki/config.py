@@ -40,6 +40,28 @@ class Settings(BaseSettings):
     cell_ontology_url: str = "https://purl.obolibrary.org/obo/cl.obo"
     cell_ontology_file: Path = cell_ontology_dir / "cl.obo"
 
+
+    # Raw data directories
+    raw_dir: Path = Path(__file__).parent.parent / "raw"
+    raw_sources_dir: Path = Path(__file__).parent.parent / "raw" / "sources"
+    raw_datasets_dir: Path = Path(__file__).parent.parent / "raw" / "datasets"
+    raw_ontologies_dir: Path = Path(__file__).parent.parent / "raw" / "ontologies"
+    raw_notes_dir: Path = Path(__file__).parent.parent / "raw" / "notes"
+
+    # Extractions directory
+    extractions_dir: Path = Path(__file__).parent.parent / "extractions"
+
+    # Wiki subdirectories
+    wiki_marker_genes_dir: Path = Path(__file__).parent.parent / "wiki" / "marker_genes"
+    wiki_tissues_dir: Path = Path(__file__).parent.parent / "wiki" / "tissues"
+    wiki_diseases_dir: Path = Path(__file__).parent.parent / "wiki" / "diseases"
+    wiki_methods_dir: Path = Path(__file__).parent.parent / "wiki" / "methods"
+    wiki_trajectories_dir: Path = Path(__file__).parent.parent / "wiki" / "trajectories"
+    wiki_state_spaces_dir: Path = Path(__file__).parent.parent / "wiki" / "state_spaces"
+
+    # Graphs directory
+    graphs_dir: Path = Path(__file__).parent.parent / "graphs"
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
@@ -58,5 +80,19 @@ def ensure_dirs():
         settings.cell_ontology_dir,
         settings.wiki_dir,
         settings.wiki_cell_types_dir,
+        # New directories
+        settings.raw_dir,
+        settings.raw_sources_dir,
+        settings.raw_datasets_dir,
+        settings.raw_ontologies_dir,
+        settings.raw_notes_dir,
+        settings.extractions_dir,
+        settings.wiki_marker_genes_dir,
+        settings.wiki_tissues_dir,
+        settings.wiki_diseases_dir,
+        settings.wiki_methods_dir,
+        settings.wiki_trajectories_dir,
+        settings.wiki_state_spaces_dir,
+        settings.graphs_dir,
     ]:
         d.mkdir(parents=True, exist_ok=True)

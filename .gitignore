@@ -3,6 +3,7 @@
 
 # local files 
 local_test/
+local_refine/
 
 # pytest
 .pytest_cache
