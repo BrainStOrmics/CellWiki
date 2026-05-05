@@ -11,22 +11,13 @@ Usage:
 
 import json
 import logging
-import os
-import sys
 from pathlib import Path
 from typing import Any
 
 from langgraph.graph import StateGraph, END
 from langgraph.types import interrupt
-from langgraph.checkpoint.memory import MemorySaver
 
 from graphs.checkpointer import get_checkpointer
-
-# Add project root to path so we can import cellwiki modules
-_project_root = Path(__file__).parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
 from graphs.states import IngestState, merge_dict, append_list
 
 logger = logging.getLogger(__name__)
@@ -80,7 +71,7 @@ def detect_entities(state: IngestState) -> dict:
         from cellwiki.llm_extract import extract_cell_types_from_paper
         from cellwiki.config import settings
 
-        result = extract_cell_types_from_paper(paper_text)
+        result = extract_cell_types_from_paper(paper_text, Path(state.get("source_path", "")))
 
         entities = []
         for ct in result.cell_types:
@@ -242,7 +233,7 @@ def generate_pages(state: IngestState) -> dict:
 
         # Generate index
         from cellwiki.wiki import generate_index_page
-        generate_index_page()
+        generate_index_page(wiki)
 
     except Exception as e:
         return {
@@ -261,11 +252,13 @@ def generate_pages(state: IngestState) -> dict:
 def update_index_log(state: IngestState) -> dict:
     """Update index.md, log.md, and statistics.md."""
     from cellwiki.config import settings
+    from cellwiki.knowledge import load_all_extractions, merge_to_wiki
     from cellwiki.wiki import generate_index_page
     import datetime
 
     try:
-        generate_index_page()
+        wiki = merge_to_wiki(load_all_extractions())
+        generate_index_page(wiki)
 
         # Append to log.md
         log_path = settings.wiki_dir / "log.md"

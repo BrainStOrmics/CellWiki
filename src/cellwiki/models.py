@@ -231,8 +231,6 @@ class WikiCellType(BaseModel):
 # CellWiki v2.0 — Extended Entity Models
 # ============================================================
 
-from enum import IntEnum
-
 
 class IngestResult(BaseModel):
     """Output from Step 2 of the ingest chain."""

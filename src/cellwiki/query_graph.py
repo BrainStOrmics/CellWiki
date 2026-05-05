@@ -10,20 +10,12 @@ Usage:
 
 import json
 import logging
-import os
 import re
-import sys
 from pathlib import Path
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from graphs.checkpointer import get_checkpointer
-
-_project_root = Path(__file__).parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
 from graphs.states import QueryState
 
 logger = logging.getLogger(__name__)
@@ -271,8 +263,9 @@ Question: {question}
 Relevant wiki pages:
 {full_context}
 
-Answer the question comprehensively using the wiki pages. Cite sources using [1], [2], etc.
-If the wiki pages don't fully answer the question, say so explicitly.
+Answer the question comprehensively using ONLY the provided wiki pages. Cite sources using [1], [2], etc.
+Do NOT use outside knowledge or make up facts not present in the wiki.
+If the wiki pages don't contain enough information, state that explicitly rather than guessing.
 If you need more data, suggest what research would help.
 """
 
@@ -281,14 +274,14 @@ If you need more data, suggest what research would help.
         from openai import OpenAI
 
         client = OpenAI(
-            api_key=settings.openai_api_key or os.environ.get("OPENAI_API_KEY", ""),
-            base_url=settings.openai_base_url or os.environ.get("OPENAI_BASE_URL", None),
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url or None,
         )
 
         response = client.chat.completions.create(
             model=settings.openai_model,
             messages=[
-                {"role": "system", "content": "You are a CellWiki query assistant. Answer based on the provided wiki pages."},
+                {"role": "system", "content": "You are a CellWiki query assistant. Answer ONLY based on the provided wiki pages. If information is not in the pages, say so explicitly."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
@@ -320,7 +313,7 @@ def build_query_graph():
     workflow.add_edge("parse_question", "entity_search")
 
     workflow.add_conditional_edges("entity_search", route_after_search, {
-        "research": "llm_synthesize",  # TODO: route to research subgraph
+        "research": "graph_expansion",  # Falls through to synthesis with no context; TODO: integrate research subgraph
         "graph_expansion": "graph_expansion",
     })
 

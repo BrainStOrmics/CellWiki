@@ -57,7 +57,6 @@ def _proper_title_case(s: str) -> str:
         "Tcf7": "TCF7",
         "Il23R": "IL23R",
         "Il10": "IL10",
-        "Tmem": "Tmem",
         "Tex": "TEX",
     }
     for old, new in fixes.items():

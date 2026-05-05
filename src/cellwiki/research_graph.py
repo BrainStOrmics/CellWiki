@@ -10,18 +10,11 @@ Usage:
 
 import json
 import logging
-import sys
 from pathlib import Path
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from graphs.checkpointer import get_checkpointer
-
-_project_root = Path(__file__).parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
 from graphs.states import ResearchState
 
 logger = logging.getLogger(__name__)
@@ -135,11 +128,10 @@ def synthesize(state: ResearchState) -> dict:
     try:
         from cellwiki.config import settings
         from openai import OpenAI
-        import os
 
         client = OpenAI(
-            api_key=settings.openai_api_key or os.environ.get("OPENAI_API_KEY", ""),
-            base_url=settings.openai_base_url or os.environ.get("OPENAI_BASE_URL", None),
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url or None,
         )
 
         prompt = f"""Research gap: {gap}

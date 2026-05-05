@@ -7,6 +7,16 @@ from cellwiki.models import WikiCellType
 from cellwiki.knowledge import load_all_extractions, merge_to_wiki
 
 
+def _escape_dot_label(text: str) -> str:
+    """Escape special characters for DOT graph labels."""
+    return text.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _escape_mermaid_label(text: str) -> str:
+    """Escape special characters for Mermaid graph labels."""
+    return text.replace('"', '&quot;').replace("]", "&#93;")
+
+
 def generate_relationship_graph():
     """Generate all three graph formats from current wiki data."""
     extractions = load_all_extractions()
@@ -17,11 +27,13 @@ def generate_relationship_graph():
     wiki = merge_to_wiki(extractions)
 
     # Resolve CL IDs
-    from cellwiki.ontology import load_cell_ontology, resolve_cell_type_to_cl
+    from cellwiki.ontology import load_cell_ontology, load_cl_id_registry, load_manual_corrections, resolve_cell_type_to_cl
     ontology = load_cell_ontology()
+    registry = load_cl_id_registry()
+    corrections = load_manual_corrections()
     for key, wt in wiki.items():
         if not wt.cl_id:
-            wt.cl_id = resolve_cell_type_to_cl(wt.display_name or key, ontology)
+            wt.cl_id = resolve_cell_type_to_cl(wt.display_name or key, ontology, registry, corrections)
 
     # 1. JSON relationships
     rel_data = {"nodes": [], "edges": []}
@@ -56,7 +68,7 @@ def generate_relationship_graph():
         "",
     ]
     for key, wt in wiki.items():
-        label = wt.display_name or key
+        label = _escape_dot_label(wt.display_name or key)
         cl_tag = f"\\n{wt.cl_id}" if wt.cl_id else ""
         dot_lines.append(f'  "{key}" [label="{label}{cl_tag}"];')
     dot_lines.append("")
@@ -74,7 +86,7 @@ def generate_relationship_graph():
         "graph BT",
     ]
     for key, wt in wiki.items():
-        label = wt.display_name or key
+        label = _escape_mermaid_label(wt.display_name or key)
         mmd_lines.append(f'  {key}["{label}"]')
     mmd_lines.append("")
     for key, wt in wiki.items():

@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # Project paths (relative to project root)
-    project_root: Path = Path(__file__).parent.parent
+    project_root: Path = Path(__file__).parent.parent.parent
     data_dir: Path = project_root / "data"
     references_dir: Path = data_dir / "references"
     extraction_dir: Path = data_dir / "extraction"
@@ -42,25 +42,25 @@ class Settings(BaseSettings):
 
 
     # Raw data directories
-    raw_dir: Path = Path(__file__).parent.parent / "raw"
-    raw_sources_dir: Path = Path(__file__).parent.parent / "raw" / "sources"
-    raw_datasets_dir: Path = Path(__file__).parent.parent / "raw" / "datasets"
-    raw_ontologies_dir: Path = Path(__file__).parent.parent / "raw" / "ontologies"
-    raw_notes_dir: Path = Path(__file__).parent.parent / "raw" / "notes"
+    raw_dir: Path = Path(__file__).parent.parent.parent / "raw"
+    raw_sources_dir: Path = Path(__file__).parent.parent.parent / "raw" / "sources"
+    raw_datasets_dir: Path = Path(__file__).parent.parent.parent / "raw" / "datasets"
+    raw_ontologies_dir: Path = Path(__file__).parent.parent.parent / "raw" / "ontologies"
+    raw_notes_dir: Path = Path(__file__).parent.parent.parent / "raw" / "notes"
 
     # Extractions directory
-    extractions_dir: Path = Path(__file__).parent.parent / "extractions"
+    extractions_dir: Path = Path(__file__).parent.parent.parent / "extractions"
 
     # Wiki subdirectories
-    wiki_marker_genes_dir: Path = Path(__file__).parent.parent / "wiki" / "marker_genes"
-    wiki_tissues_dir: Path = Path(__file__).parent.parent / "wiki" / "tissues"
-    wiki_diseases_dir: Path = Path(__file__).parent.parent / "wiki" / "diseases"
-    wiki_methods_dir: Path = Path(__file__).parent.parent / "wiki" / "methods"
-    wiki_trajectories_dir: Path = Path(__file__).parent.parent / "wiki" / "trajectories"
-    wiki_state_spaces_dir: Path = Path(__file__).parent.parent / "wiki" / "state_spaces"
+    wiki_marker_genes_dir: Path = Path(__file__).parent.parent.parent / "wiki" / "marker_genes"
+    wiki_tissues_dir: Path = Path(__file__).parent.parent.parent / "wiki" / "tissues"
+    wiki_diseases_dir: Path = Path(__file__).parent.parent.parent / "wiki" / "diseases"
+    wiki_methods_dir: Path = Path(__file__).parent.parent.parent / "wiki" / "methods"
+    wiki_trajectories_dir: Path = Path(__file__).parent.parent.parent / "wiki" / "trajectories"
+    wiki_state_spaces_dir: Path = Path(__file__).parent.parent.parent / "wiki" / "state_spaces"
 
     # Graphs directory
-    graphs_dir: Path = Path(__file__).parent.parent / "graphs"
+    graphs_dir: Path = Path(__file__).parent.parent.parent / "graphs"
 
     class Config:
         env_file = ".env"

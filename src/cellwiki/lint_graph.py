@@ -10,20 +10,12 @@ Usage:
 
 import json
 import logging
-import os
 import re
-import sys
 from pathlib import Path
 
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.memory import MemorySaver
 
 from graphs.checkpointer import get_checkpointer
-
-_project_root = Path(__file__).parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
 from graphs.states import LintState
 
 logger = logging.getLogger(__name__)
@@ -58,9 +50,9 @@ def scan_all(state: LintState) -> dict:
 
     # Additional checks specific to v2.0 structure
 
-    # Check index.md consistency
+    # Check README.md consistency
     from cellwiki.config import settings
-    index_path = settings.wiki_dir / "index.md"
+    index_path = settings.wiki_dir / "README.md"
     if index_path.exists():
         index_content = index_path.read_text(encoding="utf-8")
         ct_dir = settings.wiki_cell_types_dir
@@ -68,10 +60,10 @@ def scan_all(state: LintState) -> dict:
             actual_files = {f.stem for f in ct_dir.glob("*.md")}
             # Check if all files are mentioned in index
             for f in actual_files:
-                if f"[[{f}]]" not in index_content:
+                if f"[{f}]" not in index_content and f"({f}.md)" not in index_content:
                     issues.append({
                         "type": "index_mismatch",
-                        "detail": f"{f} exists but not in index.md",
+                        "detail": f"{f} exists but not in README.md",
                         "severity": "MEDIUM",
                         "auto_fixable": True,
                     })
@@ -136,8 +128,10 @@ def auto_fix(state: LintState) -> dict:
         try:
             if fix_type == "index_mismatch":
                 # Rebuild index
+                from cellwiki.knowledge import load_all_extractions, merge_to_wiki
                 from cellwiki.wiki import generate_index_page
-                generate_index_page()
+                wiki = merge_to_wiki(load_all_extractions())
+                generate_index_page(wiki)
                 fixes_applied.append(f"Rebuilt index.md")
 
             elif fix_type == "broken_link":

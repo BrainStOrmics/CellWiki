@@ -4,13 +4,25 @@ import json
 from pathlib import Path
 from cellwiki.config import settings
 from cellwiki.knowledge import load_all_extractions, merge_to_wiki
-from cellwiki.ontology import load_cell_ontology, resolve_cell_type_to_cl
+from cellwiki.ontology import load_cell_ontology, load_cl_id_registry, load_manual_corrections, resolve_cell_type_to_cl
 from cellwiki.wiki import _proper_title_case
 
 
 SEVERITY_HIGH = "HIGH"
 SEVERITY_MEDIUM = "MEDIUM"
 SEVERITY_LOW = "LOW"
+
+CATEGORY_LABELS = {
+    "missing_cl_id": "Missing CL ID",
+    "marker_conflicts": "Marker Conflicts",
+    "orphan_subpopulations": "Orphan Subpopulations",
+    "orphan_parent_type": "Orphan Parent Types",
+    "empty_pages": "Empty Pages",
+    "single_source": "Single-Source Pages",
+    "unresolved_names": "Unresolved Names",
+    "extraction_mismatch": "Extraction Mismatch",
+    "no_extractions": "No Extractions",
+}
 
 
 def run_audit() -> dict[str, list[dict]]:
@@ -27,9 +39,11 @@ def run_audit() -> dict[str, list[dict]]:
 
     # Resolve CL IDs (same as rebuild_wiki does)
     ontology = load_cell_ontology()
+    registry = load_cl_id_registry()
+    corrections = load_manual_corrections()
     for key, wt in wiki.items():
         if not wt.cl_id:
-            wt.cl_id = resolve_cell_type_to_cl(wt.display_name or key, ontology)
+            wt.cl_id = resolve_cell_type_to_cl(wt.display_name or key, ontology, registry, corrections)
 
     all_extractions = list(settings.extraction_dir.glob("*.json"))
     extraction_ids = {f.stem for f in all_extractions}
@@ -174,19 +188,7 @@ def display_audit_table(issues: dict[str, list[dict]]):
     console.print(Panel("\n".join(summary_lines), title="Audit Summary", border_style="yellow"))
     console.print()
 
-    category_labels = {
-        "missing_cl_id": "Missing CL ID",
-        "marker_conflicts": "Marker Conflicts",
-        "orphan_subpopulations": "Orphan Subpopulations",
-        "orphan_parent_type": "Orphan Parent Types",
-        "empty_pages": "Empty Pages",
-        "single_source": "Single-Source Pages",
-        "unresolved_names": "Unresolved Names",
-        "extraction_mismatch": "Extraction Mismatch",
-        "no_extractions": "No Extractions",
-    }
-
-    for category, label in category_labels.items():
+    for category, label in CATEGORY_LABELS.items():
         items = issues.get(category, [])
         if not items:
             continue
@@ -215,18 +217,6 @@ def generate_audit_report(issues: dict[str, list[dict]]) -> Path:
     report_path = settings.wiki_dir / "audit_report.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
-    category_labels = {
-        "missing_cl_id": "Missing CL ID",
-        "marker_conflicts": "Marker Conflicts",
-        "orphan_subpopulations": "Orphan Subpopulations",
-        "orphan_parent_type": "Orphan Parent Types",
-        "empty_pages": "Empty Pages",
-        "single_source": "Single-Source Pages",
-        "unresolved_names": "Unresolved Names",
-        "extraction_mismatch": "Extraction Mismatch",
-        "no_extractions": "No Extractions",
-    }
-
     severity_emoji = {
         SEVERITY_HIGH: "🔴",
         SEVERITY_MEDIUM: "🟡",
@@ -251,7 +241,7 @@ def generate_audit_report(issues: dict[str, list[dict]]) -> Path:
     lines.append("---")
     lines.append("")
 
-    for category, label in category_labels.items():
+    for category, label in CATEGORY_LABELS.items():
         items = issues.get(category, [])
         if not items:
             continue

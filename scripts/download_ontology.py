@@ -1,6 +1,7 @@
 """Download Cell Ontology OBO file."""
 
 import requests
+
 from cellwiki.config import settings
 
 

@@ -234,9 +234,9 @@ def cmd_graph(args):
     from cellwiki.visualization import generate_relationship_graph
     generate_relationship_graph()
     print("Graph generated:")
-    print(f"  {Path('wiki/relationships.json').resolve()}")
-    print(f"  {Path('wiki/graph.dot').resolve()}")
-    print(f"  {Path('wiki/graph.mmd').resolve()}")
+    print(f"  {(settings.wiki_dir / 'relationships.json').resolve()}")
+    print(f"  {(settings.wiki_dir / 'graph.dot').resolve()}")
+    print(f"  {(settings.wiki_dir / 'graph.mmd').resolve()}")
 
 
 def cmd_status(args):
@@ -304,7 +304,6 @@ def cmd_review(args):
 
     ontology = load_cell_ontology()
     registry = load_cl_id_registry()
-    corrections_path = settings.cell_ontology_dir / "manual_corrections.json"
     corrections = load_manual_corrections()
 
     console.print(Panel(f"Found {total} issues to review", border_style="yellow"))
