@@ -1,0 +1,496 @@
+# =============================================================================
+# 智能体工具 —— 暴露给 CellWiki 智能体的领域级工具函数
+# =============================================================================
+# 本模块定义智能体可调用的各类工具，按功能分组：
+#   - 只读工具（查询项目状态、搜索 Wiki、读取页面）
+#   - 导入工具（准备提取变更集）
+#   - 记忆工具（召回项目记忆、提交记忆候选）
+#   - 研究工具（搜索外部来源）
+#   - 提交工具（提交已审批的变更集）
+# 每个工具函数通过 @tool 装饰器注册为 LangChain 可调用工具。
+# =============================================================================
+
+"""High-level domain tools exposed to the CellWiki agent."""
+
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from langchain_core.tools import BaseTool, tool
+
+from cellwiki.api.reader import WikiReader
+from cellwiki.config import settings
+from cellwiki.domain.contracts import (
+    AgentAnswer,
+    ApprovalDecision,
+    ApprovalPolicy,
+    IngestStage,
+    TaskStatus,
+)
+from cellwiki.services.central_writer import CentralWriter
+from cellwiki.services.changesets import ChangeSetRepository
+from cellwiki.services.quality import inspect_projection
+from cellwiki.services.ingest import IngestService
+from cellwiki.services.revisions import IngestRevisionService
+from cellwiki.services.linting import LintFixService
+from cellwiki.services.sources import SourceRegistry
+from cellwiki.services.tasks import TaskEventRepository
+from cellwiki.domain.memory import MemoryCandidate, MemoryKind
+from cellwiki.services.memory import MemoryStore
+from cellwiki.services.research import ResearchService
+from cellwiki.services.operations import current_agent_run_id
+from cellwiki.services.pipeline import KnowledgePipelineHarness, PipelineBusyError
+from cellwiki.domain.contracts import PipelineTaskType
+from cellwiki.services.query import FormalQueryService
+
+
+def build_final_answer_tool() -> BaseTool:
+    """Build the coordinator's validated, direct-return answer boundary."""
+
+    @tool("submit_agent_answer", args_schema=AgentAnswer, return_direct=True)
+    def submit_agent_answer(
+        answer: str,
+        citations: list[dict[str, str | None]] | None = None,
+        confidence: str = "medium",
+        missing_evidence: list[str] | None = None,
+        knowledge_scope: str = "formal",
+        knowledge_version: str | None = None,
+    ) -> str:
+        """Finish with a grounded answer, exact page citations, and evidence gaps."""
+        validated = AgentAnswer.model_validate(
+            {
+                "answer": answer,
+                "citations": citations or [],
+                "confidence": confidence,
+                "missing_evidence": missing_evidence or [],
+                "knowledge_scope": knowledge_scope,
+                "knowledge_version": knowledge_version,
+            }
+        )
+        return validated.model_dump_json()
+
+    return submit_agent_answer
+
+
+# ---------------------------------------------------------------------------
+# 构建只读工具集
+# 提供给智能体的四类只读操作：
+# 1. get_project_status — 获取项目概览（页面数、来源数、待审批 ChangeSet 数）
+# 2. search_wiki — 搜索已发布的 Wiki 页面
+# 3. read_wiki_page — 读取单个页面内容（超过 20K 字符时截断）
+# 4. get_change_set — 读取 ChangeSet 详情（用于审批前查看）
+# 所有工具返回 JSON 字符串，确保智能体可以解析结果。
+# ---------------------------------------------------------------------------
+def build_read_tools(project_root: Path) -> list[BaseTool]:
+    root = Path(project_root).resolve()
+    reader = WikiReader(root)
+    sources = SourceRegistry(root)
+    changesets = ChangeSetRepository(root)
+    pipeline = KnowledgePipelineHarness(root)
+    query_service = FormalQueryService(root, reader=reader, pipeline=pipeline, changesets=changesets)
+
+    # 获取项目状态：已发布页面数、注册来源数、待审批 ChangeSet 数
+    @tool("get_project_status")
+    def get_project_status() -> str:
+        """Return counts for published pages, registered sources, and pending ChangeSets."""
+        pending_dir = root / "data" / "runtime" / "changesets"
+        result = {
+            "project_id": "cellwiki",
+            "page_count": len(reader.tree()),
+            "source_count": len(sources.list_sources()),
+            "change_set_count": len(list(pending_dir.glob("cs_*.json"))) if pending_dir.exists() else 0,
+            "knowledge_version": pipeline.current_knowledge_version(),
+            "approval_policy": pipeline.approval_policy().value,
+            "active_pipeline_task": pipeline.active_task(),
+        }
+        return json.dumps(result, ensure_ascii=False)
+
+    # 搜索 Wiki：返回页面 ID 和简短摘要
+    @tool("search_wiki")
+    def search_wiki(query: str, limit: int = 10) -> str:
+        """Search published CellWiki pages and return page IDs with short snippets."""
+        return query_service.search(query, limit).model_dump_json()
+
+    # 读取页面：按领域页面 ID 读取，不接受文件路径
+    # 超过 20K 字符时截断，避免超出 LLM 上下文窗口
+    @tool("read_wiki_page")
+    def read_wiki_page(page_id: str) -> str:
+        """Read one published Wiki page by domain page ID; never accepts a file path."""
+        page = query_service.read_page(page_id)
+        if len(page.markdown) > 20_000:
+            page = page.model_copy(update={"markdown": page.markdown[:20_000] + "\n...[truncated]"})
+        return page.model_dump_json()
+
+    # 读取 ChangeSet：在要求用户审批前查看不可变的提议
+    @tool("get_change_set")
+    def get_change_set(change_set_id: str) -> str:
+        """Read an immutable proposed ChangeSet before asking the user to approve it."""
+        return changesets.get(change_set_id).model_dump_json()
+
+    return [get_project_status, search_wiki, read_wiki_page, get_change_set]
+
+
+# ---------------------------------------------------------------------------
+# 构建导入工具集
+# prepare_ingest_change_set — 分析一个已注册来源并持久化提取 ChangeSet，
+# 但不发布它。取消权限来自持久化运行时上下文，而非模型提供的任务标识符。
+# ---------------------------------------------------------------------------
+def build_ingest_tools(project_root: Path) -> list[BaseTool]:
+    root = Path(project_root).resolve()
+    ingest = IngestService(root)
+    revisions = IngestRevisionService(root, ingest=ingest)
+    pipeline = KnowledgePipelineHarness(root)
+
+    @tool("prepare_ingest_change_set")
+    def prepare_ingest_change_set(source_id: str, run_id: str) -> str:
+        """Analyze one registered source and persist a proposed extraction ChangeSet without publishing it."""
+        change_set = ingest.prepare_change_set(
+            source_id,
+            run_id,
+            # 取消权限来自持久化运行时上下文，而非模型提供的任务标识符
+            cancellation_id=current_agent_run_id() or run_id,
+        )
+        policy = pipeline.approval_policy()
+        snapshot_id = getattr(change_set, "snapshot_id", None)
+        snapshot = (
+            pipeline.get_snapshot(snapshot_id).model_dump(mode="json")
+            if snapshot_id
+            else None
+        )
+        return json.dumps(
+            {
+                "change_set": json.loads(change_set.model_dump_json()),
+                "snapshot": snapshot,
+                "approval_policy": policy.value,
+                "requires_human_review": policy is not ApprovalPolicy.AUTO_ALL,
+            },
+            ensure_ascii=False,
+        )
+
+    @tool("request_ingest_revision")
+    def request_ingest_revision(
+        change_set_id: str,
+        comments: list[str],
+        reviewer: str = "default-reviewer",
+        run_id: str = "",
+    ) -> str:
+        """Record review feedback and prepare a new same-source ingest ChangeSet."""
+
+        revision = revisions.request_revision(
+            change_set_id,
+            reviewer=reviewer,
+            comments=comments,
+        )
+        effective_run_id = run_id.strip() or current_agent_run_id() or f"revision_{uuid.uuid4().hex}"
+        change_set = revisions.prepare_revision(
+            revision.revision_id,
+            run_id=effective_run_id,
+            cancellation_id=current_agent_run_id() or effective_run_id,
+        )
+        policy = pipeline.approval_policy()
+        snapshot_id = getattr(change_set, "snapshot_id", None)
+        snapshot = (
+            pipeline.get_snapshot(snapshot_id).model_dump(mode="json")
+            if snapshot_id
+            else None
+        )
+        return json.dumps(
+            {
+                "revision": revisions.get(revision.revision_id).model_dump(mode="json"),
+                "change_set": change_set.model_dump(mode="json"),
+                "snapshot": snapshot,
+                "approval_policy": policy.value,
+                "requires_human_review": policy is not ApprovalPolicy.AUTO_ALL,
+            },
+            ensure_ascii=False,
+        )
+
+    return [prepare_ingest_change_set, request_ingest_revision]
+
+
+def build_lint_tools(project_root: Path) -> list[BaseTool]:
+    """Build read-first Lint tools that share the governed Pipeline Harness."""
+
+    root = Path(project_root).resolve()
+    lint = LintFixService(root)
+    research = ResearchService(root)
+    pipeline = KnowledgePipelineHarness(root)
+
+    def pipeline_busy_payload(run_id: str) -> str:
+        """Keep a concurrent Pipeline request visible without failing the Agent run."""
+
+        return json.dumps(
+            {
+                "status": "pipeline_busy",
+                "run_id": run_id,
+                "active_task": pipeline.active_task(),
+                "message": (
+                    "Another CellWiki knowledge pipeline task owns the project lease; "
+                    "do not start a second ingest or lint task."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    @tool("run_broad_lint")
+    def run_broad_lint(
+        external_query: str = "",
+        limit: int = 5,
+        run_id: str = "",
+    ) -> str:
+        """Run local quality lint and optionally refresh external research candidates."""
+
+        effective_run_id = run_id.strip() or current_agent_run_id() or f"lint_{uuid.uuid4().hex}"
+        normalized_query = " ".join(external_query.split())
+        try:
+            with pipeline.acquire(task_type=PipelineTaskType.LINT, run_id=effective_run_id) as lease:
+                local_report = lint.inspect()
+                snapshot = lease.snapshot.model_dump(mode="json")
+                external_refresh = None
+                if normalized_query:
+                    external_refresh = research.refresh(
+                        normalized_query,
+                        project_id="cellwiki",
+                        limit=max(1, min(limit, 20)),
+                        run_id=effective_run_id,
+                        lease=lease,
+                    ).model_dump(mode="json")
+        except PipelineBusyError:
+            return pipeline_busy_payload(effective_run_id)
+
+        return json.dumps(
+            {
+                "mode": "broad",
+                "run_id": effective_run_id,
+                "snapshot": snapshot,
+                "local_quality": local_report,
+                "external_refresh": external_refresh,
+                "policy": (
+                    "external_results_are_candidate_only"
+                    if external_refresh is not None
+                    else "external_refresh_not_requested"
+                ),
+            },
+            ensure_ascii=False,
+        )
+
+    @tool("inspect_knowledge_quality")
+    def inspect_knowledge_quality() -> str:
+        """Inspect the complete formal Wiki state and return findings with its snapshot."""
+
+        run_id = current_agent_run_id() or "lint_query"
+        try:
+            with pipeline.acquire(task_type=PipelineTaskType.LINT, run_id=run_id) as lease:
+                report = lint.inspect()
+                return json.dumps(
+                    {
+                        "snapshot": lease.snapshot.model_dump(mode="json"),
+                        "report": report,
+                    },
+                    ensure_ascii=False,
+                )
+        except PipelineBusyError:
+            return pipeline_busy_payload(run_id)
+
+    @tool("propose_lint_fix")
+    def propose_lint_fix(finding_ids: list[str], run_id: str) -> str:
+        """Create a reviewable Lint ChangeSet; never apply the repair directly."""
+
+        change_set = lint.propose(finding_ids, run_id=run_id)
+        policy = pipeline.approval_policy()
+        snapshot_id = getattr(change_set, "snapshot_id", None)
+        snapshot = (
+            pipeline.get_snapshot(snapshot_id).model_dump(mode="json")
+            if snapshot_id
+            else None
+        )
+        return json.dumps(
+            {
+                "change_set": change_set.model_dump(mode="json"),
+                "snapshot": snapshot,
+                "approval_policy": policy.value,
+                "requires_human_review": policy is not ApprovalPolicy.AUTO_ALL,
+            },
+            ensure_ascii=False,
+        )
+
+    return [run_broad_lint, inspect_knowledge_quality, propose_lint_fix]
+
+
+# ---------------------------------------------------------------------------
+# 构建记忆工具集
+# 两个工具：
+# 1. recall_project_memory — 召回项目范围的任务结果
+# 2. propose_memory_candidate — 提交仅包含结果的记忆候选
+# 记忆是受控的：只包含任务结果，不包含科学证据。
+# 限制：limit 范围 1-10，token_budget 由配置决定。
+# ---------------------------------------------------------------------------
+def build_memory_tools(project_root: Path, project_id: str = "cellwiki") -> tuple[BaseTool, BaseTool]:
+    """Build bounded recall and candidate-only write tools for governed memory."""
+
+    memory = MemoryStore(Path(project_root).resolve())
+
+    # 召回记忆：查询项目范围的历史任务结果
+    @tool("recall_project_memory")
+    def recall_project_memory(query: str, limit: int = 6) -> str:
+        """Recall project-scoped outcomes; memory is context only and never citation evidence."""
+
+        records, recall = memory.recall(
+            project_id,
+            query,
+            limit=max(1, min(limit, 10)),                      # 限制召回数量
+            token_budget=settings.memory_recall_token_budget,   # 限制 token 消耗
+        )
+        return json.dumps(
+            {
+                "recall": recall.model_dump(mode="json"),
+                "records": [record.model_dump(mode="json") for record in records],
+                # 明确声明记忆不是科学证据
+                "policy": "memory_is_not_scientific_evidence",
+            },
+            ensure_ascii=False,
+        )
+
+    # 提交记忆候选：用于确定性验证和去重
+    @tool("propose_memory_candidate")
+    def propose_memory_candidate(
+        content: str,
+        kind: str = "episode",
+        key: str = "",
+        confidence: float = 0.7,
+        tags: list[str] | None = None,
+        expires_in_days: int | None = None,
+    ) -> str:
+        """Submit an outcome-only MemoryCandidate for deterministic validation and deduplication."""
+
+        memory_kind = MemoryKind(kind)
+        # 稳定记忆必须有确定性键，用于去重
+        if memory_kind == MemoryKind.STABLE and not key.strip():
+            raise ValueError("stable memory candidates require a deterministic key")
+        # 计算过期时间，限制范围 1-3650 天
+        expires_at = (
+            datetime.now(UTC) + timedelta(days=max(1, min(expires_in_days, 3650)))
+            if expires_in_days is not None
+            else None
+        )
+        # 构建记忆候选，使用 UUID 生成唯一 ID
+        candidate = MemoryCandidate(
+            candidate_id=f"candidate_{uuid.uuid4().hex}",
+            project_id=project_id,
+            kind=memory_kind,
+            content=content,
+            key=key.strip() or None,
+            confidence=confidence,
+            tags=(tags or [])[:20],  # 最多 20 个标签
+            expires_at=expires_at,
+        )
+        # 提交到记忆存储进行验证和去重
+        record = memory.admit(candidate)
+        return record.model_dump_json()
+
+    return recall_project_memory, propose_memory_candidate
+
+
+# ---------------------------------------------------------------------------
+# 构建提交工具
+# commit_change_set — 在运行时获得明确用户审批后提交不可变的 ChangeSet。
+# 流程：
+# 1. 记录"正在提交"状态
+# 2. 调用 CentralWriter 执行提交
+# 3. 运行投影质量检查
+# 4. 记录"已提交"状态
+# 如果提交失败，CentralWriter 保证回滚，记录失败状态并重新抛出异常。
+# ---------------------------------------------------------------------------
+def build_rebase_tool(project_root: Path) -> BaseTool:
+    """Return an explicit current/rebased/conflict result for one proposal."""
+
+    changesets = ChangeSetRepository(Path(project_root).resolve())
+
+    @tool("rebase_change_set")
+    def rebase_change_set(change_set_id: str) -> str:
+        """Rebase a stale ChangeSet or report overlapping targets without mutating the original."""
+
+        result = changesets.rebase(change_set_id)
+        payload = result.model_dump(mode="json")
+        if result.rebased_change_set_id is not None:
+            payload["change_set"] = changesets.get(result.rebased_change_set_id).model_dump(mode="json")
+        return json.dumps(payload, ensure_ascii=False)
+
+    return rebase_change_set
+
+
+def build_commit_tool(project_root: Path) -> BaseTool:
+    root = Path(project_root).resolve()
+    writer = CentralWriter(root)
+    changesets = ChangeSetRepository(root)
+    tasks = TaskEventRepository(root)
+    pipeline = KnowledgePipelineHarness(root)
+
+    @tool("commit_change_set")
+    def commit_change_set(change_set_id: str) -> str:
+        """Commit an immutable ChangeSet after the runtime has obtained explicit user approval."""
+        # 获取 ChangeSet 并提取来源 ID
+        change_set = changesets.get(change_set_id)
+        source_id = change_set.operations[0].target_id
+        # 1. 记录"正在提交"状态
+        tasks.record(
+            run_id=change_set.run_id,
+            source_id=source_id,
+            stage=IngestStage.PUBLISH,
+            status=TaskStatus.COMMITTING,
+            message="Publishing the approved ChangeSet.",
+            progress=82,
+            change_set_id=change_set_id,
+        )
+        try:
+            # 2. 执行提交
+            result = writer.commit(
+                change_set_id,
+                None
+                if pipeline.approval_policy() is ApprovalPolicy.AUTO_ALL
+                else ApprovalDecision(approved=True, decided_by="agent-hitl"),
+            )
+            # 3. 运行投影质量检查
+            report = inspect_projection(root)
+            tasks.record(
+                run_id=change_set.run_id,
+                source_id=source_id,
+                stage=IngestStage.LINT,
+                status=TaskStatus.COMMITTING,
+                message="Projection lint completed.",
+                progress=96,
+                change_set_id=change_set_id,
+                detail={
+                    "quality_status": report["status"],
+                    "issue_count": report["issue_count"],
+                },
+            )
+            # 4. 记录"已提交"状态
+            tasks.record(
+                run_id=change_set.run_id,
+                source_id=source_id,
+                stage=IngestStage.PUBLISH,
+                status=TaskStatus.COMMITTED,
+                message="ChangeSet was published and verified.",
+                progress=100,
+                change_set_id=change_set_id,
+            )
+            return result.model_dump_json()
+        except Exception as error:
+            # 提交失败：CentralWriter 已回滚投影，记录失败状态
+            tasks.record(
+                run_id=change_set.run_id,
+                source_id=source_id,
+                stage=IngestStage.PUBLISH,
+                status=TaskStatus.FAILED,
+                message="Publish failed; CentralWriter rolled back the projection.",
+                progress=82,
+                change_set_id=change_set_id,
+                detail={"error": str(error)},
+            )
+            raise
+
+    return commit_change_set

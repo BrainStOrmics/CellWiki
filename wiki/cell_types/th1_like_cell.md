@@ -16,6 +16,23 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: th1_like_cell
+evidence_tier: 4
+source_count: 2
+positive_markers:
+- BHLHE40
+- CD4
+- CXCL13
+- CXCR3
+- HAVCR2
+- IFNG
+negative_markers: []
+tissues:
+- colorectal tumor
+- tumor microenvironment
+species:
+- Homo sapiens
+- Mus musculus
+conflicts: []
 ---
 
 # Th1 Like Cell

@@ -10,6 +10,16 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: cancer_associated_fibroblast
+evidence_tier: 4
+source_count: 1
+positive_markers: []
+negative_markers: []
+tissues:
+- tumor tissue
+species:
+- Homo sapiens
+- Mus musculus
+conflicts: []
 ---
 
 # Cancer Associated Fibroblast

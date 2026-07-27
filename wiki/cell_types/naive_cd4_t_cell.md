@@ -10,6 +10,16 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: naive_cd4_t_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- CD4
+negative_markers: []
+tissues:
+- spleen
+species:
+- Mus musculus
+conflicts: []
 ---
 
 # Naive CD4 T Cell

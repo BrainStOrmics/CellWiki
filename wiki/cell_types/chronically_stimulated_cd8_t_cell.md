@@ -10,6 +10,22 @@ references:
 - paper_id: exmaple_paper_1
   title: Lineage tracking reveals dynamic relationships of T cells in colorectal cancer
 standard_name: chronically_stimulated_cd8_t_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- CD39
+- CD8
+- ENTPD1
+- HAVCR2
+- IGFLR1
+- LAG3
+- PDCD1
+negative_markers: []
+tissues:
+- in vitro culture
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # Chronically Stimulated CD8 T Cell

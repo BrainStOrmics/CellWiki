@@ -1,0 +1,47 @@
+{
+  "name": "agentic-cellwiki-frontend",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "desktop:package": "python ../scripts/build_sidecar.py && tauri build --bundles nsis",
+    "version:check": "python ../scripts/sync_version.py --check"
+  },
+  "dependencies": {
+    "@fontsource-variable/geist": "^5.2.9",
+    "@react-sigma/core": "^5.0.6",
+    "@tanstack/react-query": "^5.101.2",
+    "@tauri-apps/api": "^2.8.0",
+    "@vitejs/plugin-react": "latest",
+    "graphology": "^0.26.0",
+    "lucide-react": "^1.24.0",
+    "react": "latest",
+    "react-dom": "latest",
+    "react-markdown": "^10.1.0",
+    "rehype-sanitize": "^6.0.0",
+    "remark-gfm": "^4.0.1",
+    "sigma": "^3.0.3",
+    "typescript": "latest",
+    "vite": "latest",
+    "zustand": "^5.0.14"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@tauri-apps/cli": "^2.11.4",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "jsdom": "^29.1.1",
+    "vitest": "^4.1.10"
+  }
+}

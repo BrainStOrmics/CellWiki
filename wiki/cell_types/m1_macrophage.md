@@ -10,6 +10,18 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: m1_macrophage
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- NOS2
+negative_markers: []
+tissues:
+- in vitro culture
+- tumor microenvironment
+species:
+- Homo sapiens
+- Mus musculus
+conflicts: []
 ---
 
 # M1 Macrophage

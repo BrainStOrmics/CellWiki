@@ -11,6 +11,15 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: lung_carcinoma_cell_line
+evidence_tier: 4
+source_count: 1
+positive_markers: []
+negative_markers: []
+tissues:
+- lung
+species:
+- Mus musculus
+conflicts: []
 ---
 
 # Lung Carcinoma Cell Line

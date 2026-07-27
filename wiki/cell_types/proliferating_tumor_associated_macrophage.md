@@ -10,6 +10,16 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: proliferating_tumor_associated_macrophage
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- MKI67
+negative_markers: []
+tissues:
+- tumor tissue
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # Proliferating Tumor Associated Macrophage

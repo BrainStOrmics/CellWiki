@@ -26,6 +26,27 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: cd8_naive_t_cell
+evidence_tier: 4
+source_count: 2
+positive_markers:
+- CCR7
+- CD3
+- CD4
+- CD45RA
+- CD8A
+- LEF1
+- PTPRC
+negative_markers: []
+tissues:
+- adjacent normal mucosa
+- colorectal tumor
+- lymphoid tissue
+- peripheral blood
+- spleen
+species:
+- Homo sapiens
+- Mus musculus
+conflicts: []
 ---
 
 # CD8 Naive T Cell

@@ -25,6 +25,24 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: t_cell
+evidence_tier: 4
+source_count: 2
+positive_markers:
+- CD3
+- CD4
+- CD8A
+- PD-1
+negative_markers: []
+tissues:
+- adjacent normal mucosa
+- adjacent normal tissue
+- colorectal tumor
+- peripheral blood
+- tumor microenvironment
+species:
+- Homo sapiens
+- Mus musculus
+conflicts: []
 ---
 
 # T Cell

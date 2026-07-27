@@ -12,6 +12,19 @@ references:
 - paper_id: exmaple_paper_1
   title: Lineage tracking reveals dynamic relationships of T cells in colorectal cancer
 standard_name: cd8_effector_memory_t_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- GZMK
+negative_markers: []
+tissues:
+- adjacent normal mucosa
+- colorectal tumor
+- colorectal tumour
+- peripheral blood
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # CD8 Effector Memory T Cell

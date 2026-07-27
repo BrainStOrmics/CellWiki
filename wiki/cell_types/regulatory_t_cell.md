@@ -25,6 +25,37 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: regulatory_t_cell
+evidence_tier: 4
+source_count: 2
+positive_markers:
+- CD25
+- CD3
+- CD4
+- CTLA4
+- FOXP3
+- IL10
+- IL2RA
+- RORC
+- SATB1
+- TIGIT
+- TNFRSF9
+negative_markers: []
+tissues:
+- adjacent normal mucosa
+- colorectal tumor
+- colorectal tumour
+- in vitro culture
+- normal mucosa
+- peripheral blood
+- spleen (in vitro derived)
+- tumor
+- tumor microenvironment
+- tumor tissue
+species:
+- Homo sapiens
+- Mus musculus
+conflicts:
+- 'IL10: positive vs transcript'
 ---
 
 # Regulatory T Cell

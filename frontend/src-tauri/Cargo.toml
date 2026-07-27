@@ -1,0 +1,23 @@
+[package]
+name = "cellwiki-desktop"
+version = "2.0.0"
+description = "Desktop shell for Agentic CellWiki"
+authors = ["BrainStOrmics"]
+edition = "2021"
+
+[lib]
+name = "cellwiki_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "cellwiki-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"

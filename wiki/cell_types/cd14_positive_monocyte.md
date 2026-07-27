@@ -10,6 +10,17 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: cd14_positive_monocyte
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- CD14
+negative_markers: []
+tissues:
+- peripheral blood
+- tumor tissue
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # Cd14 Positive Monocyte

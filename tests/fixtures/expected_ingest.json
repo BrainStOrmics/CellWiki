@@ -1,0 +1,18 @@
+{
+  "cell_types": ["regulatory_t_cell"],
+  "markers": ["FOXP3"],
+  "minimum_claims": 2,
+  "minimum_evidence": 2,
+  "required_evidence_fields": [
+    "source_id",
+    "page_start",
+    "page_end",
+    "section",
+    "block_id",
+    "excerpt",
+    "evidence_type",
+    "confidence"
+  ],
+  "conflict_types": ["marker_direction_conflict"]
+}
+

@@ -10,6 +10,16 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: il1b_positive_macrophage
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- IL1B
+negative_markers: []
+tissues:
+- pancreatic tumor
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # Il1B Positive Macrophage

@@ -15,6 +15,21 @@ references:
 - paper_id: exmaple_paper_1
   title: Lineage tracking reveals dynamic relationships of T cells in colorectal cancer
 standard_name: cd8_intraepithelial_lymphocyte
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- CD160
+- CD69
+- ITGAE
+- KLRB1
+negative_markers: []
+tissues:
+- adjacent normal mucosa
+- colorectal tumor
+- normal mucosa
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # CD8 Intraepithelial Lymphocyte

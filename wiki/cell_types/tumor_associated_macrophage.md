@@ -15,6 +15,40 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: tumor_associated_macrophage
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- CD11B
+- CD45
+- SOCS1
+- SPP1
+- STAT1
+- TRIM21
+negative_markers: []
+tissues:
+- CT26 tumor
+- MC38 subcutaneous tumor
+- breast tumor
+- colon tumor
+- colorectal tumor
+- hepatocellular carcinoma
+- human tumor
+- lung tumor
+- pancreatic tumor
+- peritoneal tumor
+- renal cell carcinoma
+- solid tumors
+- subcutaneous tumor
+- tumor
+- tumor microenvironment
+- tumor tissue
+species:
+- Homo sapiens
+- Mus musculus
+conflicts:
+- 'SPP1: positive vs transcript'
+- 'STAT1: positive vs transcript'
+- 'TRIM21: positive vs transcript'
 ---
 
 # Tumor Associated Macrophage

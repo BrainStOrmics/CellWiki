@@ -11,6 +11,16 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: cd45_negative_cell
+evidence_tier: 4
+source_count: 1
+positive_markers: []
+negative_markers:
+- PTPRC
+tissues:
+- tumor microenvironment
+species:
+- Mus musculus
+conflicts: []
 ---
 
 # Cd45 Negative Cell

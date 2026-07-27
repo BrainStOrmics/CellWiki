@@ -1,2 +1,4 @@
 [console_scripts]
-cellwiki = cellwiki.cli:main
+cellwiki = cellwiki.product_cli:main
+cellwiki-legacy = cellwiki.legacy.cli:main
+cellwiki-sidecar = cellwiki.sidecar:main

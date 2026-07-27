@@ -11,6 +11,16 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: colon_carcinoma_cell_line
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- LUCIFERASE
+negative_markers: []
+tissues:
+- colon
+species:
+- Mus musculus
+conflicts: []
 ---
 
 # Colon Carcinoma Cell Line

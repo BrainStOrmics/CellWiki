@@ -16,6 +16,25 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: cd8_positive_t_cell
+evidence_tier: 4
+source_count: 2
+positive_markers:
+- CD8
+- CD8A
+- GZMB
+- KI67
+negative_markers:
+- CD4
+tissues:
+- colorectal tumor
+- peripheral blood
+- tumor microenvironment
+- tumor tissue
+species:
+- Homo sapiens
+- Mus musculus
+conflicts:
+- 'CD8A: positive vs transcript'
 ---
 
 # CD8 Positive T Cell

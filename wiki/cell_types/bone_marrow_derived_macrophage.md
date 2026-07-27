@@ -12,6 +12,19 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: bone_marrow_derived_macrophage
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- CD45
+- SPP1
+negative_markers: []
+tissues:
+- bone marrow
+- in vitro culture
+- peritoneal cavity
+species:
+- Mus musculus
+conflicts: []
 ---
 
 # Bone Marrow Derived Macrophage

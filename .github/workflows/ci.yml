@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  python-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --extra dev
+      - name: Lint maintained Python modules
+        run: >-
+          uv run ruff check
+          src/cellwiki/agent src/cellwiki/api src/cellwiki/domain
+          src/cellwiki/evaluation src/cellwiki/services
+          scripts/evaluate_ingest_model.py scripts/evaluate_semantic.py
+          scripts/build_sidecar.py scripts/sync_version.py
+          scripts/check_docs.py scripts/generate_release_manifest.py
+      - name: Type-check maintained Python modules
+        run: >-
+          uv run mypy
+          src/cellwiki/agent src/cellwiki/api src/cellwiki/domain
+          src/cellwiki/evaluation src/cellwiki/services
+          --ignore-missing-imports
+      - run: uv run pytest -q
+      - run: uv run python scripts/evaluate_semantic.py
+      - name: Validate documentation governance
+        run: uv run python scripts/check_docs.py
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci
+      - working-directory: frontend
+        run: npm test
+      - working-directory: frontend
+        run: npm run build
+
+  fixture-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: uv sync --extra dev
+      - working-directory: frontend
+        run: npm ci
+      - working-directory: frontend
+        run: npx playwright install --with-deps chromium
+      - working-directory: frontend
+        run: npm run test:e2e
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: frontend/playwright-report
+
+  tauri-check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - working-directory: frontend
+        run: npm ci
+      - run: python scripts/sync_version.py --check
+      - working-directory: frontend/src-tauri
+        run: cargo fmt --check
+      - working-directory: frontend/src-tauri
+        run: cargo check

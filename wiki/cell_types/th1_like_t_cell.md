@@ -10,6 +10,22 @@ references:
 - paper_id: exmaple_paper_1
   title: Lineage tracking reveals dynamic relationships of T cells in colorectal cancer
 standard_name: th1_like_t_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- BHLHE40
+- CXCL13
+- EOMES
+- IFNG
+- IGFLR1
+- RUNX3
+- TBX21
+negative_markers: []
+tissues:
+- colorectal tumour
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # Th1 Like T Cell

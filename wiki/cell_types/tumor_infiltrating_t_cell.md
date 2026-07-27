@@ -9,6 +9,18 @@ references:
 - paper_id: exmaple_paper_1
   title: Lineage tracking reveals dynamic relationships of T cells in colorectal cancer
 standard_name: tumor_infiltrating_t_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- IGFLR1
+negative_markers: []
+tissues:
+- colorectal tumor
+- hepatocellular carcinoma
+- non-small-cell lung cancer
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # Tumor Infiltrating T Cell

@@ -9,6 +9,18 @@ references:
 - paper_id: exmaple_paper_1
   title: Lineage tracking reveals dynamic relationships of T cells in colorectal cancer
 standard_name: high_proliferative_cd8_exhausted_t_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- HAVCR2
+- MKI67
+- PDCD1
+negative_markers: []
+tissues:
+- colorectal tumor
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # High Proliferative CD8 Exhausted T Cell

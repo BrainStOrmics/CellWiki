@@ -10,6 +10,15 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: exhausted_cd8_t_cell
+evidence_tier: 4
+source_count: 1
+positive_markers: []
+negative_markers: []
+tissues:
+- tumor microenvironment
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # Exhausted CD8 T Cell

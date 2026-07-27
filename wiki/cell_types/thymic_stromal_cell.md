@@ -10,6 +10,17 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: thymic_stromal_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- SOCS3
+negative_markers: []
+tissues:
+- thymus
+species:
+- Homo sapiens
+- Mus musculus
+conflicts: []
 ---
 
 # Thymic Stromal Cell

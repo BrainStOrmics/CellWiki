@@ -9,6 +9,16 @@ references:
   title: An SPP1-SOCS1 pathway constrains interferon responses in tumor-associated
     macrophages and shapes an immunosuppressive tumor microenvironment
 standard_name: cxcl10_positive_tumor_associated_macrophage
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- CXCL10
+negative_markers: []
+tissues:
+- tumor tissue
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # Cxcl10 Positive Tumor Associated Macrophage

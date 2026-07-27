@@ -9,6 +9,21 @@ references:
 - paper_id: exmaple_paper_1
   title: Lineage tracking reveals dynamic relationships of T cells in colorectal cancer
 standard_name: cd4_positive_cd8_negative_t_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- CD4
+negative_markers:
+- CD8A
+tissues:
+- adjacent normal mucosa
+- colorectal tumor
+- liver
+- lung
+- peripheral blood
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # CD4 Positive CD8 Negative T Cell

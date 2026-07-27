@@ -2,128 +2,122 @@
 
 ## 统计概览
 - 细胞类型页面: 96
-- 标记基因页面: 0
-- 组织页面: 0
-- 疾病页面: 0
-- 方法页面: 0
-- 轨迹页面: 0
-- 总来源论文: 0
-- 未解决矛盾: 0
+- 标记基因页面: 121
+- 组织页面: 39
+- 疾病页面: 26
+- 来源论文: 3
+- 未解决矛盾: 6
+- 知识库版本: projection-adcc55e0b28e
+
+## 按维度浏览
+
+- [按组织](tissues/) -- adjacent_normal_mucosa, adjacent_normal_tissue, adjacent_normal_tissues, blood, bone_marrow, breast_tumor, colon, colon_tumor, colorectal_tumor, colorectal_tumour, ct26_tumor, hepatocellular_carcinoma, human_tumor, human_tumors, in_vitro_culture, liver, lung, lung_tumor, lymphoid_organs, lymphoid_tissue, mc38_subcutaneous_tumor, non_small_cell_lung_cancer, normal_mucosa, pancreatic_tumor, pbmc, peripheral_blood, peripheral_tissues, peritoneal_cavity, peritoneal_tumor, renal_cell_carcinoma, renal_tumor, solid_tumors, spleen, spleen_in_vitro_derived, subcutaneous_tumor, thymus, tumor, tumor_microenvironment, tumor_tissue
+- [按疾病](diseases/) -- breast_invasive_carcinoma, cancer, colon_adenocarcinoma, colon_cancer, colon_carcinoma, colorectal_adenocarcinoma, colorectal_cancer, hepatocellular_carcinoma, human_cancers, inflammatory_disease, lung_adenocarcinoma, lung_cancer, lung_carcinoma, lymphoid_cancers, melanoma, microsatellite_instability, microsatellite_instability_high_colorectal_cancer, microsatellite_stable_colorectal_cancer, multiple_myeloma, multiple_solid_tumors, non_small_cell_lung_cancer, pancreatic_cancer, pulmonary_fibrosis, renal_cell_carcinoma, solid_tumors, triple_negative_breast_cancer
 
 ## 按细胞类型
-| 页面 | 最后更新 |
-|------|----------|
-| [[activated_cd4_t_cell]] | - |
-| [[b_cell]] | - |
-| [[bone_marrow_derived_macrophage]] | - |
-| [[c1qc_positive_tumor_associated_macrophage]] | - |
-| [[cancer_associated_fibroblast]] | - |
-| [[cd14_positive_monocyte]] | - |
-| [[cd16_positive_monocyte]] | - |
-| [[cd45_negative_cell]] | - |
-| [[cd4_central_memory_t_cell]] | - |
-| [[cd4_effector_memory_t_cell]] | - |
-| [[cd4_memory_t_cell]] | - |
-| [[cd4_positive_cd8_negative_t_cell]] | - |
-| [[cd4_positive_t_cell]] | - |
-| [[cd4_temra_t_cell]] | - |
-| [[cd4_tissue_resident_memory_t_cell]] | - |
-| [[cd8_central_memory_t_cell]] | - |
-| [[cd8_effector_memory_ra_t_cell]] | - |
-| [[cd8_effector_memory_t_cell]] | - |
-| [[cd8_effector_t_cell]] | - |
-| [[cd8_exhausted_t_cell]] | - |
-| [[cd8_intraepithelial_lymphocyte]] | - |
-| [[cd8_naive_t_cell]] | - |
-| [[cd8_negative_cd4_negative_t_cell]] | - |
-| [[cd8_positive_cd4_negative_t_cell]] | - |
-| [[cd8_positive_cd4_positive_t_cell]] | - |
-| [[cd8_positive_t_cell]] | - |
-| [[cd8_stem_like_t_cell]] | - |
-| [[cd8_temra_t_cell]] | - |
-| [[cd8_tissue_resident_memory_t_cell]] | - |
-| [[chronically_stimulated_cd8_t_cell]] | - |
-| [[colon_carcinoma_cell_line]] | - |
-| [[conflict_cell]] | - |
-| [[conventional_cd4_t_cell]] | - |
-| [[conventional_cd8_t_cell]] | - |
-| [[cxcl10_positive_tumor_associated_macrophage]] | - |
-| [[cytotoxic_cd8_t_cell]] | - |
-| [[cytotoxic_t_cell]] | - |
-| [[dendritic_cell]] | - |
-| [[double_negative_t_cell]] | - |
-| [[double_positive_t_cell]] | - |
-| [[effector_memory_t_cell]] | - |
-| [[endothelial_cell]] | - |
-| [[exhausted_cd8_t_cell]] | - |
-| [[follicular_helper_t_cell]] | - |
-| [[gnly_positive_cd4_t_cell]] | - |
-| [[helper_t_cell]] | - |
-| [[high_proliferative_cd8_exhausted_t_cell]] | - |
-| [[il1b_positive_macrophage]] | - |
-| [[immune_cell]] | - |
-| [[invariant_natural_killer_t_cell]] | - |
-| [[low_proliferative_cd8_exhausted_t_cell]] | - |
-| [[lung_carcinoma_cell_line]] | - |
-| [[lyve1_positive_tumor_associated_macrophage]] | - |
-| [[m1_macrophage]] | - |
-| [[m2_macrophage]] | - |
-| [[macrophage]] | - |
-| [[macrophage_signature_tumor_associated_macrophage]] | - |
-| [[malignant_cell]] | - |
-| [[marker_cell]] | - |
-| [[monocyte]] | - |
-| [[mucosal_associated_invariant_t_cell]] | - |
-| [[myeloid_cell]] | - |
-| [[myeloid_derived_suppressor_cell]] | - |
-| [[naive_cd4_positive_t_cell]] | - |
-| [[naive_cd4_t_cell]] | - |
-| [[naive_cd8_positive_t_cell]] | - |
-| [[naive_cd8_t_cell]] | - |
-| [[natural_killer_cell]] | - |
-| [[neutrophil]] | - |
-| [[normal_regulatory_t_cell]] | - |
-| [[peripheral_regulatory_t_cell]] | - |
-| [[profibrotic_macrophage]] | - |
-| [[proliferating_tumor_associated_macrophage]] | - |
-| [[proliferative_cd8_exhausted_t_cell]] | - |
-| [[proliferative_exhausted_cd8_t_cell]] | - |
-| [[proliferative_t_cell]] | - |
-| [[regulatory_t_cell]] | - |
-| [[ror_gamma_positive_regulatory_t_cell]] | - |
-| [[spp1_positive_macrophage]] | - |
-| [[spp1_positive_tumor_associated_macrophage]] | - |
-| [[stromal_cell]] | - |
-| [[t_cell]] | - |
-| [[t_helper_1_like_cell]] | - |
-| [[test_cell]] | - |
-| [[th17_cell]] | - |
-| [[th1_cd4_t_cell]] | - |
-| [[th1_cell]] | - |
-| [[th1_like_cd4_t_cell]] | - |
-| [[th1_like_cell]] | - |
-| [[th1_like_t_cell]] | - |
-| [[thymic_stromal_cell]] | - |
-| [[tumor_associated_macrophage]] | - |
-| [[tumor_cell]] | - |
-| [[tumor_infiltrating_t_cell]] | - |
-| [[tumor_regulatory_t_cell]] | - |
-| [[unpolarized_macrophage]] | - |
 
-## 按标记基因
-_(暂无页面)_
+- [Activated CD4 T Cell](cell_types/activated_cd4_t_cell.md)
+- [B Cell](cell_types/b_cell.md) (CL:0000236)
+- [Cd45 Negative Cell](cell_types/cd45_negative_cell.md)
+- [CD4 Central Memory T Cell](cell_types/cd4_central_memory_t_cell.md)
+- [CD4 Effector Memory T Cell](cell_types/cd4_effector_memory_t_cell.md)
+- [CD4 Memory T Cell](cell_types/cd4_memory_t_cell.md) (CL:0000813)
+- [CD4 Temra T Cell](cell_types/cd4_temra_t_cell.md)
+- [CD4 Tissue Resident Memory T Cell](cell_types/cd4_tissue_resident_memory_t_cell.md)
+- [CD8 Central Memory T Cell](cell_types/cd8_central_memory_t_cell.md)
+- [CD8 Effector Memory Ra T Cell](cell_types/cd8_effector_memory_ra_t_cell.md) (CL:4030002)
+- [CD8 Effector Memory T Cell](cell_types/cd8_effector_memory_t_cell.md)
+- [CD8 Effector T Cell](cell_types/cd8_effector_t_cell.md) (CL:0000911)
+- [CD8 Exhausted T Cell](cell_types/cd8_exhausted_t_cell.md) (CL:0011025)
+  - [High Proliferative CD8 Exhausted T Cell](cell_types/high_proliferative_cd8_exhausted_t_cell.md)
+  - [Low Proliferative CD8 Exhausted T Cell](cell_types/low_proliferative_cd8_exhausted_t_cell.md)
+  - [Proliferative CD8 Exhausted T Cell](cell_types/proliferative_cd8_exhausted_t_cell.md)
+- [CD8 Intraepithelial Lymphocyte](cell_types/cd8_intraepithelial_lymphocyte.md) (CL:0002496)
+- [CD8 Naive T Cell](cell_types/cd8_naive_t_cell.md) (CL:0000898)
+- [CD8 Stem Like T Cell](cell_types/cd8_stem_like_t_cell.md)
+- [CD8 Temra T Cell](cell_types/cd8_temra_t_cell.md)
+- [CD8 Tissue Resident Memory T Cell](cell_types/cd8_tissue_resident_memory_t_cell.md)
+- [Colon Carcinoma Cell Line](cell_types/colon_carcinoma_cell_line.md)
+- [Conflict Cell](cell_types/conflict_cell.md)
+- [Conventional CD4 T Cell](cell_types/conventional_cd4_t_cell.md)
+- [Conventional CD8 T Cell](cell_types/conventional_cd8_t_cell.md)
+- [Cytotoxic CD8 T Cell](cell_types/cytotoxic_cd8_t_cell.md)
+- [Exhausted CD8 T Cell](cell_types/exhausted_cd8_t_cell.md) (CL:0020031)
+- [Follicular Helper T Cell](cell_types/follicular_helper_t_cell.md) (CL:0002038)
+- [GNLY Positive CD4 T Cell](cell_types/gnly_positive_cd4_t_cell.md)
+- [Immune Cell](cell_types/immune_cell.md) (CL:0000738)
+- [Malignant Cell](cell_types/malignant_cell.md) (CL:0001064)
+- [Marker Cell](cell_types/marker_cell.md)
+- [Myeloid Cell](cell_types/myeloid_cell.md) (CL:0000763)
+  - [Dendritic Cell](cell_types/dendritic_cell.md) (CL:0000451)
+  - [Macrophage](cell_types/macrophage.md) (CL:0000235)
+  - [Monocyte](cell_types/monocyte.md) (CL:0000576)
+  - [Myeloid Derived Suppressor Cell](cell_types/myeloid_derived_suppressor_cell.md)
+  - [Neutrophil](cell_types/neutrophil.md) (CL:0000775)
+- [Natural Killer Cell](cell_types/natural_killer_cell.md) (CL:0000623)
+- [Regulatory T Cell](cell_types/regulatory_t_cell.md) (CL:0000815)
+  - [Normal Regulatory T Cell](cell_types/normal_regulatory_t_cell.md)
+  - [Peripheral Regulatory T Cell](cell_types/peripheral_regulatory_t_cell.md)
+  - [Ror Gamma Positive Regulatory T Cell](cell_types/ror_gamma_positive_regulatory_t_cell.md)
+  - [Tumor Regulatory T Cell](cell_types/tumor_regulatory_t_cell.md)
+- [Stromal Cell](cell_types/stromal_cell.md) (CL:0000499)
+  - [Cancer Associated Fibroblast](cell_types/cancer_associated_fibroblast.md)
+  - [Endothelial Cell](cell_types/endothelial_cell.md) (CL:0000115)
+  - [Thymic Stromal Cell](cell_types/thymic_stromal_cell.md) (CL:4030001)
+- [T Cell](cell_types/t_cell.md) (CL:0000084)
+  - [CD4 Positive CD8 Negative T Cell](cell_types/cd4_positive_cd8_negative_t_cell.md)
+  - [CD4 Positive T Cell](cell_types/cd4_positive_t_cell.md)
+  - [CD8 Negative CD4 Negative T Cell](cell_types/cd8_negative_cd4_negative_t_cell.md)
+  - [CD8 Positive CD4 Negative T Cell](cell_types/cd8_positive_cd4_negative_t_cell.md)
+  - [CD8 Positive CD4 Positive T Cell](cell_types/cd8_positive_cd4_positive_t_cell.md)
+  - [CD8 Positive T Cell](cell_types/cd8_positive_t_cell.md)
+  - [Cytotoxic T Cell](cell_types/cytotoxic_t_cell.md) (CL:0000910)
+  - [Double Negative T Cell](cell_types/double_negative_t_cell.md) (CL:0002489)
+  - [Double Positive T Cell](cell_types/double_positive_t_cell.md)
+  - [Effector Memory T Cell](cell_types/effector_memory_t_cell.md)
+  - [Helper T Cell](cell_types/helper_t_cell.md) (CL:0000912)
+  - [Invariant Natural Killer T Cell](cell_types/invariant_natural_killer_t_cell.md)
+  - [Mucosal Associated Invariant T Cell](cell_types/mucosal_associated_invariant_t_cell.md) (CL:0000940)
+  - [Naive CD4 T Cell](cell_types/naive_cd4_t_cell.md)
+  - [Naive CD8 T Cell](cell_types/naive_cd8_t_cell.md)
+  - [Proliferative T Cell](cell_types/proliferative_t_cell.md)
+  - [Tumor Infiltrating T Cell](cell_types/tumor_infiltrating_t_cell.md)
+- [T Helper 1 Like Cell](cell_types/t_helper_1_like_cell.md)
+- [Test Cell](cell_types/test_cell.md) (CL:0000001)
+- [Th17 Cell](cell_types/th17_cell.md) (CL:0000899)
+- [Th1 CD4 T Cell](cell_types/th1_cd4_t_cell.md)
+- [Th1 Cell](cell_types/th1_cell.md) (CL:0000545)
+- [Th1 Like T Cell](cell_types/th1_like_t_cell.md)
+- [Tumor Cell](cell_types/tumor_cell.md) (CL:0001063)
+  - [Lung Carcinoma Cell Line](cell_types/lung_carcinoma_cell_line.md)
+- [Bone Marrow Derived Macrophage](cell_types/bone_marrow_derived_macrophage.md)
+- [C1Qc Positive Tumor Associated Macrophage](cell_types/c1qc_positive_tumor_associated_macrophage.md)
+- [Cd14 Positive Monocyte](cell_types/cd14_positive_monocyte.md) (CL:0001054)
+- [Cd16 Positive Monocyte](cell_types/cd16_positive_monocyte.md)
+- [Chronically Stimulated CD8 T Cell](cell_types/chronically_stimulated_cd8_t_cell.md)
+- [Cxcl10 Positive Tumor Associated Macrophage](cell_types/cxcl10_positive_tumor_associated_macrophage.md)
+- [Il1B Positive Macrophage](cell_types/il1b_positive_macrophage.md)
+- [Lyve1 Positive Tumor Associated Macrophage](cell_types/lyve1_positive_tumor_associated_macrophage.md)
+- [M1 Macrophage](cell_types/m1_macrophage.md) (CL:0000863)
+- [M2 Macrophage](cell_types/m2_macrophage.md) (CL:0000890)
+- [Macrophage Signature Tumor Associated Macrophage](cell_types/macrophage_signature_tumor_associated_macrophage.md)
+- [Naive CD4 Positive T Cell](cell_types/naive_cd4_positive_t_cell.md)
+- [Naive CD8 Positive T Cell](cell_types/naive_cd8_positive_t_cell.md)
+- [Profibrotic Macrophage](cell_types/profibrotic_macrophage.md)
+- [Proliferating Tumor Associated Macrophage](cell_types/proliferating_tumor_associated_macrophage.md)
+- [Proliferative Exhausted CD8 T Cell](cell_types/proliferative_exhausted_cd8_t_cell.md)
+- [SPP1 Positive Macrophage](cell_types/spp1_positive_macrophage.md)
+- [SPP1 Positive Tumor Associated Macrophage](cell_types/spp1_positive_tumor_associated_macrophage.md)
+- [Th1 Like CD4 T Cell](cell_types/th1_like_cd4_t_cell.md)
+- [Th1 Like Cell](cell_types/th1_like_cell.md)
+- [Tumor Associated Macrophage](cell_types/tumor_associated_macrophage.md)
+- [Unpolarized Macrophage](cell_types/unpolarized_macrophage.md)
 
-## 按组织
-_(暂无页面)_
+## 未解决矛盾
 
-## 按疾病
-_(暂无页面)_
-
-## 按方法
-_(暂无页面)_
-
-## 按轨迹
-_(暂无页面)_
-
-## 最近 Ingest
-_(暂无记录，见 [[log]])_
+- [cd4_positive_t_cell_cd4_positive_vs_transcript](conflicts/cd4_positive_t_cell_cd4_positive_vs_transcript.md)
+- [cd8_positive_t_cell_cd8a_positive_vs_transcript](conflicts/cd8_positive_t_cell_cd8a_positive_vs_transcript.md)
+- [regulatory_t_cell_il10_positive_vs_transcript](conflicts/regulatory_t_cell_il10_positive_vs_transcript.md)
+- [tumor_associated_macrophage_spp1_positive_vs_transcript](conflicts/tumor_associated_macrophage_spp1_positive_vs_transcript.md)
+- [tumor_associated_macrophage_stat1_positive_vs_transcript](conflicts/tumor_associated_macrophage_stat1_positive_vs_transcript.md)
+- [tumor_associated_macrophage_trim21_positive_vs_transcript](conflicts/tumor_associated_macrophage_trim21_positive_vs_transcript.md)

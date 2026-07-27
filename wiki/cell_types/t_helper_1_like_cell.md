@@ -10,6 +10,26 @@ references:
 - paper_id: exmaple_paper_1
   title: Lineage tracking reveals dynamic relationships of T cells in colorectal cancer
 standard_name: t_helper_1_like_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- BACH2
+- BHLHE40
+- CXCL13
+- CXCR3
+- HAVCR2
+- ICOS
+- IGFLR1
+- PDCD1
+- TIGIT
+negative_markers: []
+tissues:
+- colorectal tumor
+- hepatocellular carcinoma
+- non-small-cell lung cancer
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # T Helper 1 Like Cell

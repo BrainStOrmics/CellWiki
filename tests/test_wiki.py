@@ -1,10 +1,14 @@
+# =============================================================================
+# Wiki 测试 —— 验证 Wiki 页面生成和标题格式化
+# =============================================================================
+
 """Tests for wiki page generation and title formatting."""
 
 import pytest
 from unittest.mock import patch
 
 from cellwiki.models import WikiCellType
-from cellwiki.wiki import _proper_title_case, generate_cell_type_page
+from cellwiki.adapters.markdown_renderer import _proper_title_case, generate_cell_type_page
 
 
 class TestProperTitleCase:
@@ -41,7 +45,7 @@ class TestGenerateCellTypePage:
             description="A test cell type",
             cl_id="CL:0000001",
         )
-        with patch("cellwiki.wiki.settings", patched_settings):
+        with patch("cellwiki.adapters.markdown_renderer.settings", patched_settings):
             generate_cell_type_page("test_cell", wt)
 
         page_path = patched_settings.wiki_cell_types_dir / "test_cell.md"
@@ -61,7 +65,7 @@ class TestGenerateCellTypePage:
             },
             references=[{"paper_id": "p1", "title": "Test Paper", "doi": "", "year": 2024}],
         )
-        with patch("cellwiki.wiki.settings", patched_settings):
+        with patch("cellwiki.adapters.markdown_renderer.settings", patched_settings):
             generate_cell_type_page("marker_cell", wt)
 
         page_path = patched_settings.wiki_cell_types_dir / "marker_cell.md"
@@ -80,7 +84,7 @@ class TestGenerateCellTypePage:
                 ],
             },
         )
-        with patch("cellwiki.wiki.settings", patched_settings):
+        with patch("cellwiki.adapters.markdown_renderer.settings", patched_settings):
             generate_cell_type_page("conflict_cell", wt)
 
         page_path = patched_settings.wiki_cell_types_dir / "conflict_cell.md"

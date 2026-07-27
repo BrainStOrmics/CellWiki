@@ -1,21 +1,46 @@
 # Secrets
 .env
 
-# local files 
-local_test/
+# local files
+local_tests/
 local_refine/
+.local/
 
 # pytest
 .pytest_cache
+.hypothesis/
+
+# Local development servers and generated metadata
+.langgraph_api
+.vite/
+src/*.egg-info/
+.superpowers
+langgraph.json
+
+# Cache
+.mypy_cache/
+.ruff_cache/
+cache/
+
+# Generated output
+output/
+evals/
+
+# Derived data
+extractions/
+raw/
+
+# Generated wiki
+wiki/
 
 # Runtime data (can be regenerated)
 data/extraction/
+data/runtime/
+data/sources/
 # data/references/
 
-# Generated wiki (derived from extractions)
-# wiki/
-
 # Python
+.venv/
 __pycache__/
 *.pyc
 
@@ -23,3 +48,24 @@ __pycache__/
 .vscode/
 .idea/
 .claude/
+frontend/node_modules/
+frontend/dist/
+frontend/src-tauri/target/
+frontend/*.log
+frontend/*.err.log
+
+# Generated packaging and test artifacts
+build/
+frontend/playwright-report/
+frontend/test-results/
+frontend/src-tauri/binaries/*
+!frontend/src-tauri/binaries/.gitkeep
+.playwright-cli/
+output/playwright/
+
+
+
+# Agent design and doc files
+docs/
+design/
+HANDOFF.md

@@ -9,6 +9,18 @@ references:
 - paper_id: exmaple_paper_1
   title: Lineage tracking reveals dynamic relationships of T cells in colorectal cancer
 standard_name: ror_gamma_positive_regulatory_t_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- CD3
+- FOXP3
+- RORC
+negative_markers: []
+tissues:
+- colorectal tumor
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # Ror Gamma Positive Regulatory T Cell

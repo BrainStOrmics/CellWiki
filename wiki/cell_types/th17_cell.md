@@ -16,6 +16,22 @@ references:
 - paper_id: exmaple_paper_1
   title: Lineage tracking reveals dynamic relationships of T cells in colorectal cancer
 standard_name: th17_cell
+evidence_tier: 4
+source_count: 1
+positive_markers:
+- CCR6
+- CD4
+- IL17A
+- IL17F
+- IL23R
+- RORC
+negative_markers: []
+tissues:
+- colorectal tumor
+- colorectal tumour
+species:
+- Homo sapiens
+conflicts: []
 ---
 
 # Th17 Cell
