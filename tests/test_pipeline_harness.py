@@ -6,6 +6,7 @@ import pytest
 
 from cellwiki.domain.contracts import (
     ApprovalDecision,
+    ChangeSet,
     ChangeOperation,
     ChangeOperationType,
     CommitResult,
@@ -62,13 +63,29 @@ def test_pipeline_lease_prevents_two_mutating_tasks(tmp_path: Path) -> None:
         assert second.snapshot.run_id == "run_two"
 
 
-def test_approval_policy_defaults_to_auto_approve_all_and_can_require_review(tmp_path: Path) -> None:
+def test_approval_policy_defaults_to_low_risk_and_can_require_review(tmp_path: Path) -> None:
     harness = KnowledgePipelineHarness(tmp_path)
 
-    assert harness.approval_policy() is ApprovalPolicy.AUTO_ALL
+    assert harness.approval_policy() is ApprovalPolicy.AUTO_LOW_RISK
+    ChangeSetRepository(tmp_path).save(
+        ChangeSet(
+            change_set_id="cs_demo",
+            run_id="run_demo",
+            project_id="cellwiki",
+            operations=[
+                ChangeOperation(
+                    type=ChangeOperationType.APPLY_LINT_FIX,
+                    target_id="lint_demo",
+                    payload={"action": "rebuild_projection"},
+                )
+            ],
+            risk=RiskLevel.LOW,
+            reason="deterministic repair",
+        )
+    )
     automatic = harness.approval_for("cs_demo", reviewer="default-reviewer")
     assert automatic.approved is True
-    assert automatic.decided_by == "policy:auto_all"
+    assert automatic.decided_by == "policy:auto_low_risk"
     assert "cs_demo" in automatic.reason
 
     harness.set_approval_policy(ApprovalPolicy.MANUAL)

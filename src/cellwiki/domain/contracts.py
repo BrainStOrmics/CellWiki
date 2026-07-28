@@ -63,6 +63,7 @@ class ApprovalPolicy(str, Enum):
     """Project-level policy controlling whether a ChangeSet waits for a user."""
 
     MANUAL = "manual"
+    AUTO_LOW_RISK = "auto_low_risk"
     AUTO_ALL = "auto_all"
 
 
@@ -311,6 +312,7 @@ class CommitResult(ContractModel):
     status: str                                  # 提交状态
     changed_targets: list[str]                   # 被变更的目标列表
     snapshot_id: str                             # 快照 ID（用于回滚）
+    transaction_id: str | None = None             # 持久发布事务 ID
     committed_at: datetime = Field(default_factory=lambda: datetime.now(UTC))  # 提交时间
 
 
@@ -330,6 +332,15 @@ class Citation(ContractModel):
     page_id: str                                 # 页面 ID
     source_id: str | None = None                  # 来源 ID
     locator: str | None = None                    # 定位器
+    evidence_id: str | None = None                # 可选的结构化证据 ID
+
+
+class VerificationLevel(str, Enum):
+    """How strongly a final answer was grounded in the formal read ledger."""
+
+    EVIDENCE = "evidence"
+    PAGE = "page"
+    UNVALIDATED = "unvalidated"
 
 
 # ---- 智能体回答 ----
@@ -341,3 +352,5 @@ class AgentAnswer(ContractModel):
     missing_evidence: list[str] = Field(default_factory=list)  # 缺失的证据
     knowledge_scope: str = "formal"
     knowledge_version: str | None = None
+    verification_level: VerificationLevel = VerificationLevel.UNVALIDATED
+    validation_warnings: list[str] = Field(default_factory=list)

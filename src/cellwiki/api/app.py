@@ -22,7 +22,7 @@ from typing import Callable
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from cellwiki.config import settings
 from cellwiki.api.reader import WikiReader
@@ -30,7 +30,6 @@ from cellwiki.api.errors import create_error_router
 from cellwiki.api.runs import create_runs_router
 from cellwiki.api.retention import create_retention_router
 from cellwiki.api.extensions import create_extension_router, search_discovery
-from cellwiki.api.request_context import RequestContextMiddleware
 from cellwiki.api.security import DesktopTokenMiddleware
 from cellwiki.domain.discovery import SearchDocumentType
 from cellwiki.domain.contracts import (
@@ -42,7 +41,12 @@ from cellwiki.domain.contracts import (
     WikiAgentContext,
 )
 from cellwiki.domain.runs import AgentRun, AgentRunStatus, RunBudget
-from cellwiki.services.agent_runtime import AgentRuntimeManager, is_retryable_run
+from cellwiki.domain.tasks import AgentTask
+from cellwiki.services.agent_runtime import (
+    AgentRuntimeBusyError,
+    AgentRuntimeManager,
+    is_retryable_run,
+)
 from cellwiki.services.approvals import ApprovalConflictError, ApprovalRepository
 from cellwiki.services.central_writer import CentralWriter, VersionConflictError
 from cellwiki.services.changesets import ChangeSetNotFoundError, ChangeSetRepository
@@ -120,13 +124,20 @@ class RollbackRequest(BaseModel):
 # ---- 智能体运行请求 ----
 class AgentRunRequest(BaseModel):
     """Stable Product API input; Deep Agents request details stay behind the runtime adapter."""
-    message: str = Field(min_length=1, max_length=100_000)        # 用户消息
+    message: str | None = Field(default=None, min_length=1, max_length=100_000)  # 旧版自由消息
+    task: AgentTask | None = None                              # 类型化领域任务
     thread_id: str | None = Field(default=None, max_length=128)   # 对话线程 ID
     project_id: str = Field(default="cellwiki", max_length=128)
     source_id: str | None = Field(default=None, max_length=256)
     page_id: str | None = Field(default=None, max_length=256)
     selected_text: str | None = Field(default=None, max_length=4000)  # 用户选中的文本
     budget: RunBudget = Field(default_factory=RunBudget)           # 运行预算
+
+    @model_validator(mode="after")
+    def require_one_entry(self) -> "AgentRunRequest":
+        if (self.message is None) == (self.task is None):
+            raise ValueError("provide exactly one of message or task")
+        return self
 
 # ---- 智能体恢复请求 ----
 class AgentResumeRequest(BaseModel):
@@ -175,7 +186,13 @@ def create_app(
             return runtime
         with runtime_lock:
             if runtime is None:
-                runtime = AgentRuntimeManager(root)
+                try:
+                    runtime = AgentRuntimeManager(root)
+                except AgentRuntimeBusyError as error:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=str(error),
+                    ) from None
         return runtime
 
     # 创建 FastAPI 应用
@@ -334,10 +351,14 @@ def create_app(
     @app.get("/api/pipeline/status")
     def pipeline_status() -> dict:
         """Return the whole-project pipeline state without exposing lock paths."""
+        policy_state = pipeline.approval_policy_status()
         return {
             "project_id": "cellwiki",
             "knowledge_version": pipeline.current_knowledge_version(),
-            "approval_policy": pipeline.approval_policy().value,
+            "approval_policy": policy_state["policy"],
+            "approval_policy_valid": policy_state["valid"],
+            "approval_policy_source": policy_state["source"],
+            "approval_policy_error": policy_state["error"],
             "default_reviewer": "default-reviewer",
             "active_task": pipeline.active_task(),
         }
@@ -404,12 +425,21 @@ def create_app(
             thread_id=thread_id,
         )
         try:
-            run = get_agent_runtime().start(
-                thread_id=thread_id,
-                message=request.message,
-                context=context,
-                budget=request.budget,
-            )
+            runtime = get_agent_runtime()
+            if request.task is not None:
+                run = runtime.start_task(
+                    thread_id=thread_id,
+                    task=request.task,
+                    context=context,
+                    budget=request.budget,
+                )
+            else:
+                run = runtime.start(
+                    thread_id=thread_id,
+                    message=request.message or "",
+                    context=context,
+                    budget=request.budget,
+                )
             return _agent_run_payload(run)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
@@ -706,7 +736,10 @@ def create_app(
                 run_id=request.run_id,
                 max_iterations=request.max_iterations,
             )
-            if pipeline.approval_policy() is ApprovalPolicy.AUTO_ALL:
+            if pipeline.approval_for(
+                change_set.change_set_id,
+                reviewer="default-reviewer",
+            ).approved:
                 source_id = change_set.operations[0].target_id
                 tasks.record(
                     run_id=change_set.run_id,

@@ -18,6 +18,7 @@ from cellwiki.agent.app import (
     build_wiki_agent,
 )
 from cellwiki.agent.tools import (
+    build_final_answer_tool,
     build_rebase_tool,
     build_ingest_tools,
     build_lint_tools,
@@ -37,12 +38,14 @@ def test_read_tools_use_page_ids_and_return_search_results(tmp_path: Path):
     tools = {tool.name: tool for tool in build_read_tools(tmp_path)}
 
     result = tools["search_wiki"].invoke({"query": "CD3D", "limit": 5})
+    missing = json.loads(tools["read_wiki_page"].invoke({"page_id": "does_not_exist"}))
     status = json.loads(tools["get_project_status"].invoke({}))
 
     assert "t_cell" in result
     assert "CD3D" in result
+    assert missing == {"error": "page_not_found", "page_id": "does_not_exist"}
     assert status["knowledge_version"].startswith("sha256:")
-    assert status["approval_policy"] == "auto_all"
+    assert status["approval_policy"] == "auto_low_risk"
 
 
 def test_rebase_tool_returns_an_explicit_current_or_conflict_result(tmp_path: Path):
@@ -81,7 +84,6 @@ def test_subagents_never_receive_commit_tool(tmp_path: Path):
     )
 
     assert {spec["name"] for spec in specs} == {
-        "general-purpose",
         "query-agent",
         "ingest-agent",
         "lint-agent",
@@ -159,7 +161,7 @@ def test_default_harness_routes_external_research_through_broad_lint(
 
     specs = captured["subagents"]
     names = {spec["name"] for spec in specs}
-    assert names == {"general-purpose", "query-agent", "ingest-agent", "lint-agent"}
+    assert names == {"query-agent", "ingest-agent", "lint-agent"}
     lint_spec = next(spec for spec in specs if spec["name"] == "lint-agent")
     lint_tool_names = {tool.name for tool in lint_spec["tools"]}
     assert "run_broad_lint" in lint_tool_names
@@ -282,9 +284,11 @@ def test_auto_approval_policy_removes_the_human_interrupt_from_agent_harness(
     assert captured["interrupt_on"] == {}
 
 
+@pytest.mark.parametrize("use_prebuilt_model", [False, True])
 def test_configured_agent_hides_generic_harness_tools_from_first_request(
     tmp_path: Path,
     monkeypatch,
+    use_prebuilt_model: bool,
 ):
     captured: dict[str, object] = {}
 
@@ -300,18 +304,29 @@ def test_configured_agent_hides_generic_harness_tools_from_first_request(
         captured["tool_names"] = {
             schema.get("function", {}).get("name", "") for schema in schemas
         }
+        captured["tool_schemas"] = json.dumps(
+            schemas,
+            ensure_ascii=False,
+            default=str,
+        )
         captured["tool_schema_chars"] = sum(
             len(json.dumps(schema, ensure_ascii=False, default=str))
             for schema in schemas
         )
         raise RequestCaptured
 
-    configuration = Settings(
-        _env_file=None,
-        openai_api_key="test-key",
-        openai_model="cellwiki-profile-test",
-    )
-    model = build_model(configuration)
+    if use_prebuilt_model:
+        model = ChatOpenAI(
+            api_key="test-key",
+            model="cellwiki-unregistered-profile-test",
+        )
+    else:
+        configuration = Settings(
+            _env_file=None,
+            openai_api_key="test-key",
+            openai_model="cellwiki-profile-test",
+        )
+        model = build_model(configuration)
     agent = build_wiki_agent(
         project_root=tmp_path,
         model=model,
@@ -338,6 +353,7 @@ def test_configured_agent_hides_generic_harness_tools_from_first_request(
         "submit_agent_answer",
         "task",
     }
+    assert "general-purpose" not in captured["tool_schemas"]
     assert captured["tool_choice"] in {None, "auto"}
     assert captured["message_chars"] < 6_500
     assert captured["tool_schema_chars"] < 2_500
@@ -356,6 +372,27 @@ def test_memory_tool_submits_validated_candidate_without_accepting_reasoning(tmp
 
     assert '"status":"active"' in record
     assert '"key":"answer_format"' in record
+
+
+def test_final_answer_tool_ignores_display_only_citation_metadata(tmp_path: Path):
+    tool = build_final_answer_tool(tmp_path)
+
+    result = tool.invoke(
+        {
+            "answer": "The page contains the requested entry.",
+            "citations": [
+                {
+                    "page_id": "regulatory_t_cell",
+                    "source_id": "paper-1",
+                    "title": "Regulatory T Cell",
+                    "path": "wiki/cell_types/regulatory_t_cell.md",
+                    "sections": ["## Markers"],
+                }
+            ],
+        }
+    )
+
+    assert '"page_id":"regulatory_t_cell"' in result
 
 
 def test_ingest_tool_uses_durable_agent_run_as_cancellation_authority(
@@ -487,6 +524,6 @@ def test_revision_tool_preserves_feedback_and_prepares_a_child_changeset(
     assert payload["change_set"]["change_set_id"] == "cs-child"
     assert captured["comments"] == ["Add the evidence locator."]
     assert captured["cancellation_id"] == "agent-run-revision"
-    assert payload["approval_policy"] == "auto_all"
-    assert payload["requires_human_review"] is False
+    assert payload["approval_policy"] == "auto_low_risk"
+    assert payload["requires_human_review"] is True
     assert payload["snapshot"]["snapshot_id"] == snapshot.snapshot_id

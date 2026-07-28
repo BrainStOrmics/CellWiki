@@ -284,6 +284,86 @@ class RuntimeStore:
             )
         return updated
 
+    def claim_resume(self, run_id: str, *, decision: str) -> AgentRun:
+        """Claim one approval continuation with a compare-and-set transition."""
+
+        if decision not in {"approve", "reject"}:
+            raise ValueError("decision must be approve or reject")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = AgentRun.model_validate_json(row[0])
+            if current.status is not AgentRunStatus.WAITING_APPROVAL:
+                raise InvalidRunTransitionError(
+                    "only a waiting-approval run can be resumed"
+                )
+            updated = current.model_copy(
+                update={"status": AgentRunStatus.RUNNING, "updated_at": datetime.now(UTC)}
+            )
+            connection.execute(
+                "UPDATE agent_runs SET status = ?, payload = ?, updated_at = ? "
+                "WHERE run_id = ? AND status = ?",
+                (
+                    AgentRunStatus.RUNNING.value,
+                    updated.model_dump_json(),
+                    updated.updated_at.isoformat(),
+                    run_id,
+                    AgentRunStatus.WAITING_APPROVAL.value,
+                ),
+            )
+            self._insert_event(
+                connection,
+                updated,
+                AgentEventType.RUN_STATUS,
+                message="Approval continuation claimed.",
+                data={"status": AgentRunStatus.RUNNING.value, "decision": decision},
+            )
+        return updated
+
+    def claim_retry(self, run_id: str) -> AgentRun:
+        """Atomically increment retry accounting and claim the retry slot."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = AgentRun.model_validate_json(row[0])
+            if current.status is not AgentRunStatus.FAILED:
+                raise InvalidRunTransitionError("only a failed run can be retried")
+            updated = current.model_copy(
+                update={
+                    "status": AgentRunStatus.RETRYING,
+                    "retry_count": current.retry_count + 1,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            connection.execute(
+                "UPDATE agent_runs SET status = ?, payload = ?, updated_at = ? "
+                "WHERE run_id = ? AND status = ?",
+                (
+                    AgentRunStatus.RETRYING.value,
+                    updated.model_dump_json(),
+                    updated.updated_at.isoformat(),
+                    run_id,
+                    AgentRunStatus.FAILED.value,
+                ),
+            )
+            self._insert_event(
+                connection,
+                updated,
+                AgentEventType.RUN_STATUS,
+                message="Retry claimed from the latest durable checkpoint.",
+                data={"status": AgentRunStatus.RETRYING.value},
+            )
+        return updated
+
     def append_event(
         self,
         run_id: str,

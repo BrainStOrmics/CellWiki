@@ -7,9 +7,11 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections.abc import Callable
 from pathlib import Path
 import json
+import uuid
 
 from filelock import FileLock
 
@@ -25,6 +27,9 @@ from cellwiki.services.approvals import ApprovalRepository
 from cellwiki.services.projection import ProjectionService
 from cellwiki.services.quality import verify_projection
 from cellwiki.services.pipeline import KnowledgePipelineHarness
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +75,8 @@ class CentralWriter:
         self.runtime_dir = self.project_root / "data" / "runtime"
         self.pipeline = KnowledgePipelineHarness(self.project_root)
         self.approvals = ApprovalRepository(self.project_root)
+        self.transactions_dir = self.runtime_dir / "transactions"
+        self._recover_transactions()
 
     def commit(
         self,
@@ -94,6 +101,8 @@ class CentralWriter:
                 )
         if not approval.approved:
             raise ApprovalRequiredError("an explicit approval is required before commit")
+        if approval.decided_by.startswith("agent-"):
+            raise ApprovalRequiredError("model-generated approvals are not accepted")
         # Persist both human and policy decisions at the write boundary so a
         # direct Agent tool call cannot publish without an auditable decision.
         approval = self.approvals.save(change_set_id, approval)
@@ -136,6 +145,16 @@ class CentralWriter:
         before.update(self._projection_files())
         snapshot_id = f"snapshot_{change_set.change_set_id}"
         self._write_snapshot(snapshot_id, before)
+        transaction_id = f"txn_{uuid.uuid4().hex}"
+        self._write_transaction(
+            transaction_id,
+            {
+                "transaction_id": transaction_id,
+                "change_set_id": change_set.change_set_id,
+                "snapshot_id": snapshot_id,
+                "stage": "prepared",
+            },
+        )
 
         try:
             for operation, path in targets:
@@ -145,6 +164,7 @@ class CentralWriter:
         except Exception:
             self._restore(before)
             self._remove_new_projection_files(before)
+            self._discard_transaction_journal(transaction_id)
             raise
 
         result = CommitResult(
@@ -153,8 +173,19 @@ class CentralWriter:
             status="committed",
             changed_targets=[operation.target_id for operation, _ in targets],
             snapshot_id=snapshot_id,
+            transaction_id=transaction_id,
         )
-        self._write_commit(result)
+        try:
+            # This atomic marker is the point of no return. Before it exists,
+            # any error restores the snapshot; afterwards, startup recovery
+            # keeps the verified publication and only removes stale journals.
+            self._write_commit(result)
+        except Exception:
+            self._restore(before)
+            self._remove_new_projection_files(before)
+            self._discard_transaction_journal(transaction_id)
+            raise
+        self._discard_transaction_journal(transaction_id)
         return result
 
     def _target_path(self, operation: ChangeOperation) -> Path:
@@ -213,9 +244,77 @@ class CentralWriter:
                 (snapshot_dir / filename).write_bytes(content)
                 entry["file"] = filename
             manifest.append(entry)
-        (snapshot_dir / "manifest.json").write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
+        self._atomic_write(
+            snapshot_dir / "manifest.json",
+            json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
         )
+
+    def _transaction_path(self, transaction_id: str) -> Path:
+        return self.transactions_dir / f"{transaction_id}.json"
+
+    def _write_transaction(self, transaction_id: str, payload: dict) -> None:
+        self.transactions_dir.mkdir(parents=True, exist_ok=True)
+        current = self._transaction_path(transaction_id)
+        previous = {}
+        if current.exists():
+            try:
+                previous = json.loads(current.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                previous = {}
+        previous.update(payload)
+        self._atomic_write(
+            current,
+            json.dumps(previous, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+
+    def _discard_transaction_journal(self, transaction_id: str) -> None:
+        try:
+            self._transaction_path(transaction_id).unlink(missing_ok=True)
+        except OSError:
+            # A verified commit remains authoritative. Leaving the journal is
+            # safe because startup recovery removes it when the commit exists.
+            logger.warning(
+                "Could not remove publication transaction journal %s",
+                transaction_id,
+                exc_info=True,
+            )
+
+    def _recover_transactions(self) -> None:
+        """Finish or roll back transactions left by an interrupted process."""
+
+        if not self.transactions_dir.exists():
+            return
+        self.pipeline.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with FileLock(str(self.pipeline.lock_path)):
+            for journal_path in sorted(self.transactions_dir.glob("txn_*.json")):
+                journal = json.loads(journal_path.read_text(encoding="utf-8"))
+                change_set_id = str(journal["change_set_id"])
+                if self._commit_path(change_set_id).exists():
+                    journal_path.unlink(missing_ok=True)
+                    continue
+                snapshot_id = str(journal["snapshot_id"])
+                before = self._read_snapshot(snapshot_id)
+                self._restore(before)
+                self._remove_new_projection_files(before)
+                journal_path.unlink(missing_ok=True)
+
+    def _read_snapshot(self, snapshot_id: str) -> dict[Path, bytes | None]:
+        snapshot_dir = self.runtime_dir / "snapshots" / snapshot_id
+        manifest_path = snapshot_dir / "manifest.json"
+        if not manifest_path.exists():
+            raise FileNotFoundError(f"snapshot manifest is missing: {snapshot_id}")
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        before: dict[Path, bytes | None] = {}
+        for entry in manifest:
+            destination = (self.project_root / entry["path"]).resolve()
+            if self.project_root not in destination.parents:
+                raise ValueError("snapshot path escaped the CellWiki project")
+            before[destination] = (
+                (snapshot_dir / entry["file"]).read_bytes()
+                if entry["existed"]
+                else None
+            )
+        return before
 
     @staticmethod
     def _restore(before: dict[Path, bytes | None]) -> None:

@@ -18,14 +18,15 @@ import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from langchain_core.tools import BaseTool, tool
+from pydantic import BaseModel, Field
 
 from cellwiki.api.reader import WikiReader
 from cellwiki.config import settings
 from cellwiki.domain.contracts import (
     AgentAnswer,
-    ApprovalDecision,
     ApprovalPolicy,
     IngestStage,
     TaskStatus,
@@ -47,29 +48,50 @@ from cellwiki.domain.contracts import PipelineTaskType
 from cellwiki.services.query import FormalQueryService
 
 
-def build_final_answer_tool() -> BaseTool:
+class FinalAnswerInput(BaseModel):
+    """Compact model-facing input; grounding metadata is runtime-owned."""
+
+    answer: str
+    citations: list[dict[str, Any]] = Field(default_factory=list)
+    confidence: str = "medium"
+    missing_evidence: list[str] = Field(default_factory=list)
+    knowledge_scope: str = "formal"
+    knowledge_version: str | None = None
+
+
+def build_final_answer_tool(project_root: Path) -> BaseTool:
     """Build the coordinator's validated, direct-return answer boundary."""
 
-    @tool("submit_agent_answer", args_schema=AgentAnswer, return_direct=True)
+    query_service = FormalQueryService(Path(project_root).resolve())
+
+    @tool("submit_agent_answer", args_schema=FinalAnswerInput, return_direct=True)
     def submit_agent_answer(
         answer: str,
-        citations: list[dict[str, str | None]] | None = None,
+        citations: list[dict[str, Any]] | None = None,
         confidence: str = "medium",
         missing_evidence: list[str] | None = None,
         knowledge_scope: str = "formal",
         knowledge_version: str | None = None,
     ) -> str:
         """Finish with a grounded answer, exact page citations, and evidence gaps."""
-        validated = AgentAnswer.model_validate(
+        # Providers sometimes echo display metadata from read tools (title/path/sections).
+        # Keep the persisted contract narrow while tolerating that harmless boundary noise.
+        citation_fields = {"page_id", "source_id", "locator", "evidence_id"}
+        normalized_citations = [
+            {key: value for key, value in citation.items() if key in citation_fields}
+            for citation in (citations or [])
+        ]
+        candidate = AgentAnswer.model_validate(
             {
                 "answer": answer,
-                "citations": citations or [],
+                "citations": normalized_citations,
                 "confidence": confidence,
                 "missing_evidence": missing_evidence or [],
                 "knowledge_scope": knowledge_scope,
                 "knowledge_version": knowledge_version,
             }
         )
+        validated = query_service.validate_answer(candidate)
         return validated.model_dump_json()
 
     return submit_agent_answer
@@ -97,13 +119,16 @@ def build_read_tools(project_root: Path) -> list[BaseTool]:
     def get_project_status() -> str:
         """Return counts for published pages, registered sources, and pending ChangeSets."""
         pending_dir = root / "data" / "runtime" / "changesets"
+        policy_state = pipeline.approval_policy_status()
         result = {
             "project_id": "cellwiki",
             "page_count": len(reader.tree()),
             "source_count": len(sources.list_sources()),
             "change_set_count": len(list(pending_dir.glob("cs_*.json"))) if pending_dir.exists() else 0,
             "knowledge_version": pipeline.current_knowledge_version(),
-            "approval_policy": pipeline.approval_policy().value,
+            "approval_policy": policy_state["policy"],
+            "approval_policy_valid": policy_state["valid"],
+            "approval_policy_error": policy_state["error"],
             "active_pipeline_task": pipeline.active_task(),
         }
         return json.dumps(result, ensure_ascii=False)
@@ -119,7 +144,14 @@ def build_read_tools(project_root: Path) -> list[BaseTool]:
     @tool("read_wiki_page")
     def read_wiki_page(page_id: str) -> str:
         """Read one published Wiki page by domain page ID; never accepts a file path."""
-        page = query_service.read_page(page_id)
+        try:
+            page = query_service.read_page(page_id)
+        except (KeyError, FileNotFoundError):
+            # A guessed page ID is recoverable model input, not a runtime crash.
+            return json.dumps(
+                {"error": "page_not_found", "page_id": page_id},
+                ensure_ascii=False,
+            )
         if len(page.markdown) > 20_000:
             page = page.model_copy(update={"markdown": page.markdown[:20_000] + "\n...[truncated]"})
         return page.model_dump_json()
@@ -427,7 +459,6 @@ def build_commit_tool(project_root: Path) -> BaseTool:
     writer = CentralWriter(root)
     changesets = ChangeSetRepository(root)
     tasks = TaskEventRepository(root)
-    pipeline = KnowledgePipelineHarness(root)
 
     @tool("commit_change_set")
     def commit_change_set(change_set_id: str) -> str:
@@ -447,12 +478,9 @@ def build_commit_tool(project_root: Path) -> BaseTool:
         )
         try:
             # 2. 执行提交
-            result = writer.commit(
-                change_set_id,
-                None
-                if pipeline.approval_policy() is ApprovalPolicy.AUTO_ALL
-                else ApprovalDecision(approved=True, decided_by="agent-hitl"),
-            )
+            # The model cannot manufacture an approval. CentralWriter derives
+            # policy approval or consumes the persisted desktop decision.
+            result = writer.commit(change_set_id, None)
             # 3. 运行投影质量检查
             report = inspect_projection(root)
             tasks.record(

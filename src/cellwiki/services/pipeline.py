@@ -16,8 +16,10 @@ from filelock import FileLock, Timeout
 from cellwiki.domain.contracts import (
     ApprovalDecision,
     ApprovalPolicy,
+    ChangeSet,
     KnowledgeSnapshot,
     PipelineTaskType,
+    RiskLevel,
 )
 from cellwiki.services.approvals import ApprovalRepository
 from cellwiki.services.changesets import ChangeSetRepository
@@ -30,6 +32,10 @@ class PipelineBusyError(RuntimeError):
 
 class SnapshotNotFoundError(KeyError):
     """Raised when a persisted pipeline snapshot cannot be found."""
+
+
+class ApprovalPolicyError(RuntimeError):
+    """Raised when the persisted approval policy cannot be trusted."""
 
 
 @dataclass(frozen=True)
@@ -168,13 +174,40 @@ class KnowledgePipelineHarness:
             return None
 
     def approval_policy(self) -> ApprovalPolicy:
+        status = self.approval_policy_status()
+        if not status["valid"]:
+            raise ApprovalPolicyError(str(status["error"]))
+        return ApprovalPolicy(str(status["policy"]))
+
+    def approval_policy_status(self) -> dict[str, Any]:
+        """Return a truthful policy state without silently failing open.
+
+        Projects created before risk-based approval had no policy file. Those
+        projects receive the safer default, while an explicitly corrupt file
+        blocks publication and remains visible to the desktop diagnostics.
+        """
+
         if not self.policy_path.exists():
-            return ApprovalPolicy.AUTO_ALL
+            return {
+                "policy": ApprovalPolicy.AUTO_LOW_RISK.value,
+                "valid": True,
+                "source": "default",
+                "error": None,
+            }
         try:
             payload = json.loads(self.policy_path.read_text(encoding="utf-8"))
-            return ApprovalPolicy(payload.get("policy", ApprovalPolicy.AUTO_ALL.value))
-        except (OSError, json.JSONDecodeError, ValueError):
-            return ApprovalPolicy.AUTO_ALL
+            value = payload.get("policy")
+            if not isinstance(value, str):
+                raise ValueError("approval policy file must contain a string policy")
+            policy = ApprovalPolicy(value)
+            return {"policy": policy.value, "valid": True, "source": "file", "error": None}
+        except (OSError, json.JSONDecodeError, ValueError) as error:
+            return {
+                "policy": None,
+                "valid": False,
+                "source": "file",
+                "error": f"invalid approval policy: {error}",
+            }
 
     def set_approval_policy(self, policy: ApprovalPolicy) -> ApprovalPolicy:
         self._write_json(self.policy_path, {"policy": policy.value, "updated_at": datetime.now(UTC).isoformat()})
@@ -183,12 +216,21 @@ class KnowledgePipelineHarness:
     def approval_for(self, change_set_id: str, *, reviewer: str) -> ApprovalDecision:
         """Return the policy result without persisting a manual pending decision."""
 
-        if self.approval_policy() is ApprovalPolicy.AUTO_ALL:
+        policy = self.approval_policy()
+        if policy is ApprovalPolicy.AUTO_ALL:
             return ApprovalDecision(
                 approved=True,
                 decided_by="policy:auto_all",
                 reason=f"ChangeSet {change_set_id} was auto-approved by the project policy.",
             )
+        if policy is ApprovalPolicy.AUTO_LOW_RISK:
+            change_set = ChangeSetRepository(self.project_root).get(change_set_id)
+            if _is_low_risk_change_set(change_set):
+                return ApprovalDecision(
+                    approved=True,
+                    decided_by="policy:auto_low_risk",
+                    reason=f"ChangeSet {change_set_id} passed the low-risk approval policy.",
+                )
         return ApprovalDecision(
             approved=False,
             decided_by=f"pending:{reviewer}",
@@ -227,10 +269,19 @@ class KnowledgePipelineHarness:
             "sources": sum(1 for item in files if item["path"].startswith("data/runtime/sources/") and item["path"].endswith(".json")),
             "files": files,
         }
-
     @staticmethod
     def _write_json(path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temporary.replace(path)
+
+
+def _is_low_risk_change_set(change_set: ChangeSet) -> bool:
+    """Keep the automatic path conservative and derived from persisted data."""
+
+    return (
+        change_set.risk is RiskLevel.LOW
+        and not change_set.review_items
+        and change_set.revision_id is None
+    )

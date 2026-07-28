@@ -2,7 +2,7 @@
 # 智能体应用组装 —— 单一顶级协调器的构建工厂
 # =============================================================================
 # 本模块负责组装 CellWiki 智能体的核心组件：构建 LLM 模型、创建子智能体
-# 规格（只读查询、导入、研究）、将工具注册到协调器，并最终组装为
+# 规格（只读查询、导入、质量检查）、将工具注册到协调器，并最终组装为
 # LangGraph 可执行的智能体应用。
 # =============================================================================
 
@@ -14,7 +14,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, cast
 
-from deepagents import HarnessProfile, create_deep_agent, register_harness_profile
+from deepagents import (
+    GeneralPurposeSubagentProfile,
+    HarnessProfile,
+    create_deep_agent,
+    register_harness_profile,
+)
 from deepagents.backends import StateBackend
 from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -185,39 +190,42 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
     """Keep the Deep Agents harness limited to CellWiki-owned capabilities."""
     # CellWiki persists knowledge through governed tools, so generic filesystem
     # and TODO tools only enlarge provider requests without serving the product.
-    register_harness_profile(
-        f"openai:{model_name}",
-        HarnessProfile(
-            base_system_prompt=HARNESS_PROMPT,
-            excluded_tools=frozenset(
-                {
-                    "write_todos",
-                    "ls",
-                    "read_file",
-                    "write_file",
-                    "edit_file",
-                    "glob",
-                    "grep",
-                }
-            ),
-            excluded_middleware=frozenset({TodoListMiddleware}),
-            tool_description_overrides={
-                "task": (
-                    "Delegate one bounded task to a CellWiki specialist. "
-                    "Choose from:\n\n{available_agents}"
-                )
-            },
+    profile = HarnessProfile(
+        base_system_prompt=HARNESS_PROMPT,
+        # Deep Agents otherwise auto-injects its generic filesystem-oriented
+        # fallback when no explicit general-purpose spec is supplied.
+        general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+        excluded_tools=frozenset(
+            {
+                "write_todos",
+                "ls",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "glob",
+                "grep",
+            }
         ),
+        excluded_middleware=frozenset({cast(Any, TodoListMiddleware)}),
+        tool_description_overrides={
+            "task": (
+                "Delegate one bounded task to a CellWiki specialist. "
+                "Choose from:\n\n{available_agents}"
+            )
+        },
     )
+    # The provider-level registration also covers supported pre-built
+    # ChatOpenAI instances whose model name differs from the configured default.
+    register_harness_profile("openai", profile)
+    register_harness_profile(f"openai:{model_name}", profile)
 
 
 # ---------------------------------------------------------------------------
 # 构建子智能体规格列表
-# 定义四种子智能体：
-# - general-purpose: 通用只读分析
+# 定义三种核心子智能体：
 # - query-agent: 知识问答
 # - ingest-agent: 来源导入
-    # - external research is intentionally handled inside lint-agent's broad-lint path
+# - lint-agent: 质量检查与外部知识刷新
 # 每种子智能体有自己的系统提示词、工具集和响应格式。
 # ---------------------------------------------------------------------------
 def build_subagent_specs(
@@ -233,23 +241,17 @@ def build_subagent_specs(
         "with exact page IDs and identify missing evidence. Every factual finding must "
         "be traceable to a page returned by read_wiki_page. Never propose that a write succeeded."
     )
+    query_tools = [
+        tool for tool in read_tools if getattr(tool, "name", None) != "get_change_set"
+    ]
     # 定义三个核心子智能体
     specs: list[dict[str, Any]] = [
-        {
-            "name": "general-purpose",      # 通用只读回退
-            "description": "Read-only fallback for bounded CellWiki analysis.",
-            "system_prompt": read_only_prompt,
-            "model": model,
-            "tools": read_tools,
-            "middleware": [_CellWikiToolBoundaryMiddleware()],
-            "interrupt_on": {},
-        },
         {
             "name": "query-agent",           # 知识问答智能体
             "description": "Answer questions from published CellWiki pages with citations.",
             "system_prompt": read_only_prompt,
             "model": model,
-            "tools": read_tools,
+            "tools": query_tools,
             "middleware": [_CellWikiToolBoundaryMiddleware()],
             "interrupt_on": {},
         },
@@ -336,6 +338,7 @@ def build_wiki_agent(
 ):
     # 解析项目根目录
     root = Path(project_root or settings.project_root).resolve()
+    _register_cellwiki_harness_profile(settings.openai_model)
     # 如果未指定模型，使用默认构建
     coordinator_model = model or build_model()
     # 构建工具集
@@ -344,7 +347,7 @@ def build_wiki_agent(
     lint_tools = build_lint_tools(root)
     # The coordinator delegates evidence work to specialist subagents. Keeping
     # read tools off the top-level request makes that ownership boundary explicit.
-    coordinator_tools = []
+    coordinator_tools: list[Any] = []
     if settings.enable_agent_memory:
         # 启用记忆：召回 + 提交候选
         recall_memory, propose_memory = build_memory_tools(root)
@@ -353,7 +356,7 @@ def build_wiki_agent(
     # 提交工具（ChangeSet 提交）
     commit_tool = build_commit_tool(root)
     rebase_tool = build_rebase_tool(root)
-    final_answer_tool = build_final_answer_tool()
+    final_answer_tool = build_final_answer_tool(root)
     # 检查点器：默认使用 InMemorySaver，除非传入了外部检查点器
     active_checkpointer = (
         InMemorySaver() if checkpointer is _DEFAULT_CHECKPOINTER else checkpointer
@@ -386,7 +389,7 @@ def build_wiki_agent(
         context_schema=WikiAgentContext,
         # Manual policy pauses before publication; auto_all keeps the same write
         # boundary but lets CentralWriter obtain the policy decision itself.
-        interrupt_on=approval_interrupt,
+        interrupt_on=cast(Any, approval_interrupt),
     )
 
 

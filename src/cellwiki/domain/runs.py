@@ -101,6 +101,8 @@ class AgentRun(ContractModel):
     page_id: str | None = None                                # 关联的页面 ID
     selected_text: str | None = None                          # 用户选中的文本
     input_message: str = ""                                   # 用户输入消息
+    task_kind: str = "conversation"                           # 结构化任务类型
+    task_payload: dict[str, Any] = Field(default_factory=dict) # 结构化任务参数
     model_role: str = "coordinator"                           # 模型角色
     model_name: str = ""                                      # 模型名称
     status: AgentRunStatus = AgentRunStatus.QUEUED            # 当前状态

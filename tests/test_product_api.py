@@ -49,7 +49,7 @@ def test_product_api_exposes_pipeline_state_and_approval_policy(tmp_path: Path):
     current = client.get("/api/pipeline/status")
 
     assert initial.status_code == 200
-    assert initial.json()["approval_policy"] == "auto_all"
+    assert initial.json()["approval_policy"] == "auto_low_risk"
     assert changed.status_code == 200
     assert changed.json()["approval_policy"] == "auto_all"
     assert current.json()["approval_policy"] == "auto_all"

@@ -16,11 +16,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Protocol
 
+from filelock import FileLock, Timeout
+from pydantic import TypeAdapter
+
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 from cellwiki.config import settings
-from cellwiki.domain.contracts import AgentAnswer, WikiAgentContext
+from cellwiki.domain.contracts import ApprovalDecision, AgentAnswer, WikiAgentContext
 from cellwiki.domain.memory import MemoryCandidate, MemoryKind
 from cellwiki.domain.runs import (
     AgentErrorType,
@@ -30,7 +33,10 @@ from cellwiki.domain.runs import (
     RunBudget,
     RunUsage,
 )
+from cellwiki.domain.tasks import AgentTask
 from cellwiki.services.runtime_store import InvalidRunTransitionError, RuntimeStore
+from cellwiki.services.approvals import ApprovalRepository
+from cellwiki.services.changesets import ChangeSetRepository
 from cellwiki.services.memory import MemoryStore
 from cellwiki.services.logging_context import log_context
 from cellwiki.services.operations import (
@@ -38,6 +44,7 @@ from cellwiki.services.operations import (
     OperationCancelled,
     bind_agent_run,
 )
+from cellwiki.services.typed_tasks import TypedTaskExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +86,10 @@ class AgentExecutionAdapter(Protocol):
     def close(self) -> None: ...
 
     def delete_thread(self, thread_id: str) -> None: ...
+
+
+class AgentRuntimeBusyError(RuntimeError):
+    """Raised when another process owns the project's Agent runtime."""
 
 
 # ---------------------------------------------------------------------------
@@ -185,27 +196,43 @@ class AgentRuntimeManager:
         memory_enabled: bool | None = None,
     ):
         self.project_root = Path(project_root).resolve()
-        # 运行时存储（SQLite，持久化运行记录和事件）
-        self.store = store or RuntimeStore(self.project_root)
-        # 执行适配器（默认使用 Deep Agents）
-        self.adapter = adapter or DeepAgentsExecutionAdapter(self.project_root)
-        # 记忆功能是否启用
-        self.memory_enabled = (
-            settings.enable_agent_memory if memory_enabled is None else memory_enabled
-        )
-        self.memory = memory_store or (
-            MemoryStore(self.project_root) if self.memory_enabled else None
-        )
-        # 取消注册表（用于协作式取消）
-        self.cancellations = CancellationRegistry.for_project(self.project_root)
-        # 后台执行线程池（最多 2 个并发智能体）
-        self.executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="cellwiki-agent")
-        self._futures: set[Future[None]] = set()       # 追踪后台任务
-        self._futures_lock = threading.Lock()           # 后台任务集合的锁
-        self._thread_operation_lock = threading.RLock()  # 会话创建与删除的互斥锁
-        self._closed = False
-        # 启动时恢复持久化的运行状态
-        self._recover_persisted_runs()
+        owner_path = self.project_root / "data" / "runtime" / "agent-runtime.lock"
+        owner_path.parent.mkdir(parents=True, exist_ok=True)
+        self._runtime_owner_lock = FileLock(str(owner_path), timeout=0)
+        try:
+            self._runtime_owner_lock.acquire()
+        except Timeout as error:
+            raise AgentRuntimeBusyError(
+                "another AgentRuntimeManager already owns this project"
+            ) from error
+        try:
+            # 运行时存储（SQLite，持久化运行记录和事件）
+            self.store = store or RuntimeStore(self.project_root)
+            # 执行适配器（默认使用 Deep Agents）
+            self.adapter = adapter or DeepAgentsExecutionAdapter(self.project_root)
+            # 记忆功能是否启用
+            self.memory_enabled = (
+                settings.enable_agent_memory if memory_enabled is None else memory_enabled
+            )
+            self.memory = memory_store or (
+                MemoryStore(self.project_root) if self.memory_enabled else None
+            )
+            # 取消注册表（用于协作式取消）
+            self.cancellations = CancellationRegistry.for_project(self.project_root)
+            # 后台执行线程池（最多 2 个并发智能体）
+            self.executor = ThreadPoolExecutor(
+                max_workers=2,
+                thread_name_prefix="cellwiki-agent",
+            )
+            self._futures: set[Future[None]] = set()
+            self._futures_lock = threading.Lock()
+            self._thread_operation_lock = threading.RLock()
+            self._closed = False
+            # 独占 owner lock 后，所有残留活跃状态都来自崩溃进程，可以安全恢复。
+            self._recover_persisted_runs()
+        except Exception:
+            self._runtime_owner_lock.release()
+            raise
 
     # ---- 启动新的智能体运行 ----
     def start(
@@ -242,6 +269,39 @@ class AgentRuntimeManager:
             self._submit(self._execute, run.run_id, message, context)
         return run
 
+    def start_task(
+        self,
+        *,
+        thread_id: str,
+        task: AgentTask,
+        context: WikiAgentContext,
+        budget: RunBudget | None = None,
+    ) -> AgentRun:
+        """Persist and execute a typed domain task without Coordinator routing."""
+
+        task_payload = task.model_dump(mode="json")
+        input_message = f"Typed CellWiki task: {task_payload['kind']}"
+        with self._thread_operation_lock:
+            run = AgentRun(
+                run_id=f"run_{uuid.uuid4().hex}",
+                thread_id=thread_id,
+                project_id=context.project_id,
+                source_id=getattr(task, "source_id", context.source_id),
+                page_id=context.page_id,
+                selected_text=context.selected_text,
+                input_message=input_message,
+                task_kind=task_payload["kind"],
+                task_payload=task_payload,
+                model_role="typed-task-adapter",
+                model_name="",
+                budget=budget or RunBudget(),
+            )
+            self.store.create_run(run)
+            self.cancellations.register(run.run_id)
+        with log_context(run_id=run.run_id, thread_id=run.thread_id, project_id=run.project_id):
+            self._submit(self._execute_typed_task, run.run_id, task, context)
+        return run
+
     def delete_thread(self, thread_id: str) -> int:
         """Delete a complete conversation after confirming no run is active."""
         active_statuses = {
@@ -271,6 +331,34 @@ class AgentRuntimeManager:
             raise ValueError("only a waiting-approval run can be resumed")
         if decision not in {"approve", "reject"}:
             raise ValueError("decision must be approve or reject")
+        changesets = ChangeSetRepository(self.project_root)
+        approvals = ApprovalRepository(self.project_root)
+        matching = sorted(
+            (item for item in changesets.list() if item.run_id == run_id),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
+        if run.task_kind != "conversation" and not matching:
+            raise ValueError("typed task has no ChangeSet to review")
+        if matching and approvals.get(matching[0].change_set_id) is None:
+            approvals.save(
+                matching[0].change_set_id,
+                ApprovalDecision(
+                    approved=decision == "approve",
+                    decided_by="desktop-user",
+                    reason=f"User selected {decision} for the pending ChangeSet.",
+                ),
+            )
+        claimed = self.store.claim_resume(run_id, decision=decision)
+        self.cancellations.register(run_id)
+        if run.task_kind != "conversation":
+            self._submit(
+                self._execute_typed_continuation,
+                run_id,
+                matching[0].change_set_id,
+                decision,
+            )
+            return claimed
         # 根据决策构造 Command 恢复指令
         if decision == "reject":
             command: Command[Any] = Command(
@@ -296,7 +384,6 @@ class AgentRuntimeManager:
         terminal_status = (
             AgentRunStatus.REJECTED if decision == "reject" else AgentRunStatus.SUCCEEDED
         )
-        self.cancellations.register(run_id)
         self._submit(
             self._execute,
             run_id,
@@ -304,7 +391,7 @@ class AgentRuntimeManager:
             context,
             terminal_status,
         )
-        return run
+        return claimed
 
     # ---- 重试失败的运行 ----
     # 从持久化检查点恢复，不重放用户输入
@@ -315,14 +402,13 @@ class AgentRuntimeManager:
         # 检查是否可重试（状态、重试次数、错误类型）
         if not is_retryable_run(run):
             raise ValueError("run is not retryable or has exhausted its retry budget")
-        self.store.increment_retry(run_id)
-        updated = self.store.transition(
-            run_id,
-            AgentRunStatus.RETRYING,
-            message="Retrying the failed run from its latest checkpoint.",
-        )
+        updated = self.store.claim_retry(run_id)
         context = self._context_for(updated)
         self.cancellations.register(run_id)
+        if updated.task_kind != "conversation":
+            task: AgentTask = TypeAdapter(AgentTask).validate_python(updated.task_payload)
+            self._submit(self._execute_typed_task, run_id, task, context)
+            return updated
         # message=None 表示从检查点恢复，不重放用户输入
         self._submit(self._execute, run_id, None, context)
         return updated
@@ -367,14 +453,18 @@ class AgentRuntimeManager:
         if self._closed:
             return
         self._closed = True
-        self.request_shutdown()
-        # 框架适配器可能拥有阻塞流或检查点连接，
-        # 在取消后关闭它们为等待提供第二条退出路径
-        self.adapter.close()
-        with self._futures_lock:
-            futures = set(self._futures)
-        wait(futures, timeout=3)
-        self.executor.shutdown(wait=False, cancel_futures=True)
+        try:
+            self.request_shutdown()
+            # 框架适配器可能拥有阻塞流或检查点连接，
+            # 在取消后关闭它们为等待提供第二条退出路径
+            self.adapter.close()
+            with self._futures_lock:
+                futures = set(self._futures)
+            wait(futures, timeout=3)
+            self.executor.shutdown(wait=False, cancel_futures=True)
+        finally:
+            if self._runtime_owner_lock.is_locked:
+                self._runtime_owner_lock.release()
 
     # ---- 请求关闭 ----
     # 取消所有活动而不等待，用于桌面端关闭端点
@@ -421,6 +511,115 @@ class AgentRuntimeManager:
                 self._futures.discard(completed)
 
         future.add_done_callback(discard)
+
+    def _execute_typed_task(
+        self,
+        run_id: str,
+        task: AgentTask,
+        context: WikiAgentContext,
+    ) -> None:
+        self.cancellations.register(run_id, reset=False)
+        try:
+            with bind_agent_run(run_id):
+                self.store.transition(run_id, AgentRunStatus.RUNNING, message="Typed task started.")
+                result = TypedTaskExecutor(self.project_root).execute(task, run_id=run_id)
+                if result.change_set_id:
+                    self.store.append_event(
+                        run_id,
+                        AgentEventType.CHANGESET_READY,
+                        message=result.message,
+                        data={"change_set_id": result.change_set_id, **result.data},
+                    )
+                self.store.append_event(
+                    run_id,
+                    AgentEventType.FINAL_RESPONSE,
+                    message=result.message,
+                    progress=100,
+                    data={"answer": result.message, **result.data},
+                )
+                if result.status == "waiting_approval":
+                    self.store.transition(
+                        run_id,
+                        AgentRunStatus.WAITING_APPROVAL,
+                        message=result.message,
+                        progress=90,
+                        data={"change_set_id": result.change_set_id},
+                    )
+                else:
+                    self.store.transition(
+                        run_id,
+                        AgentRunStatus.SUCCEEDED,
+                        message=result.message,
+                        progress=100,
+                    )
+        except Exception as error:
+            try:
+                self.store.transition(
+                    run_id,
+                    AgentRunStatus.FAILED,
+                    error_type=AgentErrorType.SYSTEM,
+                    error_message=str(error),
+                    message="Typed task failed.",
+                )
+            except (KeyError, InvalidRunTransitionError):
+                pass
+        finally:
+            self.cancellations.clear(run_id)
+
+    def _execute_typed_continuation(
+        self,
+        run_id: str,
+        change_set_id: str,
+        decision: str,
+    ) -> None:
+        """Finish a typed task from its persisted approval without LangGraph."""
+
+        self.cancellations.register(run_id, reset=False)
+        try:
+            with bind_agent_run(run_id):
+                if decision == "reject":
+                    message = "The typed task ChangeSet was rejected; no formal knowledge changed."
+                    self.store.append_event(
+                        run_id,
+                        AgentEventType.FINAL_RESPONSE,
+                        message=message,
+                        progress=100,
+                        data={"answer": message, "change_set_id": change_set_id},
+                    )
+                    self.store.transition(
+                        run_id,
+                        AgentRunStatus.REJECTED,
+                        message=message,
+                        progress=100,
+                    )
+                    return
+                result = TypedTaskExecutor(self.project_root).publish_existing(change_set_id)
+                self.store.append_event(
+                    run_id,
+                    AgentEventType.FINAL_RESPONSE,
+                    message=result.message,
+                    progress=100,
+                    data={"answer": result.message, **result.data},
+                )
+                self.store.transition(
+                    run_id,
+                    AgentRunStatus.SUCCEEDED,
+                    message=result.message,
+                    progress=100,
+                )
+        except Exception as error:
+            try:
+                self.store.transition(
+                    run_id,
+                    AgentRunStatus.FAILED,
+                    error_type=AgentErrorType.SYSTEM,
+                    error_message=str(error),
+                    message="Typed task approval failed.",
+                )
+            except (KeyError, InvalidRunTransitionError):
+                pass
+        finally:
+            self.cancellations.clear(run_id)
 
     # ---- 执行包装器 ----
     # 注册取消令牌，绑定运行 ID，执行后清理取消令牌
@@ -770,12 +969,21 @@ class AgentRuntimeManager:
             if run.status == AgentRunStatus.QUEUED and run.input_message:
                 # 队列中的运行：恢复执行
                 self.cancellations.register(run.run_id)
-                self._submit(
-                    self._execute,
-                    run.run_id,
-                    run.input_message,
-                    self._context_for(run),
-                )
+                if run.task_kind != "conversation":
+                    task: AgentTask = TypeAdapter(AgentTask).validate_python(run.task_payload)
+                    self._submit(
+                        self._execute_typed_task,
+                        run.run_id,
+                        task,
+                        self._context_for(run),
+                    )
+                else:
+                    self._submit(
+                        self._execute,
+                        run.run_id,
+                        run.input_message,
+                        self._context_for(run),
+                    )
             elif run.status == AgentRunStatus.RETRYING:
                 # 重试中的运行：从检查点恢复
                 self.cancellations.register(run.run_id)
@@ -807,8 +1015,6 @@ class AgentRuntimeManager:
                     message="Application stopped while the run was active.",
                     data={"error_type": AgentErrorType.SYSTEM.value, "retryable": True},
                 )
-
-
 # ---------------------------------------------------------------------------
 # AgentBudgetExceeded —— 预算超限异常
 # 在安全事件边界抛出，当运行超过其配置的预算时。

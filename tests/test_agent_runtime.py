@@ -409,11 +409,13 @@ def test_top_level_json_message_becomes_validated_final_response():
     assert final.message == "Grounded answer"
     assert final.data == {
         "answer": "Grounded answer",
-        "citations": [{"page_id": "t_cell", "source_id": None, "locator": None}],
+        "citations": [{"page_id": "t_cell", "source_id": None, "locator": None, "evidence_id": None}],
         "confidence": "high",
         "missing_evidence": [],
         "knowledge_scope": "formal",
         "knowledge_version": None,
+        "verification_level": "unvalidated",
+        "validation_warnings": [],
     }
 
 
@@ -436,7 +438,7 @@ def test_submit_agent_answer_tool_result_becomes_final_response():
         AgentEventType.FINAL_RESPONSE,
     ]
     assert signals[-1].data["citations"] == [
-        {"page_id": "t_cell", "source_id": None, "locator": None}
+        {"page_id": "t_cell", "source_id": None, "locator": None, "evidence_id": None}
     ]
 
 
