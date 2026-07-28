@@ -14,7 +14,6 @@ from cellwiki.adapters.markdown_renderer import (
     generate_conflict_pages,
     generate_disease_page,
     generate_index_page,
-    generate_manifest_page,
     generate_marker_gene_page,
     generate_navigation_index_page,
     generate_overview_page,
@@ -55,6 +54,9 @@ class CellWikiMarkdownRenderer:
         curation_dir: Path,
     ) -> list[str]:
         wiki_dir.mkdir(parents=True, exist_ok=True)
+        # manifest.json was an unused machine index. Remove any historical copy
+        # while retaining the in-memory metadata needed to version navigation.
+        (wiki_dir / "manifest.json").unlink(missing_ok=True)
         wiki = merge_to_wiki(extractions)
         _assign_cell_type_evidence_tiers(wiki)
 
@@ -100,8 +102,13 @@ class CellWikiMarkdownRenderer:
         conflict_ids = generate_conflict_pages(wiki, conflict_dir)
         _cleanup_pages(conflict_dir, set(conflict_ids))
 
-        manifest = build_manifest(wiki, marker_genes, tissues, diseases, conflict_ids)
-        generate_manifest_page(manifest, destination=wiki_dir / "manifest.json")
+        projection_metadata = build_manifest(
+            wiki,
+            marker_genes,
+            tissues,
+            diseases,
+            conflict_ids,
+        )
         generate_navigation_index_page(
             wiki,
             marker_genes,
@@ -109,7 +116,7 @@ class CellWikiMarkdownRenderer:
             diseases,
             conflict_ids,
             destination=wiki_dir / "index.md",
-            knowledge_version=manifest["version"],
+            knowledge_version=projection_metadata["version"],
         )
         generate_overview_page(
             wiki,
@@ -118,7 +125,7 @@ class CellWikiMarkdownRenderer:
             diseases,
             conflict_ids,
             destination=wiki_dir / "overview.md",
-            knowledge_version=manifest["version"],
+            knowledge_version=projection_metadata["version"],
         )
 
         # README.md remains the compatibility index consumed by the existing

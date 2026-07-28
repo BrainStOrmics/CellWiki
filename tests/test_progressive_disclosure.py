@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import yaml
@@ -170,9 +169,11 @@ def test_cell_type_frontmatter_contains_progressive_disclosure_metadata(tmp_path
     assert "## Conflicts" in body
 
 
-def test_projection_generates_layers_index_overview_and_manifest(tmp_path: Path):
+def test_projection_generates_layers_index_and_overview_without_manifest(tmp_path: Path):
     wiki_dir = tmp_path / "wiki"
     curation_dir = wiki_dir / "curation" / "cell_types"
+    wiki_dir.mkdir(parents=True)
+    (wiki_dir / "manifest.json").write_text("obsolete", encoding="utf-8")
     extractions = [
         _extraction(
             "p1",
@@ -222,12 +223,7 @@ def test_projection_generates_layers_index_overview_and_manifest(tmp_path: Path)
     assert "[按疾病](diseases/)" in (wiki_dir / "index.md").read_text(encoding="utf-8")
     assert "Evidence Tier" in (wiki_dir / "overview.md").read_text(encoding="utf-8")
     assert (wiki_dir / "README.md").exists()
-
-    manifest = json.loads((wiki_dir / "manifest.json").read_text(encoding="utf-8"))
-    page_types = {page["type"] for page in manifest["pages"]}
-    assert {"cell_type", "marker_gene", "tissue", "disease", "conflict"} <= page_types
-    assert manifest["dimensions"]["tissues"] == ["blood", "lung"]
-    assert manifest["dimensions"]["diseases"] == ["nsclc"]
+    assert not (wiki_dir / "manifest.json").exists()
 
     conflict_pages = list((wiki_dir / "conflicts").glob("*.md"))
     assert len(conflict_pages) == 1

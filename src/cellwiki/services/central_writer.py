@@ -227,24 +227,16 @@ class CentralWriter:
                 CentralWriter._atomic_write(path, content)
 
     def _remove_new_projection_files(self, before: dict[Path, bytes | None]) -> None:
-        pages_dir = self.project_root / "wiki" / "cell_types"
-        known_pages = {path for path in before if path.parent == pages_dir}
-        if pages_dir.exists():
-            for path in pages_dir.glob("*.md"):
-                if path not in known_pages:
-                    path.unlink(missing_ok=True)
+        for path in ProjectionService.managed_output_paths(self.project_root):
+            if path not in before:
+                path.unlink(missing_ok=True)
 
     def _projection_files(self) -> dict[Path, bytes | None]:
         """Capture generated outputs so a failed verification cannot leak a projection."""
-        pages_dir = self.project_root / "wiki" / "cell_types"
-        files: dict[Path, bytes | None] = (
-            {path: path.read_bytes() for path in pages_dir.glob("*.md")}
-            if pages_dir.exists()
-            else {}
-        )
-        index = self.project_root / "wiki" / "README.md"
-        files[index] = index.read_bytes() if index.exists() else None
-        return files
+        return {
+            path: path.read_bytes() if path.exists() else None
+            for path in ProjectionService.managed_output_paths(self.project_root)
+        }
 
     def _commit_path(self, change_set_id: str) -> Path:
         return self.runtime_dir / "commits" / f"{change_set_id}.json"
