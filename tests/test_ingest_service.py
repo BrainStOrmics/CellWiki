@@ -143,9 +143,14 @@ def test_real_pdf_runs_source_to_evidence_changeset_projection_and_lint(tmp_path
 
     assert extraction_path.is_file()
     assert wiki_page.is_file()
-    assert wiki_page.read_text(encoding="utf-8") == (
-        FIXTURES / "expected_wiki_regulatory_t_cell.md"
-    ).read_text(encoding="utf-8")
+    expected_page = (FIXTURES / "expected_wiki_regulatory_t_cell.md").read_text(
+        encoding="utf-8"
+    )
+    # The source ID is content-addressed and intentionally follows the current
+    # fixture bytes; the snapshot should assert rendered content, not a stale
+    # hash copied from an older PDF fixture.
+    expected_page = expected_page.replace("src_8967205c87259b809eae", source.source_id)
+    assert wiki_page.read_text(encoding="utf-8") == expected_page
     assert any(evidence.page_start == 2 and "FOXP3" in evidence.excerpt for evidence in first.evidence)
     assert inspect_projection(tmp_path)["error_count"] == 0
 
