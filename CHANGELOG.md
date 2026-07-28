@@ -6,13 +6,12 @@
 
 ### Added
 
-- Agentic CellWiki 文档治理：正式文档索引、架构、路线图、测试、隐私、供应商兼容、故障恢复和安全说明。
-- `design/` 的 active/research/archive 分类和文档状态元数据。
+- 自包含的公开产品入口、贡献指南、安全与隐私说明和版本记录。
 - 文档检查与 release manifest 自动化入口。
 
 ### Changed
 
-- README 改为项目入口和文档导航；当前事实转移到 `docs/`。
+- 公开入口文档不再依赖未随代码仓库分发的本地项目与设计文档。
 - 发布说明不再手工维护固定安装包哈希。
 - 产品 CLI、抽取、投影和领域模型已与旧 CLI/图工作流分离；旧实现集中到 `cellwiki.legacy`，默认 `cellwiki` 入口只启动桌面产品运行时。
 - WikiAgent 使用精确 Deep Agents HarnessProfile 隐藏通用文件/TODO 工具，并通过 `submit_agent_answer` 在不强制 `tool_choice` 的前提下校验结构化最终回答。
@@ -31,4 +30,4 @@
 
 - 安装包未签名，干净 Windows VM 验收待完成。
 - PDF 解析主要基于 pdfplumber，复杂布局可能失真。
-- 模型供应商能力存在差异，详见 [docs/provider-compatibility.md](docs/provider-compatibility.md)。
+- OpenAI-compatible 模型供应商在结构化输出、工具调用、超时和上下文限制方面存在差异，接入前需要单独验证。

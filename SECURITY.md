@@ -24,6 +24,14 @@ CellWiki 当前为未签名 Windows Beta。安全修复以当前 `main` 的后�
 - Agent、Research、Memory 和 Lint 不能绕过 ChangeSet 与人工 Approval 直接写入正式知识。
 - 项目数据保存在操作系统应用数据目录，不与安装目录混用。
 
+## 数据与隐私
+
+- 调用模型时，来源文本块、相关 Wiki 上下文、用户指令和必要的对话内容会发送给用户配置的 OpenAI-compatible 提供商。
+- 提供商是否记录、保留或用于训练这些内容，取决于用户选择的服务及其条款；CellWiki 无法替用户作出保证。
+- 来源副本、正式知识、运行记录和日志默认保存在本机项目数据目录，不会被 CellWiki 自动发布到公共代码仓库。
+- 日志和错误报告仍可能包含文件名、来源标识符、模型端点或脱敏后的上下文；对外提交前必须再次检查并脱敏。
+- 卸载应用不等于删除项目数据或系统凭据。执行人工删除前应关闭 CellWiki、按需备份，并分别检查项目数据目录和 Windows Credential Manager。
+
 ## 已知风险
 
 - OpenAI-compatible 模型调用会把输入 chunk 发送到用户配置的外部提供商。
@@ -31,5 +39,3 @@ CellWiki 当前为未签名 Windows Beta。安全修复以当前 `main` 的后�
 - 目前安装包未代码签名，Windows SmartScreen 可能提示风险。
 - 目前没有完整的项目级一键安全删除界面。
 - 依赖升级、SBOM、自动更新和干净 VM 安装验证尚未成为正式发布门禁。
-
-数据传输、保留和删除规则见 [docs/data-and-privacy.md](docs/data-and-privacy.md)；运行安全细节见 [docs/architecture.md](docs/architecture.md)。

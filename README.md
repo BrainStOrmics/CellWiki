@@ -3,7 +3,7 @@
 Agentic CellWiki 是一个本地优先的 Windows 桌面科学知识库：它把论文转化为带页码、文本块和来源定位的结构化 Claim；经人工审核后生成可追溯 Wiki，并允许用户在侧边与 WikiAgent 围绕页面、来源或选中文本协作。
 
 > [!WARNING]
-> 当前版本是未签名 Windows Beta 候选版。论文 chunk、Wiki 上下文和对话会发送给用户配置的 OpenAI-compatible 模型供应商；处理敏感或未发表资料前，请先阅读 [数据与隐私说明](docs/data-and-privacy.md)。
+> 当前版本是未签名 Windows Beta 候选版。论文 chunk、Wiki 上下文和对话会发送给用户配置的 OpenAI-compatible 模型供应商；处理敏感或未发表资料前，请先阅读 [安全说明](SECURITY.md)。
 
 ## 核心工作流
 
@@ -27,8 +27,6 @@ Source
 - Deep Agents 运行时：持久 AgentRun、SSE、checkpoint、审批续跑、取消和重试。
 - FTS5、KnowledgeGraph、受治理 Memory/Research 与 L2 semantic lint 第一版。
 - 设置页中的模型配置、系统凭据、中文/英文和运行日志。
-
-当前架构、限制和数据所有权见 [architecture.md](docs/architecture.md)。
 
 ## 开发环境
 
@@ -55,18 +53,11 @@ Copy-Item .env.example .env
 
 ## Windows Beta
 
-发布版由 Tauri 启动打包的 Python sidecar，不要求最终用户安装源码、Python、Node.js 或 Rust。构建、验收、数据保留和已知发布门禁见 [Windows Beta 发布说明](docs/release/windows-beta.md)。
+发布版由 Tauri 启动打包的 Python sidecar，不要求最终用户安装源码、Python、Node.js 或 Rust。当前安装包尚未签名；发布前应完成后端测试、前端测试与构建、打包 sidecar 健康检查以及干净 Windows 环境安装验收。
 
-## 文档
+## 公开文档
 
-- [正式文档索引](docs/README.md)
-- [当前架构](docs/architecture.md)
-- [当前路线图](docs/roadmap.md)
-- [测试与质量门禁](docs/testing.md)
-- [模型供应商兼容性](docs/provider-compatibility.md)
-- [故障排查与恢复](docs/troubleshooting.md)
-- [设计资料索引](design/README.md)
-
-## 开发协作
-
-开发和文档规则见 [CONTRIBUTING.md](CONTRIBUTING.md)，安全假设和漏洞报告见 [SECURITY.md](SECURITY.md)，版本变化见 [CHANGELOG.md](CHANGELOG.md)。
+- [领域词汇与约束](CONTEXT.md)
+- [贡献与开发指南](CONTRIBUTING.md)
+- [安全假设、数据隐私与漏洞报告](SECURITY.md)
+- [版本变化](CHANGELOG.md)
