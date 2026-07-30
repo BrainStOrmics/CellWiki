@@ -76,3 +76,29 @@ class LintFinding(ContractModel):
         material = f"{level.value}\0{category}\0{target_id}\0{locator}"
         return f"lint_{hashlib.sha256(material.encode('utf-8')).hexdigest()[:20]}"
 
+
+class LintFindingSummary(ContractModel):
+    """Bounded finding projection safe for chat and desktop rendering."""
+
+    finding_id: str
+    level: LintLevel
+    severity: LintSeverity
+    category: str
+    target_id: str
+    locator: str
+    message: str
+    blocking: bool = False
+    auto_fixable: bool = False
+
+
+class LintInspectionResult(ContractModel):
+    snapshot_id: str
+    knowledge_version: str
+    scope: dict[str, str]
+    summary: dict[str, int | str]
+    findings: list[LintFindingSummary] = Field(default_factory=list)
+    next_cursor: str | None = None
+    full_report_ref: str
+    full_report_sha256: str
+    full_report_size: int = Field(ge=0)
+

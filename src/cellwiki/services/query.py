@@ -8,13 +8,18 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from dataclasses import dataclass, field
 
 from filelock import FileLock
 
 from cellwiki.api.reader import WikiReader
-from cellwiki.domain.contracts import AgentAnswer, VerificationLevel
+from cellwiki.domain.contracts import (
+    AgentAnswer,
+    ValidationIssue,
+    ValidationIssueCode,
+    VerificationLevel,
+)
 from cellwiki.domain.query import QueryHit, QueryPage, QueryResponse
 from cellwiki.services.changesets import ChangeSetRepository
 from cellwiki.services.operations import current_agent_run_id
@@ -58,22 +63,54 @@ class FormalQuerySession:
                 return
 
     def validate(self, answer: AgentAnswer) -> AgentAnswer:
-        warnings: list[str] = []
+        declared_confidence = answer.declared_confidence or answer.confidence
+        issues: list[ValidationIssue] = []
+        if answer.knowledge_scope == "general":
+            return answer.model_copy(
+                update={
+                    "declared_confidence": declared_confidence,
+                    "verification_level": VerificationLevel.UNVALIDATED,
+                    "validation_issues": [],
+                    "validation_warnings": [],
+                }
+            )
         if answer.knowledge_scope != "formal":
             return answer.model_copy(
-                update={"verification_level": VerificationLevel.UNVALIDATED}
+                update={
+                    "declared_confidence": declared_confidence,
+                    "confidence": "low",
+                    "knowledge_scope": "unvalidated",
+                    "verification_level": VerificationLevel.UNVALIDATED,
+                }
             )
         if answer.knowledge_version and not _knowledge_version_matches(
             answer.knowledge_version,
             self.knowledge_version,
         ):
-            warnings.append("answer knowledge_version does not match the read ledger")
+            issues.append(
+                ValidationIssue(
+                    code=ValidationIssueCode.VERSION_MISMATCH,
+                    message="answer knowledge_version does not match the read ledger",
+                )
+            )
         if not answer.citations:
-            warnings.append("formal answers require at least one citation")
-        for citation in answer.citations:
+            issues.append(
+                ValidationIssue(
+                    code=ValidationIssueCode.MISSING_CITATION,
+                    message="formal answers require at least one citation",
+                )
+            )
+        for citation_index, citation in enumerate(answer.citations):
             page = self.pages.get(citation.page_id)
             if page is None:
-                warnings.append(f"citation page was not read: {citation.page_id}")
+                issues.append(
+                    ValidationIssue(
+                        code=ValidationIssueCode.UNREAD_PAGE,
+                        message=f"citation page was not read: {citation.page_id}",
+                        page_id=citation.page_id,
+                        citation_index=citation_index,
+                    )
+                )
                 continue
             if citation.source_id:
                 cited_sources = {
@@ -82,27 +119,57 @@ class FormalQuerySession:
                     if part.strip()
                 }
                 if not cited_sources.intersection(page.source_ids):
-                    warnings.append(f"citation source is not attached to page: {citation.page_id}")
-            if citation.locator and citation.locator.lower() not in page.markdown.lower():
-                warnings.append(f"citation locator was not found on page: {citation.page_id}")
+                    issues.append(
+                        ValidationIssue(
+                            code=ValidationIssueCode.SOURCE_MISMATCH,
+                            message=f"citation source is not attached to page: {citation.page_id}",
+                            page_id=citation.page_id,
+                            citation_index=citation_index,
+                        )
+                    )
+            if not citation.locator or citation.locator.lower() not in page.markdown.lower():
+                issues.append(
+                    ValidationIssue(
+                        code=ValidationIssueCode.LOCATOR_MISSING,
+                        message=f"citation locator is missing or was not found: {citation.page_id}",
+                        page_id=citation.page_id,
+                        citation_index=citation_index,
+                    )
+                )
             if citation.evidence_id:
                 # Existing renderer pages expose page/source references, but not
                 # claim-level evidence IDs. Rejecting unknown IDs prevents a
                 # model from manufacturing a stronger citation tier.
-                warnings.append(f"evidence_id is not available for page: {citation.page_id}")
-        if warnings:
+                issues.append(
+                    ValidationIssue(
+                        code=ValidationIssueCode.UNSUPPORTED_EVIDENCE_ID,
+                        message=f"evidence_id is not available for page: {citation.page_id}",
+                        page_id=citation.page_id,
+                        citation_index=citation_index,
+                    )
+                )
+        if issues:
             return answer.model_copy(
                 update={
+                    "declared_confidence": declared_confidence,
+                    "confidence": "low",
                     "knowledge_scope": "unvalidated",
                     "verification_level": VerificationLevel.UNVALIDATED,
                     "knowledge_version": self.knowledge_version,
-                    "validation_warnings": [*answer.validation_warnings, *warnings],
+                    "validation_issues": [*answer.validation_issues, *issues],
+                    "validation_warnings": [
+                        *answer.validation_warnings,
+                        *(issue.message for issue in issues),
+                    ],
                 }
             )
         return answer.model_copy(
             update={
+                "declared_confidence": declared_confidence,
                 "knowledge_version": self.knowledge_version,
                 "verification_level": VerificationLevel.PAGE,
+                "validation_issues": [],
+                "validation_warnings": [],
             }
         )
 
@@ -157,6 +224,34 @@ _SESSION: contextvars.ContextVar[FormalQuerySession | None] = contextvars.Contex
 _SESSION_FILE_LOCK = threading.RLock()
 
 
+class FormalAnswerGate:
+    """Repair bounded unread citations, then assign the final trust state once."""
+
+    MAX_REPAIR_PAGES = 5
+
+    def __init__(
+        self,
+        session: FormalQuerySession,
+        read_page: Callable[[str], QueryPage],
+    ):
+        self.session = session
+        self.read_page = read_page
+
+    def finalize(self, candidate: AgentAnswer) -> AgentAnswer:
+        if candidate.knowledge_scope == "formal":
+            unread: list[str] = []
+            for citation in candidate.citations:
+                if citation.page_id not in self.session.pages and citation.page_id not in unread:
+                    unread.append(citation.page_id)
+            for page_id in unread[: self.MAX_REPAIR_PAGES]:
+                try:
+                    self.read_page(page_id)
+                except (FileNotFoundError, KeyError, OSError, ValueError):
+                    # The validation pass below records a stable unread_page issue.
+                    continue
+        return self.session.validate(candidate)
+
+
 class FormalQueryService:
     """Expose only the published Wiki projection through a structured contract."""
 
@@ -191,7 +286,8 @@ class FormalQueryService:
         return current
 
     def validate_answer(self, answer: AgentAnswer) -> AgentAnswer:
-        return self.session().validate(answer)
+        session = self.session()
+        return FormalAnswerGate(session, self.read_page).finalize(answer)
 
     def _assert_version(self, session: FormalQuerySession) -> None:
         current = self.pipeline.current_knowledge_version()

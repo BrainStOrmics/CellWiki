@@ -30,13 +30,14 @@ import { ThemeToggle } from "../components/ThemeToggle";
 import { ZoomController } from "../components/ZoomController";
 import { useI18n } from "../i18n";
 import { apiUrl, isDesktopRuntime, productFetch } from "../runtime";
-import { deleteJson, getJson, postJson } from "../lib/product-api";
+import { deleteJson, getJson, postJson, ProductApiError } from "../lib/product-api";
 import { MarkdownReader } from "../features/wiki/MarkdownReader";
 import { useUiStore } from "../stores/ui-store";
 import { CommandPalette } from "../features/search/CommandPalette";
 import { ThreadList } from "../features/agent/ThreadList";
 import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
 import { AgentReviewCard, type AgentReviewSummary } from "../features/agent/AgentReviewCard";
+import { reduceAgentRunMessages } from "../features/agent/agent-run-reducer";
 import {
   MemoryWorkspace,
   ReviewsWorkspace,
@@ -72,6 +73,11 @@ import type {
 
 type ResizeSide = "left" | "right";
 type PendingInterrupt = { threadId: string; runId: string; changeSetId: string };
+type PendingTaskConfirmation = {
+  runId: string;
+  task: Record<string, unknown>;
+  reason: string;
+};
 
 const agentEventTypes: AgentEventType[] = [
   "run_status",
@@ -83,26 +89,15 @@ const agentEventTypes: AgentEventType[] = [
   "subagent_started",
   "subagent_completed",
   "progress",
+  "task_confirmation_required",
   "review_required",
   "changeset_ready",
   "verification",
   "error",
 ];
 
-const processEventTypes = new Set<AgentEventType>([
-  "tool_started",
-  "tool_completed",
-  "tool_failed",
-  "subagent_started",
-  "subagent_completed",
-  "progress",
-  "review_required",
-  "changeset_ready",
-  "verification",
-  "error",
-]);
-
 const terminalAgentStatuses = new Set<AgentRunStatus>([
+  "waiting_confirmation",
   "waiting_approval",
   "succeeded",
   "rejected",
@@ -115,24 +110,26 @@ function agentRunStorageKey(contextKey: string) {
 
 function historyMessageToChatMessage(message: AgentMessage): ChatMessage {
   const data = message.data as Partial<AgentAnswer> & { process?: AgentProcessStep[] };
+  const verificationLevel = data.verification_level ?? "unvalidated";
+  const knowledgeScope = data.knowledge_scope ?? "unvalidated";
+  const confidence = knowledgeScope === "general"
+    ? undefined
+    : verificationLevel === "unvalidated"
+      ? (data.confidence ? "low" : undefined)
+      : data.confidence;
   return {
     role: message.role === "assistant" ? "agent" : "user",
     text: message.content,
     citations: data.citations ?? [],
-    confidence: data.confidence,
+    confidence,
+    declaredConfidence: data.declared_confidence,
+    verificationLevel,
+    knowledgeScope,
+    validationIssues: data.validation_issues ?? [],
     missingEvidence: data.missing_evidence ?? [],
     process: Array.isArray(data.process) ? data.process : undefined,
     runId: message.run_id,
   };
-}
-
-function processStepFromEvent(event: AgentEvent): AgentProcessStep {
-  const phase = event.type === "tool_failed" || event.type === "error"
-    ? "failed"
-    : event.type === "tool_started" || event.type === "subagent_started"
-      ? "running"
-      : "completed";
-  return { ...event, phase };
 }
 
 const emptyPageDetail: PageDetail = { page_id: "", frontmatter: {}, markdown: "" };
@@ -190,6 +187,7 @@ export function AppShell() {
   const [retryableAgentRunId, setRetryableAgentRunId] = useState<string | null>(null);
   const [agentActivity, setAgentActivity] = useState("");
   const [pendingInterrupt, setPendingInterrupt] = useState<PendingInterrupt | null>(null);
+  const [pendingTaskConfirmation, setPendingTaskConfirmation] = useState<PendingTaskConfirmation | null>(null);
   const [apiOnline, setApiOnline] = useState(false);
   const leftWidth = useUiStore((state) => state.leftWidth);
   const rightWidth = useUiStore((state) => state.rightWidth);
@@ -308,6 +306,7 @@ export function AppShell() {
     }]);
     setSelectedText("");
     setPendingInterrupt(null);
+    setPendingTaskConfirmation(null);
     setRetryableAgentRunId(null);
     streamGenerationRef.current += 1;
     agentEventSourceRef.current?.close();
@@ -482,6 +481,43 @@ export function AppShell() {
     return { threadId, runId: run.run_id, status };
   }
 
+  async function runTypedTask(task: Record<string, unknown>) {
+    const threadId = await ensureAgentThread();
+    const run = await postJson<AgentRun>("/api/agent/runs", {
+      thread_id: threadId,
+      task,
+      project_id: "cellwiki",
+      page_id: selectedSource ? null : selectedId,
+      source_id: selectedSource?.source_id ?? null,
+      selected_text: selectedText || null,
+    });
+    processedAgentEventsRef.current.clear();
+    agentEventSequenceRef.current = 0;
+    setActiveAgentRunId(run.run_id);
+    setRetryableAgentRunId(null);
+    window.localStorage.setItem(agentRunStorageKey(contextKey), run.run_id);
+    const status = await subscribeToAgentRun(run.run_id);
+    return { threadId, runId: run.run_id, status };
+  }
+
+  async function resolveTaskConfirmation(decision: "execute" | "cancel") {
+    if (!pendingTaskConfirmation) return;
+    const runId = pendingTaskConfirmation.runId;
+    setAgentBusy(decision === "execute");
+    setActiveAgentRunId(runId);
+    window.localStorage.setItem(agentRunStorageKey(contextKey), runId);
+    try {
+      await postJson<AgentRun>(
+        `/api/agent/runs/${encodeURIComponent(runId)}/task-confirmation`,
+        { decision },
+      );
+      setPendingTaskConfirmation(null);
+      await subscribeToAgentRun(runId);
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
   async function resumeAgent(runId: string, decision: "approve" | "reject") {
     await postJson<AgentRun>(`/api/agent/runs/${encodeURIComponent(runId)}/resume`, { decision });
     setActiveAgentRunId(runId);
@@ -490,85 +526,28 @@ export function AppShell() {
   }
 
   function applyAgentEvent(event: AgentEvent, options: { replayChat?: boolean } = {}) {
-    const replayChat = options.replayChat ?? true;
+    const renderChat = options.replayChat ?? true;
     if (processedAgentEventsRef.current.has(event.event_id)) return;
     processedAgentEventsRef.current.add(event.event_id);
     agentEventSequenceRef.current = Math.max(agentEventSequenceRef.current, event.sequence);
-    if (processEventTypes.has(event.type)) {
-      if (replayChat) {
-        const step = processStepFromEvent(event);
-        setMessages((current) => {
-          let index = current.findIndex(
-            (message) => message.role === "agent" && message.runId === event.run_id && message.streaming,
-          );
-          if (index < 0) {
-            const reverseIndex = [...current].reverse().findIndex(
-              (message: ChatMessage) => message.role === "agent" && message.runId === event.run_id,
-            );
-            index = reverseIndex < 0 ? -1 : current.length - 1 - reverseIndex;
-          }
-          if (index < 0) {
-            return [...current, {
-              role: "agent",
-              text: "",
-              meta: t("chat.evidenceMeta"),
-              process: [step],
-              runId: event.run_id,
-              streaming: true,
-            }];
-          }
-          const next = [...current];
-          const message = next[index];
-          next[index] = {
-            ...message,
-            process: [...(message.process ?? []), step],
-          };
-          return next;
-        });
-      }
+    if (renderChat) {
+      setMessages((current) => reduceAgentRunMessages(current, event, {
+        evidenceMeta: t("chat.evidenceMeta"),
+        failed: t("chat.runFailed"),
+        cancelled: t("chat.runCancelled"),
+        formatConfidence: (confidence) => localizedConfidence(confidence, language),
+      }));
     }
-
-    if (event.type === "message_delta" && event.message && replayChat) {
-      setMessages((current) => {
-        const index = current.findIndex((message) => message.runId === event.run_id && message.streaming);
-        if (index < 0) {
-          return [...current, {
-            role: "agent",
-            text: event.message,
-            meta: t("chat.evidenceMeta"),
-            runId: event.run_id,
-            streaming: true,
-          }];
-        }
-        const next = [...current];
-        next[index] = { ...next[index], text: `${next[index].text}${event.message}` };
-        return next;
+    if (event.type === "error" && event.data.retryable === true) {
+      setRetryableAgentRunId(event.run_id);
+    }
+    if (event.type === "task_confirmation_required") {
+      setPendingTaskConfirmation({
+        runId: event.run_id,
+        task: (event.data.task as Record<string, unknown> | undefined) ?? {},
+        reason: String(event.data.reason ?? event.message),
       });
-    } else if (event.type === "final_response" && replayChat) {
-      const structured = event.data as Partial<AgentAnswer>;
-      const answer = structured.answer || event.message;
-      if (answer) {
-        setMessages((current) => {
-          const streaming = current.find(
-            (message) => message.role === "agent" && message.runId === event.run_id && message.streaming,
-          );
-          return [
-          ...current.filter((message) => !(message.runId === event.run_id && message.streaming)),
-          {
-            role: "agent",
-            text: answer,
-            citations: structured.citations ?? [],
-            confidence: structured.confidence,
-            missingEvidence: structured.missing_evidence ?? [],
-            process: streaming?.process,
-            meta: structured.confidence
-              ? `${t("chat.evidenceMeta")} · ${localizedConfidence(structured.confidence, language)}`
-              : t("chat.evidenceMeta"),
-            runId: event.run_id,
-          },
-          ];
-        });
-      }
+      setAgentActivity(t("chat.taskConfirmationRequired"));
     } else if (event.type === "review_required") {
       const changeSetId = findNestedString(event.data, "change_set_id");
       if (changeSetId) {
@@ -588,17 +567,14 @@ export function AppShell() {
       const changeSetId = findNestedString(event.data, "change_set_id");
       if (changeSetId) {
         setSelectedChangeSetId(changeSetId);
+        setPendingInterrupt({
+          threadId: event.thread_id,
+          runId: event.run_id,
+          changeSetId,
+        });
         void refreshWorkspace();
       }
       setAgentActivity(event.message || t("workflow.review"));
-    } else if (event.type === "error" && replayChat) {
-      if (event.data.retryable === true) setRetryableAgentRunId(event.run_id);
-      setMessages((current) => [...current, {
-        role: "agent",
-        text: event.message || t("chat.runFailed"),
-        meta: `${t("chat.runFailed")} · ${String(event.data.error_type ?? "system")}`,
-        runId: event.run_id,
-      }]);
     }
 
     if (event.type === "tool_started") setAgentActivity(t("chat.toolRunning"));
@@ -618,16 +594,20 @@ export function AppShell() {
             ? { phase: "cancelled", message: t("workflow.cancelled") }
             : current
         ));
-        setMessages((current) => [...current, {
-          role: "agent",
-          text: t("chat.runCancelled"),
-          meta: "RUNTIME · CANCELLED",
-          runId: event.run_id,
-        }]);
       }
       if (status && terminalAgentStatuses.has(status)) {
         setAgentBusy(false);
+        if (status !== "waiting_confirmation") {
+          setPendingTaskConfirmation((current) => (
+            current?.runId === event.run_id ? null : current
+          ));
+        }
         if (status !== "waiting_approval") {
+          setPendingInterrupt((current) => (
+            current?.runId === event.run_id ? null : current
+          ));
+        }
+        if (status !== "waiting_confirmation" && status !== "waiting_approval") {
           setActiveAgentRunId(null);
           window.localStorage.removeItem(agentRunStorageKey(contextKey));
         }
@@ -664,10 +644,24 @@ export function AppShell() {
           if (generation !== streamGenerationRef.current) return;
           // Read durable state before reconnecting so a dropped terminal event cannot
           // leave the desktop busy, and no already-executed side effect is replayed.
-          void getJson<AgentRun>(`/api/agent/runs/${encodeURIComponent(runId)}`)
-            .then((run) => {
-              if (terminalAgentStatuses.has(run.status)) resolve(run.status);
-              else window.setTimeout(connect, 400);
+          void Promise.all([
+            getJson<AgentRun>(`/api/agent/runs/${encodeURIComponent(runId)}`),
+            getJson<AgentEvent[]>(
+              `/api/agent/runs/${encodeURIComponent(runId)}/events?after=${agentEventSequenceRef.current}`,
+            ),
+          ])
+            .then(([run, missedEvents]) => {
+              missedEvents.forEach((event) => applyAgentEvent(event));
+              if (terminalAgentStatuses.has(run.status)) {
+                if (!missedEvents.some(
+                  (event) => event.type === "run_status" && event.data.terminal === true,
+                )) {
+                  applyAgentEvent(legacyTerminalEvent(run, agentEventSequenceRef.current + 1));
+                }
+                resolve(run.status);
+              } else {
+                window.setTimeout(connect, 400);
+              }
             })
             .catch(() => window.setTimeout(connect, 800));
         };
@@ -704,7 +698,18 @@ export function AppShell() {
       setActiveThreadId(run.thread_id);
       setContextThread(contextKey, run.thread_id);
       events.forEach((event) => applyAgentEvent(event, options));
-      if (run.status === "waiting_approval") {
+      if (
+        terminalAgentStatuses.has(run.status)
+        && !events.some(
+          (event) => event.type === "run_status" && event.data.terminal === true,
+        )
+      ) {
+        applyAgentEvent(
+          legacyTerminalEvent(run, (events.at(-1)?.sequence ?? 0) + 1),
+          options,
+        );
+      }
+      if (run.status === "waiting_confirmation" || run.status === "waiting_approval") {
         setActiveAgentRunId(runId);
         setAgentBusy(false);
       } else if (!terminalAgentStatuses.has(run.status)) {
@@ -741,6 +746,7 @@ export function AppShell() {
         setActiveAgentRunId(null);
         setRetryableAgentRunId(null);
         setPendingInterrupt(null);
+        setPendingTaskConfirmation(null);
         setMessages([initialAgentMessage]);
       }
     } catch (error) {
@@ -759,17 +765,16 @@ export function AppShell() {
     setMessages((current) => [...current, { role: "user", text }]);
     setAgentBusy(true);
     try {
-      const contextPrompt = selectedSource
-        ? `Current registered source: ${selectedSource.source_id} (${selectedSource.original_name})`
-        : `Current Wiki page: ${selectedId}`;
-      await runAgent(`${contextPrompt}\n\n${text}`);
-    } catch {
+      await runAgent(text);
+    } catch (error) {
+      const failure = agentRequestFailure(
+        error,
+        isDesktopRuntime ? t("workflow.runtimeDesktop") : t("workflow.runtimeWeb"),
+      );
       setMessages((current) => [...current, {
         role: "agent",
-        text: isDesktopRuntime
-          ? t("workflow.runtimeDesktop")
-          : t("workflow.runtimeWeb"),
-        meta: "RUNTIME OFFLINE",
+        text: failure.text,
+        meta: failure.meta,
       }]);
     } finally {
       setAgentBusy(false);
@@ -778,18 +783,16 @@ export function AppShell() {
 
   async function prepareIngestChangeSet() {
     if (!selectedSource || agentBusy) return;
-    const runId = `ingest_${Date.now().toString(36)}`;
-    setActiveRunId(runId);
     setTaskEvents([]);
     setWorkflow({ phase: "preparing", message: t("workflow.preparing") });
     setAgentBusy(true);
     setMessages((current) => [...current, { role: "user", text: `Prepare an ingest ChangeSet for ${selectedSource.original_name}.` }]);
     try {
-      const result = await runAgent(
-        `Use ingest-agent to analyze registered source ${selectedSource.source_id}. `
-        + `Call prepare_ingest_change_set with run_id ${runId}, then follow the configured approval policy through commit_change_set. `
-        + "Do not bypass ChangeSet, Approval, CentralWriter, or Verification.",
-      );
+      const result = await runTypedTask({
+        kind: "ingest",
+        source_id: selectedSource.source_id,
+      });
+      setActiveRunId(result.runId);
       const outcome = resolveIngestOutcome(result.status);
       if (outcome === "cancelled") {
         setWorkflow({ phase: "cancelled", message: t("workflow.cancelled") });
@@ -855,11 +858,12 @@ export function AppShell() {
         await resumeAgent(pendingInterrupt.runId, "reject");
         setPendingInterrupt(null);
       }
-      const result = await runAgent(
-        `Use ingest-agent to create a revision for ChangeSet ${changeSetId}. `
-        + `Call request_ingest_revision with the exact reviewer comment ${JSON.stringify(comment)}. `
-        + "Prepare the new same-source ChangeSet and stop before commit.",
-      );
+      const result = await runTypedTask({
+        kind: "ingest_revision",
+        change_set_id: changeSetId,
+        comments: [comment],
+        reviewer: "desktop-user",
+      });
       setActiveRunId(result.runId);
       if (result.status === "cancelled") {
         setWorkflow({ phase: "cancelled", message: t("workflow.cancelled") });
@@ -968,14 +972,36 @@ export function AppShell() {
     if (!findingIds.length || agentBusy) return;
     setAgentBusy(true);
     try {
-      const review = await postJson<ChangeSetReview>("/api/quality/fixes", {
+      const inspection = await runTypedTask({
+        kind: "lint",
+        action: "inspect",
+        scope: { kind: "project" },
+        limit: 20,
+        finding_ids: [],
+      });
+      const inspectionEvents = await getJson<AgentEvent[]>(
+        `/api/agent/runs/${encodeURIComponent(inspection.runId)}/events`,
+      );
+      const inspectionFinal = [...inspectionEvents].reverse().find(
+        (event) => event.type === "final_response",
+      );
+      const snapshotId = inspectionFinal?.data.snapshot_id;
+      if (typeof snapshotId !== "string") {
+        throw new Error("Lint inspection did not return a snapshot.");
+      }
+      setAgentBusy(true);
+      const proposal = await runTypedTask({
+        kind: "lint",
+        action: "propose_fix",
+        scope: { kind: "project" },
+        limit: 20,
+        snapshot_id: snapshotId,
         finding_ids: findingIds,
-        run_id: `lint_${Date.now().toString(36)}`,
-        max_iterations: 3,
       });
       await refreshWorkspace();
-      setSelectedChangeSetId(review.change_set.change_set_id);
-      setWorkflow({ phase: "awaiting_review", message: t("workflow.lintFixReady") });
+      if (proposal.status === "waiting_approval") {
+        setWorkflow({ phase: "awaiting_review", message: t("workflow.lintFixReady") });
+      }
     } catch (error) {
       setWorkflow({
         phase: "failed",
@@ -1067,7 +1093,7 @@ export function AppShell() {
   }
 
   function startNewChat() {
-    if (agentBusy || pendingInterrupt) return;
+    if (agentBusy || pendingInterrupt || pendingTaskConfirmation) return;
     agentEventSourceRef.current?.close();
     streamGenerationRef.current += 1;
     agentThreadIdRef.current = null;
@@ -1080,27 +1106,54 @@ export function AppShell() {
     agentEventSequenceRef.current = 0;
     processedAgentEventsRef.current.clear();
     setPendingInterrupt(null);
+    setPendingTaskConfirmation(null);
     setDraft("");
     setMessages([{ ...initialAgentMessage, text: t("workflow.newConversation").replace("{context}", contextTitle) }]);
   }
 
-  async function launchAssistantTask(prompt: string) {
-    if (agentBusy || pendingInterrupt) return;
+  async function launchLintTask(scopeKind: "page" | "project") {
+    if (agentBusy || pendingInterrupt || pendingTaskConfirmation) return;
     startNewChat();
     setActiveView("wiki");
+    const prompt = scopeKind === "page" && selectedId
+      ? t("chat.launchPageLint")
+      : t("chat.launchLocalLint");
     setMessages((current) => [...current, { role: "user", text: prompt }]);
     setAgentBusy(true);
     try {
-      await runAgent(prompt);
-    } catch {
+      await runTypedTask({
+        kind: "lint",
+        action: "inspect",
+        scope: scopeKind === "page" && selectedId
+          ? { kind: "page", page_id: selectedId }
+          : { kind: "project" },
+        limit: 5,
+        finding_ids: [],
+      });
+    } catch (error) {
+      const failure = agentRequestFailure(
+        error,
+        isDesktopRuntime ? t("workflow.runtimeDesktop") : t("workflow.runtimeWeb"),
+      );
       setMessages((current) => [...current, {
         role: "agent",
-        text: isDesktopRuntime ? t("workflow.runtimeDesktop") : t("workflow.runtimeWeb"),
-        meta: "RUNTIME OFFLINE",
+        text: failure.text,
+        meta: failure.meta,
       }]);
     } finally {
       setAgentBusy(false);
     }
+  }
+
+  function startResearchConversation() {
+    if (agentBusy || pendingInterrupt || pendingTaskConfirmation) return;
+    startNewChat();
+    setActiveView("wiki");
+    setMessages((current) => [...current, {
+      role: "agent",
+      text: t("chat.researchTopicRequired"),
+      meta: t("chat.queryMeta"),
+    }]);
   }
 
   function openCitation(citation: Citation) {
@@ -1112,7 +1165,7 @@ export function AppShell() {
 
   function openSearchResult(result: SearchResult) {
     if (result.type === "lint") {
-      void launchAssistantTask(t("chat.launchLocalLint"));
+      void launchLintTask("project");
       return;
     }
     if (result.source_id && result.type === "source") {
@@ -1162,9 +1215,9 @@ export function AppShell() {
             <button className={activeView === "graph" ? "rail-button active" : "rail-button"} onClick={() => setActiveView("graph")} title={t("nav.graph")} aria-label={t("nav.graph")}><Network size={19} /></button>
             <button className={activeView === "sources" ? "rail-button active" : "rail-button"} onClick={() => { setActiveView("sources"); if (sources[0] && !selectedSourceId) setSelectedSourceId(sources[0].source_id); else if (!sources[0]) fileRef.current?.click(); }} title={t("nav.sources")} aria-label={t("nav.sources")}><Database size={19} /></button>
             <button className={activeView === "reviews" ? "rail-button active" : "rail-button"} onClick={() => setActiveView("reviews")} title={t("nav.reviews")} aria-label={t("nav.reviews")}><GitBranch size={19} /></button>
-            <button className={activeView === "lint" ? "rail-button active" : "rail-button"} onClick={() => void launchAssistantTask(t("chat.launchLocalLint"))} title={t("nav.lint")} aria-label={t("nav.lint")}><ShieldAlert size={19} /></button>
+            <button className={activeView === "lint" ? "rail-button active" : "rail-button"} onClick={() => void launchLintTask("project")} title={t("nav.lint")} aria-label={t("nav.lint")}><ShieldAlert size={19} /></button>
             <button className={activeView === "memory" ? "rail-button active" : "rail-button"} onClick={() => setActiveView("memory")} title={t("nav.memory")} aria-label={t("nav.memory")}><BrainCircuit size={19} /></button>
-            <button className={activeView === "research" ? "rail-button active" : "rail-button"} onClick={() => void launchAssistantTask(t("chat.launchBroadLint"))} title={t("nav.broadLint")} aria-label={t("nav.broadLint")}><FlaskConical size={19} /></button>
+            <button className={activeView === "research" ? "rail-button active" : "rail-button"} onClick={startResearchConversation} title={t("nav.broadLint")} aria-label={t("nav.broadLint")}><FlaskConical size={19} /></button>
           </div>
           <div className="rail-bottom">
             <span className={apiOnline ? "rail-health online" : "rail-health"} title={apiOnline ? t("runtime.online") : t("runtime.offline")} />
@@ -1364,7 +1417,7 @@ export function AppShell() {
                 {activeAgentRunId && (
                   <button className="icon-button stop-run" onClick={() => void cancelActiveAgentRun()} title={t("chat.cancel")} aria-label={t("chat.cancel")}><Square size={13} /></button>
                 )}
-                <button className="icon-button" disabled={agentBusy || pendingInterrupt !== null} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
+                <button className="icon-button" disabled={agentBusy || pendingInterrupt !== null || pendingTaskConfirmation !== null} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
               </div>
             </div>
             <ThreadList
@@ -1383,6 +1436,29 @@ export function AppShell() {
               <small>{contextPath}</small>
               {selectedText && <blockquote>{selectedText}</blockquote>}
             </div>
+
+            {pendingTaskConfirmation && (
+              <div className="agent-task-confirmation">
+                <strong>{t("chat.taskConfirmationTitle")}</strong>
+                <p>{pendingTaskConfirmation.reason}</p>
+                <small>{taskConfirmationSummary(pendingTaskConfirmation.task)}</small>
+                <div>
+                  <button
+                    className="secondary"
+                    disabled={agentBusy}
+                    onClick={() => void resolveTaskConfirmation("cancel")}
+                  >
+                    {t("chat.taskCancel")}
+                  </button>
+                  <button
+                    disabled={agentBusy}
+                    onClick={() => void resolveTaskConfirmation("execute")}
+                  >
+                    {t("chat.taskExecute")}
+                  </button>
+                </div>
+              </div>
+            )}
 
             {pendingInterrupt && (
               <AgentReviewCard
@@ -1421,6 +1497,7 @@ export function AppShell() {
                   processLiveLabel={t("chat.processLive")}
                   processCompletedLabel={t("chat.processCompleted")}
                   processEmptyLabel={t("chat.processEmpty")}
+                  diagnosticsLabel={t("chat.runDetails")}
                   onCitationOpen={openCitation}
                 />
               ))}
@@ -1477,6 +1554,42 @@ function findNestedString(value: unknown, key: string): string | null {
     }
   }
   return null;
+}
+
+function taskConfirmationSummary(task: Record<string, unknown>) {
+  const kind = String(task.kind ?? "task");
+  const target = task.source_id ?? task.change_set_id ?? task.page_id;
+  return target ? `${kind} · ${String(target)}` : kind;
+}
+
+export function agentRequestFailure(error: unknown, offlineMessage: string) {
+  if (error instanceof ProductApiError) {
+    return {
+      text: error.message,
+      meta: `AGENT REQUEST FAILED · HTTP ${error.status}`,
+    };
+  }
+  return { text: offlineMessage, meta: "RUNTIME OFFLINE" };
+}
+
+function legacyTerminalEvent(run: AgentRun, sequence: number): AgentEvent {
+  return {
+    event_id: `legacy-terminal-${run.run_id}-${run.status}`,
+    run_id: run.run_id,
+    thread_id: run.thread_id,
+    sequence,
+    type: "run_status",
+    message: run.error_message ?? `Run ${run.status}.`,
+    data: {
+      status: run.status,
+      terminal: true,
+      error_type: run.error_type ?? null,
+      error_message: run.error_message ?? null,
+      retryable: run.retryable,
+      finished_at: run.finished_at ?? null,
+    },
+    created_at: run.finished_at ?? new Date().toISOString(),
+  };
 }
 
 function formatReference(reference: unknown) {

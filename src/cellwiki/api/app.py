@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import tempfile
 import threading
 import time
@@ -142,6 +143,10 @@ class AgentRunRequest(BaseModel):
 # ---- 智能体恢复请求 ----
 class AgentResumeRequest(BaseModel):
     decision: str = Field(pattern="^(approve|reject)$")  # 审批或拒绝
+
+
+class AgentTaskConfirmationRequest(BaseModel):
+    decision: str = Field(pattern="^(execute|cancel)$")
 
 
 # ===========================================================================
@@ -491,6 +496,7 @@ def create_app(
             last_keepalive = time.monotonic()
             # 终态集合：到达这些状态后关闭 SSE 连接
             terminal = {
+                AgentRunStatus.WAITING_CONFIRMATION,
                 AgentRunStatus.WAITING_APPROVAL,  # 等待审批是静默的：关闭订阅让 UI 启用审查控件
                 AgentRunStatus.SUCCEEDED,
                 AgentRunStatus.REJECTED,
@@ -537,6 +543,44 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
 
+    @app.post(
+        "/api/agent/runs/{run_id}/task-confirmation",
+        status_code=status.HTTP_202_ACCEPTED,
+    )
+    def confirm_agent_task(run_id: str, request: AgentTaskConfirmationRequest) -> dict:
+        """Resolve a typed task proposed from natural language."""
+
+        try:
+            return _agent_run_payload(
+                get_agent_runtime().confirm_task(run_id, decision=request.decision)
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="agent run not found") from None
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+
+    @app.get("/api/agent/runs/{run_id}/diagnostics")
+    def get_agent_diagnostics(run_id: str) -> dict:
+        """Return redacted run telemetry without prompts, reasoning, or credentials."""
+
+        try:
+            runtime = get_agent_runtime()
+            run = runtime.store.get_run(run_id)
+            spans = runtime.store.list_spans(run_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="agent run not found") from None
+        return {
+            "run_id": run.run_id,
+            "thread_id": run.thread_id,
+            "status": run.status.value,
+            "task_kind": run.task_kind,
+            "model": run.model_name,
+            "model_role": run.model_role,
+            "error_type": run.error_type.value if run.error_type else None,
+            "error_message": _redact_diagnostic_error(run.error_message),
+            "usage": run.usage.model_dump(mode="json"),
+            "spans": [span.model_dump(mode="json") for span in spans],
+        }
     @app.post("/api/agent/runs/{run_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
     def cancel_agent_run(run_id: str) -> dict:
         """取消正在运行的智能体"""
@@ -857,14 +901,25 @@ def _agent_run_payload(run: AgentRun) -> dict:
     payload = run.model_dump(mode="json")
     # 用户提示在队列运行恢复时保持持久化，但不是桌面控制面的 DTO 的一部分
     payload.pop("input_message", None)
+    payload["error_message"] = _redact_diagnostic_error(run.error_message)
     # 添加 UI 辅助标记
     payload["retryable"] = is_retryable_run(run)    # 是否可重试
     payload["cancellable"] = run.status in {        # 是否可取消
         AgentRunStatus.QUEUED,
         AgentRunStatus.RUNNING,
+        AgentRunStatus.WAITING_CONFIRMATION,
         AgentRunStatus.WAITING_APPROVAL,
     }
     return payload
+
+
+def _redact_diagnostic_error(message: str | None) -> str | None:
+    if message is None:
+        return None
+    redacted = re.sub(r"(?i)bearer\s+[^\s,;]+", "Bearer [REDACTED]", message)
+    if settings.openai_api_key:
+        redacted = redacted.replace(settings.openai_api_key, "[REDACTED]")
+    return redacted[:1000]
 
 
 # 默认导出

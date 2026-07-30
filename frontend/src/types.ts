@@ -149,10 +149,28 @@ export type Citation = {
 export type AgentAnswer = {
   answer: string;
   citations: Citation[];
-  confidence: string;
+  confidence: "low" | "medium" | "high";
+  declared_confidence?: "low" | "medium" | "high" | null;
   missing_evidence: string[];
-  knowledge_scope?: string;
+  verification_level?: "evidence" | "page" | "unvalidated";
+  knowledge_scope?: "formal" | "general" | "unvalidated";
   knowledge_version?: string | null;
+  validation_issues?: ValidationIssue[];
+  validation_warnings?: string[];
+};
+
+export type ValidationIssue = {
+  code:
+    | "missing_citation"
+    | "unread_page"
+    | "version_mismatch"
+    | "source_mismatch"
+    | "locator_missing"
+    | "unsupported_evidence_id";
+  message: string;
+  page_id?: string | null;
+  source_id?: string | null;
+  locator?: string | null;
 };
 
 export type AgentMessage = {
@@ -166,7 +184,7 @@ export type AgentMessage = {
   created_at: string;
 };
 
-export type AgentProcessPhase = "running" | "completed" | "failed";
+export type AgentProcessPhase = "running" | "completed" | "failed" | "cancelled";
 
 export type AgentProcessStep = {
   event_id: string;
@@ -186,7 +204,11 @@ export type ChatMessage = {
   text: string;
   meta?: string;
   citations?: Citation[];
-  confidence?: string;
+  confidence?: "low" | "medium" | "high";
+  declaredConfidence?: "low" | "medium" | "high" | null;
+  verificationLevel?: "evidence" | "page" | "unvalidated";
+  knowledgeScope?: "formal" | "general" | "unvalidated";
+  validationIssues?: ValidationIssue[];
   missingEvidence?: string[];
   process?: AgentProcessStep[];
   runId?: string;
@@ -196,6 +218,7 @@ export type ChatMessage = {
 export type AgentRunStatus =
   | "queued"
   | "running"
+  | "waiting_confirmation"
   | "waiting_approval"
   | "applying"
   | "verifying"
@@ -212,7 +235,12 @@ export type AgentRun = {
   project_id: string;
   source_id?: string | null;
   page_id?: string | null;
+  task_kind?: string;
+  task_payload?: Record<string, unknown>;
+  model_role?: string;
+  model_name?: string;
   status: AgentRunStatus;
+  finished_at?: string | null;
   retry_count: number;
   retryable: boolean;
   cancellable: boolean;
@@ -224,6 +252,11 @@ export type AgentRun = {
     output_tokens: number;
     estimated_cost_usd: number;
     tool_calls: number;
+    tool_calls_started?: number;
+    tool_calls_completed?: number;
+    tool_calls_failed?: number;
+    tool_calls_cancelled?: number;
+    ttft_ms?: number | null;
     elapsed_seconds: number;
   };
 };
@@ -238,6 +271,7 @@ export type AgentEventType =
   | "subagent_started"
   | "subagent_completed"
   | "progress"
+  | "task_confirmation_required"
   | "review_required"
   | "changeset_ready"
   | "verification"
@@ -253,6 +287,34 @@ export type AgentEvent = {
   progress?: number | null;
   data: Record<string, unknown>;
   created_at: string;
+};
+
+export type AgentSpan = {
+  span_id: string;
+  run_id: string;
+  kind: string;
+  name: string;
+  status: string;
+  started_at: string;
+  finished_at?: string | null;
+  duration_ms?: number | null;
+  ttft_ms?: number | null;
+  input_tokens: number;
+  output_tokens: number;
+  data: Record<string, unknown>;
+};
+
+export type AgentDiagnostics = {
+  run_id: string;
+  thread_id: string;
+  status: AgentRunStatus;
+  task_kind: string;
+  model: string;
+  model_role: string;
+  error_type?: string | null;
+  error_message?: string | null;
+  usage: AgentRun["usage"];
+  spans: AgentSpan[];
 };
 
 export type AppSettings = {

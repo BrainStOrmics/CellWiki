@@ -44,7 +44,11 @@ export function AgentProcessTrace({
         {steps.length === 0 && <p className="agent-process-empty">{emptyLabel}</p>}
         {steps.map((step) => (
           <div key={step.event_id} className={`agent-process-step ${step.phase}`}>
-            {step.phase === "failed" ? <CircleAlert size={12} /> : step.phase === "completed" ? <CircleCheck size={12} /> : <LoaderCircle size={12} className="spin" />}
+            {step.phase === "failed" || step.phase === "cancelled"
+              ? <CircleAlert size={12} />
+              : step.phase === "completed"
+                ? <CircleCheck size={12} />
+                : <LoaderCircle size={12} className="spin" />}
             <span>{step.message || step.type.replaceAll("_", " ")}</span>
             {step.progress !== null && step.progress !== undefined && <small>{step.progress}%</small>}
           </div>

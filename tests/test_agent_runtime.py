@@ -45,9 +45,11 @@ class ScriptedAdapter:
 
     def __init__(self, scripts: list[list[RuntimeSignal] | Exception]):
         self.scripts = scripts
-        self.calls: list[str | Command | None] = []
+        self.calls: list[object] = []
+        self.thread_ids: list[str] = []
 
     def execute(self, *, thread_id: str, message, context) -> Iterable[RuntimeSignal]:
+        self.thread_ids.append(thread_id)
         self.calls.append(message)
         script = self.scripts.pop(0)
         if isinstance(script, Exception):
@@ -87,6 +89,91 @@ def _wait_for_status(
             return run
         time.sleep(0.01)
     raise AssertionError(f"run did not reach {statuses}: {manager.store.get_run(run_id).status}")
+
+
+def test_runtime_redacts_tool_payloads_and_records_accurate_spans(tmp_path: Path):
+    adapter = ScriptedAdapter([[
+        RuntimeSignal(
+            type=AgentEventType.TOOL_STARTED,
+            message="raw start",
+            data={
+                "tool_name": "read_wiki_page",
+                "tool_call_id": "call_1",
+                "namespace": ["private-node"],
+                "metadata": {"authorization": "Bearer secret"},
+                "tool_call": {
+                    "id": "call_1",
+                    "name": "read_wiki_page",
+                    "args": {"page_id": "t_cell", "api_key": "secret"},
+                },
+            },
+            model_call_id="model_1",
+            input_tokens=12,
+        ),
+        RuntimeSignal(
+            type=AgentEventType.TOOL_COMPLETED,
+            message='{"raw":"full page text"}',
+            data={"tool_name": "read_wiki_page", "tool_call_id": "call_1"},
+            tool_calls=1,
+        ),
+        RuntimeSignal(
+            type=AgentEventType.FINAL_RESPONSE,
+            message="Done",
+            data={"answer": "Done", "knowledge_scope": "general"},
+            model_call_id="model_2",
+            output_tokens=3,
+        ),
+    ]])
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        run = manager.start(
+            thread_id="thread_observation",
+            message="inspect",
+            context=_context("thread_observation"),
+        )
+        completed = _wait_for_status(manager, run.run_id, {AgentRunStatus.SUCCEEDED})
+        tool_events = [
+            event
+            for event in manager.store.list_events(run.run_id)
+            if event.type in {AgentEventType.TOOL_STARTED, AgentEventType.TOOL_COMPLETED}
+        ]
+        serialized = str([event.model_dump(mode="json") for event in tool_events])
+        assert "Bearer secret" not in serialized
+        assert "full page text" not in serialized
+        assert "tool_call" not in tool_events[0].data
+        assert tool_events[0].data["label_args"] == {"page_id": "t_cell"}
+        assert completed.usage.tool_calls_started == 1
+        assert completed.usage.tool_calls_completed == 1
+        spans = manager.store.list_spans(run.run_id)
+        assert {span.kind for span in spans} == {"router", "model", "tool"}
+        assert next(span for span in spans if span.kind == "tool").status == "completed"
+    finally:
+        manager.close()
+
+
+def test_new_runs_use_isolated_checkpoints(tmp_path: Path):
+    adapter = ScriptedAdapter([
+        [RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="first")],
+        [RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="second")],
+    ])
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        first = manager.start(
+            thread_id="thread_isolated",
+            message="first",
+            context=_context("thread_isolated"),
+        )
+        _wait_for_status(manager, first.run_id, {AgentRunStatus.SUCCEEDED})
+        second = manager.start(
+            thread_id="thread_isolated",
+            message="second",
+            context=_context("thread_isolated"),
+        )
+        _wait_for_status(manager, second.run_id, {AgentRunStatus.SUCCEEDED})
+
+        assert adapter.thread_ids == [first.run_id, second.run_id]
+    finally:
+        manager.close()
 
 
 def test_agent_runtime_streams_stable_events_and_persists_usage(tmp_path: Path):
@@ -153,9 +240,9 @@ def test_enabled_memory_is_bounded_context_and_records_only_observable_outcome(t
         )
         _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
 
-        assert isinstance(adapter.calls[0], str)
-        assert "<governed_memory_context>" in adapter.calls[0]
-        assert "not scientific evidence" in adapter.calls[0]
+        assert isinstance(adapter.calls[0], list)
+        assert "<governed_memory_context>" in adapter.calls[0][-1]["content"]
+        assert "not scientific evidence" in adapter.calls[0][-1]["content"]
         events = manager.store.list_events(started.run_id)
         assert AgentEventType.MEMORY_RECALLED in {event.type for event in events}
         assert AgentEventType.MEMORY_CANDIDATE in {event.type for event in events}
@@ -359,7 +446,8 @@ def test_retry_resumes_checkpoint_without_replaying_input(tmp_path: Path):
         manager.retry(started.run_id)
         completed = _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
         assert completed.retry_count == 1
-        assert adapter.calls == ["work", None]
+        assert adapter.calls[0][-1] == {"role": "user", "content": "work"}
+        assert adapter.calls[1] is None
     finally:
         manager.close()
 
@@ -411,10 +499,12 @@ def test_top_level_json_message_becomes_validated_final_response():
         "answer": "Grounded answer",
         "citations": [{"page_id": "t_cell", "source_id": None, "locator": None, "evidence_id": None}],
         "confidence": "high",
+        "declared_confidence": None,
         "missing_evidence": [],
         "knowledge_scope": "formal",
         "knowledge_version": None,
         "verification_level": "unvalidated",
+        "validation_issues": [],
         "validation_warnings": [],
     }
 

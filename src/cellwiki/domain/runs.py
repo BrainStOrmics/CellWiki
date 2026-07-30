@@ -25,6 +25,7 @@ from cellwiki.domain.contracts import ContractModel
 class AgentRunStatus(str, Enum):
     QUEUED = "queued"                     # 已排队，等待执行
     RUNNING = "running"                   # 运行中
+    WAITING_CONFIRMATION = "waiting_confirmation"  # 等待用户确认结构化任务
     WAITING_APPROVAL = "waiting_approval"  # 等待人工审批
     APPLYING = "applying"                 # 正在应用变更
     VERIFYING = "verifying"               # 正在验证结果
@@ -63,6 +64,7 @@ class AgentEventType(str, Enum):
     SUBAGENT_STARTED = "subagent_started"   # 子智能体启动
     SUBAGENT_COMPLETED = "subagent_completed"  # 子智能体完成
     PROGRESS = "progress"                   # 进度更新
+    TASK_CONFIRMATION_REQUIRED = "task_confirmation_required"  # 需要确认动作型任务
     REVIEW_REQUIRED = "review_required"     # 需要人工审查
     CHANGESET_READY = "changeset_ready"     # ChangeSet 已就绪
     VERIFICATION = "verification"           # 验证结果
@@ -87,6 +89,11 @@ class RunUsage(ContractModel):
     output_tokens: int = Field(default=0, ge=0)              # 输出 token 数
     estimated_cost_usd: float = Field(default=0, ge=0)       # 估算成本（美元）
     tool_calls: int = Field(default=0, ge=0)                 # 工具调用次数
+    tool_calls_started: int = Field(default=0, ge=0)
+    tool_calls_completed: int = Field(default=0, ge=0)
+    tool_calls_failed: int = Field(default=0, ge=0)
+    tool_calls_cancelled: int = Field(default=0, ge=0)
+    ttft_ms: float | None = Field(default=None, ge=0)
     elapsed_seconds: float = Field(default=0, ge=0)          # 已用时间（秒）
 
 
@@ -103,6 +110,7 @@ class AgentRun(ContractModel):
     input_message: str = ""                                   # 用户输入消息
     task_kind: str = "conversation"                           # 结构化任务类型
     task_payload: dict[str, Any] = Field(default_factory=dict) # 结构化任务参数
+    checkpoint_id: str | None = None                           # 新运行按 run 隔离；旧记录回退 thread
     model_role: str = "coordinator"                           # 模型角色
     model_name: str = ""                                      # 模型名称
     status: AgentRunStatus = AgentRunStatus.QUEUED            # 当前状态
@@ -111,8 +119,21 @@ class AgentRun(ContractModel):
     retry_count: int = Field(default=0, ge=0)                 # 重试次数
     error_type: AgentErrorType | None = None                  # 错误类型
     error_message: str | None = None                          # 错误消息
+    finished_at: datetime | None = None                       # 终态持久化时间
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))  # 创建时间
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))  # 更新时间
+
+
+class AgentRunOutcome(ContractModel):
+    """Self-contained terminal outcome persisted atomically with the run row."""
+
+    status: AgentRunStatus
+    message: str
+    error_type: AgentErrorType | None = None
+    error_message: str | None = None
+    retryable: bool = False
+    progress: int | None = Field(default=None, ge=0, le=100)
+    finished_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 # ---- 智能体事件 ----
@@ -129,3 +150,20 @@ class AgentEvent(ContractModel):
     progress: int | None = Field(default=None, ge=0, le=100)   # 进度百分比
     data: dict[str, Any] = Field(default_factory=dict)          # 附加数据
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))  # 创建时间
+
+
+class AgentSpan(ContractModel):
+    """Redacted timing record for one router, model, or tool operation."""
+
+    span_id: str
+    run_id: str
+    kind: str
+    name: str
+    status: str
+    started_at: datetime
+    finished_at: datetime | None = None
+    duration_ms: float | None = Field(default=None, ge=0)
+    ttft_ms: float | None = Field(default=None, ge=0)
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    data: dict[str, Any] = Field(default_factory=dict)

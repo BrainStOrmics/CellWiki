@@ -22,7 +22,7 @@ from cellwiki.domain.contracts import (
     RiskLevel,
     WikiAgentContext,
 )
-from cellwiki.domain.runs import AgentRunStatus
+from cellwiki.domain.runs import AgentEventType, AgentRunStatus
 from cellwiki.domain.tasks import LintTask
 from cellwiki.services.agent_runtime import AgentRuntimeManager
 from cellwiki.services.central_writer import CentralWriter
@@ -181,7 +181,73 @@ def test_formal_query_validator_rejects_unread_or_wrong_version_citations(tmp_pa
     assert valid.knowledge_scope == "formal"
     assert invalid.verification_level.value == "unvalidated"
     assert invalid.knowledge_scope == "unvalidated"
+    assert invalid.confidence == "low"
+    assert invalid.declared_confidence == "medium"
+    assert {issue.code for issue in invalid.validation_issues} == {
+        "unread_page",
+        "version_mismatch",
+    }
     assert invalid.validation_warnings
+
+
+def test_formal_answer_gate_repairs_unread_citations_once(tmp_path: Path):
+    page = tmp_path / "wiki" / "cell_types" / "t_cell.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("---\ndisplay_name: T cell\n---\n\nCD3D marker", encoding="utf-8")
+    service = FormalQueryService(tmp_path)
+
+    with bind_agent_run("query-auto-read"):
+        validated = service.validate_answer(
+            AgentAnswer(
+                answer="CD3D is listed.",
+                citations=[Citation(page_id="t_cell", locator="CD3D")],
+                confidence="high",
+            )
+        )
+
+    assert validated.verification_level.value == "page"
+    assert validated.knowledge_scope == "formal"
+    assert validated.confidence == "high"
+    assert validated.declared_confidence == "high"
+    assert validated.validation_issues == []
+
+
+def test_formal_answer_gate_rejects_a_citation_without_locator(tmp_path: Path):
+    page = tmp_path / "wiki" / "cell_types" / "t_cell.md"
+    page.parent.mkdir(parents=True)
+    page.write_text("---\ndisplay_name: T cell\n---\n\nCD3D marker", encoding="utf-8")
+    service = FormalQueryService(tmp_path)
+
+    with bind_agent_run("query-missing-locator"):
+        validated = service.validate_answer(
+            AgentAnswer(
+                answer="CD3D is listed.",
+                citations=[Citation(page_id="t_cell")],
+                confidence="high",
+            )
+        )
+
+    assert validated.verification_level.value == "unvalidated"
+    assert validated.confidence == "low"
+    assert {issue.code for issue in validated.validation_issues} == {"locator_missing"}
+
+
+def test_general_answer_does_not_require_formal_citations(tmp_path: Path):
+    service = FormalQueryService(tmp_path)
+
+    with bind_agent_run("query-general"):
+        validated = service.validate_answer(
+            AgentAnswer(
+                answer="请说明要检查当前页面还是整个知识库。",
+                citations=[],
+                confidence="medium",
+                knowledge_scope="general",
+            )
+        )
+
+    assert validated.knowledge_scope == "general"
+    assert validated.confidence == "medium"
+    assert validated.validation_issues == []
 
 
 def test_formal_query_validator_reloads_specialist_read_ledger(tmp_path: Path):
@@ -276,6 +342,133 @@ def test_typed_lint_task_creates_durable_run_without_provider_call(tmp_path: Pat
 
     assert payload["task_kind"] == "lint"
     assert payload["status"] == "succeeded"
+    events = client.get(f"/api/agent/runs/{run_id}/events").json()
+    final = next(event for event in events if event["type"] == "final_response")
+    assert "snapshot" not in final["data"]
+    assert "report" not in final["data"]
+    assert final["data"]["summary"]["issue_count"] >= 0
+    assert final["data"]["knowledge_scope"] == "general"
+    assert "Local knowledge Lint completed." in final["message"]
+    diagnostics = client.get(f"/api/agent/runs/{run_id}/diagnostics")
+    assert diagnostics.status_code == 200
+    diagnostics_payload = diagnostics.json()
+    assert diagnostics_payload["model_role"] == "typed-task-adapter"
+    assert {span["kind"] for span in diagnostics_payload["spans"]} == {
+        "router",
+        "tool",
+    }
+    tool_span = next(
+        span for span in diagnostics_payload["spans"] if span["kind"] == "tool"
+    )
+    assert tool_span["data"]["artifact_ref"].endswith("lint-report.json")
+    assert tool_span["data"]["artifact_sha256"]
+    assert tool_span["data"]["artifact_bytes"] > 0
+    assert "input_message" not in diagnostics_payload
+
+
+def test_natural_language_lint_routes_to_typed_task_without_langgraph(tmp_path: Path):
+    class NoConversationAdapter:
+        def execute(self, *, thread_id, message, context):
+            raise AssertionError("high-confidence Lint intent must bypass LangGraph")
+
+        def close(self) -> None:
+            return None
+
+        def delete_thread(self, thread_id: str) -> None:
+            return None
+
+    manager = AgentRuntimeManager(tmp_path, adapter=NoConversationAdapter())
+    try:
+        run = manager.start(
+            thread_id="thread_natural_lint",
+            message="请检查当前页面的质量问题",
+            context=WikiAgentContext(
+                project_id="cellwiki",
+                page_id="t_cell",
+                thread_id="thread_natural_lint",
+            ),
+        )
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            current = manager.store.get_run(run.run_id)
+            if current.status in {AgentRunStatus.SUCCEEDED, AgentRunStatus.FAILED}:
+                break
+            time.sleep(0.01)
+
+        assert current.status is AgentRunStatus.SUCCEEDED
+        assert current.task_kind == "lint"
+        assert current.task_payload["scope"] == {"kind": "page", "page_id": "t_cell"}
+        assert current.usage.model_calls == 0
+    finally:
+        manager.close()
+
+
+def test_natural_language_ingest_waits_for_task_confirmation(tmp_path: Path):
+    class NoConversationAdapter:
+        def execute(self, *, thread_id, message, context):
+            raise AssertionError("high-confidence Ingest intent must bypass LangGraph")
+
+        def close(self) -> None:
+            return None
+
+        def delete_thread(self, thread_id: str) -> None:
+            return None
+
+    manager = AgentRuntimeManager(tmp_path, adapter=NoConversationAdapter())
+    try:
+        run = manager.start(
+            thread_id="thread_natural_ingest",
+            message="请开始摄取当前来源",
+            context=WikiAgentContext(
+                project_id="cellwiki",
+                source_id="source_demo",
+                thread_id="thread_natural_ingest",
+            ),
+        )
+
+        assert run.status is AgentRunStatus.WAITING_CONFIRMATION
+        assert run.task_kind == "ingest"
+        events = manager.store.list_events(run.run_id)
+        assert [event.type for event in events[-2:]] == [
+            AgentEventType.TASK_CONFIRMATION_REQUIRED,
+            AgentEventType.RUN_STATUS,
+        ]
+
+        manager.confirm_task(run.run_id, decision="cancel")
+        assert manager.store.get_run(run.run_id).status is AgentRunStatus.CANCELLED
+    finally:
+        manager.close()
+
+
+def test_natural_language_lint_fix_requires_task_confirmation(tmp_path: Path):
+    class NoConversationAdapter:
+        def execute(self, *, thread_id, message, context):
+            raise AssertionError("complete fix parameters must bypass LangGraph")
+
+        def close(self) -> None:
+            return None
+
+        def delete_thread(self, thread_id: str) -> None:
+            return None
+
+    manager = AgentRuntimeManager(tmp_path, adapter=NoConversationAdapter())
+    try:
+        run = manager.start(
+            thread_id="thread_natural_fix",
+            message="请执行修复 finding_missing_title，使用 snapshot_abc123",
+            context=WikiAgentContext(
+                project_id="cellwiki",
+                thread_id="thread_natural_fix",
+            ),
+        )
+
+        assert run.status is AgentRunStatus.WAITING_CONFIRMATION
+        assert run.task_kind == "lint"
+        assert run.task_payload["action"] == "propose_fix"
+        assert run.task_payload["finding_ids"] == ["finding_missing_title"]
+        assert run.task_payload["snapshot_id"] == "snapshot_abc123"
+    finally:
+        manager.close()
 
 
 def test_typed_task_approval_resumes_the_existing_changeset_without_langgraph(
@@ -320,7 +513,11 @@ def test_typed_task_approval_resumes_the_existing_changeset_without_langgraph(
     try:
         run = manager.start_task(
             thread_id="thread_typed_resume",
-            task=LintTask(action="propose_fix", finding_ids=["lint_demo"]),
+            task=LintTask(
+                action="propose_fix",
+                snapshot_id="snapshot_demo",
+                finding_ids=["lint_demo"],
+            ),
             context=WikiAgentContext(
                 project_id="cellwiki",
                 thread_id="thread_typed_resume",

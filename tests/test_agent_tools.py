@@ -74,39 +74,19 @@ def test_rebase_tool_returns_an_explicit_current_or_conflict_result(tmp_path: Pa
     assert payload["status"] == "current"
 
 
-def test_subagents_never_receive_commit_tool(tmp_path: Path):
+def test_conversation_subagent_is_read_only(tmp_path: Path):
     read_tools = build_read_tools(tmp_path)
     specs = build_subagent_specs(
         "openai:test-model",
         read_tools,
-        build_ingest_tools(tmp_path),
-        lint_tools=build_lint_tools(tmp_path),
     )
 
-    assert {spec["name"] for spec in specs} == {
-        "query-agent",
-        "ingest-agent",
-        "lint-agent",
-    }
-    for spec in specs:
-        assert "commit_change_set" not in {tool.name for tool in spec["tools"]}
-
-
-def test_lint_agent_cannot_bypass_snapshot_bound_project_status(tmp_path: Path):
-    specs = build_subagent_specs(
-        "openai:test-model",
-        build_read_tools(tmp_path),
-        build_ingest_tools(tmp_path),
-        lint_tools=build_lint_tools(tmp_path),
-    )
-
-    lint_spec = next(spec for spec in specs if spec["name"] == "lint-agent")
-    lint_tool_names = {tool.name for tool in lint_spec["tools"]}
-
-    assert "run_broad_lint" in lint_tool_names
-    assert "get_project_status" not in lint_tool_names
-    assert "inspect_knowledge_quality" not in lint_tool_names
-    assert "read_wiki_page" not in lint_tool_names
+    assert {spec["name"] for spec in specs} == {"query-agent"}
+    tool_names = {tool.name for tool in specs[0]["tools"]}
+    assert "list_change_sets" in tool_names
+    assert "commit_change_set" not in tool_names
+    assert "prepare_ingest_change_set" not in tool_names
+    assert "propose_lint_fix" not in tool_names
 
 
 def test_lint_tools_return_the_report_with_a_whole_project_snapshot(tmp_path: Path):
@@ -135,13 +115,14 @@ def test_lint_tools_report_pipeline_busy_without_failing_the_agent_run(tmp_path:
     assert payload["active_task"]["run_id"] == "run_writer"
 
 
-def test_coordinator_serializes_ingest_and_lint_delegation():
-    assert "delegate exactly one specialist task" in SYSTEM_PROMPT
+def test_coordinator_is_explicitly_read_only():
+    assert "read-only CellWiki coordinator" in SYSTEM_PROMPT
+    assert "deterministic typed tasks" in SYSTEM_PROMPT
     assert "never launch parallel tasks" in SYSTEM_PROMPT
-    assert "Reject wins; no publish" in SYSTEM_PROMPT
+    assert "Do not claim that an action ran" in SYSTEM_PROMPT
 
 
-def test_default_harness_routes_external_research_through_broad_lint(
+def test_default_harness_exposes_only_read_only_conversation_capabilities(
     tmp_path: Path,
     monkeypatch,
 ):
@@ -161,11 +142,11 @@ def test_default_harness_routes_external_research_through_broad_lint(
 
     specs = captured["subagents"]
     names = {spec["name"] for spec in specs}
-    assert names == {"query-agent", "ingest-agent", "lint-agent"}
-    lint_spec = next(spec for spec in specs if spec["name"] == "lint-agent")
-    lint_tool_names = {tool.name for tool in lint_spec["tools"]}
-    assert "run_broad_lint" in lint_tool_names
-    assert "research_external_sources" not in lint_tool_names
+    assert names == {"query-agent"}
+    top_level_tool_names = {tool.name for tool in captured["tools"]}
+    assert "submit_agent_answer" in top_level_tool_names
+    assert "commit_change_set" not in top_level_tool_names
+    assert "rebase_change_set" not in top_level_tool_names
 
 
 def test_tool_boundary_rejects_generic_filesystem_calls():
@@ -348,8 +329,6 @@ def test_configured_agent_hides_generic_harness_tools_from_first_request(
         )
 
     assert captured["tool_names"] == {
-        "commit_change_set",
-        "rebase_change_set",
         "submit_agent_answer",
         "task",
     }

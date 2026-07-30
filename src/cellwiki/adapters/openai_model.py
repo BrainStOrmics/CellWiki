@@ -28,11 +28,20 @@ def provider_request_options(
     base_url: str,
     model: str,
     *,
-    purpose: Literal["agent", "structured"] = "agent",
+    purpose: Literal[
+        "agent",
+        "structured",
+        "coordinator",
+        "router",
+        "page_query",
+        "structured_extraction",
+    ] = "agent",
 ) -> dict | None:
     """Return provider extensions only for the request purpose that needs them."""
 
-    if purpose != "structured":
+    structured_purpose = purpose in {"structured", "structured_extraction"}
+    low_reasoning_purpose = purpose in {"router", "page_query"}
+    if not structured_purpose and not low_reasoning_purpose:
         return None
 
     normalized_url = base_url.lower()
@@ -45,6 +54,8 @@ def provider_request_options(
     if "maas.aliyuncs.com/compatible-mode" in normalized_url and normalized_model.startswith(
         "qwen3"
     ):
+        if low_reasoning_purpose:
+            return {"thinking_budget": 512}
         # Current Qwen thinking-only models reject enable_thinking=false. A bounded
         # reasoning budget leaves enough output capacity for the extraction JSON.
         return {"thinking_budget": 1000}
@@ -57,7 +68,14 @@ def build_openai_chat_model(
     timeout_seconds: float | None = None,
     max_retries: int = 1,
     disable_streaming: bool | Literal["tool_calling"] = "tool_calling",
-    purpose: Literal["agent", "structured"] = "agent",
+    purpose: Literal[
+        "agent",
+        "structured",
+        "coordinator",
+        "router",
+        "page_query",
+        "structured_extraction",
+    ] = "agent",
 ) -> ChatOpenAI:
     """Build one LangChain chat model for either supported OpenAI wire protocol.
 

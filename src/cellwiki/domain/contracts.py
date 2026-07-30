@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -343,14 +343,35 @@ class VerificationLevel(str, Enum):
     UNVALIDATED = "unvalidated"
 
 
+class ValidationIssueCode(str, Enum):
+    """Stable reasons why a formal answer could not reach its claimed trust level."""
+
+    MISSING_CITATION = "missing_citation"
+    UNREAD_PAGE = "unread_page"
+    VERSION_MISMATCH = "version_mismatch"
+    SOURCE_MISMATCH = "source_mismatch"
+    LOCATOR_MISSING = "locator_missing"
+    UNSUPPORTED_EVIDENCE_ID = "unsupported_evidence_id"
+
+
+class ValidationIssue(ContractModel):
+    code: ValidationIssueCode
+    message: str
+    page_id: str | None = None
+    citation_index: int | None = Field(default=None, ge=0)
+
+
 # ---- 智能体回答 ----
 # 智能体对用户问题的结构化回答，包含引用、置信度和缺失证据信息
 class AgentAnswer(ContractModel):
     answer: str                                  # 回答文本
     citations: list[Citation] = Field(default_factory=list)  # 引用列表
-    confidence: str = "medium"                   # 回答置信度
+    confidence: Literal["low", "medium", "high"] = "medium"  # 系统最终置信度
+    declared_confidence: Literal["low", "medium", "high"] | None = None
     missing_evidence: list[str] = Field(default_factory=list)  # 缺失的证据
-    knowledge_scope: str = "formal"
+    knowledge_scope: Literal["formal", "general", "unvalidated"] = "formal"
     knowledge_version: str | None = None
     verification_level: VerificationLevel = VerificationLevel.UNVALIDATED
+    validation_issues: list[ValidationIssue] = Field(default_factory=list)
+    # Kept for old persisted messages and callers; new code should prefer validation_issues.
     validation_warnings: list[str] = Field(default_factory=list)

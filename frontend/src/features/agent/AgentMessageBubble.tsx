@@ -1,6 +1,7 @@
 import { BookOpenCheck, Bot } from "lucide-react";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { AgentProcessTrace } from "./AgentProcessTrace";
+import { AgentRunDiagnostics } from "./AgentRunDiagnostics";
 import type { ChatMessage, Citation } from "../../types";
 
 type AgentMessageBubbleProps = {
@@ -12,6 +13,7 @@ type AgentMessageBubbleProps = {
   processLiveLabel: string;
   processCompletedLabel: string;
   processEmptyLabel: string;
+  diagnosticsLabel: string;
   onCitationOpen: (citation: Citation) => void;
 };
 
@@ -25,6 +27,7 @@ export function AgentMessageBubble({
   processLiveLabel,
   processCompletedLabel,
   processEmptyLabel,
+  diagnosticsLabel,
   onCitationOpen,
 }: AgentMessageBubbleProps) {
   const isAgent = message.role === "agent";
@@ -67,7 +70,18 @@ export function AgentMessageBubble({
           {message.missingEvidence.map((gap, gapIndex) => <span key={`${gap}-${gapIndex}`}>{gap}</span>)}
         </div>
       )}
+      {message.validationIssues && message.validationIssues.length > 0 && (
+        <div className="message-evidence-gap">
+          <b>{missingEvidenceLabel}</b>
+          {message.validationIssues.map((issue, issueIndex) => (
+            <span key={`${issue.code}-${issueIndex}`}>{issue.message}</span>
+          ))}
+        </div>
+      )}
       {message.meta && <small className="message-meta">{message.meta}</small>}
+      {isAgent && message.runId && !message.streaming && (
+        <AgentRunDiagnostics runId={message.runId} label={diagnosticsLabel} />
+      )}
     </div>
   );
 }

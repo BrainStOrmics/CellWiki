@@ -6,8 +6,18 @@ from pathlib import Path
 
 import pytest
 
-from cellwiki.domain.runs import AgentEventType, AgentRun, AgentRunStatus
-from cellwiki.services.runtime_store import InvalidRunTransitionError, RuntimeStore
+from cellwiki.domain.runs import (
+    AgentErrorType,
+    AgentEventType,
+    AgentRun,
+    AgentRunOutcome,
+    AgentRunStatus,
+)
+from cellwiki.services.runtime_store import (
+    InvalidRunTransitionError,
+    RuntimeStore,
+    TerminalRunError,
+)
 
 
 def test_runtime_store_persists_runs_and_orders_events_across_instances(tmp_path: Path):
@@ -31,6 +41,45 @@ def test_runtime_store_persists_runs_and_orders_events_across_instances(tmp_path
     assert second.list_runs(thread_id="thread_one") == [restored]
 
 
+def test_history_projection_settles_running_steps_from_terminal_status(tmp_path: Path):
+    store = RuntimeStore(tmp_path)
+    run = AgentRun(
+        run_id="run_settled_history",
+        thread_id="thread_settled_history",
+        input_message="inspect",
+    )
+    store.create_run(run)
+    store.transition(run.run_id, AgentRunStatus.RUNNING)
+    store.append_event(
+        run.run_id,
+        AgentEventType.TOOL_STARTED,
+        message="Reading page.",
+        data={"tool_name": "read_wiki_page"},
+    )
+    store.append_message(
+        thread_id=run.thread_id,
+        run_id=run.run_id,
+        role="assistant",
+        content="Provider timed out.",
+    )
+    store.finalize_run(
+        run.run_id,
+        AgentRunOutcome(
+            status=AgentRunStatus.FAILED,
+            message="Run failed.",
+            error_type=AgentErrorType.TIMEOUT,
+            error_message="Provider timed out.",
+        ),
+    )
+
+    assistant = next(
+        message
+        for message in store.list_messages(run.thread_id)
+        if message["role"] == "assistant"
+    )
+    assert assistant["data"]["process"][0]["phase"] == "failed"
+
+
 def test_runtime_store_rejects_invalid_state_transition(tmp_path: Path):
     store = RuntimeStore(tmp_path)
     store.create_run(AgentRun(run_id="run_terminal", thread_id="thread_one"))
@@ -39,6 +88,45 @@ def test_runtime_store_rejects_invalid_state_transition(tmp_path: Path):
 
     with pytest.raises(InvalidRunTransitionError):
         store.transition("run_terminal", AgentRunStatus.RUNNING)
+
+
+def test_runtime_store_finalizes_failure_atomically_and_only_once(tmp_path: Path):
+    store = RuntimeStore(tmp_path)
+    store.create_run(AgentRun(run_id="run_failed", thread_id="thread_one"))
+    store.transition("run_failed", AgentRunStatus.RUNNING)
+
+    outcome = AgentRunOutcome(
+        status=AgentRunStatus.FAILED,
+        message="Run failed.",
+        error_type=AgentErrorType.TIMEOUT,
+        error_message="provider timed out",
+        retryable=True,
+    )
+    first = store.finalize_run("run_failed", outcome)
+    second = store.finalize_run("run_failed", outcome)
+    events = store.list_events("run_failed")
+
+    assert first == second
+    assert first.finished_at is not None
+    assert [event.type for event in events[-2:]] == [
+        AgentEventType.ERROR,
+        AgentEventType.RUN_STATUS,
+    ]
+    assert events[-1].data == {
+        "status": "failed",
+        "terminal": True,
+        "error_type": "timeout",
+        "error_message": "provider timed out",
+        "retryable": True,
+        "finished_at": first.finished_at.isoformat(),
+    }
+    assert sum(
+        event.type == AgentEventType.RUN_STATUS and event.data.get("terminal") is True
+        for event in events
+    ) == 1
+
+    with pytest.raises(TerminalRunError):
+        store.append_event("run_failed", AgentEventType.PROGRESS, message="too late")
 
 
 def test_runtime_store_persists_thread_messages_and_deletes_the_whole_thread(tmp_path: Path):

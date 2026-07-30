@@ -28,17 +28,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from cellwiki.adapters.openai_model import build_openai_chat_model
 from cellwiki.config import Settings, settings
-from cellwiki.domain.contracts import ApprovalPolicy, WikiAgentContext
+from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.agent.tools import (
-    build_commit_tool,
     build_final_answer_tool,
-    build_ingest_tools,
-    build_lint_tools,
     build_memory_tools,
     build_read_tools,
-    build_rebase_tool,
 )
-from cellwiki.services.pipeline import KnowledgePipelineHarness
 
 
 # ---------------------------------------------------------------------------
@@ -47,23 +42,18 @@ from cellwiki.services.pipeline import KnowledgePipelineHarness
 # 任何知识变更必须经过 commit_change_set 确认；
 # 外部研究结果必须经过注册→导入→ChangeSet→人工审批的完整流程。
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are the CellWiki coordinator for a scientific knowledge base.
+SYSTEM_PROMPT = """You are the read-only CellWiki coordinator for a scientific knowledge base.
 
-Never claim a formal knowledge change succeeded until
-commit_change_set returns a committed result. Every extraction or curation
-change must follow the configured project approval policy; auto-approved changes
-still require a ChangeSet and CentralWriter. Do not treat scratch files as CellWiki
-content. If evidence is missing, say so and recommend registering a source.
-Reject wins; no publish.
-Route query to query-agent; ingest/re-ingest to ingest-agent; and lint or external
-papers to lint-agent with run_broad_lint. delegate exactly one specialist task;
-never launch parallel tasks or generic reconnaissance. The coordinator handles approval,
-rejection, revision, and rebase. External research is not a separate agent.
-When a reviewer supplies correction comments for an ingest proposal, use
-request_ingest_revision to preserve the feedback and prepare a new same-source
-ChangeSet. Never mutate or reuse the original ChangeSet.
-If a proposal reports a stale base, use rebase_change_set and surface any
-overlapping target conflicts instead of silently overwriting them.
+Natural-language product actions are routed to deterministic typed tasks before
+this coordinator runs. Never attempt Ingest, Lint repair, ChangeSet publication,
+approval, revision, rebase, or direct file changes. If a user asks for an action
+that is not represented by visible read tools, explain that it needs a typed task
+or missing parameters. Do not claim that an action ran.
+Delegate one bounded evidence question to query-agent; never launch parallel tasks
+or generic reconnaissance. If evidence is missing, say so and recommend registering
+a source. Candidate or review state is not published knowledge.
+For product-operation explanations or clarification questions, answer directly,
+set knowledge_scope to general, and do not invent knowledge citations.
 
 For evidence questions, citations must use exact page_id values returned by
 CellWiki tools; include source_id and a section locator when they are available.
@@ -80,15 +70,14 @@ the configured approval policy before they can affect formal Wiki knowledge.
 
 # Deep Agents' stock prompt describes a general coding workspace. CellWiki has
 # narrower governed tools, so every coordinator and subagent shares this base.
-HARNESS_PROMPT = """You are a CellWiki agent. Use only the visible CellWiki tools.
-Ground scientific claims in exact page IDs returned by tools, identify missing
-evidence, and never invent citations. Knowledge changes must come from registered
-sources, be prepared as immutable ChangeSets, and pass the configured approval
-policy before commit. For ingest, report the ChangeSet ID, evidence gaps, and conflicts;
-never publish directly. External research is candidate evidence only: report its
-provenance and access or review warnings, and never let it alter formal knowledge
-directly. Governed memory is workflow context, never scientific evidence; do not
-store private reasoning. Return concise results appropriate to your assigned role.
+HARNESS_PROMPT = """You are a read-only CellWiki agent. Use only the visible CellWiki
+query tools. Ground scientific claims in exact page IDs returned by tools, identify
+missing evidence, and never invent citations. Typed product actions, ChangeSet
+creation, approval, and publication are outside this graph. Never claim that Ingest,
+Lint repair, revision, or publication ran. External research is candidate evidence
+only and cannot alter formal knowledge directly. Governed memory is workflow context,
+never scientific evidence; do not store private reasoning. Return concise results
+appropriate to your assigned role.
 """
 
 # 哨兵对象，用于区分"未传入检查点器"和"传入了 None"
@@ -231,9 +220,6 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
 def build_subagent_specs(
     model: BaseChatModel | str,
     read_tools: list,
-    ingest_tools: list,
-    research_tools: list | None = None,
-    lint_tools: list | None = None,
 ) -> list[dict[str, Any]]:
     # 只读子智能体的共享提示词：严格限定在只读工具范围内工作
     read_only_prompt = (
@@ -244,8 +230,7 @@ def build_subagent_specs(
     query_tools = [
         tool for tool in read_tools if getattr(tool, "name", None) != "get_change_set"
     ]
-    # 定义三个核心子智能体
-    specs: list[dict[str, Any]] = [
+    return [
         {
             "name": "query-agent",           # 知识问答智能体
             "description": "Answer questions from published CellWiki pages with citations.",
@@ -255,54 +240,7 @@ def build_subagent_specs(
             "middleware": [_CellWikiToolBoundaryMiddleware()],
             "interrupt_on": {},
         },
-        {
-            "name": "ingest-agent",          # 导入智能体（可写，但仅限 ChangeSet）
-            "description": "Analyze a registered source and prepare an immutable ChangeSet.",
-            "system_prompt": (
-                "Analyze only registered sources. Use prepare_ingest_change_set for a new "
-                "proposal or request_ingest_revision when reviewer comments must be applied. "
-                "Return the ChangeSet ID, evidence gaps, and conflicts. You cannot publish changes."
-            ),
-            "model": model,
-            "tools": [*read_tools, *ingest_tools],  # 导入智能体拥有更多工具
-            "middleware": [_CellWikiToolBoundaryMiddleware()],
-            "interrupt_on": {},
-        },
     ]
-    if lint_tools:
-        # Lint must enter through run_broad_lint, which acquires the project
-        # lease and captures the whole-library snapshot before reporting state.
-        # Lint owns the whole-project snapshot. Keeping read tools off this
-        # surface prevents follow-up file reads from racing with that lease or
-        # inviting generic filesystem tool calls after the governed report is
-        # already complete.
-        lint_pipeline_tools = [
-            tool
-            for tool in lint_tools
-            if getattr(tool, "name", None) != "inspect_knowledge_quality"
-        ]
-        specs.append(
-            {
-                "name": "lint-agent",
-                "description": "Inspect formal knowledge quality and prepare governed Lint ChangeSets.",
-                "system_prompt": (
-                    "Inspect the complete CellWiki formal state before reporting findings. "
-                    "For any broad or local quality request, call run_broad_lint exactly once "
-                    "as the only inspection tool call; its response already contains the "
-                    "whole-project snapshot and quality report. Do not call any read tool, "
-                    "generic filesystem tool, or issue parallel tool calls after it returns. "
-                    "When the user requests external research, include a "
-                    "focused external_query so candidates are registered with provenance. "
-                    "Use propose_lint_fix only for deterministic auto-fixable findings. "
-                    "Never apply a ChangeSet."
-                ),
-                "model": model,
-                "tools": lint_pipeline_tools,
-                "middleware": [_CellWikiToolBoundaryMiddleware(append_reminder=True)],
-                "interrupt_on": {},
-            }
-        )
-    return specs
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +253,7 @@ def build_subagent_specs(
 # ---------------------------------------------------------------------------
 def build_model(configuration: Settings = settings) -> BaseChatModel:
     _register_cellwiki_harness_profile(configuration.openai_model)
-    return build_openai_chat_model(configuration)
+    return build_openai_chat_model(configuration, purpose="coordinator")
 
 
 # ---------------------------------------------------------------------------
@@ -343,8 +281,6 @@ def build_wiki_agent(
     coordinator_model = model or build_model()
     # 构建工具集
     read_tools = build_read_tools(root)
-    ingest_tools = build_ingest_tools(root)
-    lint_tools = build_lint_tools(root)
     # The coordinator delegates evidence work to specialist subagents. Keeping
     # read tools off the top-level request makes that ownership boundary explicit.
     coordinator_tools: list[Any] = []
@@ -353,25 +289,17 @@ def build_wiki_agent(
         recall_memory, propose_memory = build_memory_tools(root)
         read_tools.append(recall_memory)
         coordinator_tools.extend((recall_memory, propose_memory))
-    # 提交工具（ChangeSet 提交）
-    commit_tool = build_commit_tool(root)
-    rebase_tool = build_rebase_tool(root)
     final_answer_tool = build_final_answer_tool(root)
     # 检查点器：默认使用 InMemorySaver，除非传入了外部检查点器
     active_checkpointer = (
         InMemorySaver() if checkpointer is _DEFAULT_CHECKPOINTER else checkpointer
-    )
-    approval_interrupt = (
-        {}
-        if KnowledgePipelineHarness(root).approval_policy() is ApprovalPolicy.AUTO_ALL
-        else {"commit_change_set": {"allowed_decisions": ["approve", "reject"]}}
     )
     # 组装 Deep Agent
     return create_deep_agent(
         name="cellwiki-agent",
         model=coordinator_model,
         system_prompt=SYSTEM_PROMPT,
-        tools=[*coordinator_tools, rebase_tool, commit_tool, final_answer_tool],
+        tools=[*coordinator_tools, final_answer_tool],
         middleware=[_CellWikiToolBoundaryMiddleware()],
         # Deep Agents 在运行时接受文档化的字典规格；
         # 其当前的类型包将此参数缩小为内部 TypedDict 类，因此需要 cast
@@ -380,16 +308,12 @@ def build_wiki_agent(
             build_subagent_specs(
                 coordinator_model,
                 read_tools,
-                ingest_tools,
-                lint_tools=lint_tools,
             ),
         ),
         backend=StateBackend(),
         checkpointer=active_checkpointer,
         context_schema=WikiAgentContext,
-        # Manual policy pauses before publication; auto_all keeps the same write
-        # boundary but lets CentralWriter obtain the policy decision itself.
-        interrupt_on=cast(Any, approval_interrupt),
+        interrupt_on={},
     )
 
 

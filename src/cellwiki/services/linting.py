@@ -43,8 +43,21 @@ class LintFixService:
         return inspect_projection(self.project_root)
 
     # 根据指定的 finding_id 列表生成修复 ChangeSet
-    def propose(self, finding_ids: list[str], *, run_id: str, max_iterations: int = 3) -> ChangeSet:
+    def propose(
+        self,
+        finding_ids: list[str],
+        *,
+        run_id: str,
+        max_iterations: int = 3,
+        snapshot_id: str | None = None,
+    ) -> ChangeSet:
         with self.pipeline.acquire(task_type=PipelineTaskType.LINT, run_id=run_id) as lease:
+            if snapshot_id:
+                requested = self.pipeline.get_snapshot(snapshot_id)
+                if requested.knowledge_version != lease.snapshot.knowledge_version:
+                    raise RuntimeError(
+                        "Lint inspection snapshot is stale; inspect again before proposing fixes"
+                    )
             return self._propose(
                 finding_ids,
                 run_id=run_id,

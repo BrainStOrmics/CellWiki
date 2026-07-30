@@ -56,10 +56,11 @@ Activation state must be considered before interpreting a single marker.
 def seed_agent_history() -> None:
     """Create a completed transcript so browser tests cover durable projections."""
 
+    # The E2E project is disposable. Recreate its runtime truth so local runs
+    # cannot accumulate unrelated threads and make the browser fixture order-dependent.
+    runtime_db = PROJECT / "data" / "runtime" / "cellwiki.db"
+    runtime_db.unlink(missing_ok=True)
     store = RuntimeStore(PROJECT)
-    # The fixture directory is reused between runs; reset only this deterministic
-    # thread so the test never accumulates duplicate messages or event sequences.
-    store.delete_thread(FIXTURE_THREAD_ID)
     run = AgentRun(
         run_id=FIXTURE_RUN_ID,
         thread_id=FIXTURE_THREAD_ID,

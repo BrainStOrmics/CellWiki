@@ -6,10 +6,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cellwiki.domain.contracts import PipelineTaskType
 from cellwiki.domain.tasks import AgentTask, IngestRevisionTask, IngestTask, LintTask
+from cellwiki.domain.linting import LintInspectionResult
 from cellwiki.services.central_writer import CentralWriter
 from cellwiki.services.ingest import IngestService
+from cellwiki.services.lint_inspection import LintInspection
 from cellwiki.services.linting import LintFixService
 from cellwiki.services.pipeline import KnowledgePipelineHarness
 from cellwiki.services.revisions import IngestRevisionService
@@ -32,6 +33,7 @@ class TypedTaskExecutor:
         self.pipeline = KnowledgePipelineHarness(self.project_root)
         self.ingest = IngestService(self.project_root)
         self.revisions = IngestRevisionService(self.project_root, ingest=self.ingest)
+        self.lint_inspection = LintInspection(self.project_root)
         self.lint = LintFixService(self.project_root)
         self.writer = CentralWriter(self.project_root)
 
@@ -57,16 +59,17 @@ class TypedTaskExecutor:
             return self._publish_or_wait(change_set, kind="ingest_revision")
         if isinstance(task, LintTask):
             if task.action == "inspect":
-                with self.pipeline.acquire(task_type=PipelineTaskType.LINT, run_id=run_id) as lease:
-                    return TypedTaskResult(
-                        status="succeeded",
-                        message="Lint inspection completed.",
-                        data={
-                            "snapshot": lease.snapshot.model_dump(mode="json"),
-                            "report": self.lint.inspect(),
-                        },
-                    )
-            change_set = self.lint.propose(task.finding_ids, run_id=run_id)
+                inspection = self.lint_inspection.inspect(task, run_id=run_id)
+                return TypedTaskResult(
+                    status="succeeded",
+                    message=_lint_inspection_message(inspection),
+                    data=inspection.model_dump(mode="json"),
+                )
+            change_set = self.lint.propose(
+                task.finding_ids,
+                run_id=run_id,
+                snapshot_id=task.snapshot_id,
+            )
             return self._publish_or_wait(change_set, kind="lint")
         raise TypeError(f"unsupported typed task: {type(task).__name__}")
 
@@ -77,7 +80,10 @@ class TypedTaskExecutor:
         )
         payload = {
             "kind": kind,
-            "change_set": change_set.model_dump(mode="json"),
+            "change_set_id": change_set.change_set_id,
+            "operation_count": len(change_set.operations),
+            "evidence_count": len(change_set.evidence),
+            "risk": change_set.risk.value,
             "approval_policy": self.pipeline.approval_policy_status(),
         }
         if not decision.approved:
@@ -88,8 +94,18 @@ class TypedTaskExecutor:
                 change_set_id=change_set.change_set_id,
             )
         commit = self.writer.commit(change_set.change_set_id, approval=None)
-        payload["commit"] = commit.model_dump(mode="json")
-        payload["quality"] = inspect_projection(self.project_root)
+        quality = inspect_projection(self.project_root)
+        payload["commit_id"] = commit.commit_id
+        payload["quality"] = {
+            key: quality.get(key)
+            for key in (
+                "status",
+                "page_count",
+                "issue_count",
+                "error_count",
+                "warning_count",
+            )
+        }
         return TypedTaskResult(
             status="succeeded",
             message="Typed task completed and the ChangeSet was published.",
@@ -102,16 +118,58 @@ class TypedTaskExecutor:
 
         change_set = self.writer.repository.get(change_set_id)
         commit = self.writer.commit(change_set_id, approval=None)
+        quality = inspect_projection(self.project_root)
         return TypedTaskResult(
             status="succeeded",
             message="Typed task approval was applied and published.",
             data={
-                "change_set": change_set.model_dump(mode="json"),
-                "commit": commit.model_dump(mode="json"),
-                "quality": inspect_projection(self.project_root),
+                "change_set_id": change_set.change_set_id,
+                "operation_count": len(change_set.operations),
+                "evidence_count": len(change_set.evidence),
+                "commit_id": commit.commit_id,
+                "quality": {
+                    key: quality.get(key)
+                    for key in (
+                        "status",
+                        "page_count",
+                        "issue_count",
+                        "error_count",
+                        "warning_count",
+                    )
+                },
             },
             change_set_id=change_set_id,
         )
+
+
+def _lint_inspection_message(inspection: LintInspectionResult) -> str:
+    """Render the bounded result, never the complete audit artifact, for chat."""
+
+    summary = inspection.summary
+    lines = [
+        "Local knowledge Lint completed.",
+        "",
+        (
+            f"- Scope: {inspection.scope.get('kind', 'project')}"
+            f" · pages: {summary.get('page_count', 0)}"
+            f" · issues: {summary.get('scoped_issue_count', 0)}"
+            f" · errors: {summary.get('error_count', 0)}"
+            f" · warnings: {summary.get('warning_count', 0)}"
+        ),
+        f"- Snapshot: `{inspection.snapshot_id}`",
+    ]
+    if inspection.findings:
+        lines.extend(["", "Findings:"])
+        for finding in inspection.findings:
+            lines.append(
+                f"- `{finding.finding_id}` [{finding.severity.value}] "
+                f"{finding.target_id}: {finding.message}"
+            )
+    else:
+        lines.extend(["", "No findings matched this scope."])
+    if inspection.next_cursor:
+        lines.extend(["", f"More findings are available after `{inspection.next_cursor}`."])
+    return "\n".join(lines)
 
 
 __all__ = ["TypedTaskExecutor", "TypedTaskResult"]

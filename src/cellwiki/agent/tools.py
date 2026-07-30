@@ -156,13 +156,37 @@ def build_read_tools(project_root: Path) -> list[BaseTool]:
             page = page.model_copy(update={"markdown": page.markdown[:20_000] + "\n...[truncated]"})
         return page.model_dump_json()
 
+    @tool("list_change_sets")
+    def list_change_sets(limit: int = 10) -> str:
+        """List a bounded summary of recent ChangeSets without exposing local paths."""
+
+        bounded_limit = max(1, min(limit, 20))
+        summaries = [
+            {
+                "change_set_id": change_set.change_set_id,
+                "run_id": change_set.run_id,
+                "risk": change_set.risk.value,
+                "reason": change_set.reason,
+                "snapshot_id": change_set.snapshot_id,
+                "created_at": change_set.created_at.isoformat(),
+            }
+            for change_set in changesets.list()[:bounded_limit]
+        ]
+        return json.dumps({"change_sets": summaries}, ensure_ascii=False)
+
     # 读取 ChangeSet：在要求用户审批前查看不可变的提议
     @tool("get_change_set")
     def get_change_set(change_set_id: str) -> str:
         """Read an immutable proposed ChangeSet before asking the user to approve it."""
         return changesets.get(change_set_id).model_dump_json()
 
-    return [get_project_status, search_wiki, read_wiki_page, get_change_set]
+    return [
+        get_project_status,
+        search_wiki,
+        read_wiki_page,
+        list_change_sets,
+        get_change_set,
+    ]
 
 
 # ---------------------------------------------------------------------------

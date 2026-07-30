@@ -135,6 +135,16 @@ def test_provider_specific_options_are_owned_by_the_shared_adapter() -> None:
         "qwen3.8-max-preview",
         purpose="agent",
     ) is None
+    assert provider_request_options(
+        "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+        "qwen3.8-max-preview",
+        purpose="page_query",
+    ) == {"thinking_budget": 512}
+    assert provider_request_options(
+        "https://unknown-provider.example/v1",
+        "qwen3-compatible-name",
+        purpose="router",
+    ) is None
 
 
 def test_extraction_cache_identity_changes_with_endpoint_and_protocol() -> None:

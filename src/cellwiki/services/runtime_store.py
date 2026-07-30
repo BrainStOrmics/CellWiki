@@ -26,20 +26,31 @@ from cellwiki.domain.runs import (
     AgentEvent,
     AgentEventType,
     AgentRun,
+    AgentRunOutcome,
+    AgentSpan,
     AgentRunStatus,
     RunUsage,
 )
 
 
 _TRANSITIONS: dict[AgentRunStatus, set[AgentRunStatus]] = {
-    AgentRunStatus.QUEUED: {AgentRunStatus.RUNNING, AgentRunStatus.CANCELLED},
+    AgentRunStatus.QUEUED: {
+        AgentRunStatus.RUNNING,
+        AgentRunStatus.WAITING_CONFIRMATION,
+        AgentRunStatus.CANCELLED,
+    },
     AgentRunStatus.RUNNING: {
+        AgentRunStatus.WAITING_CONFIRMATION,
         AgentRunStatus.WAITING_APPROVAL,
         AgentRunStatus.APPLYING,
         AgentRunStatus.SUCCEEDED,
         AgentRunStatus.REJECTED,
         AgentRunStatus.FAILED,
         AgentRunStatus.CANCELLING,
+    },
+    AgentRunStatus.WAITING_CONFIRMATION: {
+        AgentRunStatus.RUNNING,
+        AgentRunStatus.CANCELLED,
     },
     AgentRunStatus.WAITING_APPROVAL: {
         AgentRunStatus.RUNNING,
@@ -65,6 +76,10 @@ _TRANSITIONS: dict[AgentRunStatus, set[AgentRunStatus]] = {
 
 class InvalidRunTransitionError(RuntimeError):
     pass
+
+
+class TerminalRunError(RuntimeError):
+    """Raised when code attempts to append work after a finalized run."""
 
 
 class RuntimeStore:
@@ -159,6 +174,25 @@ class RuntimeStore:
         return [
             self._message_payload(row, process=process_by_run.get(row[2], []))
             for row in rows
+        ]
+
+    def list_context_messages(self, thread_id: str) -> list[dict[str, str]]:
+        """Return only observable transcript fields used for later model context."""
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT run_id, role, content
+                FROM agent_messages
+                WHERE thread_id = ?
+                ORDER BY sequence
+                """,
+                (thread_id,),
+            ).fetchall()
+        return [
+            {"run_id": str(row[0]), "role": str(row[1]), "content": str(row[2])}
+            for row in rows
+            if str(row[2]).strip()
         ]
 
     def delete_thread(self, thread_id: str) -> int:
@@ -284,6 +318,87 @@ class RuntimeStore:
             )
         return updated
 
+    def finalize_run(self, run_id: str, outcome: AgentRunOutcome) -> AgentRun:
+        """Persist a self-contained terminal outcome as the last lifecycle event."""
+
+        terminal_statuses = {
+            AgentRunStatus.WAITING_CONFIRMATION,
+            AgentRunStatus.WAITING_APPROVAL,
+            AgentRunStatus.SUCCEEDED,
+            AgentRunStatus.REJECTED,
+            AgentRunStatus.FAILED,
+            AgentRunStatus.CANCELLED,
+        }
+        if outcome.status not in terminal_statuses:
+            raise ValueError(f"{outcome.status.value} is not a terminal run outcome")
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = AgentRun.model_validate_json(row[0])
+            if current.finished_at is not None:
+                if current.status == outcome.status:
+                    return current
+                raise InvalidRunTransitionError(
+                    f"run already finalized as {current.status.value}"
+                )
+            if outcome.status != current.status and outcome.status not in _TRANSITIONS[current.status]:
+                raise InvalidRunTransitionError(
+                    f"invalid run transition: {current.status.value} -> {outcome.status.value}"
+                )
+
+            updated = current.model_copy(
+                update={
+                    "status": outcome.status,
+                    "error_type": outcome.error_type,
+                    "error_message": outcome.error_message,
+                    "finished_at": outcome.finished_at,
+                    "updated_at": outcome.finished_at,
+                }
+            )
+            connection.execute(
+                "UPDATE agent_runs SET status = ?, payload = ?, updated_at = ? WHERE run_id = ?",
+                (
+                    updated.status.value,
+                    updated.model_dump_json(),
+                    updated.updated_at.isoformat(),
+                    run_id,
+                ),
+            )
+            error_type = outcome.error_type.value if outcome.error_type else None
+            if outcome.status == AgentRunStatus.FAILED:
+                self._insert_event(
+                    connection,
+                    updated,
+                    AgentEventType.ERROR,
+                    message=outcome.error_message or outcome.message,
+                    data={
+                        "status": outcome.status.value,
+                        "error_type": error_type,
+                        "retryable": outcome.retryable,
+                    },
+                )
+            self._insert_event(
+                connection,
+                updated,
+                AgentEventType.RUN_STATUS,
+                message=outcome.message,
+                progress=outcome.progress,
+                data={
+                    "status": outcome.status.value,
+                    "terminal": True,
+                    "error_type": error_type,
+                    "error_message": outcome.error_message,
+                    "retryable": outcome.retryable,
+                    "finished_at": outcome.finished_at.isoformat(),
+                },
+            )
+        return updated
+
     def claim_resume(self, run_id: str, *, decision: str) -> AgentRun:
         """Claim one approval continuation with a compare-and-set transition."""
 
@@ -302,7 +417,11 @@ class RuntimeStore:
                     "only a waiting-approval run can be resumed"
                 )
             updated = current.model_copy(
-                update={"status": AgentRunStatus.RUNNING, "updated_at": datetime.now(UTC)}
+                update={
+                    "status": AgentRunStatus.RUNNING,
+                    "finished_at": None,
+                    "updated_at": datetime.now(UTC),
+                }
             )
             connection.execute(
                 "UPDATE agent_runs SET status = ?, payload = ?, updated_at = ? "
@@ -324,6 +443,50 @@ class RuntimeStore:
             )
         return updated
 
+    def claim_task_confirmation(self, run_id: str, *, decision: str) -> AgentRun:
+        """Reopen one confirmed task proposal without replaying natural language."""
+
+        if decision not in {"execute", "cancel"}:
+            raise ValueError("decision must be execute or cancel")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = AgentRun.model_validate_json(row[0])
+            if current.status is not AgentRunStatus.WAITING_CONFIRMATION:
+                raise InvalidRunTransitionError(
+                    "only a waiting-confirmation run can be confirmed"
+                )
+            updated = current.model_copy(
+                update={
+                    "status": AgentRunStatus.RUNNING,
+                    "finished_at": None,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            connection.execute(
+                "UPDATE agent_runs SET status = ?, payload = ?, updated_at = ? "
+                "WHERE run_id = ? AND status = ?",
+                (
+                    AgentRunStatus.RUNNING.value,
+                    updated.model_dump_json(),
+                    updated.updated_at.isoformat(),
+                    run_id,
+                    AgentRunStatus.WAITING_CONFIRMATION.value,
+                ),
+            )
+            self._insert_event(
+                connection,
+                updated,
+                AgentEventType.RUN_STATUS,
+                message="Task confirmation resolved.",
+                data={"status": AgentRunStatus.RUNNING.value, "decision": decision},
+            )
+        return updated
+
     def claim_retry(self, run_id: str) -> AgentRun:
         """Atomically increment retry accounting and claim the retry slot."""
 
@@ -341,6 +504,7 @@ class RuntimeStore:
                 update={
                     "status": AgentRunStatus.RETRYING,
                     "retry_count": current.retry_count + 1,
+                    "finished_at": None,
                     "updated_at": datetime.now(UTC),
                 }
             )
@@ -381,6 +545,10 @@ class RuntimeStore:
             if row is None:
                 raise KeyError(run_id)
             run = AgentRun.model_validate_json(row[0])
+            if run.finished_at is not None:
+                raise TerminalRunError(
+                    f"cannot append {event_type.value} after run finalized as {run.status.value}"
+                )
             event = self._insert_event(
                 connection,
                 run,
@@ -399,6 +567,41 @@ class RuntimeStore:
                 (run_id, after),
             ).fetchall()
         return [AgentEvent.model_validate_json(row[0]) for row in rows]
+
+    def upsert_span(self, span: AgentSpan) -> AgentSpan:
+        """Persist redacted diagnostics without storing prompts or credentials."""
+
+        safe_span = span.model_copy(update={"data": _redact_span_data(span.data)})
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if connection.execute(
+                "SELECT 1 FROM agent_runs WHERE run_id = ?",
+                (safe_span.run_id,),
+            ).fetchone() is None:
+                raise KeyError(safe_span.run_id)
+            connection.execute(
+                """
+                INSERT INTO agent_spans(span_id, run_id, payload, started_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(span_id) DO UPDATE SET payload = excluded.payload
+                """,
+                (
+                    safe_span.span_id,
+                    safe_span.run_id,
+                    safe_span.model_dump_json(),
+                    safe_span.started_at.isoformat(),
+                ),
+            )
+        return safe_span
+
+    def list_spans(self, run_id: str) -> list[AgentSpan]:
+        self.get_run(run_id)
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM agent_spans WHERE run_id = ? ORDER BY started_at, span_id",
+                (run_id,),
+            ).fetchall()
+        return [AgentSpan.model_validate_json(row[0]) for row in rows]
 
     def _ensure_schema(self) -> None:
         with self._schema_lock, self._connect() as connection:
@@ -437,7 +640,16 @@ class RuntimeStore:
                 );
                 CREATE INDEX IF NOT EXISTS ix_agent_messages_thread
                     ON agent_messages(thread_id, sequence);
-                PRAGMA user_version=1;
+                CREATE TABLE IF NOT EXISTS agent_spans (
+                    span_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    FOREIGN KEY(run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS ix_agent_spans_run
+                    ON agent_spans(run_id, started_at);
+                PRAGMA user_version=2;
                 """
             )
 
@@ -618,6 +830,22 @@ class RuntimeStore:
                     "phase": phase,
                 }
             )
+        run_row = connection.execute(
+            "SELECT status FROM agent_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+        terminal_phase = {
+            AgentRunStatus.FAILED.value: "failed",
+            AgentRunStatus.CANCELLED.value: "cancelled",
+            AgentRunStatus.SUCCEEDED.value: "completed",
+            AgentRunStatus.REJECTED.value: "completed",
+            AgentRunStatus.WAITING_CONFIRMATION.value: "completed",
+            AgentRunStatus.WAITING_APPROVAL.value: "completed",
+        }.get(str(run_row[0]) if run_row else "")
+        if terminal_phase:
+            for step in steps:
+                if step["phase"] == "running":
+                    step["phase"] = terminal_phase
         return steps
 
     @staticmethod
@@ -635,3 +863,30 @@ class RuntimeStore:
             "data": data,
             "created_at": row[7],
         }
+
+
+_SENSITIVE_SPAN_KEYS = {
+    "api_key",
+    "authorization",
+    "bearer",
+    "token",
+    "prompt",
+    "reasoning_content",
+    "chain_of_thought",
+    "raw_request",
+    "raw_response",
+}
+
+
+def _redact_span_data(value):
+    if isinstance(value, dict):
+        return {
+            str(key): _redact_span_data(item)
+            for key, item in value.items()
+            if str(key).lower() not in _SENSITIVE_SPAN_KEYS
+        }
+    if isinstance(value, list):
+        return [_redact_span_data(item) for item in value]
+    if isinstance(value, str):
+        return value[:1000]
+    return value

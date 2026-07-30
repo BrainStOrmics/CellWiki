@@ -7,12 +7,15 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import sqlite3
 import threading
 import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable, Protocol
 
@@ -29,6 +32,8 @@ from cellwiki.domain.runs import (
     AgentErrorType,
     AgentEventType,
     AgentRun,
+    AgentRunOutcome,
+    AgentSpan,
     AgentRunStatus,
     RunBudget,
     RunUsage,
@@ -37,6 +42,7 @@ from cellwiki.domain.tasks import AgentTask
 from cellwiki.services.runtime_store import InvalidRunTransitionError, RuntimeStore
 from cellwiki.services.approvals import ApprovalRepository
 from cellwiki.services.changesets import ChangeSetRepository
+from cellwiki.services.conversation_context import ConversationContextView
 from cellwiki.services.memory import MemoryStore
 from cellwiki.services.logging_context import log_context
 from cellwiki.services.operations import (
@@ -44,6 +50,9 @@ from cellwiki.services.operations import (
     OperationCancelled,
     bind_agent_run,
 )
+from cellwiki.services.task_router import TaskRouter
+from cellwiki.services.page_query import PageQueryExecutionAdapter, PageQueryRouter
+from cellwiki.services.agent_runtime_types import AgentInput
 from cellwiki.services.typed_tasks import TypedTaskExecutor
 
 
@@ -79,7 +88,7 @@ class AgentExecutionAdapter(Protocol):
         self,
         *,
         thread_id: str,
-        message: str | Command | None,
+        message: AgentInput,
         context: WikiAgentContext,
     ) -> Iterable[RuntimeSignal]: ...
 
@@ -120,7 +129,7 @@ class DeepAgentsExecutionAdapter:
         self,
         *,
         thread_id: str,
-        message: str | Command | None,
+        message: AgentInput,
         context: WikiAgentContext,
     ) -> Iterable[RuntimeSignal]:
         graph = self._get_graph()
@@ -129,6 +138,8 @@ class DeepAgentsExecutionAdapter:
         if message is None or isinstance(message, Command):
             # None 表示从检查点恢复，Command 用于中断恢复
             graph_input = message
+        elif isinstance(message, list):
+            graph_input = {"messages": message}
         else:
             # 普通字符串消息包装为 LangChain 消息格式
             graph_input = {"messages": [{"role": "user", "content": message}]}
@@ -194,6 +205,9 @@ class AgentRuntimeManager:
         store: RuntimeStore | None = None,
         memory_store: MemoryStore | None = None,
         memory_enabled: bool | None = None,
+        task_router: TaskRouter | None = None,
+        page_query_adapter: AgentExecutionAdapter | None = None,
+        page_query_router: PageQueryRouter | None = None,
     ):
         self.project_root = Path(project_root).resolve()
         owner_path = self.project_root / "data" / "runtime" / "agent-runtime.lock"
@@ -210,6 +224,12 @@ class AgentRuntimeManager:
             self.store = store or RuntimeStore(self.project_root)
             # 执行适配器（默认使用 Deep Agents）
             self.adapter = adapter or DeepAgentsExecutionAdapter(self.project_root)
+            self.task_router = task_router or TaskRouter()
+            self.page_query_adapter = page_query_adapter or PageQueryExecutionAdapter(
+                self.project_root
+            )
+            self.page_query_router = page_query_router or PageQueryRouter()
+            self.conversation_context = ConversationContextView(self.store)
             # 记忆功能是否启用
             self.memory_enabled = (
                 settings.enable_agent_memory if memory_enabled is None else memory_enabled
@@ -246,8 +266,68 @@ class AgentRuntimeManager:
         # 验证消息不为空
         if not message.strip():
             raise ValueError("agent message cannot be empty")
+        route = self.task_router.route(message, context)
+        if route is not None and not route.requires_confirmation:
+            return self.start_task(
+                thread_id=thread_id,
+                task=route.task,
+                context=context,
+                budget=budget,
+                input_message=message.strip(),
+            )
+        if route is not None:
+            return self._stage_task_confirmation(
+                thread_id=thread_id,
+                task=route.task,
+                context=context,
+                message=message.strip(),
+                reason=route.reason,
+                budget=budget,
+            )
+        if self.page_query_router.should_handle(message, context):
+            return self._start_page_query(
+                thread_id=thread_id,
+                message=message.strip(),
+                context=context,
+                budget=budget,
+            )
         with self._thread_operation_lock:
             # 创建运行记录
+            run_id = f"run_{uuid.uuid4().hex}"
+            run = AgentRun(
+                run_id=run_id,
+                thread_id=thread_id,
+                project_id=context.project_id,
+                source_id=context.source_id,
+                page_id=context.page_id,
+                selected_text=context.selected_text,
+                input_message=message.strip(),
+                checkpoint_id=run_id,
+                model_name=settings.openai_model,
+                budget=budget or RunBudget(),
+            )
+            # 持久化运行记录
+            self.store.create_run(run)
+            self._record_route_span(run, "coordinator", {"task_kind": "conversation"})
+            # 注册取消令牌
+            self.cancellations.register(run.run_id)
+            # 提交到后台线程执行
+            # Bind logging context for this run
+        with log_context(run_id=run.run_id, thread_id=run.thread_id, project_id=run.project_id):
+            self._submit(self._execute, run.run_id, message, context)
+        return run
+
+    def _start_page_query(
+        self,
+        *,
+        thread_id: str,
+        message: str,
+        context: WikiAgentContext,
+        budget: RunBudget | None,
+    ) -> AgentRun:
+        """Start the deterministic single-page read path outside LangGraph."""
+
+        with self._thread_operation_lock:
             run = AgentRun(
                 run_id=f"run_{uuid.uuid4().hex}",
                 thread_id=thread_id,
@@ -255,18 +335,23 @@ class AgentRuntimeManager:
                 source_id=context.source_id,
                 page_id=context.page_id,
                 selected_text=context.selected_text,
-                input_message=message.strip(),
+                input_message=message,
+                model_role="page-query",
                 model_name=settings.openai_model,
                 budget=budget or RunBudget(),
             )
-            # 持久化运行记录
             self.store.create_run(run)
-            # 注册取消令牌
+            self._record_route_span(run, "page_query", {"page_id": context.page_id})
             self.cancellations.register(run.run_id)
-            # 提交到后台线程执行
-            # Bind logging context for this run
         with log_context(run_id=run.run_id, thread_id=run.thread_id, project_id=run.project_id):
-            self._submit(self._execute, run.run_id, message, context)
+            self._submit(
+                self._execute,
+                run.run_id,
+                message,
+                context,
+                AgentRunStatus.SUCCEEDED,
+                self.page_query_adapter,
+            )
         return run
 
     def start_task(
@@ -276,11 +361,12 @@ class AgentRuntimeManager:
         task: AgentTask,
         context: WikiAgentContext,
         budget: RunBudget | None = None,
+        input_message: str | None = None,
     ) -> AgentRun:
         """Persist and execute a typed domain task without Coordinator routing."""
 
         task_payload = task.model_dump(mode="json")
-        input_message = f"Typed CellWiki task: {task_payload['kind']}"
+        persisted_message = input_message or f"Typed CellWiki task: {task_payload['kind']}"
         with self._thread_operation_lock:
             run = AgentRun(
                 run_id=f"run_{uuid.uuid4().hex}",
@@ -289,7 +375,7 @@ class AgentRuntimeManager:
                 source_id=getattr(task, "source_id", context.source_id),
                 page_id=context.page_id,
                 selected_text=context.selected_text,
-                input_message=input_message,
+                input_message=persisted_message,
                 task_kind=task_payload["kind"],
                 task_payload=task_payload,
                 model_role="typed-task-adapter",
@@ -297,16 +383,98 @@ class AgentRuntimeManager:
                 budget=budget or RunBudget(),
             )
             self.store.create_run(run)
+            self._record_route_span(
+                run,
+                "typed_task",
+                {"task_kind": task_payload["kind"]},
+            )
             self.cancellations.register(run.run_id)
         with log_context(run_id=run.run_id, thread_id=run.thread_id, project_id=run.project_id):
             self._submit(self._execute_typed_task, run.run_id, task, context)
         return run
+
+    def _stage_task_confirmation(
+        self,
+        *,
+        thread_id: str,
+        task: AgentTask,
+        context: WikiAgentContext,
+        message: str,
+        reason: str,
+        budget: RunBudget | None,
+    ) -> AgentRun:
+        """Persist a mutating TaskProposal without starting its implementation."""
+
+        task_payload = task.model_dump(mode="json")
+        run = AgentRun(
+            run_id=f"run_{uuid.uuid4().hex}",
+            thread_id=thread_id,
+            project_id=context.project_id,
+            source_id=getattr(task, "source_id", context.source_id),
+            page_id=context.page_id,
+            selected_text=context.selected_text,
+            input_message=message,
+            task_kind=str(task_payload["kind"]),
+            task_payload=task_payload,
+            model_role="task-router",
+            model_name="",
+            budget=budget or RunBudget(),
+        )
+        with self._thread_operation_lock:
+            self.store.create_run(run)
+            self._record_route_span(
+                run,
+                "task_confirmation",
+                {"task_kind": task_payload["kind"]},
+            )
+            self.store.append_event(
+                run.run_id,
+                AgentEventType.TASK_CONFIRMATION_REQUIRED,
+                message=reason,
+                progress=0,
+                data={"task": task_payload, "reason": reason},
+            )
+            return self.store.finalize_run(
+                run.run_id,
+                AgentRunOutcome(
+                    status=AgentRunStatus.WAITING_CONFIRMATION,
+                    message="Task parameters require user confirmation.",
+                ),
+            )
+
+    def confirm_task(self, run_id: str, *, decision: str) -> AgentRun:
+        """Execute or cancel a persisted natural-language task proposal."""
+
+        run = self.store.get_run(run_id)
+        if run.status is not AgentRunStatus.WAITING_CONFIRMATION:
+            raise ValueError("only a waiting-confirmation run can be resolved")
+        if decision not in {"execute", "cancel"}:
+            raise ValueError("decision must be execute or cancel")
+        claimed = self.store.claim_task_confirmation(run_id, decision=decision)
+        if decision == "cancel":
+            self.store.transition(
+                run_id,
+                AgentRunStatus.CANCELLING,
+                message="The proposed task was cancelled before execution.",
+            )
+            return self.store.finalize_run(
+                run_id,
+                AgentRunOutcome(
+                    status=AgentRunStatus.CANCELLED,
+                    message="The proposed task was not executed.",
+                ),
+            )
+        task: AgentTask = TypeAdapter(AgentTask).validate_python(claimed.task_payload)
+        self.cancellations.register(run_id)
+        self._submit(self._execute_typed_task, run_id, task, self._context_for(claimed))
+        return claimed
 
     def delete_thread(self, thread_id: str) -> int:
         """Delete a complete conversation after confirming no run is active."""
         active_statuses = {
             AgentRunStatus.QUEUED,
             AgentRunStatus.RUNNING,
+            AgentRunStatus.WAITING_CONFIRMATION,
             AgentRunStatus.WAITING_APPROVAL,
             AgentRunStatus.APPLYING,
             AgentRunStatus.VERIFYING,
@@ -319,7 +487,13 @@ class AgentRuntimeManager:
                 raise ValueError("active agent run cannot be deleted")
             delete_checkpoint = getattr(self.adapter, "delete_thread", None)
             if delete_checkpoint is not None:
-                delete_checkpoint(thread_id)
+                checkpoint_ids = {
+                    run.checkpoint_id or run.thread_id
+                    for run in runs
+                    if run.task_kind == "conversation" and run.model_role != "page-query"
+                }
+                for checkpoint_id in checkpoint_ids:
+                    delete_checkpoint(checkpoint_id)
             return self.store.delete_thread(thread_id)
 
     # ---- 恢复等待审批的运行 ----
@@ -409,6 +583,16 @@ class AgentRuntimeManager:
             task: AgentTask = TypeAdapter(AgentTask).validate_python(updated.task_payload)
             self._submit(self._execute_typed_task, run_id, task, context)
             return updated
+        if updated.model_role == "page-query":
+            self._submit(
+                self._execute,
+                run_id,
+                updated.input_message,
+                context,
+                AgentRunStatus.SUCCEEDED,
+                self.page_query_adapter,
+            )
+            return updated
         # message=None 表示从检查点恢复，不重放用户输入
         self._submit(self._execute, run_id, None, context)
         return updated
@@ -420,12 +604,17 @@ class AgentRuntimeManager:
         run = self.store.get_run(run_id)
         # 在等待下一个 LangGraph 事件之前向深层工具发送取消信号
         self.cancellations.cancel(run_id)
-        if run.status == AgentRunStatus.WAITING_APPROVAL:
-            # 等待审批的运行可以直接取消
-            updated = self.store.transition(
+        if run.status in {
+            AgentRunStatus.WAITING_CONFIRMATION,
+            AgentRunStatus.WAITING_APPROVAL,
+        }:
+            # 等待用户决定的运行没有活跃执行，可以直接进入终态。
+            updated = self.store.finalize_run(
                 run_id,
-                AgentRunStatus.CANCELLED,
-                message="Run cancelled while waiting for approval.",
+                AgentRunOutcome(
+                    status=AgentRunStatus.CANCELLED,
+                    message="Run cancelled while waiting for user confirmation.",
+                ),
             )
         elif run.status in {AgentRunStatus.QUEUED, AgentRunStatus.RUNNING}:
             # 队列中的运行可直接取消，运行中的需要等待安全事件边界
@@ -434,15 +623,20 @@ class AgentRuntimeManager:
                 if run.status == AgentRunStatus.QUEUED
                 else AgentRunStatus.CANCELLING
             )
-            updated = self.store.transition(
-                run_id,
-                target,
-                message=(
-                    "Queued run cancelled."
-                    if target == AgentRunStatus.CANCELLED
-                    else "Cancellation requested; waiting for a safe event boundary."
-                ),
-            )
+            if target == AgentRunStatus.CANCELLED:
+                updated = self.store.finalize_run(
+                    run_id,
+                    AgentRunOutcome(
+                        status=AgentRunStatus.CANCELLED,
+                        message="Queued run cancelled.",
+                    ),
+                )
+            else:
+                updated = self.store.transition(
+                    run_id,
+                    target,
+                    message="Cancellation requested; waiting for a safe event boundary.",
+                )
         else:
             raise ValueError(f"run in {run.status.value} cannot be cancelled")
         return updated
@@ -458,6 +652,8 @@ class AgentRuntimeManager:
             # 框架适配器可能拥有阻塞流或检查点连接，
             # 在取消后关闭它们为等待提供第二条退出路径
             self.adapter.close()
+            if self.page_query_adapter is not self.adapter:
+                self.page_query_adapter.close()
             with self._futures_lock:
                 futures = set(self._futures)
             wait(futures, timeout=3)
@@ -475,11 +671,24 @@ class AgentRuntimeManager:
         # 将所有排队中的运行标记为已取消，运行中的标记为取消中
         for run in self.store.list_runs(limit=10_000):
             if run.status == AgentRunStatus.QUEUED:
-                self.store.transition(
-                    run.run_id,
-                    AgentRunStatus.CANCELLED,
-                    message="Queued run cancelled during application shutdown.",
-                )
+                try:
+                    self.store.finalize_run(
+                        run.run_id,
+                        AgentRunOutcome(
+                            status=AgentRunStatus.CANCELLED,
+                            message="Queued run cancelled during application shutdown.",
+                        ),
+                    )
+                except InvalidRunTransitionError:
+                    # A worker may claim the queued run between list and finalize.
+                    try:
+                        self.store.transition(
+                            run.run_id,
+                            AgentRunStatus.CANCELLING,
+                            message="Application shutdown requested cancellation.",
+                        )
+                    except InvalidRunTransitionError:
+                        continue
             elif run.status in {
                 AgentRunStatus.RUNNING,
                 AgentRunStatus.RETRYING,
@@ -519,10 +728,33 @@ class AgentRuntimeManager:
         context: WikiAgentContext,
     ) -> None:
         self.cancellations.register(run_id, reset=False)
+        task_started_at = datetime.now(UTC)
         try:
             with bind_agent_run(run_id):
                 self.store.transition(run_id, AgentRunStatus.RUNNING, message="Typed task started.")
                 result = TypedTaskExecutor(self.project_root).execute(task, run_id=run_id)
+                task_finished_at = datetime.now(UTC)
+                self.store.upsert_span(
+                    AgentSpan(
+                        span_id=f"task:{run_id}",
+                        run_id=run_id,
+                        kind="tool",
+                        name=task.kind,
+                        status="completed",
+                        started_at=task_started_at,
+                        finished_at=task_finished_at,
+                        duration_ms=(
+                            task_finished_at - task_started_at
+                        ).total_seconds()
+                        * 1000,
+                        data={
+                            "artifact_ref": result.data.get("full_report_ref"),
+                            "artifact_sha256": result.data.get("full_report_sha256"),
+                            "artifact_bytes": result.data.get("full_report_size"),
+                            "finding_count": len(result.data.get("findings", [])),
+                        },
+                    )
+                )
                 if result.change_set_id:
                     self.store.append_event(
                         run_id,
@@ -535,31 +767,79 @@ class AgentRuntimeManager:
                     AgentEventType.FINAL_RESPONSE,
                     message=result.message,
                     progress=100,
-                    data={"answer": result.message, **result.data},
+                    data={
+                        "answer": result.message,
+                        "knowledge_scope": "general",
+                        "verification_level": "unvalidated",
+                        **result.data,
+                    },
+                )
+                self._append_assistant_result(
+                    run_id,
+                    result.message,
+                    {
+                        "answer": result.message,
+                        "knowledge_scope": "general",
+                        "verification_level": "unvalidated",
+                        **result.data,
+                    },
                 )
                 if result.status == "waiting_approval":
-                    self.store.transition(
+                    self.store.finalize_run(
                         run_id,
-                        AgentRunStatus.WAITING_APPROVAL,
-                        message=result.message,
-                        progress=90,
-                        data={"change_set_id": result.change_set_id},
+                        AgentRunOutcome(
+                            status=AgentRunStatus.WAITING_APPROVAL,
+                            message=result.message,
+                            progress=90,
+                        ),
                     )
                 else:
-                    self.store.transition(
+                    self.store.finalize_run(
                         run_id,
-                        AgentRunStatus.SUCCEEDED,
-                        message=result.message,
-                        progress=100,
+                        AgentRunOutcome(
+                            status=AgentRunStatus.SUCCEEDED,
+                            message=result.message,
+                            progress=100,
+                        ),
                     )
         except Exception as error:
             try:
-                self.store.transition(
+                task_finished_at = datetime.now(UTC)
+                self.store.upsert_span(
+                    AgentSpan(
+                        span_id=f"task:{run_id}",
+                        run_id=run_id,
+                        kind="tool",
+                        name=task.kind,
+                        status="failed",
+                        started_at=task_started_at,
+                        finished_at=task_finished_at,
+                        duration_ms=(
+                            task_finished_at - task_started_at
+                        ).total_seconds()
+                        * 1000,
+                        data={"error_type": classify_agent_error(error).value},
+                    )
+                )
+                error_type = classify_agent_error(error)
+                run = self.store.get_run(run_id)
+                retryable = is_retryable_run(
+                    run.model_copy(
+                        update={
+                            "status": AgentRunStatus.FAILED,
+                            "error_type": error_type,
+                        }
+                    )
+                )
+                self.store.finalize_run(
                     run_id,
-                    AgentRunStatus.FAILED,
-                    error_type=AgentErrorType.SYSTEM,
-                    error_message=str(error),
-                    message="Typed task failed.",
+                    AgentRunOutcome(
+                        status=AgentRunStatus.FAILED,
+                        message="Typed task failed.",
+                        error_type=error_type,
+                        error_message=_safe_error_text(error),
+                        retryable=retryable,
+                    ),
                 )
             except (KeyError, InvalidRunTransitionError):
                 pass
@@ -586,11 +866,18 @@ class AgentRuntimeManager:
                         progress=100,
                         data={"answer": message, "change_set_id": change_set_id},
                     )
-                    self.store.transition(
+                    self._append_assistant_result(
                         run_id,
-                        AgentRunStatus.REJECTED,
-                        message=message,
-                        progress=100,
+                        message,
+                        {"answer": message, "change_set_id": change_set_id},
+                    )
+                    self.store.finalize_run(
+                        run_id,
+                        AgentRunOutcome(
+                            status=AgentRunStatus.REJECTED,
+                            message=message,
+                            progress=100,
+                        ),
                     )
                     return
                 result = TypedTaskExecutor(self.project_root).publish_existing(change_set_id)
@@ -601,20 +888,40 @@ class AgentRuntimeManager:
                     progress=100,
                     data={"answer": result.message, **result.data},
                 )
-                self.store.transition(
+                self._append_assistant_result(
                     run_id,
-                    AgentRunStatus.SUCCEEDED,
-                    message=result.message,
-                    progress=100,
+                    result.message,
+                    {"answer": result.message, **result.data},
+                )
+                self.store.finalize_run(
+                    run_id,
+                    AgentRunOutcome(
+                        status=AgentRunStatus.SUCCEEDED,
+                        message=result.message,
+                        progress=100,
+                    ),
                 )
         except Exception as error:
             try:
-                self.store.transition(
+                error_type = classify_agent_error(error)
+                run = self.store.get_run(run_id)
+                retryable = is_retryable_run(
+                    run.model_copy(
+                        update={
+                            "status": AgentRunStatus.FAILED,
+                            "error_type": error_type,
+                        }
+                    )
+                )
+                self.store.finalize_run(
                     run_id,
-                    AgentRunStatus.FAILED,
-                    error_type=AgentErrorType.SYSTEM,
-                    error_message=str(error),
-                    message="Typed task approval failed.",
+                    AgentRunOutcome(
+                        status=AgentRunStatus.FAILED,
+                        message="Typed task approval failed.",
+                        error_type=error_type,
+                        error_message=_safe_error_text(error),
+                        retryable=retryable,
+                    ),
                 )
             except (KeyError, InvalidRunTransitionError):
                 pass
@@ -626,15 +933,22 @@ class AgentRuntimeManager:
     def _execute(
         self,
         run_id: str,
-        message: str | Command | None,
+        message: AgentInput,
         context: WikiAgentContext,
         terminal_status: AgentRunStatus = AgentRunStatus.SUCCEEDED,
+        execution_adapter: AgentExecutionAdapter | None = None,
     ) -> None:
         self.cancellations.register(run_id, reset=False)
         try:
             # bind_agent_run 将运行 ID 绑定到当前线程的上下文
             with bind_agent_run(run_id):
-                self._execute_bound(run_id, message, context, terminal_status)
+                self._execute_bound(
+                    run_id,
+                    message,
+                    context,
+                    terminal_status,
+                    execution_adapter or self.adapter,
+                )
         finally:
             self.cancellations.clear(run_id)
 
@@ -643,12 +957,16 @@ class AgentRuntimeManager:
     def _execute_bound(
         self,
         run_id: str,
-        message: str | Command | None,
+        message: AgentInput,
         context: WikiAgentContext,
         terminal_status: AgentRunStatus,
+        execution_adapter: AgentExecutionAdapter,
     ) -> None:
         started = time.monotonic()
+        started_at = datetime.now(UTC)
         model_calls: set[str] = set()       # 去重的模型调用 ID
+        model_token_totals: dict[str, tuple[int, int]] = {}
+        open_tool_spans: dict[str, AgentSpan] = {}
         base_usage = RunUsage()              # 基础用量（从持久化恢复）
         final_response = ""                  # 最终回答
         try:
@@ -680,19 +998,46 @@ class AgentRuntimeManager:
             waiting_for_review = False
             # 注入记忆上下文（如果启用）
             execution_message = self._recall_context(run_id, message, context)
+            if isinstance(execution_message, str):
+                execution_message = self.conversation_context.build(
+                    thread_id=current.thread_id,
+                    current_run_id=run_id,
+                    current_content=execution_message,
+                )
             # 流式执行智能体图
-            for signal in self.adapter.execute(
-                thread_id=context.thread_id or self.store.get_run(run_id).thread_id,
+            for signal in execution_adapter.execute(
+                # New runs get isolated graph state. Approval resume keeps the
+                # same run_id and therefore resumes the same checkpoint.
+                thread_id=current.checkpoint_id or current.thread_id,
                 message=execution_message,
                 context=context,
             ):
+                signal = _observable_signal(signal)
                 run = self.store.get_run(run_id)
                 # 检查取消信号
                 if run.status == AgentRunStatus.CANCELLING:
-                    self.store.transition(
+                    cancelled_tools = _finish_open_tool_spans(
+                        self.store,
+                        open_tool_spans,
+                        status="cancelled",
+                    )
+                    if cancelled_tools:
+                        self.store.update_usage(
+                            run_id,
+                            run.usage.model_copy(
+                                update={
+                                    "tool_calls_cancelled": (
+                                        run.usage.tool_calls_cancelled + cancelled_tools
+                                    )
+                                }
+                            ),
+                        )
+                    self.store.finalize_run(
                         run_id,
-                        AgentRunStatus.CANCELLED,
-                        message="Run cancelled at a safe event boundary.",
+                        AgentRunOutcome(
+                            status=AgentRunStatus.CANCELLED,
+                            message="Run cancelled at a safe event boundary.",
+                        ),
                     )
                     return
                 # 检查运行时间预算
@@ -702,6 +1047,34 @@ class AgentRuntimeManager:
                 # 去重模型调用，计算总调用次数
                 if signal.model_call_id:
                     model_calls.add(signal.model_call_id)
+                    previous_tokens = model_token_totals.get(signal.model_call_id, (0, 0))
+                    model_token_totals[signal.model_call_id] = (
+                        previous_tokens[0] + signal.input_tokens,
+                        previous_tokens[1] + signal.output_tokens,
+                    )
+                    model_input, model_output = model_token_totals[signal.model_call_id]
+                    elapsed_ms = (time.monotonic() - started) * 1000
+                    self.store.upsert_span(
+                        AgentSpan(
+                            span_id=f"model:{run_id}:{signal.model_call_id}",
+                            run_id=run_id,
+                            kind="model",
+                            name=run.model_role,
+                            status="completed",
+                            started_at=started_at,
+                            finished_at=datetime.now(UTC),
+                            duration_ms=elapsed_ms,
+                            ttft_ms=elapsed_ms,
+                            input_tokens=model_input,
+                            output_tokens=model_output,
+                            data={
+                                "model": run.model_name,
+                                "profile": run.model_role,
+                                "prompt_template_version": "agent-v2",
+                                "prompt_template_hash": _prompt_template_hash(run.model_role),
+                            },
+                        )
+                    )
                 total_model_calls = base_usage.model_calls + len(model_calls)
                 if total_model_calls > run.budget.max_model_calls:
                     raise AgentBudgetExceeded("run exceeded its model-call budget")
@@ -712,10 +1085,75 @@ class AgentRuntimeManager:
                     output_tokens=run.usage.output_tokens + signal.output_tokens,
                     estimated_cost_usd=run.usage.estimated_cost_usd,
                     tool_calls=run.usage.tool_calls + signal.tool_calls,
+                    tool_calls_started=run.usage.tool_calls_started
+                    + int(signal.type == AgentEventType.TOOL_STARTED),
+                    tool_calls_completed=run.usage.tool_calls_completed
+                    + int(
+                        signal.type == AgentEventType.TOOL_COMPLETED
+                        and bool(signal.data.get("tool_call_id"))
+                    ),
+                    tool_calls_failed=run.usage.tool_calls_failed
+                    + int(
+                        signal.type == AgentEventType.TOOL_FAILED
+                        and bool(signal.data.get("tool_call_id"))
+                    ),
+                    tool_calls_cancelled=run.usage.tool_calls_cancelled,
+                    ttft_ms=(
+                        run.usage.ttft_ms
+                        if run.usage.ttft_ms is not None
+                        else (
+                            (time.monotonic() - started) * 1000
+                            if signal.model_call_id
+                            else None
+                        )
+                    ),
                     elapsed_seconds=elapsed,
                 )
                 self.store.update_usage(run_id, usage)
                 tool_name = str(signal.data.get("tool_name", ""))
+                tool_call_id = str(signal.data.get("tool_call_id", "") or "")
+                if signal.type == AgentEventType.TOOL_STARTED and tool_call_id:
+                    tool_span = AgentSpan(
+                        span_id=f"tool:{run_id}:{tool_call_id}",
+                        run_id=run_id,
+                        kind="tool",
+                        name=tool_name or "tool",
+                        status="running",
+                        started_at=datetime.now(UTC),
+                        data={
+                            "activity_code": signal.data.get("activity_code"),
+                            "label_args": signal.data.get("label_args", {}),
+                        },
+                    )
+                    open_tool_spans[tool_call_id] = tool_span
+                    self.store.upsert_span(tool_span)
+                elif signal.type in {
+                    AgentEventType.TOOL_COMPLETED,
+                    AgentEventType.TOOL_FAILED,
+                } and tool_call_id in open_tool_spans:
+                    tool_span = open_tool_spans.pop(tool_call_id)
+                    finished_at = datetime.now(UTC)
+                    self.store.upsert_span(
+                        tool_span.model_copy(
+                            update={
+                                "status": (
+                                    "failed"
+                                    if signal.type == AgentEventType.TOOL_FAILED
+                                    else "completed"
+                                ),
+                                "finished_at": finished_at,
+                                "duration_ms": (
+                                    finished_at - tool_span.started_at
+                                ).total_seconds()
+                                * 1000,
+                                "data": {
+                                    **tool_span.data,
+                                    "result_bytes": signal.data.get("result_bytes", 0),
+                                    "result_sha256": signal.data.get("result_sha256"),
+                                },
+                            }
+                        )
+                    )
                 # 持久化事件
                 self.store.append_event(
                     run_id,
@@ -763,10 +1201,28 @@ class AgentRuntimeManager:
             )
             current = self.store.get_run(run_id)
             if current.status == AgentRunStatus.CANCELLING:
-                self.store.transition(
+                cancelled_tools = _finish_open_tool_spans(
+                    self.store,
+                    open_tool_spans,
+                    status="cancelled",
+                )
+                if cancelled_tools:
+                    self.store.update_usage(
+                        run_id,
+                        current.usage.model_copy(
+                            update={
+                                "tool_calls_cancelled": (
+                                    current.usage.tool_calls_cancelled + cancelled_tools
+                                )
+                            }
+                        ),
+                    )
+                self.store.finalize_run(
                     run_id,
-                    AgentRunStatus.CANCELLED,
-                    message="Run cancelled after reaching a safe completion boundary.",
+                    AgentRunOutcome(
+                        status=AgentRunStatus.CANCELLED,
+                        message="Run cancelled after reaching a safe completion boundary.",
+                    ),
                 )
                 return
             # 确定终态
@@ -790,12 +1246,31 @@ class AgentRuntimeManager:
                     AgentRunStatus.VERIFYING,
                     message="Atomic apply completed; final verification is running.",
                 )
+            unfinished_tools = _finish_open_tool_spans(
+                self.store,
+                open_tool_spans,
+                status="failed",
+            )
+            if unfinished_tools:
+                current = self.store.get_run(run_id)
+                self.store.update_usage(
+                    run_id,
+                    current.usage.model_copy(
+                        update={
+                            "tool_calls_failed": (
+                                current.usage.tool_calls_failed + unfinished_tools
+                            )
+                        }
+                    ),
+                )
             # 最终状态转换
-            self.store.transition(
+            self.store.finalize_run(
                 run_id,
-                status,
-                message=message_text,
-                progress=100 if status == AgentRunStatus.SUCCEEDED else None,
+                AgentRunOutcome(
+                    status=status,
+                    message=message_text,
+                    progress=100 if status == AgentRunStatus.SUCCEEDED else None,
+                ),
             )
         except Exception as error:
             # ---- 异常处理 ----
@@ -812,7 +1287,7 @@ class AgentRuntimeManager:
                 AgentRunStatus.CANCELLED,
                 AgentRunStatus.REJECTED,
                 AgentRunStatus.SUCCEEDED,
-            }:
+            } or current.finished_at is not None:
                 return
             # The cooperative operation may observe the cancellation event
             # before cancel() persists CANCELLING; the exception closes that race.
@@ -823,30 +1298,56 @@ class AgentRuntimeManager:
                 error_type = None
             else:
                 target = AgentRunStatus.FAILED
-            self.store.transition(
-                run_id,
-                target,
-                error_type=error_type,
-                error_message=str(error)[:1000],
-                message=(
-                    "Run cancelled at a safe failure boundary."
-                    if target == AgentRunStatus.CANCELLED
-                    else "Run failed."
-                ),
-                data={"error_type": error_type.value if error_type else None},
-            )
-            # 如果失败，追加错误事件
-            if target == AgentRunStatus.FAILED:
-                self.store.append_event(
-                    run_id,
-                    AgentEventType.ERROR,
-                    message=str(error)[:1000],
-                    data={
-                        "status": target.value,
-                        "error_type": error_type.value if error_type else None,
-                        "retryable": is_retryable_run(self.store.get_run(run_id)),
-                    },
+            retryable = (
+                target == AgentRunStatus.FAILED
+                and is_retryable_run(
+                    current.model_copy(
+                        update={
+                            "status": AgentRunStatus.FAILED,
+                            "error_type": error_type,
+                        }
+                    )
                 )
+            )
+            unfinished_tools = _finish_open_tool_spans(
+                self.store,
+                open_tool_spans,
+                status="cancelled" if target == AgentRunStatus.CANCELLED else "failed",
+            )
+            if unfinished_tools:
+                current = self.store.get_run(run_id)
+                usage_field = (
+                    "tool_calls_cancelled"
+                    if target == AgentRunStatus.CANCELLED
+                    else "tool_calls_failed"
+                )
+                self.store.update_usage(
+                    run_id,
+                    current.usage.model_copy(
+                        update={
+                            usage_field: getattr(current.usage, usage_field)
+                            + unfinished_tools
+                        }
+                    ),
+                )
+            self.store.finalize_run(
+                run_id,
+                AgentRunOutcome(
+                    status=target,
+                    error_type=error_type,
+                    error_message=(
+                        _safe_error_text(error)
+                        if target == AgentRunStatus.FAILED
+                        else None
+                    ),
+                    retryable=retryable,
+                    message=(
+                        "Run cancelled at a safe failure boundary."
+                        if target == AgentRunStatus.CANCELLED
+                        else "Run failed."
+                    ),
+                ),
+            )
 
     # ---- 注入记忆上下文 ----
     # 在保持原始持久化输入的同时，注入受控的项目记忆。
@@ -854,9 +1355,9 @@ class AgentRuntimeManager:
     def _recall_context(
         self,
         run_id: str,
-        message: str | Command | None,
+        message: AgentInput,
         context: WikiAgentContext,
-    ) -> str | Command | None:
+    ) -> AgentInput:
         """Inject bounded governed memory while preserving the original persisted input."""
 
         # 记忆未启用或消息不是字符串（Command/Native）时不注入
@@ -875,7 +1376,7 @@ class AgentRuntimeManager:
                 run_id,
                 AgentEventType.MEMORY_RECALLED,
                 message="Governed memory recall was unavailable; continuing without memory.",
-                data={"memory_ids": [], "warning": str(error)[:300]},
+                data={"memory_ids": [], "warning": _safe_error_text(error, limit=300)},
             )
             return message
         # 记录记忆召回事件
@@ -946,10 +1447,48 @@ class AgentRuntimeManager:
                 run_id,
                 AgentEventType.MEMORY_CANDIDATE,
                 message="Episode memory candidate was rejected; the Agent result is unchanged.",
-                data={"warning": str(error)[:300]},
+                data={"warning": _safe_error_text(error, limit=300)},
             )
 
     # ---- 从运行记录构造上下文 ----
+    def _append_assistant_result(
+        self,
+        run_id: str,
+        content: str,
+        data: dict[str, Any],
+    ) -> None:
+        """Project one observable task result into the durable conversation."""
+
+        run = self.store.get_run(run_id)
+        self.store.append_message(
+            thread_id=run.thread_id,
+            run_id=run_id,
+            role="assistant",
+            content=content,
+            data=data,
+        )
+
+    def _record_route_span(
+        self,
+        run: AgentRun,
+        route_name: str,
+        data: dict[str, Any],
+    ) -> None:
+        now = datetime.now(UTC)
+        self.store.upsert_span(
+            AgentSpan(
+                span_id=f"router:{run.run_id}",
+                run_id=run.run_id,
+                kind="router",
+                name=route_name,
+                status="completed",
+                started_at=now,
+                finished_at=now,
+                duration_ms=0,
+                data=data,
+            )
+        )
+
     def _context_for(self, run: AgentRun) -> WikiAgentContext:
         return WikiAgentContext(
             project_id=run.project_id,
@@ -978,22 +1517,41 @@ class AgentRuntimeManager:
                         self._context_for(run),
                     )
                 else:
+                    execution_adapter = (
+                        self.page_query_adapter
+                        if run.model_role == "page-query"
+                        else self.adapter
+                    )
                     self._submit(
                         self._execute,
                         run.run_id,
                         run.input_message,
                         self._context_for(run),
+                        AgentRunStatus.SUCCEEDED,
+                        execution_adapter,
                     )
             elif run.status == AgentRunStatus.RETRYING:
                 # 重试中的运行：从检查点恢复
                 self.cancellations.register(run.run_id)
-                self._submit(self._execute, run.run_id, None, self._context_for(run))
+                if run.model_role == "page-query":
+                    self._submit(
+                        self._execute,
+                        run.run_id,
+                        run.input_message,
+                        self._context_for(run),
+                        AgentRunStatus.SUCCEEDED,
+                        self.page_query_adapter,
+                    )
+                else:
+                    self._submit(self._execute, run.run_id, None, self._context_for(run))
             elif run.status == AgentRunStatus.CANCELLING:
                 # 取消中的运行：标记为已取消
-                self.store.transition(
+                self.store.finalize_run(
                     run.run_id,
-                    AgentRunStatus.CANCELLED,
-                    message="Run was cancelled during application restart.",
+                    AgentRunOutcome(
+                        status=AgentRunStatus.CANCELLED,
+                        message="Run was cancelled during application restart.",
+                    ),
                 )
             elif run.status in {
                 AgentRunStatus.RUNNING,
@@ -1001,19 +1559,23 @@ class AgentRuntimeManager:
                 AgentRunStatus.VERIFYING,
             }:
                 # 运行中的运行：标记为失败，允许重试
-                self.store.transition(
-                    run.run_id,
-                    AgentRunStatus.FAILED,
-                    error_type=AgentErrorType.SYSTEM,
-                    error_message="Application stopped while the run was active.",
-                    message="Run was interrupted by application restart.",
-                    data={"retryable": True},
+                retryable = is_retryable_run(
+                    run.model_copy(
+                        update={
+                            "status": AgentRunStatus.FAILED,
+                            "error_type": AgentErrorType.SYSTEM,
+                        }
+                    )
                 )
-                self.store.append_event(
+                self.store.finalize_run(
                     run.run_id,
-                    AgentEventType.ERROR,
-                    message="Application stopped while the run was active.",
-                    data={"error_type": AgentErrorType.SYSTEM.value, "retryable": True},
+                    AgentRunOutcome(
+                        status=AgentRunStatus.FAILED,
+                        error_type=AgentErrorType.SYSTEM,
+                        error_message="Application stopped while the run was active.",
+                        message="Run was interrupted by application restart.",
+                        retryable=retryable,
+                    ),
                 )
 # ---------------------------------------------------------------------------
 # AgentBudgetExceeded —— 预算超限异常
@@ -1021,6 +1583,13 @@ class AgentRuntimeManager:
 # ---------------------------------------------------------------------------
 class AgentBudgetExceeded(RuntimeError):
     """Raised at a safe event boundary when a run crosses its configured budget."""
+
+
+def _safe_error_text(error: Exception, *, limit: int = 1000) -> str:
+    text = re.sub(r"(?i)bearer\s+[^\s,;]+", "Bearer [REDACTED]", str(error))
+    if settings.openai_api_key:
+        text = text.replace(settings.openai_api_key, "[REDACTED]")
+    return text[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -1073,6 +1642,147 @@ def is_retryable_run(run: AgentRun) -> bool:
     )
 
 
+_TOOL_ACTIVITY_CODES = {
+    "read_wiki_page": "reading_page",
+    "search_wiki": "searching",
+    "search_wiki_pages": "searching",
+    "run_quality_lint": "checking_quality",
+    "submit_agent_answer": "completed",
+    "list_change_sets": "checking_quality",
+}
+
+
+def _observable_signal(signal) -> RuntimeSignal:
+    """Strip framework payloads before they cross the product event Seam."""
+
+    if signal.type not in {
+        AgentEventType.TOOL_STARTED,
+        AgentEventType.TOOL_COMPLETED,
+        AgentEventType.TOOL_FAILED,
+        AgentEventType.SUBAGENT_STARTED,
+        AgentEventType.SUBAGENT_COMPLETED,
+        AgentEventType.MESSAGE_DELTA,
+        AgentEventType.REVIEW_REQUIRED,
+    }:
+        return RuntimeSignal(
+            type=signal.type,
+            message=signal.message,
+            progress=signal.progress,
+            data=dict(signal.data),
+            model_call_id=signal.model_call_id,
+            input_tokens=signal.input_tokens,
+            output_tokens=signal.output_tokens,
+            tool_calls=signal.tool_calls,
+        )
+
+    if signal.type == AgentEventType.MESSAGE_DELTA:
+        safe_data: dict[str, Any] = {}
+        safe_message = signal.message
+    elif signal.type == AgentEventType.REVIEW_REQUIRED:
+        change_set_id = _find_key(signal.data, "change_set_id")
+        safe_data = {
+            "activity_code": "waiting_approval",
+            "change_set_id": change_set_id if isinstance(change_set_id, str) else None,
+        }
+        safe_message = "Human approval is required before formal knowledge can change."
+    elif signal.type in {
+        AgentEventType.SUBAGENT_STARTED,
+        AgentEventType.SUBAGENT_COMPLETED,
+    }:
+        safe_data = {"activity_code": "searching"}
+        safe_message = (
+            "Knowledge query started."
+            if signal.type == AgentEventType.SUBAGENT_STARTED
+            else "Knowledge query completed."
+        )
+    else:
+        raw_data = dict(signal.data)
+        tool_name = str(raw_data.get("tool_name", "") or "tool")
+        tool_call_id = str(raw_data.get("tool_call_id", "") or "")
+        tool_call = raw_data.get("tool_call")
+        arguments = (
+            tool_call.get("args", {})
+            if isinstance(tool_call, dict) and isinstance(tool_call.get("args"), dict)
+            else {}
+        )
+        label_args: dict[str, Any] = {}
+        for key in ("page_id", "source_id", "change_set_id", "snapshot_id"):
+            value = arguments.get(key, raw_data.get(key))
+            if isinstance(value, (str, int, float, bool)):
+                label_args[key] = value
+        finding_ids = arguments.get("finding_ids")
+        if isinstance(finding_ids, list):
+            label_args["finding_count"] = len(finding_ids)
+        serialized = json.dumps(
+            {"message": signal.message, "data": raw_data},
+            ensure_ascii=False,
+            default=str,
+            sort_keys=True,
+        ).encode("utf-8")
+        safe_data = {
+            "tool_name": tool_name,
+            "tool_call_id": tool_call_id,
+            "activity_code": _TOOL_ACTIVITY_CODES.get(tool_name, "planning"),
+            "label_args": label_args,
+            "result_bytes": len(serialized),
+            "result_sha256": hashlib.sha256(serialized).hexdigest(),
+        }
+        if raw_data.get("change_set_id"):
+            safe_data["change_set_id"] = raw_data["change_set_id"]
+        verb = {
+            AgentEventType.TOOL_STARTED: "started",
+            AgentEventType.TOOL_COMPLETED: "completed",
+            AgentEventType.TOOL_FAILED: "failed",
+        }[signal.type]
+        safe_message = f"{tool_name.replace('_', ' ').title()} {verb}."
+
+    return RuntimeSignal(
+        type=signal.type,
+        message=safe_message,
+        progress=signal.progress,
+        data=safe_data,
+        model_call_id=signal.model_call_id,
+        input_tokens=signal.input_tokens,
+        output_tokens=signal.output_tokens,
+        tool_calls=signal.tool_calls,
+    )
+
+
+def _prompt_template_hash(model_role: str) -> str:
+    template_identity = {
+        "coordinator": "coordinator-read-only-v2",
+        "page-query": "page-query-formal-v1",
+        "task-router": "task-router-rules-v1",
+        "typed-task-adapter": "typed-task-v1",
+    }.get(model_role, f"{model_role}-v1")
+    return hashlib.sha256(template_identity.encode("utf-8")).hexdigest()
+
+
+def _finish_open_tool_spans(
+    store: RuntimeStore,
+    spans: dict[str, AgentSpan],
+    *,
+    status: str,
+) -> int:
+    finished_at = datetime.now(UTC)
+    for span in list(spans.values()):
+        store.upsert_span(
+            span.model_copy(
+                update={
+                    "status": status,
+                    "finished_at": finished_at,
+                    "duration_ms": (
+                        finished_at - span.started_at
+                    ).total_seconds()
+                    * 1000,
+                }
+            )
+        )
+    count = len(spans)
+    spans.clear()
+    return count
+
+
 # ---------------------------------------------------------------------------
 # 将流式输出项转换为 RuntimeSignal 序列
 # 处理两种流模式：messages（消息级）和 updates（状态级）。
@@ -1108,6 +1818,11 @@ def _signals_from_stream_item(item: Any) -> Iterable[RuntimeSignal]:
                     "namespace": list(namespace),
                     "metadata": _json_safe(metadata),
                     "tool_name": tool_name,
+                    "tool_call_id": (
+                        str(serialized_call.get("id", ""))
+                        if isinstance(serialized_call, dict)
+                        else ""
+                    ),
                     "tool_call": serialized_call,
                 },
                 model_call_id=getattr(message, "id", None),
@@ -1195,11 +1910,9 @@ def _signals_from_stream_item(item: Any) -> Iterable[RuntimeSignal]:
     for node_name in node_names:
         lowered = node_name.lower()
         if "tool" in lowered:
-            yield RuntimeSignal(
-                type=AgentEventType.TOOL_COMPLETED,
-                message=f"{node_name} completed.",
-                data={"node": node_name, "namespace": list(namespace), "tool_name": ""},
-            )
+            # ToolMessage events already carry stable call IDs and outcomes.
+            # Framework node updates would duplicate them without useful identity.
+            continue
         elif namespace:
             yield RuntimeSignal(
                 type=AgentEventType.SUBAGENT_COMPLETED,
@@ -1258,7 +1971,7 @@ def _extract_change_set_id(value: Any) -> str | None:
 # 判断消息是否为审批恢复命令
 # 检查 Command 中是否包含 "approve" 决策
 # ---------------------------------------------------------------------------
-def _is_approval_resume(message: str | Command | None) -> bool:
+def _is_approval_resume(message: AgentInput) -> bool:
     if not isinstance(message, Command):
         return False
     serialized = _json_safe(message)

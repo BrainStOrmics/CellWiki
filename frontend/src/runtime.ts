@@ -4,6 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 // the desktop runtime's documented 8000 default.
 const DEVELOPMENT_PRODUCT_API_ORIGIN =
   import.meta.env.VITE_PRODUCT_API_ORIGIN || "http://127.0.0.1:8000";
+const RUNTIME_CONFIG_RETRY_DELAY_MS = 250;
+const RUNTIME_CONFIG_MAX_ATTEMPTS = 500;
 
 export type DesktopRuntimeConfig = {
   productApiOrigin: string;
@@ -34,16 +36,26 @@ let runtime: DesktopRuntimeConfig = {
 
 export async function initializeRuntime(): Promise<DesktopRuntimeConfig> {
   if (!isDesktopRuntime) return runtime;
-  try {
-    runtime = await invoke<DesktopRuntimeConfig>("runtime_config");
-  } catch (error) {
-    runtime = {
-      ...runtime,
-      mode: "unknown",
-      ready: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
+  let lastError: unknown;
+  for (let attempt = 0; attempt < RUNTIME_CONFIG_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      runtime = await invoke<DesktopRuntimeConfig>("runtime_config");
+      return runtime;
+    } catch (error) {
+      // Tauri can expose the WebView before its blocking setup hook finishes
+      // starting the Python sidecar and registering managed runtime state.
+      lastError = error;
+      if (attempt + 1 < RUNTIME_CONFIG_MAX_ATTEMPTS) {
+        await new Promise((resolve) => window.setTimeout(resolve, RUNTIME_CONFIG_RETRY_DELAY_MS));
+      }
+    }
   }
+  runtime = {
+    ...runtime,
+    mode: "unknown",
+    ready: false,
+    error: lastError instanceof Error ? lastError.message : String(lastError),
+  };
   return runtime;
 }
 
