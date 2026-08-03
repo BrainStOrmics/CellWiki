@@ -42,6 +42,7 @@ from cellwiki.domain.tasks import AgentTask
 from cellwiki.services.runtime_store import InvalidRunTransitionError, RuntimeStore
 from cellwiki.services.approvals import ApprovalRepository
 from cellwiki.services.changesets import ChangeSetRepository
+from cellwiki.services.central_writer import CentralWriter
 from cellwiki.services.conversation_context import ConversationContextView
 from cellwiki.services.memory import MemoryStore
 from cellwiki.services.logging_context import log_context
@@ -54,6 +55,8 @@ from cellwiki.services.task_router import TaskRouter
 from cellwiki.services.page_query import PageQueryExecutionAdapter, PageQueryRouter
 from cellwiki.services.agent_runtime_types import AgentInput
 from cellwiki.services.typed_tasks import TypedTaskExecutor
+from cellwiki.services.quality import inspect_projection
+from cellwiki.services.pipeline import KnowledgePipelineHarness
 
 
 # ---------------------------------------------------------------------------
@@ -266,31 +269,10 @@ class AgentRuntimeManager:
         # 验证消息不为空
         if not message.strip():
             raise ValueError("agent message cannot be empty")
-        route = self.task_router.route(message, context)
-        if route is not None and not route.requires_confirmation:
-            return self.start_task(
-                thread_id=thread_id,
-                task=route.task,
-                context=context,
-                budget=budget,
-                input_message=message.strip(),
-            )
-        if route is not None:
-            return self._stage_task_confirmation(
-                thread_id=thread_id,
-                task=route.task,
-                context=context,
-                message=message.strip(),
-                reason=route.reason,
-                budget=budget,
-            )
-        if self.page_query_router.should_handle(message, context):
-            return self._start_page_query(
-                thread_id=thread_id,
-                message=message.strip(),
-                context=context,
-                budget=budget,
-            )
+        # Natural language is the only product entry point. The coordinator
+        # decides whether this is a query, ingest, lint, revision, or a request
+        # for clarification; deterministic routers remain available solely for
+        # legacy/internal callers and are deliberately not consulted here.
         with self._thread_operation_lock:
             # 创建运行记录
             run_id = f"run_{uuid.uuid4().hex}"
@@ -525,6 +507,14 @@ class AgentRuntimeManager:
             )
         claimed = self.store.claim_resume(run_id, decision=decision)
         self.cancellations.register(run_id)
+        if matching:
+            self._submit(
+                self._execute_approval_continuation,
+                run_id,
+                matching[0].change_set_id,
+                decision,
+            )
+            return claimed
         if run.task_kind != "conversation":
             self._submit(
                 self._execute_typed_continuation,
@@ -533,7 +523,9 @@ class AgentRuntimeManager:
                 decision,
             )
             return claimed
-        # 根据决策构造 Command 恢复指令
+        # Legacy graph interrupts without a persisted ChangeSet are retained
+        # only for recovery of pre-Model-led runs. New proposals always use the
+        # CentralWriter continuation above.
         if decision == "reject":
             command: Command[Any] = Command(
                 resume={
@@ -720,6 +712,129 @@ class AgentRuntimeManager:
                 self._futures.discard(completed)
 
         future.add_done_callback(discard)
+
+    def _execute_approval_continuation(
+        self,
+        run_id: str,
+        change_set_id: str,
+        decision: str,
+    ) -> None:
+        """Apply or reject a reviewed proposal through the one write boundary.
+
+        Model-led runs have no publication tool and therefore cannot resume a
+        framework interrupt to perform a write. The desktop decision resumes
+        the durable run here, where CentralWriter owns approval, apply, and
+        verification as one auditable operation.
+        """
+
+        self.cancellations.register(run_id, reset=False)
+        try:
+            with bind_agent_run(run_id):
+                if decision == "reject":
+                    message = "The ChangeSet was rejected; no formal knowledge changed."
+                    self.store.append_event(
+                        run_id,
+                        AgentEventType.FINAL_RESPONSE,
+                        message=message,
+                        progress=100,
+                        data={"answer": message, "change_set_id": change_set_id},
+                    )
+                    self._append_assistant_result(
+                        run_id,
+                        message,
+                        {"answer": message, "change_set_id": change_set_id},
+                    )
+                    self.store.finalize_run(
+                        run_id,
+                        AgentRunOutcome(
+                            status=AgentRunStatus.REJECTED,
+                            message=message,
+                            progress=100,
+                        ),
+                    )
+                    return
+
+                self.store.transition(
+                    run_id,
+                    AgentRunStatus.APPLYING,
+                    message="Approval received; CentralWriter is applying the ChangeSet.",
+                )
+                commit = CentralWriter(self.project_root).commit(
+                    change_set_id,
+                    approval=None,
+                )
+                self.store.transition(
+                    run_id,
+                    AgentRunStatus.VERIFYING,
+                    message="CentralWriter applied the ChangeSet; verification is running.",
+                )
+                quality = inspect_projection(self.project_root)
+                verification = {
+                    "change_set_id": change_set_id,
+                    "commit_id": commit.commit_id,
+                    "snapshot_id": commit.snapshot_id,
+                    "quality": {
+                        key: quality.get(key)
+                        for key in (
+                            "status",
+                            "page_count",
+                            "issue_count",
+                            "error_count",
+                            "warning_count",
+                        )
+                    },
+                }
+                self.store.append_event(
+                    run_id,
+                    AgentEventType.VERIFICATION,
+                    message="CentralWriter verification completed.",
+                    progress=96,
+                    data=verification,
+                )
+                message = "The approved ChangeSet was published and passed verification."
+                answer_data = {"answer": message, **verification}
+                self.store.append_event(
+                    run_id,
+                    AgentEventType.FINAL_RESPONSE,
+                    message=message,
+                    progress=100,
+                    data=answer_data,
+                )
+                self._append_assistant_result(run_id, message, answer_data)
+                self.store.finalize_run(
+                    run_id,
+                    AgentRunOutcome(
+                        status=AgentRunStatus.SUCCEEDED,
+                        message=message,
+                        progress=100,
+                    ),
+                )
+        except Exception as error:
+            try:
+                error_type = classify_agent_error(error)
+                run = self.store.get_run(run_id)
+                retryable = is_retryable_run(
+                    run.model_copy(
+                        update={
+                            "status": AgentRunStatus.FAILED,
+                            "error_type": error_type,
+                        }
+                    )
+                )
+                self.store.finalize_run(
+                    run_id,
+                    AgentRunOutcome(
+                        status=AgentRunStatus.FAILED,
+                        message="Approved ChangeSet publication failed.",
+                        error_type=error_type,
+                        error_message=_safe_error_text(error),
+                        retryable=retryable,
+                    ),
+                )
+            except (KeyError, InvalidRunTransitionError):
+                pass
+        finally:
+            self.cancellations.clear(run_id)
 
     def _execute_typed_task(
         self,
@@ -967,6 +1082,7 @@ class AgentRuntimeManager:
         model_calls: set[str] = set()       # 去重的模型调用 ID
         model_token_totals: dict[str, tuple[int, int]] = {}
         open_tool_spans: dict[str, AgentSpan] = {}
+        pending_change_sets: dict[str, bool] = {}
         base_usage = RunUsage()              # 基础用量（从持久化恢复）
         final_response = ""                  # 最终回答
         try:
@@ -1172,7 +1288,9 @@ class AgentRuntimeManager:
                         content=final_response,
                         data=signal.data,
                     )
-                if signal.type == AgentEventType.TOOL_FAILED:
+                if signal.type == AgentEventType.TOOL_FAILED and not signal.data.get(
+                    "blocked_tool"
+                ):
                     raise RuntimeError(signal.message or f"tool {tool_name or 'unknown'} failed")
                 if signal.type == AgentEventType.TOOL_COMPLETED and tool_name == "commit_change_set":
                     # ChangeSet 提交完成，进行验证
@@ -1189,8 +1307,71 @@ class AgentRuntimeManager:
                         data={"change_set_id": signal.data.get("change_set_id")},
                     )
                 if signal.type == AgentEventType.REVIEW_REQUIRED:
-                    waiting_for_review = True
+                    change_set_id = signal.data.get("change_set_id")
+                    if isinstance(change_set_id, str) and change_set_id:
+                        try:
+                            ChangeSetRepository(self.project_root).get(change_set_id)
+                        except (KeyError, ValueError):
+                            # A legacy framework interrupt may carry a logical
+                            # ID without a persisted CellWiki ChangeSet.
+                            pass
+                        else:
+                            pending_change_sets[change_set_id] = bool(
+                                signal.data.get("requires_human_review", True)
+                            )
+                    waiting_for_review = waiting_for_review or bool(
+                        signal.data.get("requires_human_review", True)
+                    )
             # 执行完成后的处理
+            if pending_change_sets:
+                policy = KnowledgePipelineHarness(self.project_root)
+                decisions = {
+                    change_set_id: policy.approval_for(
+                        change_set_id,
+                        reviewer="default-reviewer",
+                    )
+                    for change_set_id in pending_change_sets
+                }
+                if decisions and all(decision.approved for decision in decisions.values()):
+                    self.store.transition(
+                        run_id,
+                        AgentRunStatus.APPLYING,
+                        message="Configured approval policy accepted the ChangeSet; applying it atomically.",
+                    )
+                    commits = [
+                        CentralWriter(self.project_root).commit(
+                            change_set_id,
+                            approval=decision,
+                        )
+                        for change_set_id, decision in decisions.items()
+                    ]
+                    self.store.transition(
+                        run_id,
+                        AgentRunStatus.VERIFYING,
+                        message="Policy-approved ChangeSet applied; verification is running.",
+                    )
+                    quality = inspect_projection(self.project_root)
+                    self.store.append_event(
+                        run_id,
+                        AgentEventType.VERIFICATION,
+                        message="CentralWriter verification completed.",
+                        progress=96,
+                        data={
+                            "change_set_ids": list(decisions),
+                            "commit_ids": [commit.commit_id for commit in commits],
+                            "quality": {
+                                key: quality.get(key)
+                                for key in (
+                                    "status",
+                                    "page_count",
+                                    "issue_count",
+                                    "error_count",
+                                    "warning_count",
+                                )
+                            },
+                        },
+                    )
+                    waiting_for_review = False
             elapsed = base_usage.elapsed_seconds + (time.monotonic() - started)
             run = self.store.get_run(run_id)
             if elapsed > run.budget.max_runtime_seconds:
@@ -1680,11 +1861,17 @@ def _observable_signal(signal) -> RuntimeSignal:
         safe_message = signal.message
     elif signal.type == AgentEventType.REVIEW_REQUIRED:
         change_set_id = _find_key(signal.data, "change_set_id")
+        requires_human_review = signal.data.get("requires_human_review", True)
         safe_data = {
             "activity_code": "waiting_approval",
             "change_set_id": change_set_id if isinstance(change_set_id, str) else None,
+            "requires_human_review": bool(requires_human_review),
         }
-        safe_message = "Human approval is required before formal knowledge can change."
+        safe_message = signal.message or (
+            "Human approval is required before formal knowledge can change."
+            if requires_human_review
+            else "ChangeSet passed the configured approval policy and will be published."
+        )
     elif signal.type in {
         AgentEventType.SUBAGENT_STARTED,
         AgentEventType.SUBAGENT_COMPLETED,
@@ -1729,6 +1916,8 @@ def _observable_signal(signal) -> RuntimeSignal:
         }
         if raw_data.get("change_set_id"):
             safe_data["change_set_id"] = raw_data["change_set_id"]
+        if raw_data.get("blocked_tool") is True:
+            safe_data["blocked_tool"] = True
         verb = {
             AgentEventType.TOOL_STARTED: "started",
             AgentEventType.TOOL_COMPLETED: "completed",
@@ -1837,7 +2026,7 @@ def _signals_from_stream_item(item: Any) -> Iterable[RuntimeSignal]:
             tool_name = str(getattr(message, "name", "") or "")
             failed = str(getattr(message, "status", "success")).lower() == "error"
             event_type = AgentEventType.TOOL_FAILED if failed else AgentEventType.TOOL_COMPLETED
-            change_set_id = _extract_change_set_id(getattr(message, "content", ""))
+            change_set_id = _extract_change_set_id(content)
             event_data = {
                 "namespace": list(namespace),
                 "metadata": _json_safe(metadata),
@@ -1845,6 +2034,12 @@ def _signals_from_stream_item(item: Any) -> Iterable[RuntimeSignal]:
                 "tool_call_id": getattr(message, "tool_call_id", None),
                 "change_set_id": change_set_id,
             }
+            if failed and "not available to CellWiki agents" in content:
+                # A provider may emit a filtered generic tool call despite the
+                # model-facing schema boundary. Keep the policy failure
+                # observable, but let the coordinator recover and answer from
+                # the resulting ToolMessage instead of failing the whole run.
+                event_data["blocked_tool"] = True
             yield RuntimeSignal(
                 type=event_type,
                 message=content or f"{tool_name or 'Tool'} completed.",
@@ -1858,12 +2053,37 @@ def _signals_from_stream_item(item: Any) -> Iterable[RuntimeSignal]:
                     message=answer["answer"],
                     data=answer,
                 )
-            # 如果导入工具的 ChangeSet 准备就绪，额外发出 CHANGESET_READY 信号
-            if not failed and tool_name == "prepare_ingest_change_set" and change_set_id:
+            # Proposal tools never publish. Surface the immutable proposal to
+            # the desktop and, when policy requires it, stop at one approval
+            # boundary shared by ingest, revision, and lint repair.
+            proposal_tools = {
+                "prepare_ingest_change_set",
+                "request_ingest_revision",
+                "propose_lint_fix",
+            }
+            if not failed and tool_name in proposal_tools and change_set_id:
+                requires_human_review = _extract_requires_human_review(
+                    content
+                )
                 yield RuntimeSignal(
                     type=AgentEventType.CHANGESET_READY,
                     message=f"ChangeSet {change_set_id} is ready for review.",
-                    data={"change_set_id": change_set_id},
+                    data={
+                        "change_set_id": change_set_id,
+                        "requires_human_review": requires_human_review,
+                    },
+                )
+                yield RuntimeSignal(
+                    type=AgentEventType.REVIEW_REQUIRED,
+                    message=(
+                        "Human approval is required before formal knowledge can change."
+                        if requires_human_review
+                        else "ChangeSet passed the configured approval policy and will be published."
+                    ),
+                    data={
+                        "change_set_id": change_set_id,
+                        "requires_human_review": requires_human_review,
+                    },
                 )
             return
         # 处理消息增量（AI 流式响应片段）
@@ -1965,6 +2185,19 @@ def _extract_change_set_id(value: Any) -> str | None:
             return None
     found = _find_key(serialized, "change_set_id")
     return str(found) if found else None
+
+
+def _extract_requires_human_review(value: Any) -> bool:
+    """Read the proposal policy flag from a JSON tool result safely."""
+
+    serialized = _json_safe(value)
+    if isinstance(serialized, str):
+        try:
+            serialized = json.loads(serialized)
+        except json.JSONDecodeError:
+            return True
+    found = _find_key(serialized, "requires_human_review")
+    return found if isinstance(found, bool) else True
 
 
 # ---------------------------------------------------------------------------

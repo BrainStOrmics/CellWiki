@@ -1,4 +1,17 @@
-import { expect, test } from "@playwright/test";
+import path from "node:path";
+import { expect, test, type Page } from "@playwright/test";
+
+async function persistedActiveThreadId(page: Page) {
+  return page.evaluate(() => {
+    const raw = window.localStorage.getItem("cellwiki.ui.v2");
+    if (!raw) return null;
+    try {
+      return JSON.parse(raw).state?.activeThreadId ?? null;
+    } catch {
+      return null;
+    }
+  });
+}
 
 test("three-pane workspace, grounded search, and language settings remain usable", async ({ page }) => {
   // The first Vite run may optimize the Markdown and graph bundles before the
@@ -52,4 +65,38 @@ test("three-pane workspace, grounded search, and language settings remain usable
   await page.getByRole("button", { name: /English/ }).click();
   await page.getByRole("button", { name: "保存设置" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+});
+
+test("Agent composer references stay separate from threads and temporary attachments", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto("/", { waitUntil: "domcontentloaded", timeout: 120_000 });
+  await expect(page.getByText("CellWiki", { exact: true }).first()).toBeVisible();
+  await expect(page.locator(".chat-compose textarea")).toBeVisible();
+  await page.getByRole("button", { name: /Wiki 浏览器|Wiki explorer/ }).click();
+  await expect(page.locator(".tree-file").first()).toBeVisible();
+
+  await page.getByRole("button", { name: /新建对话|New conversation/ }).click();
+  await expect.poll(() => persistedActiveThreadId(page)).not.toBeNull();
+  const firstThreadId = await persistedActiveThreadId(page);
+
+  await page.locator(".tree-file").first().click();
+  await expect(page.locator(".composer-chip.page-chip")).toBeVisible();
+  await expect.poll(() => persistedActiveThreadId(page)).toBe(firstThreadId);
+
+  await page.locator(".chat-compose textarea").focus();
+  await page.keyboard.press("Backspace");
+  await expect(page.locator(".composer-chip.page-chip")).toHaveCount(0);
+  await expect.poll(() => persistedActiveThreadId(page)).toBe(firstThreadId);
+
+  await page.locator(".tree-file").first().click();
+  await expect(page.locator(".composer-chip.page-chip")).toBeVisible();
+  await page
+    .locator('input[type="file"][accept=".pdf,.md,.txt,.csv,.json"]')
+    .setInputFiles(path.join(process.cwd(), "package.json"));
+  await expect(page.locator(".composer-chip.attachment-chip")).toContainText("package.json");
+
+  await page.getByRole("button", { name: /新建对话|New conversation/ }).click();
+  await expect(page.locator(".composer-chip.page-chip")).toBeVisible();
+  await expect(page.locator(".composer-chip.attachment-chip")).toHaveCount(0);
+  await expect.poll(() => persistedActiveThreadId(page)).not.toBe(firstThreadId);
 });

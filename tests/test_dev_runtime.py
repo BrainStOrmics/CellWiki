@@ -4,11 +4,13 @@
 
 """Tests for the owned-process development runtime interface."""
 
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 
-from cellwiki.dev_runtime import DevelopmentProcessSpec, DevelopmentRuntime
+import cellwiki.dev_runtime as dev_runtime
+from cellwiki.dev_runtime import DevelopmentProcessSpec, DevelopmentRuntime, OwnedProcess
 
 
 def test_development_runtime_builds_the_three_expected_processes(monkeypatch, tmp_path: Path):
@@ -40,6 +42,59 @@ def test_development_runtime_requires_explicit_port_reuse(monkeypatch, tmp_path:
     )
     approved._start(spec)
     assert approved.owned == []
+
+
+def test_development_runtime_stops_the_windows_process_tree(
+    monkeypatch, tmp_path: Path
+):
+    class FakeProcess:
+        pid = 321
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    taskkill_calls = []
+
+    monkeypatch.setattr(dev_runtime.os, "name", "nt")
+    monkeypatch.setattr(
+        dev_runtime.subprocess,
+        "run",
+        lambda command, **kwargs: taskkill_calls.append((command, kwargs)),
+    )
+
+    process = FakeProcess()
+    runtime = DevelopmentRuntime(tmp_path, include_agent=False, include_desktop=False)
+    runtime.owned.append(
+        OwnedProcess(
+            DevelopmentProcessSpec("product-api", 8000, ("python",), tmp_path),
+            process,
+            BytesIO(),
+            tmp_path / "product-api.log",
+        )
+    )
+
+    runtime.stop()
+
+    assert taskkill_calls[0][0] == ["taskkill", "/PID", "321", "/T", "/F"]
+    assert process.terminated is False
+
+
+def test_development_runtime_allows_only_one_orchestrator(tmp_path: Path):
+    first = DevelopmentRuntime(tmp_path, include_agent=False, include_desktop=False)
+    first._acquire_project_lock()
+    try:
+        second = DevelopmentRuntime(tmp_path, include_agent=False, include_desktop=False)
+        with pytest.raises(RuntimeError, match="another CellWiki development runtime"):
+            second._acquire_project_lock()
+    finally:
+        first._release_project_lock()
 
 
 def test_development_runtime_preflight_checks_project_venv_node_and_rust(

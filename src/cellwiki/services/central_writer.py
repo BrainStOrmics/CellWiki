@@ -46,6 +46,13 @@ class VersionConflictError(RuntimeError):
     pass
 
 
+# ---------------------------------------------------------------------------
+# 投影迁移异常 —— 旧版 Wiki 尚未迁移为正式 extraction 时拒绝首次发布
+# ---------------------------------------------------------------------------
+class ProjectionBootstrapRequiredError(RuntimeError):
+    pass
+
+
 # 验证器类型：接收项目根目录，无返回值，失败时抛出异常
 Verifier = Callable[[Path], None]
 
@@ -140,6 +147,7 @@ class CentralWriter:
                 )
 
         targets = [(operation, self._target_path(operation)) for operation in change_set.operations]
+        self._ensure_projection_baseline(change_set)
         self._check_versions(targets)
         before = {path: path.read_bytes() if path.exists() else None for _, path in targets}
         before.update(self._projection_files())
@@ -196,6 +204,28 @@ class CentralWriter:
         if operation.type == ChangeOperationType.APPLY_LINT_FIX:
             return self.runtime_dir / "lint_fixes" / f"{operation.target_id}.json"
         raise NotImplementedError(f"operation {operation.type.value!r} is not supported in v1")
+
+    def _ensure_projection_baseline(self, change_set) -> None:
+        """Prevent the first extraction publication from deleting legacy Wiki pages."""
+
+        if not any(
+            operation.type == ChangeOperationType.UPSERT_EXTRACTION
+            for operation in change_set.operations
+        ):
+            return
+        extraction_dir = self.project_root / "data" / "extraction"
+        if any(extraction_dir.glob("*.json")):
+            return
+        legacy_paths = {
+            path
+            for path in ProjectionService.managed_output_paths(self.project_root)
+            if path.is_file()
+        }
+        if legacy_paths:
+            raise ProjectionBootstrapRequiredError(
+                "existing Wiki projection is not backed by formal extraction records; "
+                "migrate the legacy Wiki before publishing the first extraction"
+            )
 
     def _check_versions(self, targets: list[tuple[ChangeOperation, Path]]) -> None:
         for operation, path in targets:

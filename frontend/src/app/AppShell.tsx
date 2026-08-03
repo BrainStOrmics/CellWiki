@@ -2,7 +2,6 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState, type MouseEvent, 
 import { useQuery } from "@tanstack/react-query";
 import {
   Bot,
-  BrainCircuit,
   ChevronDown,
   ChevronRight,
   CirclePlus,
@@ -10,8 +9,6 @@ import {
   FileText,
   Folder,
   FolderOpen,
-  FlaskConical,
-  GitBranch,
   Library,
   MessageSquareText,
   Network,
@@ -20,10 +17,10 @@ import {
   Search,
   Send,
   Settings,
-  ShieldAlert,
   Square,
   Trash2,
   Upload,
+  X,
 } from "lucide-react";
 import { SourceReview } from "../components/SourceReview";
 import { ThemeToggle } from "../components/ThemeToggle";
@@ -39,11 +36,9 @@ import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
 import { AgentReviewCard, type AgentReviewSummary } from "../features/agent/AgentReviewCard";
 import { reduceAgentRunMessages } from "../features/agent/agent-run-reducer";
 import {
-  MemoryWorkspace,
   ReviewsWorkspace,
   SearchWorkspace,
 } from "../features/discovery/FeatureWorkspaces";
-import { resolveIngestOutcome } from "./ingest-outcome";
 
 const GraphWorkspace = lazy(() => import("../features/graph/GraphWorkspace").then((module) => ({
   default: module.GraphWorkspace,
@@ -59,6 +54,7 @@ import type {
   AgentProcessStep,
   AgentRun,
   AgentRunStatus,
+  AttachmentRecord,
   ChangeSetReview,
   Citation,
   ChatMessage,
@@ -73,11 +69,6 @@ import type {
 
 type ResizeSide = "left" | "right";
 type PendingInterrupt = { threadId: string; runId: string; changeSetId: string };
-type PendingTaskConfirmation = {
-  runId: string;
-  task: Record<string, unknown>;
-  reason: string;
-};
 
 const agentEventTypes: AgentEventType[] = [
   "run_status",
@@ -89,7 +80,6 @@ const agentEventTypes: AgentEventType[] = [
   "subagent_started",
   "subagent_completed",
   "progress",
-  "task_confirmation_required",
   "review_required",
   "changeset_ready",
   "verification",
@@ -183,31 +173,32 @@ export function AppShell() {
   const [draft, setDraft] = useState("");
   const [agentBusy, setAgentBusy] = useState(false);
   const [activeAgentRunId, setActiveAgentRunId] = useState<string | null>(null);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [retryableAgentRunId, setRetryableAgentRunId] = useState<string | null>(null);
   const [agentActivity, setAgentActivity] = useState("");
   const [pendingInterrupt, setPendingInterrupt] = useState<PendingInterrupt | null>(null);
-  const [pendingTaskConfirmation, setPendingTaskConfirmation] = useState<PendingTaskConfirmation | null>(null);
+  const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
   const [apiOnline, setApiOnline] = useState(false);
   const leftWidth = useUiStore((state) => state.leftWidth);
   const rightWidth = useUiStore((state) => state.rightWidth);
   const selectedText = useUiStore((state) => state.selectedText);
   const setSelectedText = useUiStore((state) => state.setSelectedText);
   const setPanelWidth = useUiStore((state) => state.setPanelWidth);
-  const threadByContext = useUiStore((state) => state.threadByContext);
-  const setContextThread = useUiStore((state) => state.setContextThread);
-  const clearContextThread = useUiStore((state) => state.clearContextThread);
-  const clearThread = useUiStore((state) => state.clearThread);
+  const activeThreadId = useUiStore((state) => state.activeThreadId);
+  const setActiveThreadId = useUiStore((state) => state.setActiveThreadId);
+  const composerPageRef = useUiStore((state) => state.composerPageRef);
+  const setComposerPageRef = useUiStore((state) => state.setComposerPageRef);
+  const activeAttachmentIds = useUiStore((state) => state.activeAttachmentIds);
+  const setActiveAttachmentIds = useUiStore((state) => state.setActiveAttachmentIds);
+  const addActiveAttachmentIds = useUiStore((state) => state.addActiveAttachmentIds);
+  const removeActiveAttachmentId = useUiStore((state) => state.removeActiveAttachmentId);
+  const clearActiveAttachments = useUiStore((state) => state.clearActiveAttachments);
+  const removeLastComposerReference = useUiStore((state) => state.removeLastComposerReference);
   const activeView = useUiStore((state) => state.activeView);
   const setActiveView = useUiStore((state) => state.setActiveView);
   const setCommandPaletteOpen = useUiStore((state) => state.setCommandPaletteOpen);
-  const contextKey = selectedSourceId
-    ? `source:${selectedSourceId}`
-    : selectedId
-      ? `page:${selectedId}`
-      : "workspace:cellwiki";
   const workbenchRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const attachmentRef = useRef<HTMLInputElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const agentThreadIdRef = useRef<string | null>(null);
@@ -216,8 +207,6 @@ export function AppShell() {
   const processedAgentEventsRef = useRef(new Set<string>());
   const streamGenerationRef = useRef(0);
   const messagesRef = useRef<ChatMessage[]>(messages);
-  const messagesByContextRef = useRef<Record<string, ChatMessage[]>>({});
-  const previousContextRef = useRef(contextKey);
   const workspaceQuery = useQuery({
     queryKey: ["workspace"],
     queryFn: loadWorkspaceData,
@@ -281,9 +270,8 @@ export function AppShell() {
   }
 
   useEffect(() => {
-    agentThreadIdRef.current = threadByContext[contextKey] ?? null;
-    setActiveThreadId(agentThreadIdRef.current);
-    const savedRunId = window.localStorage.getItem(agentRunStorageKey(contextKey));
+    agentThreadIdRef.current = activeThreadId;
+    const savedRunId = activeThreadId ? window.localStorage.getItem(agentRunStorageKey(activeThreadId)) : null;
     if (agentThreadIdRef.current) void restoreAgentThread(agentThreadIdRef.current, savedRunId ?? undefined);
 
     return () => {
@@ -292,27 +280,6 @@ export function AppShell() {
       agentEventSourceRef.current = null;
     };
   }, []);
-
-  useEffect(() => {
-    const previous = previousContextRef.current;
-    if (previous === contextKey) return;
-    messagesByContextRef.current[previous] = messagesRef.current;
-    previousContextRef.current = contextKey;
-    agentThreadIdRef.current = threadByContext[contextKey] ?? null;
-    setActiveThreadId(agentThreadIdRef.current);
-    setMessages(messagesByContextRef.current[contextKey] ?? [{
-      ...initialAgentMessage,
-      text: t("workflow.newConversation").replace("{context}", contextKey.split(":", 2)[1]),
-    }]);
-    setSelectedText("");
-    setPendingInterrupt(null);
-    setPendingTaskConfirmation(null);
-    setRetryableAgentRunId(null);
-    streamGenerationRef.current += 1;
-    agentEventSourceRef.current?.close();
-    const savedRunId = window.localStorage.getItem(agentRunStorageKey(contextKey));
-    if (agentThreadIdRef.current) void restoreAgentThread(agentThreadIdRef.current, savedRunId ?? undefined);
-  }, [contextKey]);
 
   useEffect(() => {
     if (pageQuery.data) setDetail(pageQuery.data);
@@ -348,6 +315,9 @@ export function AppShell() {
   const contextTitle = (selectedSource?.original_name ?? selectedTitle) || t("reader.workspace");
   const contextPath = selectedSource ? `sources/${selectedSource.source_id}` : selectedPath;
   const references = Array.isArray(detail.frontmatter.references) ? detail.frontmatter.references : [];
+  const activeAttachments = activeAttachmentIds
+    .map((attachmentId) => attachments.find((attachment) => attachment.attachment_id === attachmentId))
+    .filter((attachment): attachment is AttachmentRecord => Boolean(attachment));
   const normalizedFilter = filter.trim().toLowerCase();
   const filteredPages = useMemo(() => {
     if (!normalizedFilter) return pages;
@@ -458,7 +428,6 @@ export function AppShell() {
     const thread = await postJson<{ thread_id: string }>("/api/agent/threads", {});
     agentThreadIdRef.current = thread.thread_id;
     setActiveThreadId(thread.thread_id);
-    setContextThread(contextKey, thread.thread_id);
     return thread.thread_id;
   }
 
@@ -468,60 +437,24 @@ export function AppShell() {
       thread_id: threadId,
       message: text,
       project_id: "cellwiki",
-      page_id: selectedSource ? null : selectedId,
-      source_id: selectedSource?.source_id ?? null,
+      page_id: composerPageRef?.page_id ?? null,
+      source_id: null,
+      attachment_ids: activeAttachmentIds,
       selected_text: selectedText || null,
     });
     processedAgentEventsRef.current.clear();
     agentEventSequenceRef.current = 0;
     setActiveAgentRunId(run.run_id);
     setRetryableAgentRunId(null);
-    window.localStorage.setItem(agentRunStorageKey(contextKey), run.run_id);
+    window.localStorage.setItem(agentRunStorageKey(threadId), run.run_id);
     const status = await subscribeToAgentRun(run.run_id);
     return { threadId, runId: run.run_id, status };
-  }
-
-  async function runTypedTask(task: Record<string, unknown>) {
-    const threadId = await ensureAgentThread();
-    const run = await postJson<AgentRun>("/api/agent/runs", {
-      thread_id: threadId,
-      task,
-      project_id: "cellwiki",
-      page_id: selectedSource ? null : selectedId,
-      source_id: selectedSource?.source_id ?? null,
-      selected_text: selectedText || null,
-    });
-    processedAgentEventsRef.current.clear();
-    agentEventSequenceRef.current = 0;
-    setActiveAgentRunId(run.run_id);
-    setRetryableAgentRunId(null);
-    window.localStorage.setItem(agentRunStorageKey(contextKey), run.run_id);
-    const status = await subscribeToAgentRun(run.run_id);
-    return { threadId, runId: run.run_id, status };
-  }
-
-  async function resolveTaskConfirmation(decision: "execute" | "cancel") {
-    if (!pendingTaskConfirmation) return;
-    const runId = pendingTaskConfirmation.runId;
-    setAgentBusy(decision === "execute");
-    setActiveAgentRunId(runId);
-    window.localStorage.setItem(agentRunStorageKey(contextKey), runId);
-    try {
-      await postJson<AgentRun>(
-        `/api/agent/runs/${encodeURIComponent(runId)}/task-confirmation`,
-        { decision },
-      );
-      setPendingTaskConfirmation(null);
-      await subscribeToAgentRun(runId);
-    } finally {
-      setAgentBusy(false);
-    }
   }
 
   async function resumeAgent(runId: string, decision: "approve" | "reject") {
     await postJson<AgentRun>(`/api/agent/runs/${encodeURIComponent(runId)}/resume`, { decision });
     setActiveAgentRunId(runId);
-    window.localStorage.setItem(agentRunStorageKey(contextKey), runId);
+    if (agentThreadIdRef.current) window.localStorage.setItem(agentRunStorageKey(agentThreadIdRef.current), runId);
     return subscribeToAgentRun(runId);
   }
 
@@ -541,14 +474,7 @@ export function AppShell() {
     if (event.type === "error" && event.data.retryable === true) {
       setRetryableAgentRunId(event.run_id);
     }
-    if (event.type === "task_confirmation_required") {
-      setPendingTaskConfirmation({
-        runId: event.run_id,
-        task: (event.data.task as Record<string, unknown> | undefined) ?? {},
-        reason: String(event.data.reason ?? event.message),
-      });
-      setAgentActivity(t("chat.taskConfirmationRequired"));
-    } else if (event.type === "review_required") {
+    if (event.type === "review_required") {
       const changeSetId = findNestedString(event.data, "change_set_id");
       if (changeSetId) {
         setPendingInterrupt({ threadId: event.thread_id, runId: event.run_id, changeSetId });
@@ -597,11 +523,6 @@ export function AppShell() {
       }
       if (status && terminalAgentStatuses.has(status)) {
         setAgentBusy(false);
-        if (status !== "waiting_confirmation") {
-          setPendingTaskConfirmation((current) => (
-            current?.runId === event.run_id ? null : current
-          ));
-        }
         if (status !== "waiting_approval") {
           setPendingInterrupt((current) => (
             current?.runId === event.run_id ? null : current
@@ -609,7 +530,7 @@ export function AppShell() {
         }
         if (status !== "waiting_confirmation" && status !== "waiting_approval") {
           setActiveAgentRunId(null);
-          window.localStorage.removeItem(agentRunStorageKey(contextKey));
+          window.localStorage.removeItem(agentRunStorageKey(event.thread_id));
         }
       }
     }
@@ -679,6 +600,11 @@ export function AppShell() {
       if (history.length > 0) {
         setMessages(history.map(historyMessageToChatMessage));
       }
+      const threadAttachments = await getJson<AttachmentRecord[]>(
+        `/api/agent/threads/${encodeURIComponent(threadId)}/attachments`,
+      );
+      setAttachments(threadAttachments);
+      setActiveAttachmentIds(threadAttachments.map((attachment) => attachment.attachment_id));
       const latestRun = runs[0];
       const runId = preferredRunId ?? latestRun?.run_id;
       if (runId) await restoreAgentRun(runId, { replayChat: false });
@@ -696,7 +622,6 @@ export function AppShell() {
       ]);
       agentThreadIdRef.current = run.thread_id;
       setActiveThreadId(run.thread_id);
-      setContextThread(contextKey, run.thread_id);
       events.forEach((event) => applyAgentEvent(event, options));
       if (
         terminalAgentStatuses.has(run.status)
@@ -719,10 +644,10 @@ export function AppShell() {
         await subscribeToAgentRun(runId);
       } else {
         if (run.status === "failed" && run.retryable) setRetryableAgentRunId(runId);
-        window.localStorage.removeItem(agentRunStorageKey(contextKey));
+        window.localStorage.removeItem(agentRunStorageKey(run.thread_id));
       }
     } catch {
-      window.localStorage.removeItem(agentRunStorageKey(contextKey));
+      if (agentThreadIdRef.current) window.localStorage.removeItem(agentRunStorageKey(agentThreadIdRef.current));
     }
   }
 
@@ -732,21 +657,18 @@ export function AppShell() {
       await deleteJson<{ thread_id: string; deleted_runs: number }>(
         `/api/agent/threads/${encodeURIComponent(threadId)}`,
       );
-      Object.entries(threadByContext)
-        .filter(([, mappedThreadId]) => mappedThreadId === threadId)
-        .forEach(([context]) => window.localStorage.removeItem(agentRunStorageKey(context)));
-      clearThread(threadId);
-      messagesByContextRef.current = {};
+      window.localStorage.removeItem(agentRunStorageKey(threadId));
       if (agentThreadIdRef.current === threadId) {
         agentEventSourceRef.current?.close();
         agentEventSourceRef.current = null;
         streamGenerationRef.current += 1;
         agentThreadIdRef.current = null;
         setActiveThreadId(null);
+        setAttachments([]);
+        clearActiveAttachments();
         setActiveAgentRunId(null);
         setRetryableAgentRunId(null);
         setPendingInterrupt(null);
-        setPendingTaskConfirmation(null);
         setMessages([initialAgentMessage]);
       }
     } catch (error) {
@@ -781,55 +703,6 @@ export function AppShell() {
     }
   }
 
-  async function prepareIngestChangeSet() {
-    if (!selectedSource || agentBusy) return;
-    setTaskEvents([]);
-    setWorkflow({ phase: "preparing", message: t("workflow.preparing") });
-    setAgentBusy(true);
-    setMessages((current) => [...current, { role: "user", text: `Prepare an ingest ChangeSet for ${selectedSource.original_name}.` }]);
-    try {
-      const result = await runTypedTask({
-        kind: "ingest",
-        source_id: selectedSource.source_id,
-      });
-      setActiveRunId(result.runId);
-      const outcome = resolveIngestOutcome(result.status);
-      if (outcome === "cancelled") {
-        setWorkflow({ phase: "cancelled", message: t("workflow.cancelled") });
-        return;
-      }
-      if (outcome === "awaiting_review") {
-        setWorkflow({ phase: "awaiting_review", message: t("workflow.review") });
-        return;
-      }
-      if (outcome === "failed") {
-        throw new Error(`Ingest run ended with status ${result.status}.`);
-      }
-      const sourceReviews = await getJson<ChangeSetReview[]>(`/api/changesets?source_id=${encodeURIComponent(selectedSource.source_id)}`);
-      if (sourceReviews.length === 0) throw new Error("The agent completed without creating a ChangeSet.");
-      const latestReview = sourceReviews[0];
-      setSelectedChangeSetId(latestReview.change_set.change_set_id);
-      await refreshWorkspace();
-      if (latestReview.status === "committed") {
-        setWorkflow({ phase: "committed", message: t("workflow.committed") });
-        setMessages((current) => [
-          ...current,
-          {
-            role: "agent",
-            text: `${latestReview.change_set.change_set_id} was committed after governed verification.`,
-            meta: t("chat.commitMeta"),
-          },
-        ]);
-      } else {
-        setWorkflow({ phase: "awaiting_review", message: t("workflow.review") });
-      }
-    } catch (error) {
-      setWorkflow({ phase: "failed", message: t("workflow.proposalFailed"), error: error instanceof Error ? error.message : "Unknown ingest error" });
-    } finally {
-      setAgentBusy(false);
-    }
-  }
-
   async function loadChangeSetReview(changeSetId: string) {
     const cached = reviews.find((review) => review.change_set.change_set_id === changeSetId);
     return cached ?? getJson<ChangeSetReview>(`/api/changesets/${encodeURIComponent(changeSetId)}/review`);
@@ -850,33 +723,13 @@ export function AppShell() {
       { role: "user", text: `${t("source.requestRevision")}: ${comment}` },
     ]);
     try {
-      const review = await loadChangeSetReview(changeSetId);
-      const sourceId = review.change_set.operations[0]?.target_id;
-      if (!sourceId) throw new Error("The ChangeSet has no source target for re-ingest.");
-      setActiveRunId(review.change_set.run_id);
       if (pendingInterrupt?.changeSetId === changeSetId) {
         await resumeAgent(pendingInterrupt.runId, "reject");
         setPendingInterrupt(null);
       }
-      const result = await runTypedTask({
-        kind: "ingest_revision",
-        change_set_id: changeSetId,
-        comments: [comment],
-        reviewer: "desktop-user",
-      });
-      setActiveRunId(result.runId);
-      if (result.status === "cancelled") {
-        setWorkflow({ phase: "cancelled", message: t("workflow.cancelled") });
-        return;
-      }
-      const sourceReviews = await getJson<ChangeSetReview[]>(
-        `/api/changesets?source_id=${encodeURIComponent(sourceId)}`,
+      await runAgent(
+        `Revise ChangeSet ${changeSetId} using this reviewer feedback: ${comment}`,
       );
-      const revisionReview = sourceReviews.find((item) => item.change_set.revision_id) ?? sourceReviews[0];
-      if (!revisionReview) throw new Error("The revision completed without creating a ChangeSet.");
-      setSelectedChangeSetId(revisionReview.change_set.change_set_id);
-      await refreshWorkspace();
-      setWorkflow({ phase: "awaiting_review", message: t("workflow.review") });
     } catch (error) {
       setWorkflow({
         phase: "failed",
@@ -968,51 +821,6 @@ export function AppShell() {
     }
   }
 
-  async function proposeLintFix(findingIds: string[]) {
-    if (!findingIds.length || agentBusy) return;
-    setAgentBusy(true);
-    try {
-      const inspection = await runTypedTask({
-        kind: "lint",
-        action: "inspect",
-        scope: { kind: "project" },
-        limit: 20,
-        finding_ids: [],
-      });
-      const inspectionEvents = await getJson<AgentEvent[]>(
-        `/api/agent/runs/${encodeURIComponent(inspection.runId)}/events`,
-      );
-      const inspectionFinal = [...inspectionEvents].reverse().find(
-        (event) => event.type === "final_response",
-      );
-      const snapshotId = inspectionFinal?.data.snapshot_id;
-      if (typeof snapshotId !== "string") {
-        throw new Error("Lint inspection did not return a snapshot.");
-      }
-      setAgentBusy(true);
-      const proposal = await runTypedTask({
-        kind: "lint",
-        action: "propose_fix",
-        scope: { kind: "project" },
-        limit: 20,
-        snapshot_id: snapshotId,
-        finding_ids: findingIds,
-      });
-      await refreshWorkspace();
-      if (proposal.status === "waiting_approval") {
-        setWorkflow({ phase: "awaiting_review", message: t("workflow.lintFixReady") });
-      }
-    } catch (error) {
-      setWorkflow({
-        phase: "failed",
-        message: t("source.failedTitle"),
-        error: error instanceof Error ? error.message : t("source.failedTitle"),
-      });
-    } finally {
-      setAgentBusy(false);
-    }
-  }
-
   async function cancelActiveAgentRun() {
     if (!activeAgentRunId) return;
     setWorkflow((current) => current.phase === "preparing"
@@ -1031,7 +839,7 @@ export function AppShell() {
         setActiveAgentRunId(null);
         setAgentBusy(false);
         setAgentActivity(t("chat.runCancelled"));
-        window.localStorage.removeItem(agentRunStorageKey(contextKey));
+        if (agentThreadIdRef.current) window.localStorage.removeItem(agentRunStorageKey(agentThreadIdRef.current));
       } else {
         setAgentActivity(t("chat.cancelling"));
       }
@@ -1054,7 +862,7 @@ export function AppShell() {
     setAgentActivity(t("chat.retrying"));
     setRetryableAgentRunId(null);
     setActiveAgentRunId(runId);
-    window.localStorage.setItem(agentRunStorageKey(contextKey), runId);
+    if (agentThreadIdRef.current) window.localStorage.setItem(agentRunStorageKey(agentThreadIdRef.current), runId);
     try {
       await postJson<AgentRun>(`/api/agent/runs/${encodeURIComponent(runId)}/retry`, {});
       await subscribeToAgentRun(runId);
@@ -1092,68 +900,62 @@ export function AppShell() {
     }
   }
 
-  function startNewChat() {
-    if (agentBusy || pendingInterrupt || pendingTaskConfirmation) return;
+  async function uploadAgentAttachments(fileList: FileList | null) {
+    const files = Array.from(fileList ?? []);
+    if (files.length === 0) return;
+    try {
+      const threadId = await ensureAgentThread();
+      const body = new FormData();
+      files.forEach((file) => body.append("files", file));
+      const response = await productFetch(
+        `/api/agent/threads/${encodeURIComponent(threadId)}/attachments`,
+        { method: "POST", body },
+      );
+      if (!response.ok) throw new Error("attachment upload failed");
+      const uploaded = await response.json() as AttachmentRecord[];
+      setAttachments((current) => [
+        ...uploaded,
+        ...current.filter((item) => !uploaded.some((next) => next.attachment_id === item.attachment_id)),
+      ]);
+      setActiveAttachmentIds([...activeAttachmentIds, ...uploaded.map((item) => item.attachment_id)]);
+    } catch {
+      setMessages((current) => [...current, {
+        role: "agent",
+        text: t("chat.attachmentUploadFailed"),
+        meta: t("chat.sourceErrorMeta"),
+      }]);
+    }
+  }
+
+  async function startNewChat() {
+    if (agentBusy || pendingInterrupt) return;
     agentEventSourceRef.current?.close();
     streamGenerationRef.current += 1;
     agentThreadIdRef.current = null;
     setActiveThreadId(null);
-    clearContextThread(contextKey);
-    window.localStorage.removeItem(agentRunStorageKey(contextKey));
     setActiveAgentRunId(null);
     setRetryableAgentRunId(null);
     setAgentActivity("");
     agentEventSequenceRef.current = 0;
     processedAgentEventsRef.current.clear();
     setPendingInterrupt(null);
-    setPendingTaskConfirmation(null);
+    setAttachments([]);
+    clearActiveAttachments();
     setDraft("");
-    setMessages([{ ...initialAgentMessage, text: t("workflow.newConversation").replace("{context}", contextTitle) }]);
-  }
-
-  async function launchLintTask(scopeKind: "page" | "project") {
-    if (agentBusy || pendingInterrupt || pendingTaskConfirmation) return;
-    startNewChat();
-    setActiveView("wiki");
-    const prompt = scopeKind === "page" && selectedId
-      ? t("chat.launchPageLint")
-      : t("chat.launchLocalLint");
-    setMessages((current) => [...current, { role: "user", text: prompt }]);
-    setAgentBusy(true);
     try {
-      await runTypedTask({
-        kind: "lint",
-        action: "inspect",
-        scope: scopeKind === "page" && selectedId
-          ? { kind: "page", page_id: selectedId }
-          : { kind: "project" },
-        limit: 5,
-        finding_ids: [],
-      });
-    } catch (error) {
-      const failure = agentRequestFailure(
-        error,
-        isDesktopRuntime ? t("workflow.runtimeDesktop") : t("workflow.runtimeWeb"),
-      );
-      setMessages((current) => [...current, {
-        role: "agent",
-        text: failure.text,
-        meta: failure.meta,
+      const thread = await postJson<{ thread_id: string }>("/api/agent/threads", {});
+      agentThreadIdRef.current = thread.thread_id;
+      setActiveThreadId(thread.thread_id);
+      setMessages([{
+        ...initialAgentMessage,
+        text: t("workflow.newConversation").replace(
+          "{context}",
+          composerPageRef?.title ?? t("reader.workspace"),
+        ),
       }]);
-    } finally {
-      setAgentBusy(false);
+    } catch {
+      setMessages([{ ...initialAgentMessage, text: t("workflow.newConversation").replace("{context}", contextTitle) }]);
     }
-  }
-
-  function startResearchConversation() {
-    if (agentBusy || pendingInterrupt || pendingTaskConfirmation) return;
-    startNewChat();
-    setActiveView("wiki");
-    setMessages((current) => [...current, {
-      role: "agent",
-      text: t("chat.researchTopicRequired"),
-      meta: t("chat.queryMeta"),
-    }]);
   }
 
   function openCitation(citation: Citation) {
@@ -1164,10 +966,6 @@ export function AppShell() {
   }
 
   function openSearchResult(result: SearchResult) {
-    if (result.type === "lint") {
-      void launchLintTask("project");
-      return;
-    }
     if (result.source_id && result.type === "source") {
       setSelectedSourceId(result.source_id);
       setActiveView("sources");
@@ -1212,12 +1010,7 @@ export function AppShell() {
             <button className={activeView === "wiki" ? "rail-button active" : "rail-button"} onClick={() => { setActiveView("wiki"); setSelectedSourceId(null); setSelectedChangeSetId(null); }} title={t("nav.wiki")} aria-label={t("nav.wiki")}><PanelLeft size={19} /></button>
             <button className="rail-button" onClick={() => document.querySelector<HTMLTextAreaElement>(".chat-compose textarea")?.focus()} title={t("nav.agent")} aria-label={t("nav.agent")}><MessageSquareText size={19} /></button>
             <button className={activeView === "search" ? "rail-button active" : "rail-button"} onClick={() => setActiveView("search")} title={t("nav.search")} aria-label={t("nav.search")}><Search size={19} /></button>
-            <button className={activeView === "graph" ? "rail-button active" : "rail-button"} onClick={() => setActiveView("graph")} title={t("nav.graph")} aria-label={t("nav.graph")}><Network size={19} /></button>
             <button className={activeView === "sources" ? "rail-button active" : "rail-button"} onClick={() => { setActiveView("sources"); if (sources[0] && !selectedSourceId) setSelectedSourceId(sources[0].source_id); else if (!sources[0]) fileRef.current?.click(); }} title={t("nav.sources")} aria-label={t("nav.sources")}><Database size={19} /></button>
-            <button className={activeView === "reviews" ? "rail-button active" : "rail-button"} onClick={() => setActiveView("reviews")} title={t("nav.reviews")} aria-label={t("nav.reviews")}><GitBranch size={19} /></button>
-            <button className={activeView === "lint" ? "rail-button active" : "rail-button"} onClick={() => void launchLintTask("project")} title={t("nav.lint")} aria-label={t("nav.lint")}><ShieldAlert size={19} /></button>
-            <button className={activeView === "memory" ? "rail-button active" : "rail-button"} onClick={() => setActiveView("memory")} title={t("nav.memory")} aria-label={t("nav.memory")}><BrainCircuit size={19} /></button>
-            <button className={activeView === "research" ? "rail-button active" : "rail-button"} onClick={startResearchConversation} title={t("nav.broadLint")} aria-label={t("nav.broadLint")}><FlaskConical size={19} /></button>
           </div>
           <div className="rail-bottom">
             <span className={apiOnline ? "rail-health online" : "rail-health"} title={apiOnline ? t("runtime.online") : t("runtime.offline")} />
@@ -1252,7 +1045,17 @@ export function AppShell() {
                         className={page.page_id === selectedId ? "tree-file selected" : "tree-file"}
                         style={{ paddingLeft: 18 + 16 * 3 }}
                         key={page.page_id}
-                        onClick={() => { setActiveView("wiki"); setSelectedId(page.page_id); setSelectedSourceId(null); setSelectedChangeSetId(null); }}
+                        onClick={() => {
+                          setActiveView("wiki");
+                          setSelectedId(page.page_id);
+                          setComposerPageRef({
+                            page_id: page.page_id,
+                            title: page.title ?? fileNameForPage(page),
+                            path: page.path,
+                          });
+                          setSelectedSourceId(null);
+                          setSelectedChangeSetId(null);
+                        }}
                         title={page.path}
                       >
                         <FileText size={14} />
@@ -1316,10 +1119,6 @@ export function AppShell() {
                     focus={`cell_type:${selectedId}`}
                     onOpenPage={(pageId) => { setSelectedId(pageId); setSelectedSourceId(null); setActiveView("wiki"); }}
                     onOpenSource={(sourceId) => { setSelectedSourceId(sourceId); setActiveView("sources"); }}
-                    onAttachNode={(node) => {
-                      setSelectedText(`${node.type}: ${node.label} (${node.node_id})`);
-                      setDraft(`${t("graph.discuss")} ${node.label}`);
-                    }}
                   />
                 </Suspense>
               ) : activeView === "search" ? (
@@ -1334,8 +1133,6 @@ export function AppShell() {
                     setActiveView("sources");
                   }}
                 />
-              ) : activeView === "memory" ? (
-                <MemoryWorkspace />
               ) : selectedSource ? (
                 <SourceReview
                   source={selectedSource}
@@ -1343,12 +1140,9 @@ export function AppShell() {
                   workflow={workflow}
                   quality={quality}
                   taskEvents={taskEvents}
-                  onPrepare={() => void prepareIngestChangeSet()}
-                  onCancel={() => void cancelActiveAgentRun()}
                   onApprove={() => void approveChangeSet()}
                   onReject={() => void rejectChangeSet()}
                   onRollback={() => void rollbackChangeSet()}
-                  onProposeFix={(findingIds) => void proposeLintFix(findingIds)}
                   onRequestRevision={(comment) => void requestIngestRevision(comment)}
                 />
               ) : !selectedId ? (
@@ -1370,6 +1164,14 @@ export function AppShell() {
                     <span>{references.length} {t("reader.references")}</span>
                     <span>{t("reader.stable")}</span>
                     <span>{t("reader.verified")}</span>
+                    <button
+                      className="document-graph-action"
+                      onClick={() => setActiveView("graph")}
+                      title={t("reader.viewGraph")}
+                    >
+                      <Network size={13} />
+                      {t("reader.viewGraph")}
+                    </button>
                   </div>
                   <MarkdownReader
                     markdown={detail.markdown}
@@ -1417,7 +1219,7 @@ export function AppShell() {
                 {activeAgentRunId && (
                   <button className="icon-button stop-run" onClick={() => void cancelActiveAgentRun()} title={t("chat.cancel")} aria-label={t("chat.cancel")}><Square size={13} /></button>
                 )}
-                <button className="icon-button" disabled={agentBusy || pendingInterrupt !== null || pendingTaskConfirmation !== null} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
+                <button className="icon-button" disabled={agentBusy || pendingInterrupt !== null} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
               </div>
             </div>
             <ThreadList
@@ -1426,39 +1228,22 @@ export function AppShell() {
               onSelect={(thread) => {
                 agentThreadIdRef.current = thread.threadId;
                 setActiveThreadId(thread.threadId);
-                setContextThread(contextKey, thread.threadId);
                 void restoreAgentThread(thread.threadId, thread.latestRun.run_id);
               }}
             />
             <div className="agent-context">
-              <span><i />{selectedSource ? t("chat.sourceContext") : t("chat.pageContext")}</span>
-              <strong>{contextTitle}</strong>
-              <small>{contextPath}</small>
+              <span><i />{t("chat.agentContext")}</span>
+              {composerPageRef && (
+                <>
+                  <strong>{composerPageRef.title}</strong>
+                  <small>{composerPageRef.path ?? composerPageRef.page_id}</small>
+                </>
+              )}
+              {activeAttachments.length > 0 && (
+                <small>{t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length))}</small>
+              )}
               {selectedText && <blockquote>{selectedText}</blockquote>}
             </div>
-
-            {pendingTaskConfirmation && (
-              <div className="agent-task-confirmation">
-                <strong>{t("chat.taskConfirmationTitle")}</strong>
-                <p>{pendingTaskConfirmation.reason}</p>
-                <small>{taskConfirmationSummary(pendingTaskConfirmation.task)}</small>
-                <div>
-                  <button
-                    className="secondary"
-                    disabled={agentBusy}
-                    onClick={() => void resolveTaskConfirmation("cancel")}
-                  >
-                    {t("chat.taskCancel")}
-                  </button>
-                  <button
-                    disabled={agentBusy}
-                    onClick={() => void resolveTaskConfirmation("execute")}
-                  >
-                    {t("chat.taskExecute")}
-                  </button>
-                </div>
-              </div>
-            )}
 
             {pendingInterrupt && (
               <AgentReviewCard
@@ -1511,24 +1296,74 @@ export function AppShell() {
 
             <div className="composer-wrap">
               <div className="chat-compose">
+                {(composerPageRef || activeAttachments.length > 0) && (
+                  <div className="composer-reference-row">
+                    {composerPageRef && (
+                      <span className="composer-chip page-chip">
+                        <FileText size={12} />
+                        <span>{composerPageRef.title}</span>
+                        <button type="button" onClick={() => setComposerPageRef(null)} aria-label={t("chat.clearReference")}><X size={11} /></button>
+                      </span>
+                    )}
+                    {activeAttachments.map((attachment) => (
+                      <span className="composer-chip attachment-chip" key={attachment.attachment_id}>
+                        <Upload size={12} />
+                        <span>{attachment.original_name}</span>
+                        <button type="button" onClick={() => removeActiveAttachmentId(attachment.attachment_id)} aria-label={t("chat.clearReference")}><X size={11} /></button>
+                      </span>
+                    ))}
+                  </div>
+                )}
                 <textarea
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
                   onKeyDown={(event) => {
+                    if (
+                      event.key === "Backspace"
+                      && !draft
+                      && event.currentTarget.selectionStart === 0
+                      && event.currentTarget.selectionEnd === 0
+                      && (composerPageRef || activeAttachmentIds.length > 0)
+                    ) {
+                      event.preventDefault();
+                      removeLastComposerReference();
+                      return;
+                    }
                     if (event.key === "Enter" && !event.shiftKey) {
                       event.preventDefault();
                       void sendMessage();
                     }
                   }}
-                  placeholder={selectedSource ? t("chat.sourcePlaceholder") : t("chat.pagePlaceholder")}
+                  placeholder={t("chat.composerPlaceholder")}
                   rows={3}
                 />
                 <div className="compose-actions">
-                  <span>{selectedSource ? t("chat.sourceAttached") : t("chat.pageAttached")}</span>
+                  <div className="compose-left">
+                    <button
+                      type="button"
+                      className="compose-tool-button"
+                      onClick={() => attachmentRef.current?.click()}
+                      title={t("chat.addAttachment")}
+                      aria-label={t("chat.addAttachment")}
+                    >
+                      <CirclePlus size={14} />
+                    </button>
+                    <span>{activeAttachments.length > 0 ? t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length)) : t("chat.agentContext")}</span>
+                  </div>
                   <button onClick={() => void sendMessage()} disabled={!draft.trim() || agentBusy} aria-label={t("chat.send")}><Send size={15} /></button>
                 </div>
+                <input
+                  ref={attachmentRef}
+                  type="file"
+                  accept=".pdf,.md,.txt,.csv,.json"
+                  multiple
+                  hidden
+                  onChange={(event) => {
+                    void uploadAgentAttachments(event.currentTarget.files);
+                    event.currentTarget.value = "";
+                  }}
+                />
               </div>
-              <div className="agent-modes"><span className={!selectedSource ? "active" : ""}>{t("chat.query")}</span><span className={selectedSource ? "active" : ""}>{t("chat.ingest")}</span><span className={selectedReview?.status === "awaiting_review" ? "active" : ""}>{t("chat.review")}</span></div>
             </div>
           </aside>
         </div>
@@ -1554,12 +1389,6 @@ function findNestedString(value: unknown, key: string): string | null {
     }
   }
   return null;
-}
-
-function taskConfirmationSummary(task: Record<string, unknown>) {
-  const kind = String(task.kind ?? "task");
-  const target = task.source_id ?? task.change_set_id ?? task.page_id;
-  return target ? `${kind} · ${String(target)}` : kind;
 }
 
 export function agentRequestFailure(error: unknown, offlineMessage: string) {

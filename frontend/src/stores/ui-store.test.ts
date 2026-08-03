@@ -1,30 +1,31 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { useUiStore } from "./ui-store";
+import { normalizePersistedView, useUiStore } from "./ui-store";
 
 describe("UI state boundaries", () => {
   beforeEach(() => {
     localStorage.clear();
     useUiStore.setState({
       activeView: "wiki",
+      activeThreadId: null,
+      composerPageRef: null,
+      activeAttachmentIds: [],
       commandPaletteOpen: false,
       selectedText: "",
       leftWidth: 252,
       rightWidth: 390,
-      threadByContext: {},
       zoomLevel: 1,
       themeOverride: null,
     });
   });
 
-  it("isolates durable Agent threads by active context", () => {
+  it("keeps the active Agent thread independent from the composer page reference", () => {
     const state = useUiStore.getState();
-    state.setContextThread("page:T_cell", "thread-page");
-    state.setContextThread("source:paper-1", "thread-source");
+    state.setActiveThreadId("thread-global");
+    state.setComposerPageRef({ page_id: "T_cell", title: "T cell", path: "wiki/cell_types/T_cell.md" });
+    state.setComposerPageRef({ page_id: "B_cell", title: "B cell", path: "wiki/cell_types/B_cell.md" });
 
-    expect(useUiStore.getState().threadByContext).toEqual({
-      "page:T_cell": "thread-page",
-      "source:paper-1": "thread-source",
-    });
+    expect(useUiStore.getState().activeThreadId).toBe("thread-global");
+    expect(useUiStore.getState().composerPageRef?.page_id).toBe("B_cell");
   });
 
   it("keeps selected scientific text out of persisted state", () => {
@@ -34,16 +35,19 @@ describe("UI state boundaries", () => {
     expect(persisted).not.toContain("sensitive selected passage");
   });
 
-  it("removes every local context mapping for a deleted thread", () => {
+  it("removes composer references from the end so Backspace can delete chips", () => {
     const state = useUiStore.getState();
-    state.setContextThread("page:T_cell", "thread-delete");
-    state.setContextThread("source:paper-1", "thread-keep");
+    state.setComposerPageRef({ page_id: "T_cell", title: "T cell" });
+    state.setActiveAttachmentIds(["att_1", "att_2"]);
 
-    state.clearThread("thread-delete");
+    state.removeLastComposerReference();
+    expect(useUiStore.getState().activeAttachmentIds).toEqual(["att_1"]);
+    expect(useUiStore.getState().composerPageRef?.page_id).toBe("T_cell");
 
-    expect(useUiStore.getState().threadByContext).toEqual({
-      "source:paper-1": "thread-keep",
-    });
+    state.removeLastComposerReference();
+    state.removeLastComposerReference();
+    expect(useUiStore.getState().activeAttachmentIds).toEqual([]);
+    expect(useUiStore.getState().composerPageRef).toBeNull();
   });
 
   it("clamps and persists the global zoom level", () => {
@@ -63,5 +67,13 @@ describe("UI state boundaries", () => {
 
     expect(useUiStore.getState().themeOverride).toBe("dark");
     expect(localStorage.getItem("cellwiki.ui.v2") ?? "").not.toContain("themeOverride");
+  });
+
+  it("does not restore retired feature views as first-level navigation", () => {
+    expect(normalizePersistedView("reviews")).toBe("wiki");
+    expect(normalizePersistedView("lint")).toBe("wiki");
+    expect(normalizePersistedView("research")).toBe("wiki");
+    expect(normalizePersistedView("graph")).toBe("wiki");
+    expect(normalizePersistedView("search")).toBe("search");
   });
 });

@@ -20,10 +20,10 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile, status
+from fastapi import FastAPI, File, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from cellwiki.config import settings
 from cellwiki.api.reader import WikiReader
@@ -42,13 +42,13 @@ from cellwiki.domain.contracts import (
     WikiAgentContext,
 )
 from cellwiki.domain.runs import AgentRun, AgentRunStatus, RunBudget
-from cellwiki.domain.tasks import AgentTask
 from cellwiki.services.agent_runtime import (
     AgentRuntimeBusyError,
     AgentRuntimeManager,
     is_retryable_run,
 )
 from cellwiki.services.approvals import ApprovalConflictError, ApprovalRepository
+from cellwiki.services.attachments import AttachmentService
 from cellwiki.services.central_writer import CentralWriter, VersionConflictError
 from cellwiki.services.changesets import ChangeSetNotFoundError, ChangeSetRepository
 from cellwiki.services.environment import EnvironmentSettingsService
@@ -124,29 +124,22 @@ class RollbackRequest(BaseModel):
 
 # ---- 智能体运行请求 ----
 class AgentRunRequest(BaseModel):
-    """Stable Product API input; Deep Agents request details stay behind the runtime adapter."""
-    message: str | None = Field(default=None, min_length=1, max_length=100_000)  # 旧版自由消息
-    task: AgentTask | None = None                              # 类型化领域任务
+    """Natural-language Product API input; routing stays inside the Agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=100_000)
     thread_id: str | None = Field(default=None, max_length=128)   # 对话线程 ID
     project_id: str = Field(default="cellwiki", max_length=128)
     source_id: str | None = Field(default=None, max_length=256)
     page_id: str | None = Field(default=None, max_length=256)
+    attachment_ids: list[str] = Field(default_factory=list, max_length=50)
     selected_text: str | None = Field(default=None, max_length=4000)  # 用户选中的文本
     budget: RunBudget = Field(default_factory=RunBudget)           # 运行预算
-
-    @model_validator(mode="after")
-    def require_one_entry(self) -> "AgentRunRequest":
-        if (self.message is None) == (self.task is None):
-            raise ValueError("provide exactly one of message or task")
-        return self
 
 # ---- 智能体恢复请求 ----
 class AgentResumeRequest(BaseModel):
     decision: str = Field(pattern="^(approve|reject)$")  # 审批或拒绝
-
-
-class AgentTaskConfirmationRequest(BaseModel):
-    decision: str = Field(pattern="^(execute|cancel)$")
 
 
 # ===========================================================================
@@ -167,6 +160,7 @@ def create_app(
     # 初始化所有服务依赖
     reader = WikiReader(root)                    # Wiki 页面读取器
     sources = SourceRegistry(root)               # 来源注册
+    attachments = AttachmentService(root, source_registry=sources)
     changesets = ChangeSetRepository(root)       # 变更集仓库
     approvals = ApprovalRepository(root)         # 审批仓库
     writer = CentralWriter(root, repository=changesets)  # 中央写入器
@@ -409,12 +403,58 @@ def create_app(
         """Return the complete persisted transcript for one conversation."""
         return get_agent_runtime().store.list_messages(thread_id)
 
+    @app.post("/api/agent/threads/{thread_id}/attachments", status_code=status.HTTP_201_CREATED)
+    async def upload_agent_thread_attachments(
+        thread_id: str,
+        files: list[UploadFile] = File(...),
+    ) -> list[dict]:
+        """Upload temporary Agent attachments scoped to one conversation thread."""
+        upload_dir = root / "data" / "runtime" / "uploads"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        records = []
+        for upload in files:
+            filename = Path(upload.filename or "attachment.bin").name
+            temporary_path: Path | None = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    dir=upload_dir, prefix="agent_attachment_", suffix=".tmp", delete=False
+                ) as temporary:
+                    temporary_path = Path(temporary.name)
+                    while chunk := await upload.read(1024 * 1024):
+                        temporary.write(chunk)
+                record = attachments.create(
+                    thread_id,
+                    temporary_path,
+                    original_name=filename,
+                    media_type=upload.content_type,
+                )
+                records.append(_attachment_payload(record))
+            except KeyError:
+                raise HTTPException(status_code=404, detail="agent thread not found") from None
+            finally:
+                if temporary_path is not None:
+                    temporary_path.unlink(missing_ok=True)
+        return records
+
+    @app.get("/api/agent/threads/{thread_id}/attachments")
+    def list_agent_thread_attachments(thread_id: str) -> list[dict]:
+        """Return temporary Agent attachments for one conversation thread."""
+        try:
+            return [_attachment_payload(record) for record in attachments.list(thread_id)]
+        except KeyError:
+            raise HTTPException(status_code=404, detail="agent thread not found") from None
+
     @app.delete("/api/agent/threads/{thread_id}")
     def delete_agent_thread(thread_id: str) -> dict[str, int | str]:
         """Permanently delete a conversation and its LangGraph checkpoint."""
         try:
             deleted_runs = get_agent_runtime().delete_thread(thread_id)
-            return {"thread_id": thread_id, "deleted_runs": deleted_runs}
+            deleted_attachments = attachments.delete_thread(thread_id)
+            return {
+                "thread_id": thread_id,
+                "deleted_runs": deleted_runs,
+                "deleted_attachments": deleted_attachments,
+            }
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
 
@@ -428,23 +468,16 @@ def create_app(
             page_id=request.page_id,
             selected_text=request.selected_text,
             thread_id=thread_id,
+            attachment_ids=request.attachment_ids,
         )
         try:
             runtime = get_agent_runtime()
-            if request.task is not None:
-                run = runtime.start_task(
-                    thread_id=thread_id,
-                    task=request.task,
-                    context=context,
-                    budget=request.budget,
-                )
-            else:
-                run = runtime.start(
-                    thread_id=thread_id,
-                    message=request.message or "",
-                    context=context,
-                    budget=request.budget,
-                )
+            run = runtime.start(
+                thread_id=thread_id,
+                message=request.message,
+                context=context,
+                budget=request.budget,
+            )
             return _agent_run_payload(run)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
@@ -537,22 +570,6 @@ def create_app(
         try:
             return _agent_run_payload(
                 get_agent_runtime().resume(run_id, decision=request.decision)
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="agent run not found") from None
-        except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from None
-
-    @app.post(
-        "/api/agent/runs/{run_id}/task-confirmation",
-        status_code=status.HTTP_202_ACCEPTED,
-    )
-    def confirm_agent_task(run_id: str, request: AgentTaskConfirmationRequest) -> dict:
-        """Resolve a typed task proposed from natural language."""
-
-        try:
-            return _agent_run_payload(
-                get_agent_runtime().confirm_task(run_id, decision=request.decision)
             )
         except KeyError:
             raise HTTPException(status_code=404, detail="agent run not found") from None
@@ -771,9 +788,14 @@ def create_app(
     def quality_report() -> dict:
         return inspect_projection(root)
 
-    @app.post("/api/quality/fixes", status_code=status.HTTP_201_CREATED)
-    def propose_quality_fixes(request: LintFixRequest) -> dict:
+    @app.post("/api/internal/quality/fixes", status_code=status.HTTP_201_CREATED)
+    def propose_quality_fixes(
+        request: LintFixRequest,
+        internal_compatibility: str | None = Header(default=None, alias="X-CellWiki-Internal"),
+    ) -> dict:
         """Create a low-risk ChangeSet for deterministic findings; never apply it here."""
+        if internal_compatibility != "1":
+            raise HTTPException(status_code=404, detail="internal compatibility route")
         try:
             change_set = lint_fixes.propose(
                 request.finding_ids,
@@ -910,6 +932,13 @@ def _agent_run_payload(run: AgentRun) -> dict:
         AgentRunStatus.WAITING_CONFIRMATION,
         AgentRunStatus.WAITING_APPROVAL,
     }
+    return payload
+
+
+def _attachment_payload(record) -> dict:
+    payload = record.model_dump(mode="json")
+    payload.pop("stored_path", None)
+    payload.pop("text_path", None)
     return payload
 
 

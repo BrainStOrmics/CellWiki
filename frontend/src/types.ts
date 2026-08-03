@@ -261,6 +261,18 @@ export type AgentRun = {
   };
 };
 
+export type AttachmentRecord = {
+  attachment_id: string;
+  thread_id: string;
+  original_name: string;
+  media_type: string;
+  size_bytes: number;
+  content_hash: string;
+  text_hash?: string | null;
+  promoted_source_id?: string | null;
+  created_at: string;
+};
+
 export type AgentEventType =
   | "run_status"
   | "message_delta"
@@ -271,7 +283,6 @@ export type AgentEventType =
   | "subagent_started"
   | "subagent_completed"
   | "progress"
-  | "task_confirmation_required"
   | "review_required"
   | "changeset_ready"
   | "verification"

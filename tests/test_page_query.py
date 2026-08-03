@@ -7,7 +7,7 @@ from langchain_core.messages import AIMessage
 
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.runs import AgentEventType, AgentRunStatus
-from cellwiki.services.agent_runtime import AgentRuntimeManager
+from cellwiki.services.agent_runtime import AgentRuntimeManager, RuntimeSignal
 from cellwiki.services.operations import bind_agent_run
 from cellwiki.services.page_query import PageQueryExecutionAdapter, PageQueryRouter
 
@@ -77,14 +77,18 @@ def test_page_query_adapter_reads_current_page_and_uses_one_model_call(tmp_path:
     assert final.output_tokens == 30
 
 
-def test_manager_routes_current_page_question_outside_langgraph(tmp_path: Path):
+def test_manager_sends_current_page_question_to_the_coordinator(tmp_path: Path):
     page = tmp_path / "wiki" / "cell_types" / "t_cell.md"
     page.parent.mkdir(parents=True)
     page.write_text("# T cell\nCD3D marker", encoding="utf-8")
 
-    class _ForbiddenCoordinator:
+    class _Coordinator:
         def execute(self, *, thread_id, message, context):
-            raise AssertionError("current-page fast path must not enter LangGraph")
+            yield RuntimeSignal(
+                type=AgentEventType.FINAL_RESPONSE,
+                message="CD3D is listed as a marker.",
+                data={"answer": "CD3D is listed as a marker."},
+            )
 
         def close(self):
             return None
@@ -95,7 +99,7 @@ def test_manager_routes_current_page_question_outside_langgraph(tmp_path: Path):
     page_adapter = PageQueryExecutionAdapter(tmp_path, model_factory=lambda: _BoundModel())
     manager = AgentRuntimeManager(
         tmp_path,
-        adapter=_ForbiddenCoordinator(),
+        adapter=_Coordinator(),
         page_query_adapter=page_adapter,
     )
     try:
@@ -116,13 +120,10 @@ def test_manager_routes_current_page_question_outside_langgraph(tmp_path: Path):
             time.sleep(0.01)
 
         assert current.status is AgentRunStatus.SUCCEEDED
-        assert current.model_role == "page-query"
-        assert current.usage.model_calls == 1
+        assert current.model_role == "coordinator"
+        assert current.usage.model_calls == 0
         assert current.usage.tool_calls_started == 0
-        assert {span.kind for span in manager.store.list_spans(run.run_id)} == {
-            "router",
-            "model",
-        }
+        assert {span.kind for span in manager.store.list_spans(run.run_id)} == {"router"}
     finally:
         manager.close()
 

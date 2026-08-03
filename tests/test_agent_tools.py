@@ -18,6 +18,7 @@ from cellwiki.agent.app import (
     build_wiki_agent,
 )
 from cellwiki.agent.tools import (
+    build_attachment_tools,
     build_final_answer_tool,
     build_rebase_tool,
     build_ingest_tools,
@@ -28,6 +29,7 @@ from cellwiki.agent.tools import (
 from cellwiki.config import Settings
 from cellwiki.services.operations import bind_agent_run
 from cellwiki.domain.contracts import ApprovalPolicy, PipelineTaskType
+from cellwiki.services.attachments import AttachmentService
 from cellwiki.services.pipeline import KnowledgePipelineHarness
 
 
@@ -46,6 +48,49 @@ def test_read_tools_use_page_ids_and_return_search_results(tmp_path: Path):
     assert missing == {"error": "page_not_found", "page_id": "does_not_exist"}
     assert status["knowledge_version"].startswith("sha256:")
     assert status["approval_policy"] == "auto_low_risk"
+
+
+def test_attachment_tools_read_search_and_promote_thread_scoped_uploads(tmp_path: Path):
+    thread_id = "thread_" + "a" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 attachment evidence for Treg curation.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    tools = {tool.name: tool for tool in build_attachment_tools(tmp_path)}
+
+    listed = json.loads(tools["list_thread_attachments"].invoke({"thread_id": thread_id}))
+    excerpt = json.loads(
+        tools["read_attachment_excerpt"].invoke(
+            {"thread_id": thread_id, "attachment_id": attachment.attachment_id}
+        )
+    )
+    matches = json.loads(
+        tools["search_attachment_text"].invoke({"thread_id": thread_id, "query": "FOXP3"})
+    )
+    promoted = json.loads(
+        tools["register_attachment_as_source"].invoke(
+            {"thread_id": thread_id, "attachment_id": attachment.attachment_id}
+        )
+    )
+    promoted_again = json.loads(
+        tools["register_attachment_as_source"].invoke(
+            {"thread_id": thread_id, "attachment_id": attachment.attachment_id}
+        )
+    )
+
+    assert listed["attachments"][0]["attachment_id"] == attachment.attachment_id
+    assert "stored_path" not in listed["attachments"][0]
+    assert excerpt["chunk_id"] == f"{attachment.attachment_id}:text:0"
+    assert "FOXP3 attachment evidence" in excerpt["excerpt"]
+    assert matches["matches"][0]["attachment_id"] == attachment.attachment_id
+    assert matches["matches"][0]["chunk_id"].startswith(f"{attachment.attachment_id}:")
+    assert promoted["source"]["source_id"].startswith("src_")
+    assert promoted_again["source"]["source_id"] == promoted["source"]["source_id"]
+    assert promoted_again["already_promoted"] is True
 
 
 def test_rebase_tool_returns_an_explicit_current_or_conflict_result(tmp_path: Path):
@@ -115,11 +160,11 @@ def test_lint_tools_report_pipeline_busy_without_failing_the_agent_run(tmp_path:
     assert payload["active_task"]["run_id"] == "run_writer"
 
 
-def test_coordinator_is_explicitly_read_only():
-    assert "read-only CellWiki coordinator" in SYSTEM_PROMPT
-    assert "deterministic typed tasks" in SYSTEM_PROMPT
-    assert "never launch parallel tasks" in SYSTEM_PROMPT
-    assert "Do not claim that an action ran" in SYSTEM_PROMPT
+def test_coordinator_is_model_led_and_governed():
+    assert "Model-led CellWiki coordinator" in SYSTEM_PROMPT
+    assert "Do not route the user to a separate typed-task" in SYSTEM_PROMPT
+    assert "never launch" in SYSTEM_PROMPT
+    assert "never modify files directly" in SYSTEM_PROMPT
 
 
 def test_default_harness_exposes_only_read_only_conversation_capabilities(
@@ -145,8 +190,15 @@ def test_default_harness_exposes_only_read_only_conversation_capabilities(
     assert names == {"query-agent"}
     top_level_tool_names = {tool.name for tool in captured["tools"]}
     assert "submit_agent_answer" in top_level_tool_names
+    assert "list_thread_attachments" in top_level_tool_names
+    assert "read_attachment_excerpt" in top_level_tool_names
+    assert "search_attachment_text" in top_level_tool_names
+    assert "register_attachment_as_source" in top_level_tool_names
     assert "commit_change_set" not in top_level_tool_names
     assert "rebase_change_set" not in top_level_tool_names
+    assert {"read_file", "write_file", "edit_file", "glob", "grep", "ls"}.isdisjoint(
+        top_level_tool_names
+    )
 
 
 def test_tool_boundary_rejects_generic_filesystem_calls():
@@ -328,14 +380,24 @@ def test_configured_agent_hides_generic_harness_tools_from_first_request(
             )
         )
 
-    assert captured["tool_names"] == {
+    assert {
+        "get_project_status",
+        "search_wiki",
+        "read_wiki_page",
+        "list_change_sets",
+        "get_change_set",
+        "prepare_ingest_change_set",
+        "request_ingest_revision",
+        "run_broad_lint",
+        "inspect_knowledge_quality",
+        "propose_lint_fix",
         "submit_agent_answer",
         "task",
-    }
+    } <= captured["tool_names"]
     assert "general-purpose" not in captured["tool_schemas"]
     assert captured["tool_choice"] in {None, "auto"}
-    assert captured["message_chars"] < 6_500
-    assert captured["tool_schema_chars"] < 2_500
+    assert captured["message_chars"] < 12_000
+    assert captured["tool_schema_chars"] < 12_000
 
 
 def test_memory_tool_submits_validated_candidate_without_accepting_reasoning(tmp_path: Path):

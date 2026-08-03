@@ -30,7 +30,10 @@ from cellwiki.adapters.openai_model import build_openai_chat_model
 from cellwiki.config import Settings, settings
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.agent.tools import (
+    build_attachment_tools,
     build_final_answer_tool,
+    build_ingest_tools,
+    build_lint_tools,
     build_memory_tools,
     build_read_tools,
 )
@@ -42,18 +45,29 @@ from cellwiki.agent.tools import (
 # 任何知识变更必须经过 commit_change_set 确认；
 # 外部研究结果必须经过注册→导入→ChangeSet→人工审批的完整流程。
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = """You are the read-only CellWiki coordinator for a scientific knowledge base.
+SYSTEM_PROMPT = """You are the Model-led CellWiki coordinator for a scientific knowledge base.
 
-Natural-language product actions are routed to deterministic typed tasks before
-this coordinator runs. Never attempt Ingest, Lint repair, ChangeSet publication,
-approval, revision, rebase, or direct file changes. If a user asks for an action
-that is not represented by visible read tools, explain that it needs a typed task
-or missing parameters. Do not claim that an action ran.
-Delegate one bounded evidence question to query-agent; never launch parallel tasks
-or generic reconnaissance. If evidence is missing, say so and recommend registering
-a source. Candidate or review state is not published knowledge.
-For product-operation explanations or clarification questions, answer directly,
-set knowledge_scope to general, and do not invent knowledge citations.
+Every natural-language request enters this coordinator. Decide what the user is
+trying to accomplish from the request and the supplied runtime context, make a
+short internal plan, and call only the visible CellWiki tools needed for that plan.
+The available profiles cover published-Wiki query, source ingest, quality Lint, and
+candidate-only external research. Do not route the user to a separate typed-task
+form or ask them to provide an internal run ID.
+
+Ingest, revision, and Lint repair tools only prepare immutable candidate ChangeSets.
+They never publish formal Wiki knowledge. After a ChangeSet is prepared, summarize
+what will change and wait for the runtime's single human approval boundary. Never
+call or invent a publication tool, never modify files directly, and never claim a
+ChangeSet was committed before the runtime reports CentralWriter verification. If a
+required source, page, or scope is missing, ask a concise clarification rather than
+guessing. External research results are candidate sources only and must not be
+treated as formal Wiki evidence until the governed source and approval workflow
+completes.
+
+Delegate a bounded evidence question to query-agent when useful; never launch
+parallel tasks or generic reconnaissance. For product-operation explanations or
+clarification questions, answer directly, set knowledge_scope to general, and do
+not invent knowledge citations.
 
 For evidence questions, citations must use exact page_id values returned by
 CellWiki tools; include source_id and a section locator when they are available.
@@ -70,14 +84,15 @@ the configured approval policy before they can affect formal Wiki knowledge.
 
 # Deep Agents' stock prompt describes a general coding workspace. CellWiki has
 # narrower governed tools, so every coordinator and subagent shares this base.
-HARNESS_PROMPT = """You are a read-only CellWiki agent. Use only the visible CellWiki
-query tools. Ground scientific claims in exact page IDs returned by tools, identify
-missing evidence, and never invent citations. Typed product actions, ChangeSet
-creation, approval, and publication are outside this graph. Never claim that Ingest,
-Lint repair, revision, or publication ran. External research is candidate evidence
-only and cannot alter formal knowledge directly. Governed memory is workflow context,
-never scientific evidence; do not store private reasoning. Return concise results
-appropriate to your assigned role.
+HARNESS_PROMPT = """You are a governed CellWiki agent. Use only the visible CellWiki
+domain tools and the current runtime context. Query tools read published knowledge;
+ingest and Lint tools create candidate ChangeSets; research tools create candidate
+sources. Ground scientific claims in exact page IDs returned by tools, identify
+missing evidence, and never invent citations. Candidate ChangeSets are not formal
+knowledge until the runtime's approval, CentralWriter, and Verification boundary
+completes. Never use generic filesystem, shell, or publication tools. Governed
+memory is workflow context, never scientific evidence; do not store private
+reasoning. Return concise results appropriate to your assigned role.
 """
 
 # 哨兵对象，用于区分"未传入检查点器"和"传入了 None"
@@ -281,9 +296,15 @@ def build_wiki_agent(
     coordinator_model = model or build_model()
     # 构建工具集
     read_tools = build_read_tools(root)
-    # The coordinator delegates evidence work to specialist subagents. Keeping
-    # read tools off the top-level request makes that ownership boundary explicit.
-    coordinator_tools: list[Any] = []
+    # The coordinator owns the product decision loop. Domain tools stay visible
+    # at this level so the model can choose query, ingest, or lint from the
+    # user's natural-language request; only bounded evidence work is delegated.
+    coordinator_tools: list[Any] = [
+        *read_tools,
+        *build_attachment_tools(root),
+        *build_ingest_tools(root),
+        *build_lint_tools(root),
+    ]
     if settings.enable_agent_memory:
         # 启用记忆：召回 + 提交候选
         recall_memory, propose_memory = build_memory_tools(root)

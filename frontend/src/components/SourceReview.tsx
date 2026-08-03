@@ -12,8 +12,6 @@ import {
   RotateCcw,
   ShieldCheck,
   ShieldX,
-  Square,
-  Wrench,
 } from "lucide-react";
 import { useState } from "react";
 import { useI18n, type AppLanguage } from "../i18n";
@@ -26,12 +24,9 @@ type SourceReviewProps = {
   workflow: IngestWorkflow;
   quality?: QualityReport;
   taskEvents: TaskEvent[];
-  onPrepare: () => void;
-  onCancel: () => void;
   onApprove: () => void;
   onReject: () => void;
   onRollback: () => void;
-  onProposeFix: (findingIds: string[]) => void;
   onRequestRevision?: (comment: string) => void;
 };
 
@@ -41,12 +36,9 @@ export function SourceReview({
   workflow,
   quality,
   taskEvents,
-  onPrepare,
-  onCancel,
   onApprove,
   onReject,
   onRollback,
-  onProposeFix,
   onRequestRevision,
 }: SourceReviewProps) {
   const { language, t } = useI18n();
@@ -63,7 +55,7 @@ export function SourceReview({
       <header className="source-review-header">
         <div>
           <div className="document-kicker">{t("source.registered").toUpperCase()} · {source.source_type.toUpperCase()}</div>
-          <h1>{source.original_name}</h1>
+          <h1 className="source-review-title" title={source.original_name}>{source.original_name}</h1>
           <p>{source.source_id}</p>
         </div>
         <span className={`source-status ${source.status}`}>{localizedSourceStatus(source.status, language)}</span>
@@ -89,11 +81,6 @@ export function SourceReview({
       <section className={`workflow-banner ${workflow.phase}`}>
         {isBusy ? <LoaderCircle className="spin" size={17} /> : workflowIcon(workflow.phase)}
         <div className="workflow-copy"><strong>{workflowTitle(workflow.phase, t)}</strong><span>{workflow.error ?? workflow.message}</span></div>
-        {(workflow.phase === "preparing" || workflow.phase === "cancelling") && (
-          <button className="cancel-ingest-action" onClick={onCancel} disabled={workflow.phase === "cancelling"}>
-            <Square size={12} />{t("source.cancelIngest")}
-          </button>
-        )}
       </section>
 
       {taskEvents.length > 0 && <TaskTimeline events={taskEvents} />}
@@ -102,7 +89,7 @@ export function SourceReview({
         <section className="empty-review-card">
           <FileSearch size={24} />
           <div><h2>{t("source.emptyTitle")}</h2><p>{t("source.emptyBody")}</p></div>
-          <button className="primary-action" onClick={onPrepare}>{t("source.prepare")}</button>
+          <small>{t("chat.sourcePlaceholder")}</small>
         </section>
       )}
 
@@ -242,7 +229,7 @@ export function SourceReview({
         </section>
       )}
 
-      {(review?.status === "committed" || review?.status === "rolled_back") && quality && <QualityDetails quality={quality} onProposeFix={onProposeFix} />}
+      {(review?.status === "committed" || review?.status === "rolled_back") && quality && <QualityDetails quality={quality} />}
     </article>
   );
 }
@@ -286,7 +273,7 @@ function TaskTimeline({ events }: { events: TaskEvent[] }) {
   );
 }
 
-function QualityDetails({ quality, onProposeFix }: { quality: QualityReport; onProposeFix: (findingIds: string[]) => void }) {
+function QualityDetails({ quality }: { quality: QualityReport }) {
   const { language, t } = useI18n();
   return (
     <section className={`quality-report ${quality.status}`}>
@@ -313,7 +300,7 @@ function QualityDetails({ quality, onProposeFix }: { quality: QualityReport; onP
             <div className={`quality-issue ${issue.severity}`} key={`${issue.page_id}-${issue.type}-${index}`}>
               <span className="quality-issue-level">{issue.level}</span>
               <div><b>{issue.page_id}</b><p>{issue.detail}</p><small>{issue.category} · {issue.locator}{issue.auto_fixable ? ` · ${t("quality.autoFixable")}` : ""}</small></div>
-              {issue.auto_fixable && <button onClick={() => onProposeFix([issue.finding_id])}><Wrench size={12} />{t("quality.proposeFix")}</button>}
+              {issue.auto_fixable && <small>{t("quality.autoFixable")}</small>}
             </div>
           ))}
         </div>

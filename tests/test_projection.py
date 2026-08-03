@@ -14,7 +14,10 @@ from cellwiki.domain.contracts import (
     RiskLevel,
 )
 from cellwiki.models import CellTypeExtract, ExtractionResult, PaperReference
-from cellwiki.services.central_writer import CentralWriter
+from cellwiki.services.central_writer import (
+    CentralWriter,
+    ProjectionBootstrapRequiredError,
+)
 from cellwiki.services.changesets import ChangeSetRepository
 from cellwiki.services.projection import ProjectionService
 
@@ -202,3 +205,47 @@ def test_projection_removes_obsolete_manifest_without_extractions(tmp_path: Path
 
     assert ProjectionService(tmp_path).render() == []
     assert not manifest.exists()
+
+
+def test_first_extraction_does_not_delete_unmigrated_legacy_wiki(tmp_path: Path):
+    legacy_page = tmp_path / "wiki" / "cell_types" / "legacy_cell.md"
+    legacy_page.parent.mkdir(parents=True)
+    legacy_page.write_text("legacy knowledge", encoding="utf-8")
+
+    paper = PaperReference(paper_id="paper_1", title="Paper 1", year=2025)
+    extraction = ExtractionResult(
+        paper=paper,
+        cell_types=[
+            CellTypeExtract(
+                name="Treg",
+                standard_name="regulatory_t_cell",
+                paper_ref=paper,
+            )
+        ],
+    )
+    change_set = ChangeSet(
+        change_set_id="cs_legacy_projection_guard",
+        run_id="run_legacy_projection_guard",
+        project_id="cellwiki",
+        risk=RiskLevel.MEDIUM,
+        reason="Publish the first formal extraction.",
+        operations=[
+            ChangeOperation(
+                type=ChangeOperationType.UPSERT_EXTRACTION,
+                target_id="paper_1",
+                payload=extraction.model_dump(mode="json"),
+            )
+        ],
+    )
+    repository = ChangeSetRepository(tmp_path)
+    repository.save(change_set)
+
+    with pytest.raises(ProjectionBootstrapRequiredError, match="migrate the legacy Wiki"):
+        CentralWriter(tmp_path, repository=repository).commit(
+            change_set.change_set_id,
+            ApprovalDecision(approved=True, decided_by="local-user"),
+        )
+
+    assert legacy_page.read_text(encoding="utf-8") == "legacy knowledge"
+    assert not (tmp_path / "data" / "extraction" / "paper_1.json").exists()
+    assert not (tmp_path / "data" / "runtime" / "commits" / f"{change_set.change_set_id}.json").exists()

@@ -404,6 +404,8 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .document-meta { display: flex; gap: 8px; padding-bottom: 28px; border-bottom: 1px solid var(--line); }
 .document-meta span,
 .reference-list span { padding: 4px 7px; border: 1px solid #303640; border-radius: 4px; color: #818995; background: #1b1f26; font-size: 9px; }
+.document-graph-action { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; padding: 4px 8px; border: 1px solid #385783; border-radius: 4px; color: #9dbfff; background: rgba(75, 112, 169, 0.13); font-size: 9px; }
+.document-graph-action:hover { border-color: #5f88ca; color: #dce8ff; background: rgba(75, 112, 169, 0.24); }
 
 .markdown-view { max-width: 760px; padding-top: 26px; }
 .markdown-title { display: none; }
@@ -503,7 +505,8 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
   padding: 44px 0 76px;
 }
 .source-review-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; }
-.source-review-header h1 { max-width: 720px; margin: 12px 0 8px; color: #f0f2f5; font-size: clamp(28px, 3.7vw, 46px); font-weight: 580; letter-spacing: -0.04em; line-height: 1.08; overflow-wrap: anywhere; }
+.source-review-header > div { min-width: 0; }
+.source-review-title { display: -webkit-box; max-width: 720px; margin: 12px 0 8px; overflow: hidden; color: #f0f2f5; font-size: clamp(22px, 2.7vw, 34px); font-weight: 580; letter-spacing: -0.02em; line-height: 1.12; overflow-wrap: anywhere; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .source-review-header p { margin: 0; color: #646d79; font-size: 10px; }
 .source-runtime-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid #252b33; border-radius: 5px; background: #252b33; }
 .source-runtime-meta > div { min-width: 0; padding: 8px 9px; background: #12161b; }
@@ -535,9 +538,6 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .workflow-banner.rejected,
 .workflow-banner.failed,
 .workflow-banner.cancelled { border-color: #664248; color: #db868e; background: rgba(126, 66, 73, 0.1); }
-.cancel-ingest-action { display: inline-flex; height: 29px; flex: 0 0 auto; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid #65434a; border-radius: 5px; color: #e099a0; background: #251b1f; font-size: 9px; }
-.cancel-ingest-action:hover:not(:disabled) { border-color: #83545c; background: #312126; }
-.cancel-ingest-action:disabled { cursor: wait; opacity: 0.55; }
 .spin { animation: spin 900ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -831,15 +831,6 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .thread-list-items strong { font-size: 9px; }
 .thread-list-items small { color: var(--subtle); font-size: 8px; }
 .agent-context blockquote { max-height: 54px; margin: 6px 0 0; overflow: hidden; padding: 5px 7px; border-left: 2px solid #557bb5; color: #96a5b8; background: #11151b; font-size: 8px; }
-.agent-task-confirmation { margin: 8px; padding: 10px; border: 1px solid #506784; border-radius: 6px; background: rgba(57, 86, 124, 0.14); }
-.agent-task-confirmation strong,
-.agent-task-confirmation small { display: block; }
-.agent-task-confirmation strong { color: #c9d9ef; font-size: 10px; }
-.agent-task-confirmation p { margin: 6px 0; color: #aebdd0; font-size: 9px; line-height: 1.45; }
-.agent-task-confirmation small { color: #71839a; font-size: 8px; }
-.agent-task-confirmation > div { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
-.agent-task-confirmation button { padding: 5px 9px; border: 1px solid #55779f; border-radius: 4px; color: #e2ebf7; background: #294667; font-size: 8px; }
-.agent-task-confirmation button.secondary { color: #9cabbc; background: transparent; }
 .agent-run-diagnostics { margin-top: 6px; color: #7f8c9d; font-size: 8px; }
 .agent-run-diagnostics summary { display: flex; align-items: center; gap: 4px; cursor: pointer; list-style: none; }
 .agent-run-diagnostics > div { margin-top: 5px; padding: 7px; border: 1px solid var(--line-soft); border-radius: 4px; background: rgba(0, 0, 0, 0.12); }

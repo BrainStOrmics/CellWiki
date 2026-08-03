@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 import uuid
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from cellwiki.domain.discovery import GraphNodeType, SearchDocumentType
@@ -176,9 +176,14 @@ def create_extension_router(project_root: Path) -> APIRouter:
             for item in ResearchService(root).list_refresh_runs(project_id)
         ]
 
-    @router.post("/research/refresh", status_code=status.HTTP_202_ACCEPTED)
-    def research_refresh(request: ResearchRequest) -> dict:
+    @router.post("/internal/research/refresh", status_code=status.HTTP_202_ACCEPTED)
+    def research_refresh(
+        request: ResearchRequest,
+        internal_compatibility: str | None = Header(default=None, alias="X-CellWiki-Internal"),
+    ) -> dict:
         """Run broad external lint research against one pipeline snapshot."""
+        if internal_compatibility != "1":
+            raise HTTPException(status_code=404, detail="internal compatibility route")
         try:
             return ResearchService(root).refresh(
                 request.query,
@@ -192,8 +197,13 @@ def create_extension_router(project_root: Path) -> APIRouter:
         except Exception as error:
             raise HTTPException(status_code=503, detail=str(error)[:500]) from None
 
-    @router.post("/research/search", status_code=status.HTTP_202_ACCEPTED)
-    def research(request: ResearchRequest) -> list[dict]:
+    @router.post("/internal/research/search", status_code=status.HTTP_202_ACCEPTED)
+    def research(
+        request: ResearchRequest,
+        internal_compatibility: str | None = Header(default=None, alias="X-CellWiki-Internal"),
+    ) -> list[dict]:
+        if internal_compatibility != "1":
+            raise HTTPException(status_code=404, detail="internal compatibility route")
         try:
             return [
                 item.model_dump(mode="json")
@@ -217,9 +227,13 @@ def create_extension_router(project_root: Path) -> APIRouter:
         ):
             return [item.model_dump(mode="json") for item in semantic_lint.inspect()]
 
-    @router.post("/lint/l2/review")
-    def l2_review_items() -> list[dict]:
+    @router.post("/internal/lint/l2/review")
+    def l2_review_items(
+        internal_compatibility: str | None = Header(default=None, alias="X-CellWiki-Internal"),
+    ) -> list[dict]:
         """运行 L2 审查并返回审查项"""
+        if internal_compatibility != "1":
+            raise HTTPException(status_code=404, detail="internal compatibility route")
         with pipeline.acquire(
             task_type=PipelineTaskType.LINT,
             run_id=f"lint_l2_{uuid.uuid4().hex}",

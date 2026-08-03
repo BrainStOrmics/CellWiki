@@ -324,6 +324,7 @@ class WikiAgentContext(ContractModel):
     source_id: str | None = None                  # 当前来源 ID
     selected_text: str | None = None              # 用户选中的文本
     thread_id: str | None = None                  # 对话线程 ID
+    attachment_ids: list[str] = Field(default_factory=list)  # 当前 Agent 线程附件 ID
 
 
 # ---- 引用 ----

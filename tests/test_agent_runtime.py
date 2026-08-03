@@ -479,8 +479,88 @@ def test_deep_agents_chunks_are_adapted_to_stable_tool_and_changeset_events():
     assert [signal.type for signal in completed] == [
         AgentEventType.TOOL_COMPLETED,
         AgentEventType.CHANGESET_READY,
+        AgentEventType.REVIEW_REQUIRED,
     ]
     assert completed[-1].data["change_set_id"] == "cs_fixture"
+
+
+def test_blocked_generic_tool_failure_is_marked_recoverable():
+    signals = list(_signals_from_stream_item((
+        (),
+        "messages",
+        (ToolMessage(
+            content=(
+                "Tool 'read_file' is not available to CellWiki agents. "
+                "Use the visible CellWiki tools instead of generic filesystem tools."
+            ),
+            tool_call_id="blocked_tool_1",
+            name="read_file",
+            status="error",
+        ), {}),
+    )))
+
+    assert signals[0].type is AgentEventType.TOOL_FAILED
+    assert signals[0].data["blocked_tool"] is True
+
+
+def test_proposal_tool_content_blocks_surface_review_boundary():
+    signals = list(_signals_from_stream_item((
+        (),
+        "messages",
+        (ToolMessage(
+            content=[
+                {
+                    "type": "text",
+                    "text": (
+                        '{"change_set":{"change_set_id":"cs_blocks"},'
+                        '"requires_human_review":true}'
+                    ),
+                }
+            ],
+            tool_call_id="proposal_blocks_1",
+            name="prepare_ingest_change_set",
+        ), {}),
+    )))
+
+    assert [signal.type for signal in signals] == [
+        AgentEventType.TOOL_COMPLETED,
+        AgentEventType.CHANGESET_READY,
+        AgentEventType.REVIEW_REQUIRED,
+    ]
+    assert signals[-1].data == {
+        "change_set_id": "cs_blocks",
+        "requires_human_review": True,
+    }
+
+
+def test_runtime_continues_after_blocked_generic_tool_failure(tmp_path: Path):
+    adapter = ScriptedAdapter([[
+        RuntimeSignal(
+            type=AgentEventType.TOOL_FAILED,
+            message="Read File failed.",
+            data={
+                "tool_name": "read_file",
+                "tool_call_id": "blocked_tool_1",
+                "blocked_tool": True,
+            },
+        ),
+        RuntimeSignal(
+            type=AgentEventType.FINAL_RESPONSE,
+            message="The requested operation is unavailable through CellWiki tools.",
+        ),
+    ]])
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id="thread_blocked_tool",
+            message="Analyze the source.",
+            context=_context("thread_blocked_tool"),
+        )
+        completed = _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        assert completed.status is AgentRunStatus.SUCCEEDED
+        assert completed.usage.tool_calls_failed == 1
+    finally:
+        manager.close()
 
 
 def test_top_level_json_message_becomes_validated_final_response():

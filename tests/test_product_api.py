@@ -22,6 +22,8 @@ from cellwiki.services.projection import ProjectionService
 from cellwiki.services.pipeline import KnowledgePipelineHarness
 from cellwiki.services.sources import SourceRegistry
 
+INTERNAL_COMPAT_HEADERS = {"X-CellWiki-Internal": "1"}
+
 
 class _ApiAgentAdapter:
     """Keep Product API streaming tests independent from an external model provider."""
@@ -81,14 +83,30 @@ def test_product_api_exposes_governed_external_research_refresh(monkeypatch, tmp
     client = TestClient(create_app(tmp_path))
 
     response = client.post(
-        "/api/research/refresh",
+        "/api/internal/research/refresh",
         json={"project_id": "cellwiki", "query": "Treg FOXP3", "limit": 5},
+        headers=INTERNAL_COMPAT_HEADERS,
     )
 
     assert response.status_code == 202
     assert response.json()["refresh_run_id"] == "refresh_test"
     assert response.json()["snapshot_id"] == "snapshot_test"
     assert response.json()["candidate_ids"] == ["research_candidate"]
+
+
+def test_product_api_rejects_public_operation_compatibility_routes(tmp_path: Path):
+    client = TestClient(create_app(tmp_path))
+
+    for path, payload in (
+        ("/api/quality/fixes", {"finding_ids": [], "run_id": "public"}),
+        ("/api/research/refresh", {"query": "FOXP3"}),
+        ("/api/research/search", {"query": "FOXP3"}),
+        ("/api/lint/l2/review", {}),
+        ("/api/internal/quality/fixes", {"finding_ids": ["missing"], "run_id": "missing-header"}),
+        ("/api/internal/research/search", {"query": "FOXP3"}),
+    ):
+        response = client.post(path, json=payload)
+        assert response.status_code == 404, path
 
 
 def test_product_api_exposes_changeset_rebase_result(tmp_path: Path):
@@ -179,6 +197,30 @@ def test_product_api_restores_and_deletes_complete_thread_history(tmp_path: Path
         assert client.get("/api/agent/runs", params={"thread_id": thread}).json() == []
     finally:
         runtime.close()
+
+
+def test_product_api_manages_thread_scoped_agent_attachments(tmp_path: Path):
+    client = TestClient(create_app(tmp_path))
+    thread = client.post("/api/agent/threads").json()["thread_id"]
+
+    uploaded = client.post(
+        f"/api/agent/threads/{thread}/attachments",
+        files={"files": ("notes.txt", b"FOXP3 attachment evidence.", "text/plain")},
+    )
+
+    assert uploaded.status_code == 201
+    attachment = uploaded.json()[0]
+    assert attachment["thread_id"] == thread
+    assert attachment["attachment_id"].startswith("att_")
+    assert attachment["original_name"] == "notes.txt"
+    assert attachment["media_type"] == "text/plain"
+    assert attachment["promoted_source_id"] is None
+    assert client.get(f"/api/agent/threads/{thread}/attachments").json() == [attachment]
+
+    deleted = client.delete(f"/api/agent/threads/{thread}")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted_attachments"] == 1
+    assert client.get(f"/api/agent/threads/{thread}/attachments").json() == []
 
 
 def test_product_api_reads_wiki_and_registers_sources(tmp_path: Path):
@@ -480,8 +522,9 @@ def test_quality_fix_is_proposed_then_rebuilds_projection_after_approval(tmp_pat
         if item["type"] == "missing_title"
     )
     proposed = client.post(
-        "/api/quality/fixes",
+        "/api/internal/quality/fixes",
         json={"finding_ids": [finding["finding_id"]], "run_id": "run_lint_fix"},
+        headers=INTERNAL_COMPAT_HEADERS,
     )
 
     assert proposed.status_code == 201
@@ -533,8 +576,9 @@ def test_quality_fix_is_auto_committed_when_project_policy_is_auto_all(tmp_path:
         if item["type"] == "missing_title"
     )
     proposed = client.post(
-        "/api/quality/fixes",
+        "/api/internal/quality/fixes",
         json={"finding_ids": [finding["finding_id"]], "run_id": "run_auto_lint"},
+        headers=INTERNAL_COMPAT_HEADERS,
     )
 
     assert proposed.status_code == 201

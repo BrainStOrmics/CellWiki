@@ -24,7 +24,7 @@ from cellwiki.domain.contracts import (
 )
 from cellwiki.domain.runs import AgentEventType, AgentRunStatus
 from cellwiki.domain.tasks import LintTask
-from cellwiki.services.agent_runtime import AgentRuntimeManager
+from cellwiki.services.agent_runtime import AgentRuntimeManager, RuntimeSignal
 from cellwiki.services.central_writer import CentralWriter
 from cellwiki.services.changesets import ChangeSetRepository
 from cellwiki.services.operations import bind_agent_run
@@ -324,68 +324,60 @@ def test_formal_query_ledger_merges_concurrent_specialist_reads(
     assert validated.knowledge_scope == "formal"
 
 
-def test_typed_lint_task_creates_durable_run_without_provider_call(tmp_path: Path):
+def test_public_agent_api_rejects_explicit_typed_tasks(tmp_path: Path):
     client = TestClient(create_app(tmp_path))
     response = client.post(
         "/api/agent/runs",
-        json={"task": {"kind": "lint", "action": "inspect"}},
+        json={
+            "message": "请检查当前知识库",
+            "task": {"kind": "lint", "action": "inspect"},
+        },
     )
-    assert response.status_code == 202
-    run_id = response.json()["run_id"]
-
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        payload = client.get(f"/api/agent/runs/{run_id}").json()
-        if payload["status"] in {"succeeded", "failed"}:
-            break
-        time.sleep(0.02)
-
-    assert payload["task_kind"] == "lint"
-    assert payload["status"] == "succeeded"
-    events = client.get(f"/api/agent/runs/{run_id}/events").json()
-    final = next(event for event in events if event["type"] == "final_response")
-    assert "snapshot" not in final["data"]
-    assert "report" not in final["data"]
-    assert final["data"]["summary"]["issue_count"] >= 0
-    assert final["data"]["knowledge_scope"] == "general"
-    assert "Local knowledge Lint completed." in final["message"]
-    diagnostics = client.get(f"/api/agent/runs/{run_id}/diagnostics")
-    assert diagnostics.status_code == 200
-    diagnostics_payload = diagnostics.json()
-    assert diagnostics_payload["model_role"] == "typed-task-adapter"
-    assert {span["kind"] for span in diagnostics_payload["spans"]} == {
-        "router",
-        "tool",
-    }
-    tool_span = next(
-        span for span in diagnostics_payload["spans"] if span["kind"] == "tool"
-    )
-    assert tool_span["data"]["artifact_ref"].endswith("lint-report.json")
-    assert tool_span["data"]["artifact_sha256"]
-    assert tool_span["data"]["artifact_bytes"] > 0
-    assert "input_message" not in diagnostics_payload
+    assert response.status_code == 422
 
 
-def test_natural_language_lint_routes_to_typed_task_without_langgraph(tmp_path: Path):
-    class NoConversationAdapter:
-        def execute(self, *, thread_id, message, context):
-            raise AssertionError("high-confidence Lint intent must bypass LangGraph")
+class _ConversationAnswerAdapter:
+    def __init__(self):
+        self.messages: list[object] = []
 
-        def close(self) -> None:
-            return None
+    def execute(self, *, thread_id, message, context):
+        self.messages.append(message)
+        yield RuntimeSignal(
+            type=AgentEventType.FINAL_RESPONSE,
+            message="The coordinator completed the request.",
+            data={"answer": "The coordinator completed the request."},
+        )
 
-        def delete_thread(self, thread_id: str) -> None:
-            return None
+    def close(self) -> None:
+        return None
 
-    manager = AgentRuntimeManager(tmp_path, adapter=NoConversationAdapter())
+    def delete_thread(self, thread_id: str) -> None:
+        return None
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "请检查当前页面的质量问题",
+        "请分析当前来源并更新 Wiki",
+        "请修复 finding_missing_title",
+    ],
+)
+def test_natural_language_operations_remain_model_led_conversations(
+    tmp_path: Path,
+    message: str,
+):
+    adapter = _ConversationAnswerAdapter()
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
     try:
         run = manager.start(
-            thread_id="thread_natural_lint",
-            message="请检查当前页面的质量问题",
+            thread_id="thread_model_led_operation",
+            message=message,
             context=WikiAgentContext(
                 project_id="cellwiki",
+                source_id="source_demo",
                 page_id="t_cell",
-                thread_id="thread_natural_lint",
+                thread_id="thread_model_led_operation",
             ),
         )
         deadline = time.monotonic() + 3
@@ -396,77 +388,9 @@ def test_natural_language_lint_routes_to_typed_task_without_langgraph(tmp_path: 
             time.sleep(0.01)
 
         assert current.status is AgentRunStatus.SUCCEEDED
-        assert current.task_kind == "lint"
-        assert current.task_payload["scope"] == {"kind": "page", "page_id": "t_cell"}
-        assert current.usage.model_calls == 0
-    finally:
-        manager.close()
-
-
-def test_natural_language_ingest_waits_for_task_confirmation(tmp_path: Path):
-    class NoConversationAdapter:
-        def execute(self, *, thread_id, message, context):
-            raise AssertionError("high-confidence Ingest intent must bypass LangGraph")
-
-        def close(self) -> None:
-            return None
-
-        def delete_thread(self, thread_id: str) -> None:
-            return None
-
-    manager = AgentRuntimeManager(tmp_path, adapter=NoConversationAdapter())
-    try:
-        run = manager.start(
-            thread_id="thread_natural_ingest",
-            message="请开始摄取当前来源",
-            context=WikiAgentContext(
-                project_id="cellwiki",
-                source_id="source_demo",
-                thread_id="thread_natural_ingest",
-            ),
-        )
-
-        assert run.status is AgentRunStatus.WAITING_CONFIRMATION
-        assert run.task_kind == "ingest"
-        events = manager.store.list_events(run.run_id)
-        assert [event.type for event in events[-2:]] == [
-            AgentEventType.TASK_CONFIRMATION_REQUIRED,
-            AgentEventType.RUN_STATUS,
-        ]
-
-        manager.confirm_task(run.run_id, decision="cancel")
-        assert manager.store.get_run(run.run_id).status is AgentRunStatus.CANCELLED
-    finally:
-        manager.close()
-
-
-def test_natural_language_lint_fix_requires_task_confirmation(tmp_path: Path):
-    class NoConversationAdapter:
-        def execute(self, *, thread_id, message, context):
-            raise AssertionError("complete fix parameters must bypass LangGraph")
-
-        def close(self) -> None:
-            return None
-
-        def delete_thread(self, thread_id: str) -> None:
-            return None
-
-    manager = AgentRuntimeManager(tmp_path, adapter=NoConversationAdapter())
-    try:
-        run = manager.start(
-            thread_id="thread_natural_fix",
-            message="请执行修复 finding_missing_title，使用 snapshot_abc123",
-            context=WikiAgentContext(
-                project_id="cellwiki",
-                thread_id="thread_natural_fix",
-            ),
-        )
-
-        assert run.status is AgentRunStatus.WAITING_CONFIRMATION
-        assert run.task_kind == "lint"
-        assert run.task_payload["action"] == "propose_fix"
-        assert run.task_payload["finding_ids"] == ["finding_missing_title"]
-        assert run.task_payload["snapshot_id"] == "snapshot_abc123"
+        assert current.task_kind == "conversation"
+        assert current.model_role == "coordinator"
+        assert adapter.messages
     finally:
         manager.close()
 
@@ -644,7 +568,7 @@ def test_product_api_reports_runtime_ownership_conflict_as_service_unavailable(
     try:
         response = TestClient(create_app(tmp_path)).post(
             "/api/agent/runs",
-            json={"task": {"kind": "lint", "action": "inspect"}},
+            json={"message": "检查当前页面"},
         )
     finally:
         owner.close()

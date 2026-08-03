@@ -59,10 +59,9 @@ type GraphWorkspaceProps = {
   focus?: string | null;
   onOpenPage: (pageId: string) => void;
   onOpenSource: (sourceId: string) => void;
-  onAttachNode: (node: GraphNode) => void;
 };
 
-export function GraphWorkspace({ focus, onOpenPage, onOpenSource, onAttachNode }: GraphWorkspaceProps) {
+export function GraphWorkspace({ focus, onOpenPage, onOpenSource }: GraphWorkspaceProps) {
   const { t } = useI18n();
   const [selectedId, setSelectedId] = useState<string | null>(focus ?? null);
   const [localFocus, setLocalFocus] = useState<string | null>(focus ?? null);
@@ -123,7 +122,6 @@ export function GraphWorkspace({ focus, onOpenPage, onOpenSource, onAttachNode }
             <div className="graph-inspector-actions">
               {selected.page_id && <button onClick={() => onOpenPage(selected.page_id!)}><Focus size={13} />{t("graph.openWiki")}</button>}
               {selected.source_id && <button onClick={() => onOpenSource(selected.source_id!)}><Focus size={13} />{t("graph.openEvidence")}</button>}
-              <button onClick={() => onAttachNode(selected)}><Network size={13} />{t("graph.attach")}</button>
             </div>
           </aside>
         )}

@@ -21,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import IO
 
+from filelock import FileLock, Timeout
+
 
 @dataclass(frozen=True)
 class DevelopmentProcessSpec:
@@ -36,6 +38,26 @@ class OwnedProcess:
     process: subprocess.Popen
     log_handle: IO[bytes]
     log_path: Path
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    """Stop an owned process and its Windows wrapper descendants."""
+
+    if os.name == "nt":
+        subprocess.run(
+            ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    else:
+        process.terminate()
+
+    try:
+        process.wait(timeout=8)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3)
 
 
 class DevelopmentRuntime:
@@ -55,6 +77,10 @@ class DevelopmentRuntime:
         self.reuse_ports = reuse_ports
         self.log_dir = self.project_root / "data" / "runtime" / "logs"
         self.owned: list[OwnedProcess] = []
+        project_lock_path = self.project_root / "data" / "runtime" / "dev-runtime.lock"
+        project_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        self._project_lock = FileLock(str(project_lock_path), timeout=0)
+        self._project_lock_acquired = False
 
     def specs(self) -> list[DevelopmentProcessSpec]:
         npm = shutil.which("npm.cmd" if os.name == "nt" else "npm")
@@ -119,13 +145,31 @@ class DevelopmentRuntime:
     def run(self) -> None:
         """Start the runtime, report log paths, and block until interrupted or a child exits."""
 
+        self._acquire_project_lock()
         try:
             self._validate_environment()
             for spec in self.specs():
                 self._start(spec)
             self._watch()
         finally:
-            self.stop()
+            try:
+                self.stop()
+            finally:
+                self._release_project_lock()
+
+    def _acquire_project_lock(self) -> None:
+        try:
+            self._project_lock.acquire()
+        except Timeout as error:
+            raise RuntimeError(
+                "another CellWiki development runtime already owns this project"
+            ) from error
+        self._project_lock_acquired = True
+
+    def _release_project_lock(self) -> None:
+        if self._project_lock_acquired:
+            self._project_lock.release()
+            self._project_lock_acquired = False
 
     def _validate_environment(self) -> None:
         """Fail before spawning children when the repository-local toolchain is incomplete."""
@@ -158,12 +202,7 @@ class DevelopmentRuntime:
 
         for owned in reversed(self.owned):
             if owned.process.poll() is None:
-                owned.process.terminate()
-                try:
-                    owned.process.wait(timeout=8)
-                except subprocess.TimeoutExpired:
-                    owned.process.kill()
-                    owned.process.wait(timeout=3)
+                _terminate_process_tree(owned.process)
             owned.log_handle.close()
         self.owned.clear()
 

@@ -38,6 +38,7 @@ from cellwiki.services.ingest import IngestService
 from cellwiki.services.revisions import IngestRevisionService
 from cellwiki.services.linting import LintFixService
 from cellwiki.services.sources import SourceRegistry
+from cellwiki.services.attachments import AttachmentService
 from cellwiki.services.tasks import TaskEventRepository
 from cellwiki.domain.memory import MemoryCandidate, MemoryKind
 from cellwiki.services.memory import MemoryStore
@@ -189,6 +190,102 @@ def build_read_tools(project_root: Path) -> list[BaseTool]:
     ]
 
 
+def build_attachment_tools(project_root: Path) -> list[BaseTool]:
+    """Build CellWiki-owned attachment tools; never expose generic file paths."""
+
+    attachments = AttachmentService(Path(project_root).resolve())
+
+    def attachment_payload(record: Any) -> dict[str, Any]:
+        payload = record.model_dump(mode="json")
+        payload.pop("stored_path", None)
+        payload.pop("text_path", None)
+        return payload
+
+    @tool("list_thread_attachments")
+    def list_thread_attachments(thread_id: str) -> str:
+        """List temporary files attached to one Agent thread by attachment ID."""
+
+        try:
+            records = attachments.list(thread_id)
+        except KeyError:
+            return json.dumps({"error": "thread_not_found", "thread_id": thread_id}, ensure_ascii=False)
+        return json.dumps(
+            {"thread_id": thread_id, "attachments": [attachment_payload(record) for record in records]},
+            ensure_ascii=False,
+        )
+
+    @tool("read_attachment_excerpt")
+    def read_attachment_excerpt(
+        thread_id: str,
+        attachment_id: str,
+        start: int = 0,
+        max_chars: int = 4000,
+    ) -> str:
+        """Read a bounded text excerpt from a thread attachment by attachment ID."""
+
+        try:
+            record = attachments.get(thread_id, attachment_id)
+            text = attachments.read_text(thread_id, attachment_id)
+        except KeyError:
+            return json.dumps(
+                {"error": "attachment_not_found", "thread_id": thread_id, "attachment_id": attachment_id},
+                ensure_ascii=False,
+            )
+        bounded_start = max(0, min(start, len(text)))
+        bounded_limit = max(1, min(max_chars, 12_000))
+        excerpt = text[bounded_start : bounded_start + bounded_limit]
+        return json.dumps(
+            {
+                "attachment_id": attachment_id,
+                "original_name": record.original_name,
+                "chunk_id": f"{attachment_id}:text:{bounded_start}",
+                "excerpt": excerpt,
+                "truncated": bounded_start + bounded_limit < len(text),
+            },
+            ensure_ascii=False,
+        )
+
+    @tool("search_attachment_text")
+    def search_attachment_text(thread_id: str, query: str) -> str:
+        """Search text extracted from the current thread's attachments."""
+
+        try:
+            matches = attachments.search_text(thread_id, query)
+        except KeyError:
+            return json.dumps({"error": "thread_not_found", "thread_id": thread_id}, ensure_ascii=False)
+        return json.dumps({"thread_id": thread_id, "matches": matches}, ensure_ascii=False)
+
+    @tool("register_attachment_as_source")
+    def register_attachment_as_source(thread_id: str, attachment_id: str) -> str:
+        """Promote one thread attachment into the governed SourceRegistry."""
+
+        try:
+            before = attachments.get(thread_id, attachment_id)
+            already_promoted = before.promoted_source_id is not None
+            source = attachments.promote_to_source(thread_id, attachment_id)
+            after = attachments.get(thread_id, attachment_id)
+        except KeyError:
+            return json.dumps(
+                {"error": "attachment_not_found", "thread_id": thread_id, "attachment_id": attachment_id},
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "already_promoted": already_promoted,
+                "attachment": attachment_payload(after),
+                "source": source.model_dump(mode="json"),
+            },
+            ensure_ascii=False,
+        )
+
+    return [
+        list_thread_attachments,
+        read_attachment_excerpt,
+        search_attachment_text,
+        register_attachment_as_source,
+    ]
+
+
 # ---------------------------------------------------------------------------
 # 构建导入工具集
 # prepare_ingest_change_set — 分析一个已注册来源并持久化提取 ChangeSet，
@@ -201,13 +298,14 @@ def build_ingest_tools(project_root: Path) -> list[BaseTool]:
     pipeline = KnowledgePipelineHarness(root)
 
     @tool("prepare_ingest_change_set")
-    def prepare_ingest_change_set(source_id: str, run_id: str) -> str:
+    def prepare_ingest_change_set(source_id: str, run_id: str = "") -> str:
         """Analyze one registered source and persist a proposed extraction ChangeSet without publishing it."""
+        effective_run_id = run_id.strip() or current_agent_run_id() or f"ingest_{uuid.uuid4().hex}"
         change_set = ingest.prepare_change_set(
             source_id,
-            run_id,
+            effective_run_id,
             # 取消权限来自持久化运行时上下文，而非模型提供的任务标识符
-            cancellation_id=current_agent_run_id() or run_id,
+            cancellation_id=current_agent_run_id() or effective_run_id,
         )
         policy = pipeline.approval_policy()
         snapshot_id = getattr(change_set, "snapshot_id", None)
@@ -220,6 +318,7 @@ def build_ingest_tools(project_root: Path) -> list[BaseTool]:
             {
                 "change_set": json.loads(change_set.model_dump_json()),
                 "snapshot": snapshot,
+                "run_id": effective_run_id,
                 "approval_policy": policy.value,
                 "requires_human_review": policy is not ApprovalPolicy.AUTO_ALL,
             },
@@ -258,6 +357,7 @@ def build_ingest_tools(project_root: Path) -> list[BaseTool]:
                 "revision": revisions.get(revision.revision_id).model_dump(mode="json"),
                 "change_set": change_set.model_dump(mode="json"),
                 "snapshot": snapshot,
+                "run_id": effective_run_id,
                 "approval_policy": policy.value,
                 "requires_human_review": policy is not ApprovalPolicy.AUTO_ALL,
             },
@@ -352,10 +452,11 @@ def build_lint_tools(project_root: Path) -> list[BaseTool]:
             return pipeline_busy_payload(run_id)
 
     @tool("propose_lint_fix")
-    def propose_lint_fix(finding_ids: list[str], run_id: str) -> str:
+    def propose_lint_fix(finding_ids: list[str], run_id: str = "") -> str:
         """Create a reviewable Lint ChangeSet; never apply the repair directly."""
 
-        change_set = lint.propose(finding_ids, run_id=run_id)
+        effective_run_id = run_id.strip() or current_agent_run_id() or f"lint_{uuid.uuid4().hex}"
+        change_set = lint.propose(finding_ids, run_id=effective_run_id)
         policy = pipeline.approval_policy()
         snapshot_id = getattr(change_set, "snapshot_id", None)
         snapshot = (
@@ -367,6 +468,7 @@ def build_lint_tools(project_root: Path) -> list[BaseTool]:
             {
                 "change_set": change_set.model_dump(mode="json"),
                 "snapshot": snapshot,
+                "run_id": effective_run_id,
                 "approval_policy": policy.value,
                 "requires_human_review": policy is not ApprovalPolicy.AUTO_ALL,
             },
