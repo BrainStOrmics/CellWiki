@@ -85,7 +85,7 @@ def build_openai_chat_model(
     """
 
     if not configuration.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is required to run the CellWiki agent")
+        raise RuntimeError("OPENAI_API_KEY is required to run CewiPilot")
 
     protocol = normalize_openai_protocol(configuration.openai_api_protocol)
     extra_body = provider_request_options(

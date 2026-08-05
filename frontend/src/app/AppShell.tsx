@@ -1297,7 +1297,7 @@ export function AppShell() {
 
           <aside className="agent-panel" style={{ width: rightWidth }}>
             <div className="agent-toolbar">
-              <div className="agent-title"><span className="agent-icon"><Bot size={16} /></span><div><strong>WikiAgent</strong><small>{t("chat.subtitle")}</small></div></div>
+              <div className="agent-title"><span className="agent-icon"><Bot size={16} /></span><div><strong>CewiPilot</strong><small>{t("chat.subtitle")}</small></div></div>
               <div className="agent-toolbar-actions">
                 {activeAgentRunId && (
                   <button className="icon-button stop-run" onClick={() => void cancelActiveAgentRun()} title={t("chat.cancel")} aria-label={t("chat.cancel")}><Square size={13} /></button>
@@ -1358,7 +1358,7 @@ export function AppShell() {
                 <AgentMessageBubble
                   key={`${message.role}-${message.runId ?? "message"}-${index}`}
                   message={message}
-                  agentLabel="WikiAgent"
+                  agentLabel="CewiPilot"
                   userLabel={t("agent.you")}
                   missingEvidenceLabel={t("chat.missingEvidence")}
                   processTitle={t("chat.process")}

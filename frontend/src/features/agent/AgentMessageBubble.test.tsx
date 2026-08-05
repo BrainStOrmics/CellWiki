@@ -4,7 +4,7 @@ import { AgentMessageBubble } from "./AgentMessageBubble";
 import type { ChatMessage } from "../../types";
 
 const labels = {
-  agentLabel: "WikiAgent",
+  agentLabel: "CewiPilot",
   userLabel: "You",
   missingEvidenceLabel: "Missing evidence",
   processTitle: "Process",

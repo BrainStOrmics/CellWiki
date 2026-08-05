@@ -20,7 +20,7 @@ const queryClient = new QueryClient({
 async function bootstrap() {
   const root = document.getElementById("root");
   if (!root) throw new Error("CellWiki root element is unavailable");
-  root.textContent = "Starting CellWiki Agent Runtime…";
+  root.textContent = "Starting CewiPilot Runtime…";
   // Resolve the random sidecar origin and launch token before any Product request.
   await initializeRuntime();
 
