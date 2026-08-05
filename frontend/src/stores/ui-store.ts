@@ -103,7 +103,7 @@ export const useUiStore = create<UiState>()(persist(
     setComposerPageRef: (composerPageRef) => set({ composerPageRef }),
     setActiveAttachmentIds: (activeAttachmentIds) => set({ activeAttachmentIds }),
     addActiveAttachmentIds: (ids) => set((state) => ({
-      activeAttachmentIds: [...state.activeAttachmentIds, ...ids],
+      activeAttachmentIds: [...new Set([...state.activeAttachmentIds, ...ids])],
     })),
     removeActiveAttachmentId: (id) => set((state) => ({
       activeAttachmentIds: state.activeAttachmentIds.filter((attachmentId) => attachmentId !== id),

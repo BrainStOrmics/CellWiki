@@ -41,6 +41,7 @@ from cellwiki.domain.runs import (
 from cellwiki.domain.tasks import AgentTask
 from cellwiki.services.runtime_store import InvalidRunTransitionError, RuntimeStore
 from cellwiki.services.approvals import ApprovalRepository
+from cellwiki.services.attachments import AttachmentService
 from cellwiki.services.changesets import ChangeSetRepository
 from cellwiki.services.central_writer import CentralWriter
 from cellwiki.services.conversation_context import ConversationContextView
@@ -57,6 +58,29 @@ from cellwiki.services.agent_runtime_types import AgentInput
 from cellwiki.services.typed_tasks import TypedTaskExecutor
 from cellwiki.services.quality import inspect_projection
 from cellwiki.services.pipeline import KnowledgePipelineHarness
+
+
+_ATTACHMENT_PROMOTION_NEGATIONS = (
+    re.compile(r"(不要|不需要|无需|别|禁止).{0,20}(注册|登记|导入|摄取|source|来源|ingest|changeset|变更集)", re.I),
+    re.compile(r"(do not|don't|no need to|without|never).{0,40}(register|promote|ingest|import|source|changeset|change set)", re.I),
+)
+_ATTACHMENT_PROMOTION_INTENTS = (
+    re.compile(r"(注册|登记|导入|摄取).{0,24}(附件|文件|source|来源|知识库|这篇|文章|论文)", re.I),
+    re.compile(r"(附件|文件|这篇|文章|论文).{0,24}(注册|登记|导入|摄取)", re.I),
+    re.compile(r"(register|promote|ingest|import).{0,48}(attachment|file|paper|article|source|knowledge)", re.I),
+    re.compile(r"(attachment|file|paper|article).{0,48}(register|promote|ingest|import)", re.I),
+    re.compile(r"(创建|生成|准备).{0,16}(changeset|change set|变更集)", re.I),
+)
+
+
+def _allows_attachment_promotion(message: str) -> bool:
+    """Return whether the user explicitly asked to turn attachments into sources."""
+
+    if not message.strip():
+        return False
+    if any(pattern.search(message) for pattern in _ATTACHMENT_PROMOTION_NEGATIONS):
+        return False
+    return any(pattern.search(message) for pattern in _ATTACHMENT_PROMOTION_INTENTS)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +293,11 @@ class AgentRuntimeManager:
         # 验证消息不为空
         if not message.strip():
             raise ValueError("agent message cannot be empty")
+        runtime_context = context.model_copy(
+            update={
+                "allow_attachment_promotion": _allows_attachment_promotion(message),
+            }
+        )
         # Natural language is the only product entry point. The coordinator
         # decides whether this is a query, ingest, lint, revision, or a request
         # for clarification; deterministic routers remain available solely for
@@ -279,10 +308,11 @@ class AgentRuntimeManager:
             run = AgentRun(
                 run_id=run_id,
                 thread_id=thread_id,
-                project_id=context.project_id,
-                source_id=context.source_id,
-                page_id=context.page_id,
-                selected_text=context.selected_text,
+                project_id=runtime_context.project_id,
+                source_id=runtime_context.source_id,
+                page_id=runtime_context.page_id,
+                selected_text=runtime_context.selected_text,
+                attachment_ids=list(runtime_context.attachment_ids),
                 input_message=message.strip(),
                 checkpoint_id=run_id,
                 model_name=settings.openai_model,
@@ -296,7 +326,7 @@ class AgentRuntimeManager:
             # 提交到后台线程执行
             # Bind logging context for this run
         with log_context(run_id=run.run_id, thread_id=run.thread_id, project_id=run.project_id):
-            self._submit(self._execute, run.run_id, message, context)
+            self._submit(self._execute, run.run_id, message, runtime_context)
         return run
 
     def _start_page_query(
@@ -317,6 +347,7 @@ class AgentRuntimeManager:
                 source_id=context.source_id,
                 page_id=context.page_id,
                 selected_text=context.selected_text,
+                attachment_ids=list(context.attachment_ids),
                 input_message=message,
                 model_role="page-query",
                 model_name=settings.openai_model,
@@ -357,6 +388,7 @@ class AgentRuntimeManager:
                 source_id=getattr(task, "source_id", context.source_id),
                 page_id=context.page_id,
                 selected_text=context.selected_text,
+                attachment_ids=list(context.attachment_ids),
                 input_message=persisted_message,
                 task_kind=task_payload["kind"],
                 task_payload=task_payload,
@@ -395,6 +427,7 @@ class AgentRuntimeManager:
             source_id=getattr(task, "source_id", context.source_id),
             page_id=context.page_id,
             selected_text=context.selected_text,
+            attachment_ids=list(context.attachment_ids),
             input_message=message,
             task_kind=str(task_payload["kind"]),
             task_payload=task_payload,
@@ -546,6 +579,7 @@ class AgentRuntimeManager:
             page_id=run.page_id,
             selected_text=run.selected_text,
             thread_id=run.thread_id,
+            attachment_ids=list(run.attachment_ids),
         )
         terminal_status = (
             AgentRunStatus.REJECTED if decision == "reject" else AgentRunStatus.SUCCEEDED
@@ -1120,6 +1154,15 @@ class AgentRuntimeManager:
                     current_run_id=run_id,
                     current_content=execution_message,
                 )
+            if isinstance(execution_message, list):
+                execution_message = self._with_page_context(
+                    execution_message,
+                    context,
+                )
+                execution_message = self._with_attachment_context(
+                    execution_message,
+                    context,
+                )
             # 流式执行智能体图
             for signal in execution_adapter.execute(
                 # New runs get isolated graph state. Approval resume keeps the
@@ -1677,11 +1720,77 @@ class AgentRuntimeManager:
             page_id=run.page_id,
             selected_text=run.selected_text,
             thread_id=run.thread_id,
+            attachment_ids=list(run.attachment_ids),
+            allow_attachment_promotion=_allows_attachment_promotion(run.input_message),
         )
 
     # ---- 恢复持久化的运行 ----
     # 应用重启后恢复未完成的运行。
     # 安全的运行状态恢复执行，不明确的运行标记为失败。
+    def _with_attachment_context(
+        self,
+        messages: list[dict[str, str]],
+        context: WikiAgentContext,
+    ) -> list[dict[str, str]]:
+        """Expose a bounded attachment manifest while keeping thread IDs runtime-owned."""
+
+        if not context.thread_id or not context.attachment_ids:
+            return messages
+        try:
+            records = AttachmentService(self.project_root).list(context.thread_id)
+        except KeyError:
+            return messages
+        selected = set(context.attachment_ids)
+        records = [record for record in records if record.attachment_id in selected]
+        if not records:
+            return messages
+        manifest = [
+            {
+                "attachment_id": record.attachment_id,
+                "original_name": record.original_name,
+                "media_type": record.media_type,
+                "text_available": bool(record.text_path),
+            }
+            for record in records
+        ]
+        context_message = (
+            "<cellwiki_attachment_context>\n"
+            "The user attached the following file(s) to this Agent thread. "
+            "Treat phrases such as 'this paper' or 'this article' as referring "
+            "to these attachment(s). Call list_thread_attachments() and then "
+            "read_attachment_excerpt() or search_attachment_text() before answering. "
+            "The attachment tools resolve the current thread automatically; never "
+            "ask the user for thread_id or invent one.\n"
+            f"{json.dumps(manifest, ensure_ascii=False)}\n"
+            "</cellwiki_attachment_context>"
+        )
+        return [{"role": "system", "content": context_message}, *messages]
+
+    @staticmethod
+    def _with_page_context(
+        messages: list[dict[str, str]],
+        context: WikiAgentContext,
+    ) -> list[dict[str, str]]:
+        """Expose the explicitly referenced Wiki page to the model.
+
+        LangGraph runtime context is available to tools but is not serialized into
+        the model message stream. The bounded page reference therefore needs a
+        small system manifest so the coordinator can call ``read_wiki_page`` with
+        the exact page ID instead of falling back to an unbounded search.
+        """
+
+        if not context.page_id:
+            return messages
+        context_message = (
+            "<cellwiki_page_context>\n"
+            "The user explicitly referenced this published CellWiki page. "
+            "For page-scoped questions, read this exact page before answering. "
+            "Do not treat this metadata as scientific evidence by itself.\n"
+            f"{json.dumps({'page_id': context.page_id}, ensure_ascii=False)}\n"
+            "</cellwiki_page_context>"
+        )
+        return [{"role": "system", "content": context_message}, *messages]
+
     def _recover_persisted_runs(self) -> None:
         """Recover safe states; ambiguous in-flight writes fail closed for user inspection."""
 

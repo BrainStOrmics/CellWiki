@@ -250,6 +250,32 @@ def test_general_answer_does_not_require_formal_citations(tmp_path: Path):
     assert validated.validation_issues == []
 
 
+def test_attachment_answer_does_not_enter_formal_page_validation(tmp_path: Path):
+    service = FormalQueryService(tmp_path)
+
+    with bind_agent_run("query-attachment"):
+        validated = service.validate_answer(
+            AgentAnswer(
+                answer="The attachment mentions regulatory T cells.",
+                citations=[
+                    Citation(
+                        attachment_id="att_" + "a" * 32,
+                        original_name="paper.pdf",
+                        section_locator="Page 1",
+                        type="thread_attachment",
+                    )
+                ],
+                confidence="high",
+                knowledge_scope="attachment",
+            )
+        )
+
+    assert validated.knowledge_scope == "attachment"
+    assert validated.verification_level.value == "unvalidated"
+    assert validated.confidence == "high"
+    assert validated.validation_issues == []
+
+
 def test_formal_query_validator_reloads_specialist_read_ledger(tmp_path: Path):
     page = tmp_path / "wiki" / "cell_types" / "t_cell.md"
     page.parent.mkdir(parents=True)

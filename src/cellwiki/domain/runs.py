@@ -107,6 +107,7 @@ class AgentRun(ContractModel):
     source_id: str | None = None                              # 关联的来源 ID
     page_id: str | None = None                                # 关联的页面 ID
     selected_text: str | None = None                          # 用户选中的文本
+    attachment_ids: list[str] = Field(default_factory=list)   # 当前运行可用的线程附件
     input_message: str = ""                                   # 用户输入消息
     task_kind: str = "conversation"                           # 结构化任务类型
     task_payload: dict[str, Any] = Field(default_factory=dict) # 结构化任务参数

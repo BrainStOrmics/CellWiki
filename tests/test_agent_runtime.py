@@ -29,10 +29,12 @@ from cellwiki.services.agent_runtime import (
     AgentRuntimeManager,
     DeepAgentsExecutionAdapter,
     RuntimeSignal,
+    _allows_attachment_promotion,
     _signals_from_stream_item,
     classify_agent_error,
 )
 from cellwiki.services.memory import MemoryStore
+from cellwiki.services.attachments import AttachmentService
 from cellwiki.services.operations import (
     CancellationRegistry,
     OperationCancelled,
@@ -47,10 +49,12 @@ class ScriptedAdapter:
         self.scripts = scripts
         self.calls: list[object] = []
         self.thread_ids: list[str] = []
+        self.contexts: list[WikiAgentContext] = []
 
     def execute(self, *, thread_id: str, message, context) -> Iterable[RuntimeSignal]:
         self.thread_ids.append(thread_id)
         self.calls.append(message)
+        self.contexts.append(context)
         script = self.scripts.pop(0)
         if isinstance(script, Exception):
             raise script
@@ -74,6 +78,55 @@ class BlockingAdapter:
 
 def _context(thread_id: str = "thread_test") -> WikiAgentContext:
     return WikiAgentContext(project_id="cellwiki", thread_id=thread_id)
+
+
+def test_attachment_promotion_intent_requires_an_explicit_mutating_request():
+    assert not _allows_attachment_promotion("这篇文章里提到了什么细胞类型？")
+    assert not _allows_attachment_promotion(
+        "请只根据附件回答，不要注册 source，不要 ingest，不要创建 ChangeSet。"
+    )
+    assert _allows_attachment_promotion("请把这个附件注册为 source 并 ingest。")
+
+
+def test_runtime_persists_and_injects_referenced_attachment_context(tmp_path: Path):
+    thread_id = "thread_" + "1" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 marks regulatory T cells.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    adapter = ScriptedAdapter([[
+        RuntimeSignal(
+            type=AgentEventType.FINAL_RESPONSE,
+            message="Done.",
+            data={"answer": "Done.", "knowledge_scope": "attachment"},
+        ),
+    ]])
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id=thread_id,
+            message="这篇文章里有什么细胞类型？",
+            context=WikiAgentContext(
+                project_id="cellwiki",
+                thread_id=thread_id,
+                attachment_ids=[attachment.attachment_id],
+            ),
+        )
+        completed = _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+
+        assert completed.attachment_ids == [attachment.attachment_id]
+        assert adapter.calls
+        first_message = adapter.calls[0][0]
+        assert first_message["role"] == "system"
+        assert attachment.attachment_id in first_message["content"]
+        assert "read_attachment_excerpt" in first_message["content"]
+        assert adapter.contexts[0].allow_attachment_promotion is False
+    finally:
+        manager.close()
 
 
 def _wait_for_status(
@@ -559,6 +612,85 @@ def test_runtime_continues_after_blocked_generic_tool_failure(tmp_path: Path):
         completed = _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
         assert completed.status is AgentRunStatus.SUCCEEDED
         assert completed.usage.tool_calls_failed == 1
+    finally:
+        manager.close()
+
+
+def test_runtime_persists_attachment_context_and_exposes_a_manifest_to_the_model(
+    tmp_path: Path,
+):
+    thread_id = "thread_" + "d" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 marks regulatory T cells.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    adapter = ScriptedAdapter(
+        [[RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="Grounded final answer")]]
+    )
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id=thread_id,
+            message="What cell types are in this paper?",
+            context=WikiAgentContext(
+                project_id="cellwiki",
+                thread_id=thread_id,
+                attachment_ids=[attachment.attachment_id],
+            ),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+
+        persisted = manager.store.get_run(started.run_id)
+        assert persisted.attachment_ids == [attachment.attachment_id]
+        restored_context = manager._context_for(persisted)
+        assert restored_context.attachment_ids == [attachment.attachment_id]
+        assert isinstance(adapter.calls[0], list)
+        manifest = adapter.calls[0][0]["content"]
+        assert attachment.attachment_id in manifest
+        assert "notes.txt" in manifest
+        assert "never ask the user for thread_id" in manifest
+    finally:
+        manager.close()
+
+
+def test_runtime_does_not_inject_thread_archive_when_no_attachment_is_referenced(
+    tmp_path: Path,
+):
+    thread_id = "thread_" + "e" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 marks regulatory T cells.", encoding="utf-8")
+    AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    manager = AgentRuntimeManager(tmp_path, adapter=ScriptedAdapter([]))
+    try:
+        context = WikiAgentContext(project_id="cellwiki", thread_id=thread_id)
+        messages = [{"role": "user", "content": "What is this?"}]
+        assert manager._with_attachment_context(messages, context) == messages
+    finally:
+        manager.close()
+
+
+def test_runtime_injects_explicit_page_context_for_model_queries(tmp_path: Path):
+    manager = AgentRuntimeManager(tmp_path, adapter=ScriptedAdapter([]))
+    try:
+        messages = [{"role": "user", "content": "What is this page?"}]
+        injected = manager._with_page_context(
+            messages,
+            WikiAgentContext(project_id="cellwiki", page_id="t_cell"),
+        )
+
+        assert injected[0]["role"] == "system"
+        assert "<cellwiki_page_context>" in injected[0]["content"]
+        assert '"page_id": "t_cell"' in injected[0]["content"]
+        assert injected[1:] == messages
     finally:
         manager.close()
 

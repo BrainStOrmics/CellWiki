@@ -65,7 +65,7 @@ class FormalQuerySession:
     def validate(self, answer: AgentAnswer) -> AgentAnswer:
         declared_confidence = answer.declared_confidence or answer.confidence
         issues: list[ValidationIssue] = []
-        if answer.knowledge_scope == "general":
+        if answer.knowledge_scope in {"general", "attachment"}:
             return answer.model_copy(
                 update={
                     "declared_confidence": declared_confidence,

@@ -30,6 +30,7 @@ import { apiUrl, isDesktopRuntime, productFetch } from "../runtime";
 import { deleteJson, getJson, postJson, ProductApiError } from "../lib/product-api";
 import { MarkdownReader } from "../features/wiki/MarkdownReader";
 import { useUiStore } from "../stores/ui-store";
+import { appendAsyncTask } from "./attachment-upload-queue";
 import { CommandPalette } from "../features/search/CommandPalette";
 import { ThreadList } from "../features/agent/ThreadList";
 import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
@@ -149,6 +150,16 @@ function fileNameForPage(page: Page) {
   return page.path?.split("/").at(-1) ?? `${page.page_id}.md`;
 }
 
+export function resolveInitialPageId(
+  pages: Page[],
+  pageRef: { page_id: string } | null,
+) {
+  if (pageRef?.page_id && pages.some((page) => page.page_id === pageRef.page_id)) {
+    return pageRef.page_id;
+  }
+  return pages[0]?.page_id ?? "";
+}
+
 export function AppShell() {
   const { language, t } = useI18n();
   const initialAgentMessage = useMemo<ChatMessage>(() => ({
@@ -157,7 +168,9 @@ export function AppShell() {
     meta: t("chat.queryMeta"),
   }), [t]);
   const [pages, setPages] = useState<Page[]>([]);
-  const [selectedId, setSelectedId] = useState("");
+  const [selectedId, setSelectedId] = useState(
+    () => useUiStore.getState().composerPageRef?.page_id ?? "",
+  );
   const [detail, setDetail] = useState<PageDetail>(emptyPageDetail);
   const [sources, setSources] = useState<Source[]>([]);
   const [reviews, setReviews] = useState<ChangeSetReview[]>([]);
@@ -177,6 +190,7 @@ export function AppShell() {
   const [agentActivity, setAgentActivity] = useState("");
   const [pendingInterrupt, setPendingInterrupt] = useState<PendingInterrupt | null>(null);
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
+  const [attachmentUploadBusy, setAttachmentUploadBusy] = useState(false);
   const [apiOnline, setApiOnline] = useState(false);
   const leftWidth = useUiStore((state) => state.leftWidth);
   const rightWidth = useUiStore((state) => state.rightWidth);
@@ -207,6 +221,9 @@ export function AppShell() {
   const processedAgentEventsRef = useRef(new Set<string>());
   const streamGenerationRef = useRef(0);
   const messagesRef = useRef<ChatMessage[]>(messages);
+  const attachmentUploadRef = useRef<Promise<void> | null>(null);
+  const attachmentUploadErrorRef = useRef<Error | null>(null);
+  const threadCreationRef = useRef<Promise<string> | null>(null);
   const workspaceQuery = useQuery({
     queryKey: ["workspace"],
     queryFn: loadWorkspaceData,
@@ -255,9 +272,12 @@ export function AppShell() {
       setSelectedId("");
       setDetail(emptyPageDetail);
     } else if (!workspaceQuery.data.pages.some((page) => page.page_id === selectedId)) {
-      setSelectedId(workspaceQuery.data.pages[0].page_id);
+      setSelectedId(resolveInitialPageId(workspaceQuery.data.pages, composerPageRef));
+      if (composerPageRef && !workspaceQuery.data.pages.some((page) => page.page_id === composerPageRef.page_id)) {
+        setComposerPageRef(null);
+      }
     }
-  }, [workspaceQuery.data, selectedId]);
+  }, [workspaceQuery.data, selectedId, composerPageRef, setComposerPageRef]);
 
   useEffect(() => {
     if (workspaceQuery.isError) setApiOnline(false);
@@ -425,21 +445,42 @@ export function AppShell() {
 
   async function ensureAgentThread() {
     if (agentThreadIdRef.current) return agentThreadIdRef.current;
-    const thread = await postJson<{ thread_id: string }>("/api/agent/threads", {});
-    agentThreadIdRef.current = thread.thread_id;
-    setActiveThreadId(thread.thread_id);
-    return thread.thread_id;
+    if (threadCreationRef.current) return threadCreationRef.current;
+    const pending = postJson<{ thread_id: string }>("/api/agent/threads", {})
+      .then((thread) => {
+        agentThreadIdRef.current = thread.thread_id;
+        setActiveThreadId(thread.thread_id);
+        return thread.thread_id;
+      });
+    threadCreationRef.current = pending;
+    try {
+      return await pending;
+    } finally {
+      if (threadCreationRef.current === pending) threadCreationRef.current = null;
+    }
   }
 
   async function runAgent(text: string) {
+    // A file picker upload is asynchronous; bind the run only after every
+    // upload started by the composer has committed its attachment record.
+    while (attachmentUploadRef.current) {
+      const pendingUpload = attachmentUploadRef.current;
+      await pendingUpload;
+    }
+    if (attachmentUploadErrorRef.current) {
+      const error = attachmentUploadErrorRef.current;
+      attachmentUploadErrorRef.current = null;
+      throw error;
+    }
     const threadId = await ensureAgentThread();
+    const currentAttachmentIds = useUiStore.getState().activeAttachmentIds;
     const run = await postJson<AgentRun>("/api/agent/runs", {
       thread_id: threadId,
       message: text,
       project_id: "cellwiki",
       page_id: composerPageRef?.page_id ?? null,
       source_id: null,
-      attachment_ids: activeAttachmentIds,
+      attachment_ids: currentAttachmentIds,
       selected_text: selectedText || null,
     });
     processedAgentEventsRef.current.clear();
@@ -459,6 +500,7 @@ export function AppShell() {
   }
 
   function applyAgentEvent(event: AgentEvent, options: { replayChat?: boolean } = {}) {
+    if (event.thread_id !== agentThreadIdRef.current) return;
     const renderChat = options.replayChat ?? true;
     if (processedAgentEventsRef.current.has(event.event_id)) return;
     processedAgentEventsRef.current.add(event.event_id);
@@ -592,6 +634,21 @@ export function AppShell() {
   }
 
   async function restoreAgentThread(threadId: string, preferredRunId?: string) {
+    // A thread switch must not carry review cards, streams, or attachment chips across conversations.
+    agentEventSourceRef.current?.close();
+    agentEventSourceRef.current = null;
+    streamGenerationRef.current += 1;
+    setActiveAgentRunId(null);
+    setRetryableAgentRunId(null);
+    setAgentActivity("");
+    setAgentBusy(false);
+    setPendingInterrupt(null);
+    setSelectedChangeSetId(null);
+    setActiveRunId(null);
+    setWorkflow({ phase: "idle", message: t("workflow.ready") });
+    setAttachments([]);
+    clearActiveAttachments();
+    setMessages([initialAgentMessage]);
     try {
       const [history, runs] = await Promise.all([
         getJson<AgentMessage[]>(`/api/agent/threads/${encodeURIComponent(threadId)}/messages`),
@@ -604,8 +661,13 @@ export function AppShell() {
         `/api/agent/threads/${encodeURIComponent(threadId)}/attachments`,
       );
       setAttachments(threadAttachments);
-      setActiveAttachmentIds(threadAttachments.map((attachment) => attachment.attachment_id));
       const latestRun = runs[0];
+      const referencedAttachmentIds = new Set(latestRun?.attachment_ids ?? []);
+      setActiveAttachmentIds(
+        threadAttachments
+          .filter((attachment) => referencedAttachmentIds.has(attachment.attachment_id))
+          .map((attachment) => attachment.attachment_id),
+      );
       const runId = preferredRunId ?? latestRun?.run_id;
       if (runId) await restoreAgentRun(runId, { replayChat: false });
     } catch {
@@ -622,6 +684,7 @@ export function AppShell() {
       ]);
       agentThreadIdRef.current = run.thread_id;
       setActiveThreadId(run.thread_id);
+      setActiveAttachmentIds(run.attachment_ids ?? []);
       events.forEach((event) => applyAgentEvent(event, options));
       if (
         terminalAgentStatuses.has(run.status)
@@ -900,9 +963,9 @@ export function AppShell() {
     }
   }
 
-  async function uploadAgentAttachments(fileList: FileList | null) {
-    const files = Array.from(fileList ?? []);
+  async function uploadAgentAttachments(files: File[]) {
     if (files.length === 0) return;
+    attachmentUploadErrorRef.current = null;
     try {
       const threadId = await ensureAgentThread();
       const body = new FormData();
@@ -917,8 +980,9 @@ export function AppShell() {
         ...uploaded,
         ...current.filter((item) => !uploaded.some((next) => next.attachment_id === item.attachment_id)),
       ]);
-      setActiveAttachmentIds([...activeAttachmentIds, ...uploaded.map((item) => item.attachment_id)]);
+      addActiveAttachmentIds(uploaded.map((item) => item.attachment_id));
     } catch {
+      attachmentUploadErrorRef.current = new Error("attachment upload failed; retry the upload before sending");
       setMessages((current) => [...current, {
         role: "agent",
         text: t("chat.attachmentUploadFailed"),
@@ -927,8 +991,26 @@ export function AppShell() {
     }
   }
 
+  function queueAgentAttachmentUpload(fileList: FileList | null) {
+    const files = Array.from(fileList ?? []);
+    if (files.length === 0) return;
+    setAttachmentUploadBusy(true);
+    const pending = appendAsyncTask(
+      attachmentUploadRef.current,
+      () => uploadAgentAttachments(files),
+    );
+    attachmentUploadRef.current = pending;
+    const settle = () => {
+      if (attachmentUploadRef.current === pending) {
+        attachmentUploadRef.current = null;
+        setAttachmentUploadBusy(false);
+      }
+    };
+    void pending.then(settle, settle);
+  }
+
   async function startNewChat() {
-    if (agentBusy || pendingInterrupt) return;
+    if (agentBusy || pendingInterrupt || attachmentUploadBusy || attachmentUploadRef.current) return;
     agentEventSourceRef.current?.close();
     streamGenerationRef.current += 1;
     agentThreadIdRef.current = null;
@@ -959,6 +1041,7 @@ export function AppShell() {
   }
 
   function openCitation(citation: Citation) {
+    if (!citation.page_id) return;
     // A citation changes only the reader context; the conversation remains intact.
     setSelectedSourceId(null);
     setSelectedId(citation.page_id);
@@ -1219,7 +1302,7 @@ export function AppShell() {
                 {activeAgentRunId && (
                   <button className="icon-button stop-run" onClick={() => void cancelActiveAgentRun()} title={t("chat.cancel")} aria-label={t("chat.cancel")}><Square size={13} /></button>
                 )}
-                <button className="icon-button" disabled={agentBusy || pendingInterrupt !== null} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
+                <button className="icon-button" disabled={agentBusy || pendingInterrupt !== null || attachmentUploadBusy} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
               </div>
             </div>
             <ThreadList
@@ -1358,8 +1441,8 @@ export function AppShell() {
                   accept=".pdf,.md,.txt,.csv,.json"
                   multiple
                   hidden
-                  onChange={(event) => {
-                    void uploadAgentAttachments(event.currentTarget.files);
+                 onChange={(event) => {
+                    queueAgentAttachmentUpload(event.currentTarget.files);
                     event.currentTarget.value = "";
                   }}
                 />

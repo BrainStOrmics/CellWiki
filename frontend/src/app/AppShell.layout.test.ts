@@ -10,6 +10,11 @@ describe("Agent sidebar layout", () => {
 
   it("keeps Composer references separate from Agent threads and supports attachment chips", () => {
     expect(appShellSource).toContain("uploadAgentAttachments");
+    expect(appShellSource).toContain("attachmentUploadRef.current");
+    expect(appShellSource).toContain("queueAgentAttachmentUpload");
+    expect(appShellSource).toContain("threadCreationRef");
+    expect(appShellSource).toContain("attachmentUploadBusy");
+    expect(appShellSource).toContain("useUiStore.getState().activeAttachmentIds");
     expect(appShellSource).toContain("attachmentRef.current?.click()");
     expect(appShellSource).toContain("multiple");
     expect(appShellSource).toContain("composer-reference-row");
@@ -27,5 +32,20 @@ describe("Agent sidebar layout", () => {
   it("does not expose graph nodes as a separate attach-to-Agent shortcut", () => {
     expect(appShellSource).not.toContain("onAttachNode");
     expect(graphWorkspaceSource).not.toContain("graph.attach");
+  });
+
+  it("clears the previous thread runtime state before restoring another thread", () => {
+    const restoreStart = appShellSource.indexOf("async function restoreAgentThread");
+    const restoreEnd = appShellSource.indexOf("async function restoreAgentRun", restoreStart);
+    const restoreSource = appShellSource.slice(restoreStart, restoreEnd);
+    const eventStart = appShellSource.indexOf("function applyAgentEvent");
+    const eventEnd = appShellSource.indexOf("function subscribeToAgentRun", eventStart);
+    const eventSource = appShellSource.slice(eventStart, eventEnd);
+
+    expect(restoreSource).toContain("agentEventSourceRef.current?.close()");
+    expect(restoreSource).toContain("setPendingInterrupt(null)");
+    expect(restoreSource).toContain("setActiveAgentRunId(null)");
+    expect(restoreSource).toContain("setMessages([initialAgentMessage])");
+    expect(eventSource).toContain("event.thread_id !== agentThreadIdRef.current");
   });
 });

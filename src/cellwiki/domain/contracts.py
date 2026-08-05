@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -325,15 +325,48 @@ class WikiAgentContext(ContractModel):
     selected_text: str | None = None              # 用户选中的文本
     thread_id: str | None = None                  # 对话线程 ID
     attachment_ids: list[str] = Field(default_factory=list)  # 当前 Agent 线程附件 ID
+    allow_attachment_promotion: bool = False      # 是否允许将当前附件注册为 governed source
 
 
 # ---- 引用 ----
 # 智能体回答中的引用信息
 class Citation(ContractModel):
-    page_id: str                                 # 页面 ID
+    page_id: str | None = None                    # Wiki page ID
     source_id: str | None = None                  # 来源 ID
     locator: str | None = None                    # 定位器
     evidence_id: str | None = None                # 可选的结构化证据 ID
+    attachment_id: str | None = Field(default=None, pattern=r"att_[a-f0-9]{32}")
+    original_name: str | None = None
+    section_locator: str | None = None
+    type: Literal["thread_attachment"] | None = None
+
+    @model_validator(mode="after")
+    def require_reference(self) -> "Citation":
+        if self.page_id is None and self.attachment_id is None:
+            raise ValueError("citation requires page_id or attachment_id")
+        if self.page_id is not None and self.attachment_id is not None:
+            raise ValueError("citation cannot contain both page_id and attachment_id")
+        return self
+
+    @model_serializer(mode="plain")
+    def serialize(self) -> dict[str, Any]:
+        if self.attachment_id is not None:
+            return {
+                key: value
+                for key, value in {
+                    "attachment_id": self.attachment_id,
+                    "original_name": self.original_name,
+                    "section_locator": self.section_locator,
+                    "type": self.type,
+                }.items()
+                if value is not None
+            }
+        return {
+            "page_id": self.page_id,
+            "source_id": self.source_id,
+            "locator": self.locator,
+            "evidence_id": self.evidence_id,
+        }
 
 
 class VerificationLevel(str, Enum):
@@ -370,7 +403,7 @@ class AgentAnswer(ContractModel):
     confidence: Literal["low", "medium", "high"] = "medium"  # 系统最终置信度
     declared_confidence: Literal["low", "medium", "high"] | None = None
     missing_evidence: list[str] = Field(default_factory=list)  # 缺失的证据
-    knowledge_scope: Literal["formal", "general", "unvalidated"] = "formal"
+    knowledge_scope: Literal["formal", "general", "attachment", "unvalidated"] = "formal"
     knowledge_version: str | None = None
     verification_level: VerificationLevel = VerificationLevel.UNVALIDATED
     validation_issues: list[ValidationIssue] = Field(default_factory=list)

@@ -223,6 +223,46 @@ def test_product_api_manages_thread_scoped_agent_attachments(tmp_path: Path):
     assert client.get(f"/api/agent/threads/{thread}/attachments").json() == []
 
 
+def test_product_api_rejects_attachment_ids_from_another_thread(tmp_path: Path):
+    client = TestClient(create_app(tmp_path))
+    owner_thread = client.post("/api/agent/threads").json()["thread_id"]
+    other_thread = client.post("/api/agent/threads").json()["thread_id"]
+    uploaded = client.post(
+        f"/api/agent/threads/{owner_thread}/attachments",
+        files={"files": ("notes.txt", b"FOXP3 evidence", "text/plain")},
+    )
+    attachment_id = uploaded.json()[0]["attachment_id"]
+
+    started = client.post(
+        "/api/agent/runs",
+        json={
+            "thread_id": other_thread,
+            "message": "Read the attached notes.",
+            "attachment_ids": [attachment_id],
+        },
+    )
+
+    assert started.status_code == 422
+    assert "attachment" in started.json()["detail"]
+
+
+def test_product_api_rejects_unknown_attachment_ids(tmp_path: Path):
+    client = TestClient(create_app(tmp_path))
+    thread = client.post("/api/agent/threads").json()["thread_id"]
+
+    started = client.post(
+        "/api/agent/runs",
+        json={
+            "thread_id": thread,
+            "message": "Read the attached notes.",
+            "attachment_ids": ["att_" + "f" * 32],
+        },
+    )
+
+    assert started.status_code == 422
+    assert "attachment" in started.json()["detail"]
+
+
 def test_product_api_reads_wiki_and_registers_sources(tmp_path: Path):
     pages = tmp_path / "wiki" / "cell_types"
     pages.mkdir(parents=True)

@@ -54,6 +54,23 @@ The available profiles cover published-Wiki query, source ingest, quality Lint, 
 candidate-only external research. Do not route the user to a separate typed-task
 form or ask them to provide an internal run ID.
 
+When the runtime supplies a cellwiki_attachment_context block, treat references
+such as "this paper" or "this article" as the attached files. Always inspect the
+current attachments before answering an attachment-grounded question. The
+attachment tools resolve the current thread automatically; never provide or ask
+for a thread_id and never invent a placeholder such as "current".
+When the runtime supplies a cellwiki_page_context block, treat its page_id as the
+current explicitly referenced published Wiki page. For questions about that page,
+call read_wiki_page with that exact page_id before answering; do not replace the
+page-scoped request with an unbounded project search.
+Reading an attachment is not source registration. For questions such as "what
+does this paper mention?", answer from the attachment and set knowledge_scope to
+attachment. Call register_attachment_as_source or ingest tools only when the
+current user explicitly asks to register, import, or ingest the attachment.
+If the user explicitly says not to register, ingest, or create a ChangeSet, treat that as a constraint on actions
+rather than a request for a workflow explanation;
+answer the attachment question directly unless they ask about the workflow.
+
 Ingest, revision, and Lint repair tools only prepare immutable candidate ChangeSets.
 They never publish formal Wiki knowledge. After a ChangeSet is prepared, summarize
 what will change and wait for the runtime's single human approval boundary. Never
@@ -63,6 +80,11 @@ required source, page, or scope is missing, ask a concise clarification rather t
 guessing. External research results are candidate sources only and must not be
 treated as formal Wiki evidence until the governed source and approval workflow
 completes.
+
+For ingest, source_id means the canonical identifier returned as source.source_id
+by register_attachment_as_source or the source registry. content_hash is only a
+deduplication hash; never use it as a source_id and never construct a src_ ID by
+prefixing a full content hash.
 
 Delegate a bounded evidence question to query-agent when useful; never launch
 parallel tasks or generic reconnaissance. For product-operation explanations or
@@ -121,6 +143,17 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
             "grep",
         }
     )
+    _read_only_attachment_mutating_tools = frozenset(
+        {
+            "register_attachment_as_source",
+            "prepare_ingest_change_set",
+            "request_ingest_revision",
+            "run_broad_lint",
+            "propose_lint_fix",
+            "rebase_change_set",
+            "commit_change_set",
+        }
+    )
     _boundary_reminder = (
         "CellWiki tool boundary: the built-in deep-agent filesystem tools "
         "ls, read_file, write_file, edit_file, glob, grep, and write_todos are "
@@ -133,11 +166,35 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
     def __init__(self, *, append_reminder: bool = False):
         self.append_reminder = append_reminder
 
+    @staticmethod
+    def _tool_name(tool: Any) -> str | None:
+        if isinstance(tool, dict):
+            function = tool.get("function")
+            if isinstance(function, dict):
+                return cast(str | None, function.get("name"))
+            return cast(str | None, tool.get("name"))
+        return cast(str | None, getattr(tool, "name", None))
+
+    @classmethod
+    def _is_read_only_attachment_context(cls, request: Any) -> bool:
+        runtime = getattr(request, "runtime", None)
+        context = getattr(runtime, "context", None)
+        if isinstance(context, WikiAgentContext):
+            return bool(context.attachment_ids) and not context.allow_attachment_promotion
+        if isinstance(context, dict):
+            return bool(context.get("attachment_ids")) and not bool(
+                context.get("allow_attachment_promotion", False)
+            )
+        return False
+
     def _filter_request(self, request: Any) -> Any:
+        blocked_tools = set(self._blocked_tools)
+        if self._is_read_only_attachment_context(request):
+            blocked_tools.update(self._read_only_attachment_mutating_tools)
         filtered_tools = [
             tool
             for tool in request.tools
-            if getattr(tool, "name", None) not in self._blocked_tools
+            if self._tool_name(tool) not in blocked_tools
         ]
         system_message = request.system_message
         if self.append_reminder and isinstance(system_message, SystemMessage):

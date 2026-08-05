@@ -141,9 +141,14 @@ export type TaskEvent = {
 };
 
 export type Citation = {
-  page_id: string;
+  page_id?: string | null;
   source_id?: string | null;
   locator?: string | null;
+  evidence_id?: string | null;
+  attachment_id?: string | null;
+  original_name?: string | null;
+  section_locator?: string | null;
+  type?: "thread_attachment" | null;
 };
 
 export type AgentAnswer = {
@@ -153,7 +158,7 @@ export type AgentAnswer = {
   declared_confidence?: "low" | "medium" | "high" | null;
   missing_evidence: string[];
   verification_level?: "evidence" | "page" | "unvalidated";
-  knowledge_scope?: "formal" | "general" | "unvalidated";
+  knowledge_scope?: "formal" | "general" | "attachment" | "unvalidated";
   knowledge_version?: string | null;
   validation_issues?: ValidationIssue[];
   validation_warnings?: string[];
@@ -207,7 +212,7 @@ export type ChatMessage = {
   confidence?: "low" | "medium" | "high";
   declaredConfidence?: "low" | "medium" | "high" | null;
   verificationLevel?: "evidence" | "page" | "unvalidated";
-  knowledgeScope?: "formal" | "general" | "unvalidated";
+  knowledgeScope?: "formal" | "general" | "attachment" | "unvalidated";
   validationIssues?: ValidationIssue[];
   missingEvidence?: string[];
   process?: AgentProcessStep[];
@@ -233,6 +238,7 @@ export type AgentRun = {
   run_id: string;
   thread_id: string;
   project_id: string;
+  attachment_ids?: string[];
   source_id?: string | null;
   page_id?: string | null;
   task_kind?: string;

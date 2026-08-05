@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import mimetypes
 import re
 import shutil
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import List
 
+import pdfplumber
+from pdfminer.pdfparser import PDFSyntaxError
 from pydantic import BaseModel, Field
 
 from cellwiki.domain.contracts import SourceRecord
@@ -101,19 +103,46 @@ class AttachmentService:
 
     def read_text(self, thread_id: str, attachment_id: str) -> str:
         record = self.get(thread_id, attachment_id)
-        if not record.text_path:
-            return ""
-        path = Path(record.text_path)
-        if not path.is_file():
-            return ""
-        return path.read_text(encoding="utf-8")
+        if record.text_path:
+            path = Path(record.text_path)
+            if path.is_file():
+                return path.read_text(encoding="utf-8")
 
-    def search_text(self, thread_id: str, query: str) -> list[dict[str, str]]:
+        # Older uploads may predate PDF extraction or have lost their derived
+        # text file. Rebuild the disposable text projection from the immutable
+        # stored file before returning an empty result.
+        stored_path = Path(record.stored_path)
+        if not stored_path.is_file():
+            return ""
+        text = _read_text_if_supported(stored_path)
+        if text is None:
+            return ""
+        text_path = stored_path.parent / "text.txt"
+        text_path.write_text(text, encoding="utf-8")
+        self._write_record(
+            record.model_copy(
+                update={
+                    "text_path": str(text_path.resolve()),
+                    "text_hash": f"sha256:{hashlib.sha256(text.encode('utf-8')).hexdigest()}",
+                }
+            )
+        )
+        return text
+
+    def search_text(
+        self,
+        thread_id: str,
+        query: str,
+        *,
+        attachment_ids: set[str] | None = None,
+    ) -> List[dict[str, str]]:
         needle = query.strip().lower()
         if not needle:
             return []
-        matches: list[dict[str, str]] = []
+        matches: List[dict[str, str]] = []
         for record in self.list(thread_id):
+            if attachment_ids is not None and record.attachment_id not in attachment_ids:
+                continue
             text = self.read_text(thread_id, record.attachment_id)
             index = text.lower().find(needle)
             if index >= 0:
@@ -182,6 +211,17 @@ class AttachmentService:
 
 
 def _read_text_if_supported(path: Path) -> str | None:
+    if path.suffix.lower() == ".pdf":
+        try:
+            pages: list[str] = []
+            with pdfplumber.open(path) as pdf:
+                for page_number, page in enumerate(pdf.pages, start=1):
+                    text = page.extract_text(x_tolerance=2, y_tolerance=3) or ""
+                    if text.strip():
+                        pages.append(f"[Page {page_number}]\n{text.strip()}")
+            return "\n\n".join(pages) or None
+        except (OSError, ValueError, PDFSyntaxError):
+            return None
     if path.suffix.lower() not in {".txt", ".md", ".csv", ".tsv", ".json"}:
         return None
     try:

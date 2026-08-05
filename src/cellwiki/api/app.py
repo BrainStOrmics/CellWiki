@@ -462,6 +462,26 @@ def create_app(
     def start_agent_run(request: AgentRunRequest) -> dict:
         """启动一个新的智能体运行"""
         thread_id = request.thread_id or f"thread_{uuid.uuid4().hex}"
+        if request.attachment_ids:
+            try:
+                available_attachment_ids = {
+                    record.attachment_id for record in attachments.list(thread_id)
+                }
+            except KeyError:
+                raise HTTPException(status_code=422, detail="invalid agent thread or attachment") from None
+            invalid_attachment_ids = [
+                attachment_id
+                for attachment_id in request.attachment_ids
+                if attachment_id not in available_attachment_ids
+            ]
+            if invalid_attachment_ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        "attachment_ids do not belong to the requested agent thread: "
+                        + ", ".join(invalid_attachment_ids)
+                    ),
+                )
         context = WikiAgentContext(
             project_id=request.project_id,
             source_id=request.source_id,

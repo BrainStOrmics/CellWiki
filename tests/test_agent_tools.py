@@ -28,9 +28,10 @@ from cellwiki.agent.tools import (
 )
 from cellwiki.config import Settings
 from cellwiki.services.operations import bind_agent_run
-from cellwiki.domain.contracts import ApprovalPolicy, PipelineTaskType
+from cellwiki.domain.contracts import ApprovalPolicy, PipelineTaskType, WikiAgentContext
 from cellwiki.services.attachments import AttachmentService
 from cellwiki.services.pipeline import KnowledgePipelineHarness
+from cellwiki.services.sources import SourceRegistry
 
 
 def test_read_tools_use_page_ids_and_return_search_results(tmp_path: Path):
@@ -61,24 +62,34 @@ def test_attachment_tools_read_search_and_promote_thread_scoped_uploads(tmp_path
         media_type="text/plain",
     )
     tools = {tool.name: tool for tool in build_attachment_tools(tmp_path)}
+    runtime = SimpleNamespace(
+        context={
+            "thread_id": thread_id,
+            "attachment_ids": [attachment.attachment_id],
+            "allow_attachment_promotion": True,
+        }
+    )
 
-    listed = json.loads(tools["list_thread_attachments"].invoke({"thread_id": thread_id}))
+    listed = json.loads(tools["list_thread_attachments"].func(runtime=runtime))
     excerpt = json.loads(
-        tools["read_attachment_excerpt"].invoke(
-            {"thread_id": thread_id, "attachment_id": attachment.attachment_id}
+        tools["read_attachment_excerpt"].func(
+            runtime=runtime,
+            attachment_id=attachment.attachment_id,
         )
     )
     matches = json.loads(
-        tools["search_attachment_text"].invoke({"thread_id": thread_id, "query": "FOXP3"})
+        tools["search_attachment_text"].func(runtime=runtime, query="FOXP3")
     )
     promoted = json.loads(
-        tools["register_attachment_as_source"].invoke(
-            {"thread_id": thread_id, "attachment_id": attachment.attachment_id}
+        tools["register_attachment_as_source"].func(
+            runtime=runtime,
+            attachment_id=attachment.attachment_id,
         )
     )
     promoted_again = json.loads(
-        tools["register_attachment_as_source"].invoke(
-            {"thread_id": thread_id, "attachment_id": attachment.attachment_id}
+        tools["register_attachment_as_source"].func(
+            runtime=runtime,
+            attachment_id=attachment.attachment_id,
         )
     )
 
@@ -91,6 +102,202 @@ def test_attachment_tools_read_search_and_promote_thread_scoped_uploads(tmp_path
     assert promoted["source"]["source_id"].startswith("src_")
     assert promoted_again["source"]["source_id"] == promoted["source"]["source_id"]
     assert promoted_again["already_promoted"] is True
+
+
+def test_attachment_promotion_requires_runtime_write_intent(tmp_path: Path):
+    thread_id = "thread_" + "f" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("This paper mentions T cells only.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    tools = {tool.name: tool for tool in build_attachment_tools(tmp_path)}
+    runtime = SimpleNamespace(
+        context={"thread_id": thread_id, "attachment_ids": [attachment.attachment_id]}
+    )
+
+    blocked = json.loads(
+        tools["register_attachment_as_source"].func(
+            runtime=runtime,
+            attachment_id=attachment.attachment_id,
+        )
+    )
+
+    assert blocked["error"] == "attachment_promotion_not_allowed"
+    assert AttachmentService(tmp_path).get(thread_id, attachment.attachment_id).promoted_source_id is None
+    assert SourceRegistry(tmp_path).list_sources() == []
+
+
+def test_attachment_tools_bind_the_current_thread_from_runtime_context(tmp_path: Path):
+    thread_id = "thread_" + "b" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 is a regulatory T-cell marker.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    tools = {tool.name: tool for tool in build_attachment_tools(tmp_path)}
+    runtime = SimpleNamespace(
+        context={
+            "thread_id": thread_id,
+            "attachment_ids": [attachment.attachment_id],
+        }
+    )
+
+    assert "thread_id" not in tools["list_thread_attachments"].tool_call_schema.model_fields
+    listed = json.loads(tools["list_thread_attachments"].func(runtime=runtime))
+    excerpt = json.loads(
+        tools["read_attachment_excerpt"].func(
+            attachment_id=attachment.attachment_id,
+            runtime=runtime,
+        )
+    )
+
+    assert listed["attachments"][0]["attachment_id"] == attachment.attachment_id
+    assert "FOXP3" in excerpt["excerpt"]
+
+
+def test_attachment_tools_only_expose_currently_referenced_attachments(tmp_path: Path):
+    thread_id = "thread_" + "e" * 32
+    first_source = tmp_path / "first.txt"
+    second_source = tmp_path / "second.txt"
+    first_source.write_text("FOXP3 is a regulatory T-cell marker.", encoding="utf-8")
+    second_source.write_text("SPP1 marks tumor-associated macrophages.", encoding="utf-8")
+    first = AttachmentService(tmp_path).create(
+        thread_id,
+        first_source,
+        original_name="first.txt",
+        media_type="text/plain",
+    )
+    second = AttachmentService(tmp_path).create(
+        thread_id,
+        second_source,
+        original_name="second.txt",
+        media_type="text/plain",
+    )
+    tools = {tool.name: tool for tool in build_attachment_tools(tmp_path)}
+    runtime = SimpleNamespace(context={"thread_id": thread_id, "attachment_ids": [first.attachment_id]})
+
+    listed = json.loads(tools["list_thread_attachments"].func(runtime=runtime))
+    unselected_read = json.loads(
+        tools["read_attachment_excerpt"].func(runtime=runtime, attachment_id=second.attachment_id)
+    )
+    unselected_search = json.loads(
+        tools["search_attachment_text"].func(runtime=runtime, query="SPP1")
+    )
+
+    assert [item["attachment_id"] for item in listed["attachments"]] == [first.attachment_id]
+    assert unselected_read["error"] == "attachment_not_selected"
+    assert unselected_search["matches"] == []
+
+
+def test_attachment_tools_with_no_references_do_not_fall_back_to_the_thread_archive(tmp_path: Path):
+    thread_id = "thread_" + "f" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 evidence", encoding="utf-8")
+    AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    tools = {tool.name: tool for tool in build_attachment_tools(tmp_path)}
+    runtime = SimpleNamespace(context={"thread_id": thread_id, "attachment_ids": []})
+
+    listed = json.loads(tools["list_thread_attachments"].func(runtime=runtime))
+    search = json.loads(tools["search_attachment_text"].func(runtime=runtime, query="FOXP3"))
+
+    assert listed["attachments"] == []
+    assert search["matches"] == []
+
+
+def test_attachment_tools_extract_pdf_text_for_agent_reads(tmp_path: Path):
+    source = tmp_path / "paper.pdf"
+    source.write_bytes((Path(__file__).parent / "fixtures" / "page_aware_source.pdf").read_bytes())
+
+    attachment = AttachmentService(tmp_path).create(
+        "thread_" + "c" * 32,
+        source,
+        original_name="paper.pdf",
+        media_type="application/pdf",
+    )
+
+    assert attachment.text_path is not None
+    assert "FOXP3" in AttachmentService(tmp_path).read_text(
+        attachment.thread_id,
+        attachment.attachment_id,
+    )
+
+
+def test_attachment_service_lazily_extracts_text_from_legacy_pdf_uploads(tmp_path: Path):
+    source = tmp_path / "legacy-paper.pdf"
+    source.write_bytes((Path(__file__).parent / "fixtures" / "page_aware_source.pdf").read_bytes())
+    service = AttachmentService(tmp_path)
+    attachment = service.create(
+        "thread_" + "d" * 32,
+        source,
+        original_name="legacy-paper.pdf",
+        media_type="application/pdf",
+    )
+
+    # Simulate an upload created before PDF extraction was supported.
+    text_path = Path(attachment.text_path or "")
+    text_path.unlink()
+    metadata_path = text_path.parent / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["text_path"] = None
+    metadata["text_hash"] = None
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    text = service.read_text(attachment.thread_id, attachment.attachment_id)
+
+    assert "FOXP3" in text
+    refreshed = service.get(attachment.thread_id, attachment.attachment_id)
+    assert refreshed.text_path is not None
+
+
+def test_attachment_tool_reads_legacy_pdf_after_lazy_extraction(tmp_path: Path):
+    source = tmp_path / "legacy-paper.pdf"
+    source.write_bytes((Path(__file__).parent / "fixtures" / "page_aware_source.pdf").read_bytes())
+    service = AttachmentService(tmp_path)
+    attachment = service.create(
+        "thread_" + "e" * 32,
+        source,
+        original_name="legacy-paper.pdf",
+        media_type="application/pdf",
+    )
+
+    # Simulate metadata written before PDF extraction was supported.
+    text_path = Path(attachment.text_path or "")
+    text_path.unlink()
+    metadata_path = text_path.parent / "metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["text_path"] = None
+    metadata["text_hash"] = None
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    tools = {tool.name: tool for tool in build_attachment_tools(tmp_path)}
+    runtime = SimpleNamespace(
+        context={
+            "thread_id": attachment.thread_id,
+            "attachment_ids": [attachment.attachment_id],
+        }
+    )
+
+    result = json.loads(
+        tools["read_attachment_excerpt"].func(
+            runtime=runtime,
+            attachment_id=attachment.attachment_id,
+        )
+    )
+
+    assert "error" not in result
+    assert "FOXP3" in result["excerpt"]
 
 
 def test_rebase_tool_returns_an_explicit_current_or_conflict_result(tmp_path: Path):
@@ -165,6 +372,7 @@ def test_coordinator_is_model_led_and_governed():
     assert "Do not route the user to a separate typed-task" in SYSTEM_PROMPT
     assert "never launch" in SYSTEM_PROMPT
     assert "never modify files directly" in SYSTEM_PROMPT
+    assert "treat that as a constraint on actions" in SYSTEM_PROMPT
 
 
 def test_default_harness_exposes_only_read_only_conversation_capabilities(
@@ -212,6 +420,75 @@ def test_tool_boundary_rejects_generic_filesystem_calls():
     assert isinstance(result, ToolMessage)
     assert result.status == "error"
     assert "CellWiki tools" in result.content
+
+
+def test_tool_boundary_hides_mutating_tools_for_read_only_attachment_context():
+    class Request(SimpleNamespace):
+        def override(self, **overrides):
+            data = self.__dict__.copy()
+            data.update(overrides)
+            return Request(**data)
+
+    middleware = _CellWikiToolBoundaryMiddleware()
+    request = Request(
+        tools=[
+            SimpleNamespace(name="list_thread_attachments"),
+            SimpleNamespace(name="read_attachment_excerpt"),
+            SimpleNamespace(name="register_attachment_as_source"),
+            SimpleNamespace(name="prepare_ingest_change_set"),
+            SimpleNamespace(name="submit_agent_answer"),
+        ],
+        runtime=SimpleNamespace(
+            context=WikiAgentContext(
+                thread_id="thread_" + "1" * 32,
+                attachment_ids=["att_" + "2" * 32],
+            )
+        ),
+        system_message=None,
+    )
+
+    visible_tool_names = middleware.wrap_model_call(
+        request,
+        lambda filtered: [tool.name for tool in filtered.tools],
+    )
+
+    assert "list_thread_attachments" in visible_tool_names
+    assert "read_attachment_excerpt" in visible_tool_names
+    assert "submit_agent_answer" in visible_tool_names
+    assert "register_attachment_as_source" not in visible_tool_names
+    assert "prepare_ingest_change_set" not in visible_tool_names
+
+
+def test_tool_boundary_keeps_mutating_tools_for_explicit_attachment_promotion():
+    class Request(SimpleNamespace):
+        def override(self, **overrides):
+            data = self.__dict__.copy()
+            data.update(overrides)
+            return Request(**data)
+
+    middleware = _CellWikiToolBoundaryMiddleware()
+    request = Request(
+        tools=[
+            SimpleNamespace(name="register_attachment_as_source"),
+            SimpleNamespace(name="prepare_ingest_change_set"),
+        ],
+        runtime=SimpleNamespace(
+            context=WikiAgentContext(
+                thread_id="thread_" + "1" * 32,
+                attachment_ids=["att_" + "2" * 32],
+                allow_attachment_promotion=True,
+            )
+        ),
+        system_message=None,
+    )
+
+    visible_tool_names = middleware.wrap_model_call(
+        request,
+        lambda filtered: [tool.name for tool in filtered.tools],
+    )
+
+    assert "register_attachment_as_source" in visible_tool_names
+    assert "prepare_ingest_change_set" in visible_tool_names
 
 
 def test_broad_lint_tool_combines_local_quality_and_external_refresh(
@@ -436,11 +713,161 @@ def test_final_answer_tool_ignores_display_only_citation_metadata(tmp_path: Path
     assert '"page_id":"regulatory_t_cell"' in result
 
 
+def test_final_answer_tool_normalizes_formal_section_metadata(tmp_path: Path):
+    tool = build_final_answer_tool(tmp_path)
+
+    result = json.loads(
+        tool.invoke(
+            {
+                "answer": "Lint completed and found advisory issues.",
+                "citations": [
+                    {
+                        "page_id": "regulatory_t_cell",
+                        "section": "wiki/cell_types/regulatory_t_cell.md:81-90",
+                        "note": "broken link finding",
+                    }
+                ],
+                "confidence": "high",
+                "knowledge_scope": "formal",
+            }
+        )
+    )
+
+    citation = result["citations"][0]
+    assert citation["page_id"] == "regulatory_t_cell"
+    assert citation["locator"] == "wiki/cell_types/regulatory_t_cell.md:81-90"
+    assert "section" not in citation
+    assert "note" not in citation
+
+
+def test_final_answer_tool_accepts_attachment_grounding(tmp_path: Path):
+    tool = build_final_answer_tool(tmp_path)
+
+    result = json.loads(
+        tool.invoke(
+            {
+                "answer": "The attachment mentions regulatory T cells.",
+                "citations": [
+                    {
+                        "attachment_id": "att_" + "a" * 32,
+                        "original_name": "paper.pdf",
+                        "section_locator": "Page 1",
+                        "type": "thread_attachment",
+                    }
+                ],
+                "confidence": "high",
+                "knowledge_scope": "attachment",
+            }
+        )
+    )
+
+    assert result["knowledge_scope"] == "attachment"
+    assert result["verification_level"] == "unvalidated"
+    assert result["citations"][0]["attachment_id"].startswith("att_")
+
+
+def test_final_answer_tool_preserves_attachment_locator_as_section_locator(tmp_path: Path):
+    tool = build_final_answer_tool(tmp_path)
+
+    result = json.loads(
+        tool.invoke(
+            {
+                "answer": "The attachment mentions regulatory T cells.",
+                "citations": [
+                    {
+                        "attachment_id": "att_" + "b" * 32,
+                        "original_name": "paper.pdf",
+                        "locator": "Page 2 (RESULTS)",
+                    }
+                ],
+                "confidence": "high",
+                "knowledge_scope": "attachment",
+            }
+        )
+    )
+
+    assert result["citations"][0]["section_locator"] == "Page 2 (RESULTS)"
+    assert result["citations"][0]["type"] == "thread_attachment"
+
+
+def test_final_answer_tool_normalizes_attachment_quote_without_leaking_extra_fields(
+    tmp_path: Path,
+):
+    tool = build_final_answer_tool(tmp_path)
+
+    result = json.loads(
+        tool.invoke(
+            {
+                "answer": "The attachment mentions regulatory T cells.",
+                "citations": [
+                    {
+                        "attachment_id": "att_" + "c" * 32,
+                        "original_name": "paper.pdf",
+                        "quote": "Regulatory T cell identity was examined.",
+                    }
+                ],
+                "confidence": "high",
+                "knowledge_scope": "attachment",
+            }
+        )
+    )
+
+    citation = result["citations"][0]
+    assert citation["section_locator"] == "Regulatory T cell identity was examined."
+    assert citation["type"] == "thread_attachment"
+    assert "quote" not in citation
+
+
+def test_final_answer_tool_accepts_operational_lint_summary_without_citations(
+    tmp_path: Path,
+):
+    tool = build_final_answer_tool(tmp_path)
+
+    result = json.loads(
+        tool.invoke(
+            {
+                "answer": "Lint completed and reported project quality status.",
+                "citations": [],
+                "confidence": 0.82,
+                "knowledge_scope": "lint",
+            }
+        )
+    )
+
+    assert result["confidence"] == "high"
+    assert result["knowledge_scope"] == "general"
+    assert result["verification_level"] == "unvalidated"
+    assert result["validation_issues"] == []
+
+
+def test_final_answer_tool_tolerates_unknown_operational_scope_and_confidence(
+    tmp_path: Path,
+):
+    tool = build_final_answer_tool(tmp_path)
+
+    result = json.loads(
+        tool.invoke(
+            {
+                "answer": "The Agent completed an operational status check.",
+                "citations": [],
+                "confidence": "confident",
+                "knowledge_scope": "project quality",
+            }
+        )
+    )
+
+    assert result["confidence"] == "medium"
+    assert result["knowledge_scope"] == "general"
+
+
 def test_ingest_tool_uses_durable_agent_run_as_cancellation_authority(
     tmp_path: Path,
     monkeypatch,
 ):
     captured: dict[str, str] = {}
+    source_path = tmp_path / "source.txt"
+    source_path.write_text("FOXP3 is a regulatory T-cell marker.", encoding="utf-8")
+    source = SourceRegistry(tmp_path).register(source_path, source_type="paper")
     snapshot = KnowledgePipelineHarness(tmp_path).capture_snapshot(
         task_type=PipelineTaskType.INGEST,
         run_id="model-task-id",
@@ -473,16 +900,19 @@ def test_ingest_tool_uses_durable_agent_run_as_cancellation_authority(
     # The model controls run_id, so it must never be able to redirect the
     # cancellation token away from the durable runtime-owned Agent run.
     with bind_agent_run("agent-run-durable"):
-        prepare.invoke({"source_id": "source-paper", "run_id": "model-task-id"})
+        prepare.invoke({"source_id": source.source_id, "run_id": "model-task-id"})
 
     assert captured == {
-        "source_id": "source-paper",
+        "source_id": source.source_id,
         "run_id": "model-task-id",
         "cancellation_id": "agent-run-durable",
     }
 
 
 def test_ingest_tool_returns_the_full_pipeline_snapshot(tmp_path: Path, monkeypatch):
+    source_path = tmp_path / "source.txt"
+    source_path.write_text("FOXP3 is a regulatory T-cell marker.", encoding="utf-8")
+    source = SourceRegistry(tmp_path).register(source_path, source_type="paper")
     snapshot = KnowledgePipelineHarness(tmp_path).capture_snapshot(
         task_type=PipelineTaskType.INGEST,
         run_id="snapshot-ingest-run",
@@ -501,11 +931,55 @@ def test_ingest_tool_returns_the_full_pipeline_snapshot(tmp_path: Path, monkeypa
     monkeypatch.setattr("cellwiki.agent.tools.IngestService", FakeIngestService)
     prepare = build_ingest_tools(tmp_path)[0]
 
-    payload = json.loads(prepare.invoke({"source_id": "source-paper", "run_id": "snapshot-ingest-run"}))
+    payload = json.loads(
+        prepare.invoke({"source_id": source.source_id, "run_id": "snapshot-ingest-run"})
+    )
 
+    assert payload["source_id"] == source.source_id
     assert payload["snapshot"]["snapshot_id"] == snapshot.snapshot_id
     assert payload["snapshot"]["task_type"] == "ingest"
     assert "formal" in payload["snapshot"]["inventory"]
+
+
+def test_ingest_tool_resolves_full_content_hash_alias_to_canonical_source_id(
+    tmp_path: Path,
+    monkeypatch,
+):
+    source_path = tmp_path / "source.txt"
+    source_path.write_text("FOXP3 is a regulatory T-cell marker.", encoding="utf-8")
+    source = SourceRegistry(tmp_path).register(source_path, source_type="paper")
+    snapshot = KnowledgePipelineHarness(tmp_path).capture_snapshot(
+        task_type=PipelineTaskType.INGEST,
+        run_id="hash-alias-run",
+    )
+    captured: dict[str, str] = {}
+
+    class FakeIngestService:
+        def __init__(self, project_root: Path):
+            assert project_root == tmp_path.resolve()
+
+        def prepare_change_set(self, source_id, run_id, *, cancellation_id):
+            captured.update(
+                source_id=source_id,
+                run_id=run_id,
+                cancellation_id=cancellation_id,
+            )
+            return SimpleNamespace(
+                snapshot_id=snapshot.snapshot_id,
+                model_dump_json=lambda: '{"change_set_id":"cs-hash-alias"}',
+            )
+
+    monkeypatch.setattr("cellwiki.agent.tools.IngestService", FakeIngestService)
+    prepare = build_ingest_tools(tmp_path)[0]
+    full_hash_alias = "src_" + source.content_hash.removeprefix("sha256:")
+
+    payload = json.loads(
+        prepare.invoke({"source_id": full_hash_alias, "run_id": "hash-alias-run"})
+    )
+
+    assert captured["source_id"] == source.source_id
+    assert payload["source_id"] == source.source_id
+    assert payload["change_set"]["change_set_id"] == "cs-hash-alias"
 
 
 def test_revision_tool_preserves_feedback_and_prepares_a_child_changeset(

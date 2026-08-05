@@ -51,17 +51,35 @@ export function AgentMessageBubble({
       </div>
       {isAgent && message.citations && message.citations.length > 0 && (
         <div className="message-citations">
-          {message.citations.map((citation, citationIndex) => (
-            <button
-              key={`${citation.page_id}-${citation.locator ?? "page"}-${citationIndex}`}
-              onClick={() => onCitationOpen(citation)}
-              title={citation.locator ?? `Open ${citation.page_id}`}
-            >
-              <BookOpenCheck size={12} />
-              <span>{citation.page_id}</span>
-              {citation.locator && <small>{citation.locator}</small>}
-            </button>
-          ))}
+          {message.citations.map((citation, citationIndex) => {
+            const locator = citation.section_locator ?? citation.locator;
+            if (citation.attachment_id) {
+              return (
+                <span
+                  className="message-citation"
+                  key={`${citation.attachment_id}-${locator ?? "attachment"}-${citationIndex}`}
+                  title={locator ?? citation.original_name ?? citation.attachment_id}
+                >
+                  <BookOpenCheck size={12} />
+                  <span>{citation.original_name ?? citation.attachment_id}</span>
+                  {locator && <small>{locator}</small>}
+                </span>
+              );
+            }
+            if (!citation.page_id) return null;
+            return (
+              <button
+                className="message-citation"
+                key={`${citation.page_id}-${locator ?? "page"}-${citationIndex}`}
+                onClick={() => onCitationOpen(citation)}
+                title={locator ?? `Open ${citation.page_id}`}
+              >
+                <BookOpenCheck size={12} />
+                <span>{citation.page_id}</span>
+                {locator && <small>{locator}</small>}
+              </button>
+            );
+          })}
         </div>
       )}
       {message.missingEvidence && message.missingEvidence.length > 0 && (

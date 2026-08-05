@@ -20,6 +20,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from langchain.tools import ToolRuntime
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
@@ -30,6 +31,7 @@ from cellwiki.domain.contracts import (
     ApprovalPolicy,
     IngestStage,
     TaskStatus,
+    WikiAgentContext,
 )
 from cellwiki.services.central_writer import CentralWriter
 from cellwiki.services.changesets import ChangeSetRepository
@@ -54,10 +56,57 @@ class FinalAnswerInput(BaseModel):
 
     answer: str
     citations: list[dict[str, Any]] = Field(default_factory=list)
-    confidence: str = "medium"
+    confidence: str | int | float = "medium"
     missing_evidence: list[str] = Field(default_factory=list)
     knowledge_scope: str = "formal"
     knowledge_version: str | None = None
+
+
+def _normalize_answer_confidence(value: Any) -> str:
+    """Map loose provider confidence values onto the stable AgentAnswer enum."""
+
+    if isinstance(value, bool):
+        return "medium"
+    if isinstance(value, int | float):
+        if value >= 0.75:
+            return "high"
+        if value <= 0.35:
+            return "low"
+        return "medium"
+    normalized = " ".join(str(value or "").strip().lower().split())
+    if normalized in {"high", "medium", "low"}:
+        return normalized
+    try:
+        return _normalize_answer_confidence(float(normalized))
+    except ValueError:
+        return "medium"
+
+
+def _normalize_knowledge_scope(value: Any) -> str:
+    """Keep operational answers out of the formal scientific citation gate."""
+
+    normalized = " ".join(str(value or "").strip().lower().replace("_", "-").split())
+    aliases = {
+        "formal": "formal",
+        "published": "formal",
+        "wiki": "formal",
+        "general": "general",
+        "workflow": "general",
+        "operation": "general",
+        "operational": "general",
+        "task": "general",
+        "status": "general",
+        "lint": "general",
+        "quality": "general",
+        "quality-check": "general",
+        "project-quality": "general",
+        "attachment": "attachment",
+        "file": "attachment",
+        "uploaded-file": "attachment",
+        "unvalidated": "unvalidated",
+        "candidate": "unvalidated",
+    }
+    return aliases.get(normalized, "general")
 
 
 def build_final_answer_tool(project_root: Path) -> BaseTool:
@@ -69,7 +118,7 @@ def build_final_answer_tool(project_root: Path) -> BaseTool:
     def submit_agent_answer(
         answer: str,
         citations: list[dict[str, Any]] | None = None,
-        confidence: str = "medium",
+        confidence: str | int | float = "medium",
         missing_evidence: list[str] | None = None,
         knowledge_scope: str = "formal",
         knowledge_version: str | None = None,
@@ -77,18 +126,63 @@ def build_final_answer_tool(project_root: Path) -> BaseTool:
         """Finish with a grounded answer, exact page citations, and evidence gaps."""
         # Providers sometimes echo display metadata from read tools (title/path/sections).
         # Keep the persisted contract narrow while tolerating that harmless boundary noise.
-        citation_fields = {"page_id", "source_id", "locator", "evidence_id"}
-        normalized_citations = [
-            {key: value for key, value in citation.items() if key in citation_fields}
-            for citation in (citations or [])
-        ]
+        citation_fields = {
+            "page_id",
+            "source_id",
+            "locator",
+            "evidence_id",
+            "attachment_id",
+            "original_name",
+            "section_locator",
+            "quote",
+            "section",
+            "type",
+        }
+        normalized_citations: list[dict[str, Any]] = []
+        for citation in citations or []:
+            normalized = {
+                key: value for key, value in citation.items() if key in citation_fields
+            }
+            if normalized.get("attachment_id"):
+                # Providers commonly call the attachment locator `locator`,
+                # `quote`, or `section`; the domain contract uses one stable
+                # field so page/section provenance is not lost in serialization.
+                section_locator = (
+                    normalized.get("section_locator")
+                    or normalized.get("locator")
+                    or normalized.get("quote")
+                    or normalized.get("section")
+                )
+                if section_locator:
+                    normalized["section_locator"] = str(section_locator)[:1_000]
+                normalized.pop("quote", None)
+                normalized.pop("section", None)
+                normalized["type"] = "thread_attachment"
+            elif normalized.get("page_id"):
+                locator = (
+                    normalized.get("locator")
+                    or normalized.get("section_locator")
+                    or normalized.get("quote")
+                    or normalized.get("section")
+                )
+                normalized = {
+                    key: value
+                    for key, value in {
+                        "page_id": normalized.get("page_id"),
+                        "source_id": normalized.get("source_id"),
+                        "locator": str(locator)[:1_000] if locator else None,
+                        "evidence_id": normalized.get("evidence_id"),
+                    }.items()
+                    if value is not None
+                }
+            normalized_citations.append(normalized)
         candidate = AgentAnswer.model_validate(
             {
                 "answer": answer,
                 "citations": normalized_citations,
-                "confidence": confidence,
+                "confidence": _normalize_answer_confidence(confidence),
                 "missing_evidence": missing_evidence or [],
-                "knowledge_scope": knowledge_scope,
+                "knowledge_scope": _normalize_knowledge_scope(knowledge_scope),
                 "knowledge_version": knowledge_version,
             }
         )
@@ -195,18 +289,87 @@ def build_attachment_tools(project_root: Path) -> list[BaseTool]:
 
     attachments = AttachmentService(Path(project_root).resolve())
 
+    def runtime_scope(runtime: ToolRuntime) -> tuple[str | None, set[str]]:
+        """Resolve the current thread without asking the model to invent IDs."""
+
+        context = runtime.context
+        if isinstance(context, WikiAgentContext):
+            return context.thread_id, set(context.attachment_ids)
+        if isinstance(context, dict):
+            thread_id = context.get("thread_id")
+            attachment_ids = context.get("attachment_ids", [])
+            return (
+                str(thread_id) if thread_id else None,
+                {str(item) for item in attachment_ids if item},
+            )
+        return None, set()
+
+    def missing_context() -> str:
+        return json.dumps(
+            {
+                "error": "thread_context_missing",
+                "message": "The current Agent thread context is unavailable; do not ask the user for thread_id.",
+            },
+            ensure_ascii=False,
+        )
+
+    def promotion_allowed(runtime: ToolRuntime) -> bool:
+        context = runtime.context
+        if isinstance(context, WikiAgentContext):
+            return context.allow_attachment_promotion
+        if isinstance(context, dict):
+            return bool(context.get("allow_attachment_promotion", False))
+        return False
+
+    def promotion_not_allowed(attachment_id: str) -> str:
+        return json.dumps(
+            {
+                "error": "attachment_promotion_not_allowed",
+                "attachment_id": attachment_id,
+                "message": (
+                    "The current user request is attachment-grounded read-only. "
+                    "Answer from the attachment tools; do not register sources or ingest unless the user explicitly asks for it."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
     def attachment_payload(record: Any) -> dict[str, Any]:
         payload = record.model_dump(mode="json")
         payload.pop("stored_path", None)
         payload.pop("text_path", None)
+        payload["text_available"] = bool(record.text_path)
         return payload
 
-    @tool("list_thread_attachments")
-    def list_thread_attachments(thread_id: str) -> str:
-        """List temporary files attached to one Agent thread by attachment ID."""
+    def selected_records(thread_id: str, active_ids: set[str]) -> list[Any]:
+        """Keep every attachment operation inside the run's explicit references."""
 
+        return [
+            record
+            for record in attachments.list(thread_id)
+            if record.attachment_id in active_ids
+        ]
+
+    def not_selected(thread_id: str, attachment_id: str) -> str:
+        return json.dumps(
+            {
+                "error": "attachment_not_selected",
+                "thread_id": thread_id,
+                "attachment_id": attachment_id,
+                "message": "The attachment is not referenced by the current Agent run.",
+            },
+            ensure_ascii=False,
+        )
+
+    @tool("list_thread_attachments")
+    def list_thread_attachments(runtime: ToolRuntime) -> str:
+        """List the files attached to the current Agent thread."""
+
+        thread_id, active_ids = runtime_scope(runtime)
+        if not thread_id:
+            return missing_context()
         try:
-            records = attachments.list(thread_id)
+            records = selected_records(thread_id, active_ids)
         except KeyError:
             return json.dumps({"error": "thread_not_found", "thread_id": thread_id}, ensure_ascii=False)
         return json.dumps(
@@ -216,19 +379,49 @@ def build_attachment_tools(project_root: Path) -> list[BaseTool]:
 
     @tool("read_attachment_excerpt")
     def read_attachment_excerpt(
-        thread_id: str,
-        attachment_id: str,
+        runtime: ToolRuntime,
+        attachment_id: str | None = None,
         start: int = 0,
         max_chars: int = 4000,
     ) -> str:
-        """Read a bounded text excerpt from a thread attachment by attachment ID."""
+        """Read a bounded excerpt from a current-thread attachment."""
 
+        thread_id, active_ids = runtime_scope(runtime)
+        if not thread_id:
+            return missing_context()
+        try:
+            records = selected_records(thread_id, active_ids)
+        except KeyError:
+            return json.dumps({"error": "thread_not_found", "thread_id": thread_id}, ensure_ascii=False)
+        if attachment_id is None:
+            if len(records) != 1:
+                return json.dumps(
+                    {
+                        "error": "attachment_id_required",
+                        "attachments": [attachment_payload(record) for record in records],
+                    },
+                    ensure_ascii=False,
+                )
+            attachment_id = records[0].attachment_id
+        elif attachment_id not in active_ids:
+            return not_selected(thread_id, attachment_id)
         try:
             record = attachments.get(thread_id, attachment_id)
             text = attachments.read_text(thread_id, attachment_id)
         except KeyError:
             return json.dumps(
                 {"error": "attachment_not_found", "thread_id": thread_id, "attachment_id": attachment_id},
+                ensure_ascii=False,
+            )
+        if not text:
+            return json.dumps(
+                {
+                    "error": "attachment_text_unavailable",
+                    "attachment_id": attachment_id,
+                    "original_name": record.original_name,
+                    "media_type": record.media_type,
+                    "message": "No extractable text is available for this attachment.",
+                },
                 ensure_ascii=False,
             )
         bounded_start = max(0, min(start, len(text)))
@@ -246,19 +439,29 @@ def build_attachment_tools(project_root: Path) -> list[BaseTool]:
         )
 
     @tool("search_attachment_text")
-    def search_attachment_text(thread_id: str, query: str) -> str:
-        """Search text extracted from the current thread's attachments."""
+    def search_attachment_text(query: str, runtime: ToolRuntime) -> str:
+        """Search extracted text across the current Agent thread's attachments."""
 
+        thread_id, active_ids = runtime_scope(runtime)
+        if not thread_id:
+            return missing_context()
         try:
-            matches = attachments.search_text(thread_id, query)
+            matches = attachments.search_text(thread_id, query, attachment_ids=active_ids)
         except KeyError:
             return json.dumps({"error": "thread_not_found", "thread_id": thread_id}, ensure_ascii=False)
         return json.dumps({"thread_id": thread_id, "matches": matches}, ensure_ascii=False)
 
     @tool("register_attachment_as_source")
-    def register_attachment_as_source(thread_id: str, attachment_id: str) -> str:
-        """Promote one thread attachment into the governed SourceRegistry."""
+    def register_attachment_as_source(runtime: ToolRuntime, attachment_id: str) -> str:
+        """Promote one current-thread attachment into the governed SourceRegistry."""
 
+        thread_id, active_ids = runtime_scope(runtime)
+        if not thread_id:
+            return missing_context()
+        if attachment_id not in active_ids:
+            return not_selected(thread_id, attachment_id)
+        if not promotion_allowed(runtime):
+            return promotion_not_allowed(attachment_id)
         try:
             before = attachments.get(thread_id, attachment_id)
             already_promoted = before.promoted_source_id is not None
@@ -272,6 +475,9 @@ def build_attachment_tools(project_root: Path) -> list[BaseTool]:
         return json.dumps(
             {
                 "already_promoted": already_promoted,
+                # Keep the canonical identifier flat so the next model turn
+                # does not confuse it with the content hash nested in source.
+                "source_id": source.source_id,
                 "attachment": attachment_payload(after),
                 "source": source.model_dump(mode="json"),
             },
@@ -291,15 +497,49 @@ def build_attachment_tools(project_root: Path) -> list[BaseTool]:
 # prepare_ingest_change_set — 分析一个已注册来源并持久化提取 ChangeSet，
 # 但不发布它。取消权限来自持久化运行时上下文，而非模型提供的任务标识符。
 # ---------------------------------------------------------------------------
+def _resolve_registered_source_id(sources: SourceRegistry, value: str) -> str:
+    """Resolve a Source ID and tolerate model-copied content-hash aliases."""
+
+    requested = value.strip()
+    try:
+        sources.get(requested)
+        return requested
+    except KeyError:
+        pass
+
+    hash_value = requested.removeprefix("src_").removeprefix("sha256:")
+    for source in sources.list_sources():
+        content_hash = source.content_hash.removeprefix("sha256:")
+        if hash_value == content_hash:
+            return source.source_id
+    raise KeyError(requested)
+
+
 def build_ingest_tools(project_root: Path) -> list[BaseTool]:
     root = Path(project_root).resolve()
     ingest = IngestService(root)
+    sources = SourceRegistry(root)
     revisions = IngestRevisionService(root, ingest=ingest)
     pipeline = KnowledgePipelineHarness(root)
 
     @tool("prepare_ingest_change_set")
     def prepare_ingest_change_set(source_id: str, run_id: str = "") -> str:
         """Analyze one registered source and persist a proposed extraction ChangeSet without publishing it."""
+        requested_source_id = source_id
+        try:
+            source_id = _resolve_registered_source_id(sources, source_id)
+        except KeyError:
+            return json.dumps(
+                {
+                    "error": "source_not_found",
+                    "source_id": requested_source_id,
+                    "message": (
+                        "Use the canonical source.source_id returned by "
+                        "register_attachment_as_source; content_hash is not a Source ID."
+                    ),
+                },
+                ensure_ascii=False,
+            )
         effective_run_id = run_id.strip() or current_agent_run_id() or f"ingest_{uuid.uuid4().hex}"
         change_set = ingest.prepare_change_set(
             source_id,
@@ -316,6 +556,7 @@ def build_ingest_tools(project_root: Path) -> list[BaseTool]:
         )
         return json.dumps(
             {
+                "source_id": source_id,
                 "change_set": json.loads(change_set.model_dump_json()),
                 "snapshot": snapshot,
                 "run_id": effective_run_id,

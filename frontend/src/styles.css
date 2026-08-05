@@ -555,10 +555,10 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .message.user p { padding: 9px 11px; border: 1px solid #303640; border-radius: 7px 7px 2px 7px; color: #d2d6dc; background: #1d2128; }
 .message small { display: block; margin-top: 7px; color: #59616c; font-size: 8px; letter-spacing: 0.06em; }
 .message-citations { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.message-citations button { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; padding: 5px 7px; border: 1px solid #35465e; border-radius: 4px; color: #9dbcf0; background: #192230; font-size: 9px; }
-.message-citations button:hover { border-color: #587caf; color: #c4d8fa; background: #1e2a3c; }
-.message-citations button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.message-citations button small { display: inline; margin: 0 0 0 2px; color: #627898; font-size: 8px; letter-spacing: 0; }
+.message-citation { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; padding: 5px 7px; border: 1px solid #35465e; border-radius: 4px; color: #9dbcf0; background: #192230; font-size: 9px; }
+button.message-citation:hover { border-color: #587caf; color: #c4d8fa; background: #1e2a3c; }
+.message-citation span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.message-citation small { display: inline; margin: 0 0 0 2px; color: #627898; font-size: 8px; letter-spacing: 0; }
 .message-evidence-gap { margin-top: 9px; padding: 8px 9px; border-left: 2px solid #8d6d38; color: #8b7959; background: rgba(112, 85, 39, 0.08); font-size: 9px; line-height: 1.45; }
 .message-evidence-gap b,
 .message-evidence-gap span { display: block; }
@@ -1486,9 +1486,9 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 :root[data-theme="light"] .message.user .message-bubble p { color: #173b60; background: #dcecfb; }
 :root[data-theme="light"] .message.agent.is-streaming .message-bubble { border-color: rgba(44, 109, 178, 0.45); background: #f0f6fc; }
 :root[data-theme="light"] .message small { color: var(--subtle); }
-:root[data-theme="light"] .message-citations button { border-color: rgba(44, 109, 178, 0.3); color: var(--accent); background: var(--accent-soft-2); }
-:root[data-theme="light"] .message-citations button:hover { border-color: rgba(44, 109, 178, 0.55); color: var(--accent); background: var(--accent-soft); }
-:root[data-theme="light"] .message-citations button small { color: var(--subtle); }
+:root[data-theme="light"] .message-citation { border-color: rgba(44, 109, 178, 0.3); color: var(--accent); background: var(--accent-soft-2); }
+:root[data-theme="light"] button.message-citation:hover { border-color: rgba(44, 109, 178, 0.55); color: var(--accent); background: var(--accent-soft); }
+:root[data-theme="light"] .message-citation small { color: var(--subtle); }
 :root[data-theme="light"] .message-evidence-gap { border-left-color: #b88d48; color: #806329; background: #fff8e8; }
 :root[data-theme="light"] .message-evidence-gap b { color: #8a6a2c; }
 :root[data-theme="light"] .agent-thinking { color: var(--muted); }
