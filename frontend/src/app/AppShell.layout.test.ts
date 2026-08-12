@@ -20,6 +20,29 @@ describe("Agent sidebar layout", () => {
     expect(appShellSource).toContain("composer-reference-row");
     expect(appShellSource).toContain("removeLastComposerReference");
     expect(appShellSource).toContain("setComposerPageRef({");
+    expect(appShellSource).toContain("clearPendingAttachments: true");
+    expect(appShellSource).toContain("attachments: messageAttachments");
+    expect(appShellSource).toContain("removeComposerAttachment");
+    expect(appShellSource).toContain("/attachments/${encodeURIComponent(attachmentId)}");
+    expect(appShellSource).toContain("attachmentAlreadySent");
+  });
+
+  it("commits the composer only after the Agent run is accepted", () => {
+    const runStart = appShellSource.indexOf("async function runAgent(");
+    const runEnd = appShellSource.indexOf("async function resumeAgent", runStart);
+    const runSource = appShellSource.slice(runStart, runEnd);
+    const sendStart = appShellSource.indexOf("async function sendMessage()");
+    const sendEnd = appShellSource.indexOf("async function loadChangeSetReview", sendStart);
+    const sendSource = appShellSource.slice(sendStart, sendEnd);
+
+    expect(runSource).toContain("onAccepted?: () => void");
+    expect(runSource).toContain("options.onAccepted?.();");
+    expect(runSource.indexOf("options.onAccepted?.();")).toBeLessThan(
+      runSource.indexOf("if (options.clearPendingAttachments)"),
+    );
+    expect(sendSource).toContain("onAccepted: () => {");
+    expect(sendSource.indexOf("await runAgent")).toBeLessThan(sendSource.indexOf("setDraft(\"\")"));
+    expect(sendSource.indexOf("await runAgent")).toBeLessThan(sendSource.indexOf("setMessages((current) =>"));
   });
 
   it("does not present the reader or source selection as Agent Composer context", () => {
@@ -46,6 +69,7 @@ describe("Agent sidebar layout", () => {
     expect(restoreSource).toContain("setPendingInterrupt(null)");
     expect(restoreSource).toContain("setActiveAgentRunId(null)");
     expect(restoreSource).toContain("setMessages([initialAgentMessage])");
+    expect(restoreSource).not.toContain("setActiveAttachmentIds(");
     expect(eventSource).toContain("event.thread_id !== agentThreadIdRef.current");
   });
 });

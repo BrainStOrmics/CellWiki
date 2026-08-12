@@ -272,7 +272,7 @@ def test_attachment_answer_does_not_enter_formal_page_validation(tmp_path: Path)
 
     assert validated.knowledge_scope == "attachment"
     assert validated.verification_level.value == "unvalidated"
-    assert validated.confidence == "high"
+    assert validated.confidence == "low"
     assert validated.validation_issues == []
 
 

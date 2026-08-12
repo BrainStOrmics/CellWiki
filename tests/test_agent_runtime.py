@@ -129,6 +129,211 @@ def test_runtime_persists_and_injects_referenced_attachment_context(tmp_path: Pa
         manager.close()
 
 
+def test_runtime_reuses_attachment_from_prior_message_without_reupload(tmp_path: Path):
+    thread_id = "thread_" + "2" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 marks regulatory T cells.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    adapter = ScriptedAdapter([
+        [RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="First answer.")],
+        [RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="Follow-up answer.")],
+    ])
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        first = manager.start(
+            thread_id=thread_id,
+            message="What cell type is mentioned?",
+            context=WikiAgentContext(
+                project_id="cellwiki",
+                thread_id=thread_id,
+                attachment_ids=[attachment.attachment_id],
+            ),
+        )
+        _wait_for_status(manager, first.run_id, {AgentRunStatus.SUCCEEDED})
+
+        second = manager.start(
+            thread_id=thread_id,
+            message="Where is that evidence in the same paper?",
+            context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
+        )
+        completed = _wait_for_status(manager, second.run_id, {AgentRunStatus.SUCCEEDED})
+
+        assert completed.attachment_ids == [attachment.attachment_id]
+        assert len(adapter.calls) == 2
+        assert attachment.attachment_id in adapter.calls[1][0]["content"]
+        messages = manager.store.list_messages(thread_id)
+        assert messages[0]["data"]["attachments"][0]["attachment_id"] == attachment.attachment_id
+        assert messages[2]["data"] == {}
+    finally:
+        manager.close()
+
+
+def test_runtime_reuses_attachment_after_manager_restart(tmp_path: Path):
+    """A fresh runtime instance must recover attachment IDs from the transcript."""
+
+    thread_id = "thread_" + "3" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 marks regulatory T cells.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+
+    first_adapter = ScriptedAdapter([[
+        RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="First answer."),
+    ]])
+    first_manager = AgentRuntimeManager(tmp_path, adapter=first_adapter)
+    try:
+        first = first_manager.start(
+            thread_id=thread_id,
+            message="What cell type is mentioned?",
+            context=WikiAgentContext(
+                project_id="cellwiki",
+                thread_id=thread_id,
+                attachment_ids=[attachment.attachment_id],
+            ),
+        )
+        _wait_for_status(first_manager, first.run_id, {AgentRunStatus.SUCCEEDED})
+    finally:
+        first_manager.close()
+
+    second_adapter = ScriptedAdapter([[
+        RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="Follow-up answer."),
+    ]])
+    second_manager = AgentRuntimeManager(tmp_path, adapter=second_adapter)
+    try:
+        second = second_manager.start(
+            thread_id=thread_id,
+            message="Where is that evidence in the same paper?",
+            context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
+        )
+        completed = _wait_for_status(second_manager, second.run_id, {AgentRunStatus.SUCCEEDED})
+
+        assert completed.attachment_ids == [attachment.attachment_id]
+        assert attachment.attachment_id in second_adapter.calls[0][0]["content"]
+        assert second_manager.store.list_messages(thread_id)[0]["data"]["attachments"][0][
+            "attachment_id"
+        ] == attachment.attachment_id
+    finally:
+        second_manager.close()
+
+
+def test_runtime_keeps_sent_attachment_metadata_when_run_fails(tmp_path: Path):
+    thread_id = "thread_" + "f" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 marks regulatory T cells.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    manager = AgentRuntimeManager(tmp_path, adapter=ScriptedAdapter([RuntimeError("provider failed")]))
+    try:
+        started = manager.start(
+            thread_id=thread_id,
+            message="Read the attached notes.",
+            context=WikiAgentContext(
+                project_id="cellwiki",
+                thread_id=thread_id,
+                attachment_ids=[attachment.attachment_id],
+            ),
+        )
+        failed = _wait_for_status(manager, started.run_id, {AgentRunStatus.FAILED})
+
+        assert failed.status == AgentRunStatus.FAILED
+        messages = manager.store.list_messages(thread_id)
+        assert messages[0]["data"]["attachments"][0]["attachment_id"] == attachment.attachment_id
+    finally:
+        manager.close()
+
+
+def test_runtime_keeps_sent_attachment_metadata_when_run_is_cancelled(tmp_path: Path):
+    thread_id = "thread_" + "4" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 marks regulatory T cells.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    adapter = BlockingAdapter()
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id=thread_id,
+            message="Read the attached notes.",
+            context=WikiAgentContext(
+                project_id="cellwiki",
+                thread_id=thread_id,
+                attachment_ids=[attachment.attachment_id],
+            ),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.RUNNING})
+        manager.cancel(started.run_id)
+        adapter.release.set()
+        cancelled = _wait_for_status(manager, started.run_id, {AgentRunStatus.CANCELLED})
+
+        assert cancelled.status == AgentRunStatus.CANCELLED
+        assert manager.store.list_messages(thread_id)[0]["data"]["attachments"][0][
+            "attachment_id"
+        ] == attachment.attachment_id
+    finally:
+        manager.close()
+
+
+def test_runtime_downgrades_unvalidated_final_answer_confidence(tmp_path: Path):
+    thread_id = "thread_" + "c" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 marks regulatory T cells.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    adapter = ScriptedAdapter([[
+        RuntimeSignal(
+            type=AgentEventType.FINAL_RESPONSE,
+            message="The attachment mentions regulatory T cells.",
+            data={
+                "answer": "The attachment mentions regulatory T cells.",
+                "citations": [{"attachment_id": attachment.attachment_id}],
+                "confidence": "high",
+                "knowledge_scope": "attachment",
+                "verification_level": "unvalidated",
+            },
+        ),
+    ]])
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id=thread_id,
+            message="Read the attached notes.",
+            context=WikiAgentContext(
+                project_id="cellwiki",
+                thread_id=thread_id,
+                attachment_ids=[attachment.attachment_id],
+            ),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+
+        assistant = manager.store.list_messages(thread_id)[1]
+        assert assistant["data"]["confidence"] == "low"
+        assert assistant["data"]["declared_confidence"] == "high"
+        assert assistant["data"]["verification_level"] == "unvalidated"
+    finally:
+        manager.close()
+
+
 def _wait_for_status(
     manager: AgentRuntimeManager,
     run_id: str,

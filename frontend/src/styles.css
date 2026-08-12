@@ -554,6 +554,9 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .message p { margin: 0; color: #bfc5ce; font-size: 12px; line-height: 1.62; white-space: pre-wrap; }
 .message.user p { padding: 9px 11px; border: 1px solid #303640; border-radius: 7px 7px 2px 7px; color: #d2d6dc; background: #1d2128; }
 .message small { display: block; margin-top: 7px; color: #59616c; font-size: 8px; letter-spacing: 0.06em; }
+.message-attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; margin: 0 0 6px; }
+.message-attachment { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; padding: 5px 8px; border: 1px solid #35465e; border-radius: 5px; color: #9dbcf0; background: #192230; font-size: 9px; }
+.message-attachment span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .message-citations { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .message-citation { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; padding: 5px 7px; border: 1px solid #35465e; border-radius: 4px; color: #9dbcf0; background: #192230; font-size: 9px; }
 button.message-citation:hover { border-color: #587caf; color: #c4d8fa; background: #1e2a3c; }

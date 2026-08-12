@@ -41,7 +41,11 @@ from cellwiki.domain.runs import (
 from cellwiki.domain.tasks import AgentTask
 from cellwiki.services.runtime_store import InvalidRunTransitionError, RuntimeStore
 from cellwiki.services.approvals import ApprovalRepository
-from cellwiki.services.attachments import AttachmentService
+from cellwiki.services.attachments import (
+    AttachmentService,
+    attachment_reference,
+    clear_attachment_read_ledger,
+)
 from cellwiki.services.changesets import ChangeSetRepository
 from cellwiki.services.central_writer import CentralWriter
 from cellwiki.services.conversation_context import ConversationContextView
@@ -58,6 +62,7 @@ from cellwiki.services.agent_runtime_types import AgentInput
 from cellwiki.services.typed_tasks import TypedTaskExecutor
 from cellwiki.services.quality import inspect_projection
 from cellwiki.services.pipeline import KnowledgePipelineHarness
+from cellwiki.services.query import FormalQueryService
 
 
 _ATTACHMENT_PROMOTION_NEGATIONS = (
@@ -293,11 +298,14 @@ class AgentRuntimeManager:
         # 验证消息不为空
         if not message.strip():
             raise ValueError("agent message cannot be empty")
-        runtime_context = context.model_copy(
-            update={
-                "allow_attachment_promotion": _allows_attachment_promotion(message),
-            }
+        runtime_context = self._with_thread_attachments(
+            context.model_copy(
+                update={
+                    "allow_attachment_promotion": _allows_attachment_promotion(message),
+                }
+            )
         )
+        user_message_data = self._attachment_message_data(context)
         # Natural language is the only product entry point. The coordinator
         # decides whether this is a query, ingest, lint, revision, or a request
         # for clarification; deterministic routers remain available solely for
@@ -318,8 +326,9 @@ class AgentRuntimeManager:
                 model_name=settings.openai_model,
                 budget=budget or RunBudget(),
             )
+            runtime_context = runtime_context.model_copy(update={"run_id": run_id})
             # 持久化运行记录
-            self.store.create_run(run)
+            self.store.create_run(run, user_message_data=user_message_data)
             self._record_route_span(run, "coordinator", {"task_kind": "conversation"})
             # 注册取消令牌
             self.cancellations.register(run.run_id)
@@ -339,21 +348,24 @@ class AgentRuntimeManager:
     ) -> AgentRun:
         """Start the deterministic single-page read path outside LangGraph."""
 
+        runtime_context = self._with_thread_attachments(context)
+        user_message_data = self._attachment_message_data(context)
         with self._thread_operation_lock:
             run = AgentRun(
                 run_id=f"run_{uuid.uuid4().hex}",
                 thread_id=thread_id,
                 project_id=context.project_id,
-                source_id=context.source_id,
-                page_id=context.page_id,
-                selected_text=context.selected_text,
-                attachment_ids=list(context.attachment_ids),
+                source_id=runtime_context.source_id,
+                page_id=runtime_context.page_id,
+                selected_text=runtime_context.selected_text,
+                attachment_ids=list(runtime_context.attachment_ids),
                 input_message=message,
                 model_role="page-query",
                 model_name=settings.openai_model,
                 budget=budget or RunBudget(),
             )
-            self.store.create_run(run)
+            runtime_context = runtime_context.model_copy(update={"run_id": run.run_id})
+            self.store.create_run(run, user_message_data=user_message_data)
             self._record_route_span(run, "page_query", {"page_id": context.page_id})
             self.cancellations.register(run.run_id)
         with log_context(run_id=run.run_id, thread_id=run.thread_id, project_id=run.project_id):
@@ -361,7 +373,7 @@ class AgentRuntimeManager:
                 self._execute,
                 run.run_id,
                 message,
-                context,
+                runtime_context,
                 AgentRunStatus.SUCCEEDED,
                 self.page_query_adapter,
             )
@@ -380,15 +392,17 @@ class AgentRuntimeManager:
 
         task_payload = task.model_dump(mode="json")
         persisted_message = input_message or f"Typed CellWiki task: {task_payload['kind']}"
+        runtime_context = self._with_thread_attachments(context)
+        user_message_data = self._attachment_message_data(context)
         with self._thread_operation_lock:
             run = AgentRun(
                 run_id=f"run_{uuid.uuid4().hex}",
                 thread_id=thread_id,
-                project_id=context.project_id,
-                source_id=getattr(task, "source_id", context.source_id),
-                page_id=context.page_id,
-                selected_text=context.selected_text,
-                attachment_ids=list(context.attachment_ids),
+                project_id=runtime_context.project_id,
+                source_id=getattr(task, "source_id", runtime_context.source_id),
+                page_id=runtime_context.page_id,
+                selected_text=runtime_context.selected_text,
+                attachment_ids=list(runtime_context.attachment_ids),
                 input_message=persisted_message,
                 task_kind=task_payload["kind"],
                 task_payload=task_payload,
@@ -396,7 +410,8 @@ class AgentRuntimeManager:
                 model_name="",
                 budget=budget or RunBudget(),
             )
-            self.store.create_run(run)
+            runtime_context = runtime_context.model_copy(update={"run_id": run.run_id})
+            self.store.create_run(run, user_message_data=user_message_data)
             self._record_route_span(
                 run,
                 "typed_task",
@@ -404,7 +419,7 @@ class AgentRuntimeManager:
             )
             self.cancellations.register(run.run_id)
         with log_context(run_id=run.run_id, thread_id=run.thread_id, project_id=run.project_id):
-            self._submit(self._execute_typed_task, run.run_id, task, context)
+            self._submit(self._execute_typed_task, run.run_id, task, runtime_context)
         return run
 
     def _stage_task_confirmation(
@@ -420,14 +435,16 @@ class AgentRuntimeManager:
         """Persist a mutating TaskProposal without starting its implementation."""
 
         task_payload = task.model_dump(mode="json")
+        runtime_context = self._with_thread_attachments(context)
+        user_message_data = self._attachment_message_data(context)
         run = AgentRun(
             run_id=f"run_{uuid.uuid4().hex}",
             thread_id=thread_id,
-            project_id=context.project_id,
-            source_id=getattr(task, "source_id", context.source_id),
-            page_id=context.page_id,
-            selected_text=context.selected_text,
-            attachment_ids=list(context.attachment_ids),
+            project_id=runtime_context.project_id,
+            source_id=getattr(task, "source_id", runtime_context.source_id),
+            page_id=runtime_context.page_id,
+            selected_text=runtime_context.selected_text,
+            attachment_ids=list(runtime_context.attachment_ids),
             input_message=message,
             task_kind=str(task_payload["kind"]),
             task_payload=task_payload,
@@ -435,8 +452,9 @@ class AgentRuntimeManager:
             model_name="",
             budget=budget or RunBudget(),
         )
+        runtime_context = runtime_context.model_copy(update={"run_id": run.run_id})
         with self._thread_operation_lock:
-            self.store.create_run(run)
+            self.store.create_run(run, user_message_data=user_message_data)
             self._record_route_span(
                 run,
                 "task_confirmation",
@@ -579,6 +597,7 @@ class AgentRuntimeManager:
             page_id=run.page_id,
             selected_text=run.selected_text,
             thread_id=run.thread_id,
+            run_id=run.run_id,
             attachment_ids=list(run.attachment_ids),
         )
         terminal_status = (
@@ -1089,6 +1108,7 @@ class AgentRuntimeManager:
     ) -> None:
         self.cancellations.register(run_id, reset=False)
         try:
+            context = context.model_copy(update={"run_id": run_id})
             # bind_agent_run 将运行 ID 绑定到当前线程的上下文
             with bind_agent_run(run_id):
                 self._execute_bound(
@@ -1099,6 +1119,7 @@ class AgentRuntimeManager:
                     execution_adapter or self.adapter,
                 )
         finally:
+            clear_attachment_read_ledger(run_id)
             self.cancellations.clear(run_id)
 
     # ---- 核心执行逻辑 ----
@@ -1172,6 +1193,7 @@ class AgentRuntimeManager:
                 context=context,
             ):
                 signal = _observable_signal(signal)
+                signal = _finalize_answer_signal(self.project_root, run_id, signal)
                 run = self.store.get_run(run_id)
                 # 检查取消信号
                 if run.status == AgentRunStatus.CANCELLING:
@@ -1724,6 +1746,40 @@ class AgentRuntimeManager:
             allow_attachment_promotion=_allows_attachment_promotion(run.input_message),
         )
 
+    def _with_thread_attachments(self, context: WikiAgentContext) -> WikiAgentContext:
+        """Merge sent message attachments into the next run without trusting the UI."""
+
+        if not context.thread_id:
+            return context
+        historical_ids = self.store.list_thread_attachment_ids(context.thread_id)
+        attachment_ids = list(dict.fromkeys([*historical_ids, *context.attachment_ids]))
+        return context.model_copy(update={"attachment_ids": attachment_ids})
+
+    def _attachment_message_data(self, context: WikiAgentContext) -> dict[str, Any]:
+        """Persist only new message references; attachment content stays in the cache."""
+
+        if not context.thread_id or not context.attachment_ids:
+            return {}
+        historical_ids = set(self.store.list_thread_attachment_ids(context.thread_id))
+        current_ids = [
+            attachment_id
+            for attachment_id in dict.fromkeys(context.attachment_ids)
+            if attachment_id not in historical_ids
+        ]
+        if not current_ids:
+            return {}
+        try:
+            records = AttachmentService(self.project_root).list(context.thread_id)
+        except KeyError:
+            return {}
+        selected = set(current_ids)
+        references = [
+            attachment_reference(record)
+            for record in records
+            if record.attachment_id in selected
+        ]
+        return {"attachments": references} if references else {}
+
     # ---- 恢复持久化的运行 ----
     # 应用重启后恢复未完成的运行。
     # 安全的运行状态恢复执行，不明确的运行标记为失败。
@@ -1746,9 +1802,7 @@ class AgentRuntimeManager:
             return messages
         manifest = [
             {
-                "attachment_id": record.attachment_id,
-                "original_name": record.original_name,
-                "media_type": record.media_type,
+                **attachment_reference(record),
                 "text_available": bool(record.text_path),
             }
             for record in records
@@ -2279,6 +2333,33 @@ def _parse_agent_answer(content: str) -> dict[str, Any]:
         return AgentAnswer.model_validate(payload).model_dump(mode="json")
     except (json.JSONDecodeError, TypeError, ValueError):
         return AgentAnswer(answer=content).model_dump(mode="json")
+
+
+def _finalize_answer_signal(
+    project_root: Path,
+    run_id: str,
+    signal: RuntimeSignal,
+) -> RuntimeSignal:
+    """Re-run the trust gate for every framework path that can emit a final answer."""
+
+    if signal.type != AgentEventType.FINAL_RESPONSE or not isinstance(signal.data, dict):
+        return signal
+    try:
+        candidate = AgentAnswer.model_validate(signal.data)
+    except (TypeError, ValueError):
+        return signal
+    with bind_agent_run(run_id):
+        finalized = FormalQueryService(Path(project_root).resolve()).validate_answer(candidate)
+    return RuntimeSignal(
+        type=signal.type,
+        message=finalized.answer,
+        progress=signal.progress,
+        data=finalized.model_dump(mode="json"),
+        model_call_id=signal.model_call_id,
+        input_tokens=signal.input_tokens,
+        output_tokens=signal.output_tokens,
+        tool_calls=signal.tool_calls,
+    )
 
 
 # ---------------------------------------------------------------------------

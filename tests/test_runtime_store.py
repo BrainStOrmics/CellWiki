@@ -3,6 +3,7 @@
 # =============================================================================
 
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -39,6 +40,16 @@ def test_runtime_store_persists_runs_and_orders_events_across_instances(tmp_path
         AgentEventType.RUN_STATUS,
     ]
     assert second.list_runs(thread_id="thread_one") == [restored]
+
+
+def test_runtime_store_releases_sqlite_file_handle_after_operations(tmp_path: Path):
+    project_root = tmp_path / "disposable_project"
+    store = RuntimeStore(project_root)
+
+    store.list_runs()
+    shutil.rmtree(project_root)
+
+    assert not project_root.exists()
 
 
 def test_history_projection_settles_running_steps_from_terminal_status(tmp_path: Path):
@@ -153,10 +164,48 @@ def test_runtime_store_persists_thread_messages_and_deletes_the_whole_thread(tmp
     assert [run.run_id for run in store.list_runs(thread_id="thread_keep")] == ["run_other"]
 
 
+def test_runtime_store_persists_message_attachment_references_and_recovers_ids(tmp_path: Path):
+    store = RuntimeStore(tmp_path)
+    attachment_id = "att_" + "a" * 32
+    run = AgentRun(
+        run_id="run_attachment_message",
+        thread_id="thread_attachment_message",
+        input_message="Read the attached paper.",
+        attachment_ids=[attachment_id],
+    )
+    store.create_run(
+        run,
+        user_message_data={
+            "attachments": [
+                {
+                    "attachment_id": attachment_id,
+                    "original_name": "paper.pdf",
+                    "media_type": "application/pdf",
+                    "content_hash": "sha256:" + "b" * 64,
+                    "size_bytes": 128,
+                }
+            ]
+        },
+    )
+
+    message = store.list_messages(run.thread_id)[0]
+
+    assert message["data"]["attachments"][0]["attachment_id"] == attachment_id
+    assert store.list_thread_attachment_ids(run.thread_id) == [attachment_id]
+    assert message["data"]["attachments"][0]["original_name"] == "paper.pdf"
+    assert "text" not in message["data"]["attachments"][0]
+
+
 def test_runtime_store_backfills_messages_from_legacy_run_and_final_event(tmp_path: Path):
     store = RuntimeStore(tmp_path)
+    attachment_id = "att_" + "c" * 32
     store.create_run(
-        AgentRun(run_id="run_legacy", thread_id="thread_legacy", input_message="old question")
+        AgentRun(
+            run_id="run_legacy",
+            thread_id="thread_legacy",
+            input_message="old question",
+            attachment_ids=[attachment_id],
+        )
     )
     store.append_event(
         "run_legacy",
@@ -165,15 +214,20 @@ def test_runtime_store_backfills_messages_from_legacy_run_and_final_event(tmp_pa
         data={"confidence": "medium"},
     )
 
-    # Simulate the database shape produced before agent_messages was introduced.
+    # Simulate an old message row that recorded the attachment only on AgentRun.
     with store._connect() as connection:
-        connection.execute("DELETE FROM agent_messages WHERE thread_id = ?", ("thread_legacy",))
+        connection.execute(
+            "UPDATE agent_messages SET data = '{}' WHERE thread_id = ? AND role = 'user'",
+            ("thread_legacy",),
+        )
 
     upgraded = RuntimeStore(tmp_path)
-    assert [(item["role"], item["content"]) for item in upgraded.list_messages("thread_legacy")] == [
+    messages = upgraded.list_messages("thread_legacy")
+    assert [(item["role"], item["content"]) for item in messages] == [
         ("user", "old question"),
         ("assistant", "old answer"),
     ]
+    assert messages[0]["data"]["attachments"] == [{"attachment_id": attachment_id}]
 
 
 def test_runtime_store_projects_displayable_events_into_assistant_history(tmp_path: Path):

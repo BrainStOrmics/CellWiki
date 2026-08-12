@@ -10,6 +10,8 @@ const labels = {
   processTitle: "Process",
   processLiveLabel: "Running",
   processCompletedLabel: "Completed",
+  processFailedLabel: "Failed",
+  processCancelledLabel: "Cancelled",
   processEmptyLabel: "No steps",
   diagnosticsLabel: "Run details",
 };
@@ -35,5 +37,25 @@ describe("AgentMessageBubble", () => {
     expect(screen.queryByRole("button", { name: /undefined/i })).not.toBeInTheDocument();
     expect(screen.getByText("att_abc123")).toBeInTheDocument();
     expect(screen.getByText("Page 1 · Markers")).toBeInTheDocument();
+  });
+  it("renders sent user attachments above the user message", () => {
+    render(
+      <AgentMessageBubble
+        {...labels}
+        message={{
+          role: "user",
+          text: "Summarize the attachment.",
+          attachments: [{
+            attachment_id: "att_" + "a".repeat(32),
+            original_name: "paper.pdf",
+            media_type: "application/pdf",
+          }],
+        }}
+        onCitationOpen={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("paper.pdf")).toBeInTheDocument();
+    expect(screen.getByText("Summarize the attachment.")).toBeInTheDocument();
   });
 });

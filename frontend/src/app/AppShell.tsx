@@ -30,7 +30,7 @@ import { apiUrl, isDesktopRuntime, productFetch } from "../runtime";
 import { deleteJson, getJson, postJson, ProductApiError } from "../lib/product-api";
 import { MarkdownReader } from "../features/wiki/MarkdownReader";
 import { useUiStore } from "../stores/ui-store";
-import { appendAsyncTask } from "./attachment-upload-queue";
+import { appendAsyncTask, attachmentReferencesForIds } from "./attachment-upload-queue";
 import { CommandPalette } from "../features/search/CommandPalette";
 import { ThreadList } from "../features/agent/ThreadList";
 import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
@@ -51,6 +51,7 @@ import type {
   AgentEvent,
   AgentEventType,
   AgentAnswer,
+  AgentAttachmentReference,
   AgentMessage,
   AgentProcessStep,
   AgentRun,
@@ -100,7 +101,24 @@ function agentRunStorageKey(contextKey: string) {
 }
 
 function historyMessageToChatMessage(message: AgentMessage): ChatMessage {
-  const data = message.data as Partial<AgentAnswer> & { process?: AgentProcessStep[] };
+  const data = message.data as Partial<AgentAnswer> & {
+    process?: AgentProcessStep[];
+    attachments?: unknown;
+  };
+  const attachments = Array.isArray(data.attachments)
+    ? data.attachments.flatMap((item): AgentAttachmentReference[] => {
+      if (!item || typeof item !== "object") return [];
+      const candidate = item as Record<string, unknown>;
+      if (typeof candidate.attachment_id !== "string") return [];
+      return [{
+        attachment_id: candidate.attachment_id,
+        original_name: typeof candidate.original_name === "string" ? candidate.original_name : undefined,
+        media_type: typeof candidate.media_type === "string" ? candidate.media_type : undefined,
+        content_hash: typeof candidate.content_hash === "string" ? candidate.content_hash : undefined,
+        size_bytes: typeof candidate.size_bytes === "number" ? candidate.size_bytes : undefined,
+      }];
+    })
+    : [];
   const verificationLevel = data.verification_level ?? "unvalidated";
   const knowledgeScope = data.knowledge_scope ?? "unvalidated";
   const confidence = knowledgeScope === "general"
@@ -111,6 +129,7 @@ function historyMessageToChatMessage(message: AgentMessage): ChatMessage {
   return {
     role: message.role === "assistant" ? "agent" : "user",
     text: message.content,
+    attachments: attachments.length > 0 ? attachments : undefined,
     citations: data.citations ?? [],
     confidence,
     declaredConfidence: data.declared_confidence,
@@ -202,7 +221,6 @@ export function AppShell() {
   const composerPageRef = useUiStore((state) => state.composerPageRef);
   const setComposerPageRef = useUiStore((state) => state.setComposerPageRef);
   const activeAttachmentIds = useUiStore((state) => state.activeAttachmentIds);
-  const setActiveAttachmentIds = useUiStore((state) => state.setActiveAttachmentIds);
   const addActiveAttachmentIds = useUiStore((state) => state.addActiveAttachmentIds);
   const removeActiveAttachmentId = useUiStore((state) => state.removeActiveAttachmentId);
   const clearActiveAttachments = useUiStore((state) => state.clearActiveAttachments);
@@ -221,9 +239,26 @@ export function AppShell() {
   const processedAgentEventsRef = useRef(new Set<string>());
   const streamGenerationRef = useRef(0);
   const messagesRef = useRef<ChatMessage[]>(messages);
+  const attachmentRecordsRef = useRef<AttachmentRecord[]>([]);
   const attachmentUploadRef = useRef<Promise<void> | null>(null);
   const attachmentUploadErrorRef = useRef<Error | null>(null);
   const threadCreationRef = useRef<Promise<string> | null>(null);
+
+  function replaceAttachmentRecords(records: AttachmentRecord[]) {
+    attachmentRecordsRef.current = records;
+    setAttachments(records);
+  }
+
+  function mergeAttachmentRecords(uploaded: AttachmentRecord[]) {
+    const next = [
+      ...uploaded,
+      ...attachmentRecordsRef.current.filter(
+        (current) => !uploaded.some((record) => record.attachment_id === current.attachment_id),
+      ),
+    ];
+    replaceAttachmentRecords(next);
+  }
+
   const workspaceQuery = useQuery({
     queryKey: ["workspace"],
     queryFn: loadWorkspaceData,
@@ -460,7 +495,7 @@ export function AppShell() {
     }
   }
 
-  async function runAgent(text: string) {
+  async function waitForAgentAttachmentUploads() {
     // A file picker upload is asynchronous; bind the run only after every
     // upload started by the composer has committed its attachment record.
     while (attachmentUploadRef.current) {
@@ -472,8 +507,21 @@ export function AppShell() {
       attachmentUploadErrorRef.current = null;
       throw error;
     }
+  }
+
+  async function runAgent(
+    text: string,
+    options: {
+      attachmentIds?: string[];
+      clearPendingAttachments?: boolean;
+      uploadsReady?: boolean;
+      onAccepted?: () => void;
+    } = {},
+  ) {
+    if (!options.uploadsReady) await waitForAgentAttachmentUploads();
     const threadId = await ensureAgentThread();
-    const currentAttachmentIds = useUiStore.getState().activeAttachmentIds;
+    const currentAttachmentIds = options.attachmentIds
+      ?? useUiStore.getState().activeAttachmentIds;
     const run = await postJson<AgentRun>("/api/agent/runs", {
       thread_id: threadId,
       message: text,
@@ -483,6 +531,10 @@ export function AppShell() {
       attachment_ids: currentAttachmentIds,
       selected_text: selectedText || null,
     });
+    // The backend persists the user message while accepting the run. Only then
+    // may the composer move its draft into the visible conversation history.
+    options.onAccepted?.();
+    if (options.clearPendingAttachments) clearActiveAttachments();
     processedAgentEventsRef.current.clear();
     agentEventSequenceRef.current = 0;
     setActiveAgentRunId(run.run_id);
@@ -646,7 +698,7 @@ export function AppShell() {
     setSelectedChangeSetId(null);
     setActiveRunId(null);
     setWorkflow({ phase: "idle", message: t("workflow.ready") });
-    setAttachments([]);
+    replaceAttachmentRecords([]);
     clearActiveAttachments();
     setMessages([initialAgentMessage]);
     try {
@@ -660,14 +712,8 @@ export function AppShell() {
       const threadAttachments = await getJson<AttachmentRecord[]>(
         `/api/agent/threads/${encodeURIComponent(threadId)}/attachments`,
       );
-      setAttachments(threadAttachments);
+      replaceAttachmentRecords(threadAttachments);
       const latestRun = runs[0];
-      const referencedAttachmentIds = new Set(latestRun?.attachment_ids ?? []);
-      setActiveAttachmentIds(
-        threadAttachments
-          .filter((attachment) => referencedAttachmentIds.has(attachment.attachment_id))
-          .map((attachment) => attachment.attachment_id),
-      );
       const runId = preferredRunId ?? latestRun?.run_id;
       if (runId) await restoreAgentRun(runId, { replayChat: false });
     } catch {
@@ -684,7 +730,6 @@ export function AppShell() {
       ]);
       agentThreadIdRef.current = run.thread_id;
       setActiveThreadId(run.thread_id);
-      setActiveAttachmentIds(run.attachment_ids ?? []);
       events.forEach((event) => applyAgentEvent(event, options));
       if (
         terminalAgentStatuses.has(run.status)
@@ -727,7 +772,7 @@ export function AppShell() {
         streamGenerationRef.current += 1;
         agentThreadIdRef.current = null;
         setActiveThreadId(null);
-        setAttachments([]);
+        replaceAttachmentRecords([]);
         clearActiveAttachments();
         setActiveAgentRunId(null);
         setRetryableAgentRunId(null);
@@ -746,11 +791,27 @@ export function AppShell() {
   async function sendMessage() {
     const text = draft.trim();
     if (!text || agentBusy) return;
-    setDraft("");
-    setMessages((current) => [...current, { role: "user", text }]);
     setAgentBusy(true);
     try {
-      await runAgent(text);
+      await waitForAgentAttachmentUploads();
+      const currentAttachmentIds = useUiStore.getState().activeAttachmentIds;
+      const messageAttachments = attachmentReferencesForIds(
+        attachmentRecordsRef.current,
+        currentAttachmentIds,
+      );
+      await runAgent(text, {
+        attachmentIds: currentAttachmentIds,
+        clearPendingAttachments: true,
+        uploadsReady: true,
+        onAccepted: () => {
+          setDraft("");
+          setMessages((current) => [...current, {
+            role: "user",
+            text,
+            attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
+          }]);
+        },
+      });
     } catch (error) {
       const failure = agentRequestFailure(
         error,
@@ -976,10 +1037,7 @@ export function AppShell() {
       );
       if (!response.ok) throw new Error("attachment upload failed");
       const uploaded = await response.json() as AttachmentRecord[];
-      setAttachments((current) => [
-        ...uploaded,
-        ...current.filter((item) => !uploaded.some((next) => next.attachment_id === item.attachment_id)),
-      ]);
+      mergeAttachmentRecords(uploaded);
       addActiveAttachmentIds(uploaded.map((item) => item.attachment_id));
     } catch {
       attachmentUploadErrorRef.current = new Error("attachment upload failed; retry the upload before sending");
@@ -987,6 +1045,31 @@ export function AppShell() {
         role: "agent",
         text: t("chat.attachmentUploadFailed"),
         meta: t("chat.sourceErrorMeta"),
+      }]);
+    }
+  }
+
+  async function removeComposerAttachment(attachmentId: string) {
+    const record = attachmentRecordsRef.current.find((item) => item.attachment_id === attachmentId);
+    removeActiveAttachmentId(attachmentId);
+    replaceAttachmentRecords(
+      attachmentRecordsRef.current.filter((item) => item.attachment_id !== attachmentId),
+    );
+    if (!record || !agentThreadIdRef.current) return;
+
+    try {
+      await deleteJson<{ deleted: boolean }>(
+        `/api/agent/threads/${encodeURIComponent(agentThreadIdRef.current)}/attachments/${encodeURIComponent(attachmentId)}`,
+      );
+    } catch (error) {
+      mergeAttachmentRecords([record]);
+      addActiveAttachmentIds([attachmentId]);
+      setMessages((current) => [...current, {
+        role: "agent",
+        text: error instanceof ProductApiError && error.status === 409
+          ? t("chat.attachmentAlreadySent")
+          : t("chat.attachmentDeleteFailed"),
+        meta: "ATTACHMENT · DELETE FAILED",
       }]);
     }
   }
@@ -1021,7 +1104,7 @@ export function AppShell() {
     agentEventSequenceRef.current = 0;
     processedAgentEventsRef.current.clear();
     setPendingInterrupt(null);
-    setAttachments([]);
+    replaceAttachmentRecords([]);
     clearActiveAttachments();
     setDraft("");
     try {
@@ -1364,6 +1447,8 @@ export function AppShell() {
                   processTitle={t("chat.process")}
                   processLiveLabel={t("chat.processLive")}
                   processCompletedLabel={t("chat.processCompleted")}
+                  processFailedLabel={t("chat.runFailed")}
+                  processCancelledLabel={t("chat.runCancelled")}
                   processEmptyLabel={t("chat.processEmpty")}
                   diagnosticsLabel={t("chat.runDetails")}
                   onCitationOpen={openCitation}
@@ -1392,7 +1477,7 @@ export function AppShell() {
                       <span className="composer-chip attachment-chip" key={attachment.attachment_id}>
                         <Upload size={12} />
                         <span>{attachment.original_name}</span>
-                        <button type="button" onClick={() => removeActiveAttachmentId(attachment.attachment_id)} aria-label={t("chat.clearReference")}><X size={11} /></button>
+                        <button type="button" onClick={() => void removeComposerAttachment(attachment.attachment_id)} aria-label={t("chat.clearReference")}><X size={11} /></button>
                       </span>
                     ))}
                   </div>

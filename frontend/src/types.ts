@@ -178,6 +178,14 @@ export type ValidationIssue = {
   locator?: string | null;
 };
 
+export type AgentAttachmentReference = {
+  attachment_id: string;
+  original_name?: string;
+  media_type?: string;
+  content_hash?: string;
+  size_bytes?: number;
+};
+
 export type AgentMessage = {
   message_id: string;
   thread_id: string;
@@ -207,6 +215,7 @@ export type AgentProcessStep = {
 export type ChatMessage = {
   role: "user" | "agent";
   text: string;
+  attachments?: AgentAttachmentReference[];
   meta?: string;
   citations?: Citation[];
   confidence?: "low" | "medium" | "high";
@@ -217,6 +226,7 @@ export type ChatMessage = {
   missingEvidence?: string[];
   process?: AgentProcessStep[];
   runId?: string;
+  runStatus?: AgentRunStatus;
   streaming?: boolean;
 };
 

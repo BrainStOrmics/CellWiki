@@ -324,6 +324,7 @@ class WikiAgentContext(ContractModel):
     source_id: str | None = None                  # 当前来源 ID
     selected_text: str | None = None              # 用户选中的文本
     thread_id: str | None = None                  # 对话线程 ID
+    run_id: str | None = None                     # Runtime 注入的当前运行 ID
     attachment_ids: list[str] = Field(default_factory=list)  # 当前 Agent 线程附件 ID
     allow_attachment_promotion: bool = False      # 是否允许将当前附件注册为 governed source
 

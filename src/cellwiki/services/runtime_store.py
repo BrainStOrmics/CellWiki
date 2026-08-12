@@ -14,12 +14,15 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from collections.abc import Iterator
 import json
 import sqlite3
 import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from cellwiki.domain.runs import (
     AgentErrorType,
@@ -92,7 +95,21 @@ class RuntimeStore:
         self._ensure_schema()
         self._backfill_messages()
 
-    def create_run(self, run: AgentRun) -> AgentRun:
+    def create_run(
+        self,
+        run: AgentRun,
+        *,
+        user_message_data: dict[str, Any] | None = None,
+    ) -> AgentRun:
+        message_data = user_message_data if user_message_data is not None else {}
+        if user_message_data is None and run.attachment_ids:
+            # Keep direct RuntimeStore callers and pre-message records compatible.
+            message_data = {
+                "attachments": [
+                    {"attachment_id": attachment_id}
+                    for attachment_id in dict.fromkeys(run.attachment_ids)
+                ]
+            }
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(
@@ -122,7 +139,7 @@ class RuntimeStore:
                 run_id=run.run_id,
                 role="user",
                 content=run.input_message,
-                data={},
+                data=message_data,
             )
         return run
 
@@ -194,6 +211,54 @@ class RuntimeStore:
             for row in rows
             if str(row[2]).strip()
         ]
+
+    def list_thread_attachment_ids(self, thread_id: str) -> list[str]:
+        """Recover the attachments available to later runs in this thread.
+
+        Message-level references are authoritative for new runs. Run payloads are
+        also checked so installations upgraded from the old Run-only attachment
+        model remain usable.
+        """
+
+        with self._connect() as connection:
+            message_rows = connection.execute(
+                "SELECT data FROM agent_messages WHERE thread_id = ? ORDER BY sequence",
+                (thread_id,),
+            ).fetchall()
+            run_rows = connection.execute(
+                "SELECT payload FROM agent_runs WHERE thread_id = ? ORDER BY updated_at",
+                (thread_id,),
+            ).fetchall()
+
+        attachment_ids: list[str] = []
+        seen: set[str] = set()
+
+        def add(value: object) -> None:
+            if not isinstance(value, str) or not value or value in seen:
+                return
+            seen.add(value)
+            attachment_ids.append(value)
+
+        for row in message_rows:
+            try:
+                data = json.loads(row[0])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            references = data.get("attachments", []) if isinstance(data, dict) else []
+            if not isinstance(references, list):
+                continue
+            for reference in references:
+                if isinstance(reference, dict):
+                    add(reference.get("attachment_id"))
+
+        for row in run_rows:
+            try:
+                run = AgentRun.model_validate_json(row[0])
+            except (TypeError, ValueError):
+                continue
+            for attachment_id in run.attachment_ids:
+                add(attachment_id)
+        return attachment_ids
 
     def delete_thread(self, thread_id: str) -> int:
         """Delete all product records for a thread and return its run count."""
@@ -672,14 +737,53 @@ class RuntimeStore:
                 key=lambda run: run.created_at,
             )
             for run in runs:
-                self._insert_message(
-                    connection,
-                    thread_id=run.thread_id,
-                    run_id=run.run_id,
-                    role="user",
-                    content=run.input_message,
-                    data={},
-                )
+                fallback_data = {
+                    "attachments": [
+                        {"attachment_id": attachment_id}
+                        for attachment_id in dict.fromkeys(run.attachment_ids)
+                    ]
+                } if run.attachment_ids else {}
+                existing_message = connection.execute(
+                    "SELECT message_id, data FROM agent_messages WHERE run_id = ? AND role = ?",
+                    (run.run_id, "user"),
+                ).fetchone()
+                if existing_message is None:
+                    self._insert_message(
+                        connection,
+                        thread_id=run.thread_id,
+                        run_id=run.run_id,
+                        role="user",
+                        content=run.input_message,
+                        data=fallback_data,
+                        update_existing=False,
+                    )
+                elif fallback_data:
+                    try:
+                        existing_data = json.loads(existing_message[1])
+                    except (TypeError, json.JSONDecodeError):
+                        existing_data = {}
+                    if not isinstance(existing_data, dict):
+                        existing_data = {}
+                    existing_references = existing_data.get("attachments")
+                    if not isinstance(existing_references, list):
+                        existing_references = []
+                    existing_ids = {
+                        reference.get("attachment_id")
+                        for reference in existing_references
+                        if isinstance(reference, dict) and reference.get("attachment_id")
+                    }
+                    merged_references = list(existing_references)
+                    merged_references.extend(
+                        reference
+                        for reference in fallback_data["attachments"]
+                        if reference["attachment_id"] not in existing_ids
+                    )
+                    if merged_references != existing_references:
+                        existing_data["attachments"] = merged_references
+                        connection.execute(
+                            "UPDATE agent_messages SET data = ? WHERE message_id = ?",
+                            (json.dumps(existing_data, ensure_ascii=False), existing_message[0]),
+                        )
                 event_rows = connection.execute(
                     """
                     SELECT payload FROM agent_events
@@ -704,11 +808,23 @@ class RuntimeStore:
                         )
                     break
 
-    def _connect(self) -> sqlite3.Connection:
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Open one transaction-scoped connection and always release its handle.
+
+        ``sqlite3.Connection`` commits or rolls back when used as a context
+        manager, but it does not close itself. Explicitly closing here matters
+        on Windows, where an uncollected connection keeps ``cellwiki.db`` locked.
+        """
+
         connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
-        connection.execute("PRAGMA busy_timeout=30000")
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+        try:
+            connection.execute("PRAGMA busy_timeout=30000")
+            connection.execute("PRAGMA foreign_keys=ON")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     @staticmethod
     def _insert_event(
@@ -751,17 +867,20 @@ class RuntimeStore:
         role: str,
         content: str,
         data: dict,
+        update_existing: bool = True,
     ) -> None:
         existing = connection.execute(
             "SELECT message_id FROM agent_messages WHERE run_id = ? AND role = ?",
             (run_id, role),
         ).fetchone()
         serialized_data = json.dumps(data, ensure_ascii=False, default=str)
-        if existing:
+        if existing and update_existing:
             connection.execute(
                 "UPDATE agent_messages SET content = ?, data = ? WHERE message_id = ?",
                 (content, serialized_data, existing[0]),
             )
+            return
+        if existing:
             return
         sequence = connection.execute(
             "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_messages WHERE thread_id = ?",

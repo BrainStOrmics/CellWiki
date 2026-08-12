@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -40,7 +41,14 @@ from cellwiki.services.ingest import IngestService
 from cellwiki.services.revisions import IngestRevisionService
 from cellwiki.services.linting import LintFixService
 from cellwiki.services.sources import SourceRegistry
-from cellwiki.services.attachments import AttachmentService
+from cellwiki.services.attachments import (
+    AttachmentService,
+    MAX_ATTACHMENT_SEARCHES_PER_RUN,
+    begin_attachment_search,
+    cache_attachment_search,
+    cached_attachment_search,
+    record_attachment_read,
+)
 from cellwiki.services.tasks import TaskEventRepository
 from cellwiki.domain.memory import MemoryCandidate, MemoryKind
 from cellwiki.services.memory import MemoryStore
@@ -109,6 +117,94 @@ def _normalize_knowledge_scope(value: Any) -> str:
     return aliases.get(normalized, "general")
 
 
+_ATTACHMENT_ID_RE = re.compile(r"att_[a-f0-9]{32}")
+
+
+def _normalize_answer_citations(
+    citations: list[dict[str, Any]] | None,
+    *,
+    knowledge_scope: str,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Normalize provider citations without letting display fields abort a run.
+
+    Providers often emit one complete attachment citation followed by locator-only
+    citations. In an attachment-scoped answer those locators are unambiguous when
+    exactly one attachment ID is present in the same submission. Ambiguous or
+    invalid entries are omitted and reported as missing evidence instead of
+    crossing the strict ``Citation`` validation boundary.
+    """
+
+    raw_citations = citations or []
+    explicit_attachment_ids = {
+        str(item.get("attachment_id"))
+        for item in raw_citations
+        if isinstance(item, dict)
+        and _ATTACHMENT_ID_RE.fullmatch(str(item.get("attachment_id") or ""))
+    }
+    fallback_attachment_id = (
+        next(iter(explicit_attachment_ids)) if len(explicit_attachment_ids) == 1 else None
+    )
+    normalized_citations: list[dict[str, Any]] = []
+    missing_evidence: list[str] = []
+
+    def report(index: int, reason: str) -> None:
+        missing_evidence.append(f"citation {index + 1} was omitted: {reason}")
+
+    for index, citation in enumerate(raw_citations):
+        if not isinstance(citation, dict):
+            report(index, "citation is not an object")
+            continue
+
+        attachment_id = str(citation.get("attachment_id") or "") or None
+        page_id = str(citation.get("page_id") or "") or None
+        if attachment_id and not _ATTACHMENT_ID_RE.fullmatch(attachment_id):
+            report(index, "attachment_id is invalid")
+            continue
+
+        if attachment_id or (knowledge_scope == "attachment" and not page_id and fallback_attachment_id):
+            resolved_attachment_id = attachment_id or fallback_attachment_id
+            assert resolved_attachment_id is not None
+            locator = (
+                citation.get("section_locator")
+                or citation.get("locator")
+                or citation.get("quote")
+                or citation.get("section")
+            )
+            normalized: dict[str, Any] = {
+                "attachment_id": resolved_attachment_id,
+                "original_name": citation.get("original_name"),
+                "type": "thread_attachment",
+            }
+            if locator:
+                normalized["section_locator"] = str(locator)[:1_000]
+            normalized_citations.append(
+                {key: value for key, value in normalized.items() if value is not None}
+            )
+            continue
+
+        if page_id:
+            locator = (
+                citation.get("locator")
+                or citation.get("section_locator")
+                or citation.get("quote")
+                or citation.get("section")
+            )
+            normalized = {
+                "page_id": page_id,
+                "source_id": citation.get("source_id"),
+                "locator": str(locator)[:1_000] if locator else None,
+                "evidence_id": citation.get("evidence_id"),
+            }
+            normalized_citations.append(
+                {key: value for key, value in normalized.items() if value is not None}
+            )
+            continue
+
+        report(index, "citation has neither page_id nor attachment_id")
+
+    return normalized_citations, missing_evidence
+
+
 def build_final_answer_tool(project_root: Path) -> BaseTool:
     """Build the coordinator's validated, direct-return answer boundary."""
 
@@ -126,63 +222,18 @@ def build_final_answer_tool(project_root: Path) -> BaseTool:
         """Finish with a grounded answer, exact page citations, and evidence gaps."""
         # Providers sometimes echo display metadata from read tools (title/path/sections).
         # Keep the persisted contract narrow while tolerating that harmless boundary noise.
-        citation_fields = {
-            "page_id",
-            "source_id",
-            "locator",
-            "evidence_id",
-            "attachment_id",
-            "original_name",
-            "section_locator",
-            "quote",
-            "section",
-            "type",
-        }
-        normalized_citations: list[dict[str, Any]] = []
-        for citation in citations or []:
-            normalized = {
-                key: value for key, value in citation.items() if key in citation_fields
-            }
-            if normalized.get("attachment_id"):
-                # Providers commonly call the attachment locator `locator`,
-                # `quote`, or `section`; the domain contract uses one stable
-                # field so page/section provenance is not lost in serialization.
-                section_locator = (
-                    normalized.get("section_locator")
-                    or normalized.get("locator")
-                    or normalized.get("quote")
-                    or normalized.get("section")
-                )
-                if section_locator:
-                    normalized["section_locator"] = str(section_locator)[:1_000]
-                normalized.pop("quote", None)
-                normalized.pop("section", None)
-                normalized["type"] = "thread_attachment"
-            elif normalized.get("page_id"):
-                locator = (
-                    normalized.get("locator")
-                    or normalized.get("section_locator")
-                    or normalized.get("quote")
-                    or normalized.get("section")
-                )
-                normalized = {
-                    key: value
-                    for key, value in {
-                        "page_id": normalized.get("page_id"),
-                        "source_id": normalized.get("source_id"),
-                        "locator": str(locator)[:1_000] if locator else None,
-                        "evidence_id": normalized.get("evidence_id"),
-                    }.items()
-                    if value is not None
-                }
-            normalized_citations.append(normalized)
+        normalized_scope = _normalize_knowledge_scope(knowledge_scope)
+        normalized_citations, citation_warnings = _normalize_answer_citations(
+            citations,
+            knowledge_scope=normalized_scope,
+        )
         candidate = AgentAnswer.model_validate(
             {
                 "answer": answer,
                 "citations": normalized_citations,
                 "confidence": _normalize_answer_confidence(confidence),
-                "missing_evidence": missing_evidence or [],
-                "knowledge_scope": _normalize_knowledge_scope(knowledge_scope),
+                "missing_evidence": [*(missing_evidence or []), *citation_warnings],
+                "knowledge_scope": normalized_scope,
                 "knowledge_version": knowledge_version,
             }
         )
@@ -303,6 +354,15 @@ def build_attachment_tools(project_root: Path) -> list[BaseTool]:
                 {str(item) for item in attachment_ids if item},
             )
         return None, set()
+
+    def runtime_run_id(runtime: ToolRuntime) -> str | None:
+        context = runtime.context
+        if isinstance(context, WikiAgentContext):
+            return context.run_id
+        if isinstance(context, dict):
+            value = context.get("run_id")
+            return str(value) if value else None
+        return None
 
     def missing_context() -> str:
         return json.dumps(
@@ -427,6 +487,7 @@ def build_attachment_tools(project_root: Path) -> list[BaseTool]:
         bounded_start = max(0, min(start, len(text)))
         bounded_limit = max(1, min(max_chars, 12_000))
         excerpt = text[bounded_start : bounded_start + bounded_limit]
+        record_attachment_read(attachment_id, run_id=runtime_run_id(runtime))
         return json.dumps(
             {
                 "attachment_id": attachment_id,
@@ -445,10 +506,48 @@ def build_attachment_tools(project_root: Path) -> list[BaseTool]:
         thread_id, active_ids = runtime_scope(runtime)
         if not thread_id:
             return missing_context()
+        run_id = runtime_run_id(runtime)
+        cached = cached_attachment_search(query, active_ids, run_id=run_id)
+        if cached is not None:
+            compact_matches = [
+                {key: value for key, value in match.items() if key != "excerpt"}
+                for match in cached
+            ]
+            return json.dumps(
+                {
+                    "thread_id": thread_id,
+                    "query": query.strip(),
+                    "cached": True,
+                    "matches": compact_matches,
+                    "message": (
+                        "This exact attachment search was already completed in this run. "
+                        "Use the earlier result instead of searching the same query again."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        if not begin_attachment_search(run_id=run_id):
+            return json.dumps(
+                {
+                    "error": "attachment_search_budget_exhausted",
+                    "thread_id": thread_id,
+                    "max_searches": MAX_ATTACHMENT_SEARCHES_PER_RUN,
+                    "message": (
+                        "The attachment search budget for this run is exhausted. "
+                        "Stop searching, answer from evidence already read, and disclose any gap."
+                    ),
+                },
+                ensure_ascii=False,
+            )
         try:
             matches = attachments.search_text(thread_id, query, attachment_ids=active_ids)
         except KeyError:
             return json.dumps({"error": "thread_not_found", "thread_id": thread_id}, ensure_ascii=False)
+        cache_attachment_search(query, active_ids, matches, run_id=run_id)
+        for match in matches:
+            match_attachment_id = match.get("attachment_id")
+            if isinstance(match_attachment_id, str):
+                record_attachment_read(match_attachment_id, run_id=runtime_run_id(runtime))
         return json.dumps({"thread_id": thread_id, "matches": matches}, ensure_ascii=False)
 
     @tool("register_attachment_as_source")

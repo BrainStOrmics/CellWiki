@@ -70,6 +70,7 @@ describe("reduceAgentRunMessages", () => {
     expect(cancelled).toHaveLength(1);
     expect(cancelled[0].text).toBe("Cancelled safely");
     expect(cancelled[0].streaming).toBe(false);
+    expect(cancelled[0].runStatus).toBe("cancelled");
   });
 
   it("downgrades legacy high-confidence answers without verification fields", () => {
@@ -86,4 +87,3 @@ describe("reduceAgentRunMessages", () => {
     expect(result[0].confidence).toBe("low");
   });
 });
-

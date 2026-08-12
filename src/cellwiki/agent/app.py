@@ -59,6 +59,10 @@ such as "this paper" or "this article" as the attached files. Always inspect the
 current attachments before answering an attachment-grounded question. The
 attachment tools resolve the current thread automatically; never provide or ask
 for a thread_id and never invent a placeholder such as "current".
+For one attachment question, use a focused search plan: no more than 12 attachment
+searches in one run, and do not repeat an equivalent query after a cached result.
+Once the available excerpts support the answer, stop searching and submit the
+answer; do not enumerate every synonym or probe the full paper indefinitely.
 When the runtime supplies a cellwiki_page_context block, treat its page_id as the
 current explicitly referenced published Wiki page. For questions about that page,
 call read_wiki_page with that exact page_id before answering; do not replace the

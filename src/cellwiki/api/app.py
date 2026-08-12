@@ -444,6 +444,24 @@ def create_app(
         except KeyError:
             raise HTTPException(status_code=404, detail="agent thread not found") from None
 
+    @app.delete("/api/agent/threads/{thread_id}/attachments/{attachment_id}")
+    def delete_agent_thread_attachment(thread_id: str, attachment_id: str) -> dict[str, object]:
+        """Remove a pending upload; sent message attachments are immutable."""
+        if attachment_id in set(get_agent_runtime().store.list_thread_attachment_ids(thread_id)):
+            raise HTTPException(
+                status_code=409,
+                detail="sent agent attachments cannot be deleted from conversation history",
+            )
+        try:
+            deleted = attachments.delete(thread_id, attachment_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="agent attachment not found") from None
+        return {
+            "thread_id": thread_id,
+            "attachment_id": deleted.attachment_id,
+            "deleted": True,
+        }
+
     @app.delete("/api/agent/threads/{thread_id}")
     def delete_agent_thread(thread_id: str) -> dict[str, int | str]:
         """Permanently delete a conversation and its LangGraph checkpoint."""
@@ -457,6 +475,8 @@ def create_app(
             }
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
+        except KeyError:
+            raise HTTPException(status_code=404, detail="agent thread not found") from None
 
     @app.post("/api/agent/runs", status_code=status.HTTP_202_ACCEPTED)
     def start_agent_run(request: AgentRunRequest) -> dict:

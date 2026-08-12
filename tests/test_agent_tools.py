@@ -3,7 +3,9 @@
 # =============================================================================
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -29,7 +31,12 @@ from cellwiki.agent.tools import (
 from cellwiki.config import Settings
 from cellwiki.services.operations import bind_agent_run
 from cellwiki.domain.contracts import ApprovalPolicy, PipelineTaskType, WikiAgentContext
-from cellwiki.services.attachments import AttachmentService
+from cellwiki.services.attachments import (
+    MAX_ATTACHMENT_SEARCHES_PER_RUN,
+    AttachmentService,
+    clear_attachment_read_ledger,
+    record_attachment_read,
+)
 from cellwiki.services.pipeline import KnowledgePipelineHarness
 from cellwiki.services.sources import SourceRegistry
 
@@ -102,6 +109,72 @@ def test_attachment_tools_read_search_and_promote_thread_scoped_uploads(tmp_path
     assert promoted["source"]["source_id"].startswith("src_")
     assert promoted_again["source"]["source_id"] == promoted["source"]["source_id"]
     assert promoted_again["already_promoted"] is True
+
+
+def test_attachment_search_is_cached_and_bounded_per_run(tmp_path: Path):
+    thread_id = "thread_" + "d" * 32
+    source = tmp_path / "notes.txt"
+    source.write_text("FOXP3 attachment evidence for Treg curation.", encoding="utf-8")
+    attachment = AttachmentService(tmp_path).create(
+        thread_id,
+        source,
+        original_name="notes.txt",
+        media_type="text/plain",
+    )
+    tools = {tool.name: tool for tool in build_attachment_tools(tmp_path)}
+    runtime = SimpleNamespace(
+        context={
+            "thread_id": thread_id,
+            "attachment_ids": [attachment.attachment_id],
+            "run_id": "run_attachment_search_budget",
+        }
+    )
+
+    try:
+        first = json.loads(
+            tools["search_attachment_text"].func(runtime=runtime, query="FOXP3")
+        )
+        repeated = json.loads(
+            tools["search_attachment_text"].func(runtime=runtime, query="  foxp3  ")
+        )
+
+        assert first["matches"]
+        assert repeated["cached"] is True
+        assert repeated["matches"][0]["attachment_id"] == attachment.attachment_id
+        assert "excerpt" not in repeated["matches"][0]
+
+        for index in range(MAX_ATTACHMENT_SEARCHES_PER_RUN - 1):
+            json.loads(
+                tools["search_attachment_text"].func(
+                    runtime=runtime,
+                    query=f"unseen query {index}",
+                )
+            )
+        exhausted = json.loads(
+            tools["search_attachment_text"].func(
+                runtime=runtime,
+                query="one more query",
+            )
+        )
+        assert exhausted["error"] == "attachment_search_budget_exhausted"
+
+        other_runtime = SimpleNamespace(
+            context={
+                "thread_id": thread_id,
+                "attachment_ids": [attachment.attachment_id],
+                "run_id": "run_attachment_search_other",
+            }
+        )
+        other_run = json.loads(
+            tools["search_attachment_text"].func(
+                runtime=other_runtime,
+                query="FOXP3",
+            )
+        )
+        assert other_run.get("cached") is not True
+    finally:
+        clear_attachment_read_ledger("run_attachment_search_budget")
+        clear_attachment_read_ledger("run_attachment_search_other")
 
 
 def test_attachment_promotion_requires_runtime_write_intent(tmp_path: Path):
@@ -216,7 +289,7 @@ def test_attachment_tools_with_no_references_do_not_fall_back_to_the_thread_arch
     assert search["matches"] == []
 
 
-def test_attachment_tools_extract_pdf_text_for_agent_reads(tmp_path: Path):
+def test_attachment_upload_defers_pdf_extraction_until_agent_read(tmp_path: Path):
     source = tmp_path / "paper.pdf"
     source.write_bytes((Path(__file__).parent / "fixtures" / "page_aware_source.pdf").read_bytes())
 
@@ -227,11 +300,35 @@ def test_attachment_tools_extract_pdf_text_for_agent_reads(tmp_path: Path):
         media_type="application/pdf",
     )
 
-    assert attachment.text_path is not None
+    assert attachment.text_path is None
+    assert not (Path(attachment.stored_path).parent / "text.txt").exists()
     assert "FOXP3" in AttachmentService(tmp_path).read_text(
         attachment.thread_id,
         attachment.attachment_id,
     )
+    assert AttachmentService(tmp_path).get(
+        attachment.thread_id,
+        attachment.attachment_id,
+    ).text_path is not None
+
+
+def test_attachment_service_deletes_an_uncommitted_attachment(tmp_path: Path):
+    source = tmp_path / "pending.txt"
+    source.write_text("pending attachment", encoding="utf-8")
+    service = AttachmentService(tmp_path)
+    attachment = service.create(
+        "thread_" + "f" * 32,
+        source,
+        original_name="pending.txt",
+        media_type="text/plain",
+    )
+    stored_dir = Path(attachment.stored_path).parent
+
+    deleted = service.delete(attachment.thread_id, attachment.attachment_id)
+
+    assert deleted.attachment_id == attachment.attachment_id
+    assert not stored_dir.exists()
+    assert service.list(attachment.thread_id) == []
 
 
 def test_attachment_service_lazily_extracts_text_from_legacy_pdf_uploads(tmp_path: Path):
@@ -246,9 +343,10 @@ def test_attachment_service_lazily_extracts_text_from_legacy_pdf_uploads(tmp_pat
     )
 
     # Simulate an upload created before PDF extraction was supported.
-    text_path = Path(attachment.text_path or "")
-    text_path.unlink()
-    metadata_path = text_path.parent / "metadata.json"
+    attachment_dir = Path(attachment.stored_path).parent
+    text_path = attachment_dir / "text.txt"
+    text_path.unlink(missing_ok=True)
+    metadata_path = attachment_dir / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["text_path"] = None
     metadata["text_hash"] = None
@@ -257,6 +355,84 @@ def test_attachment_service_lazily_extracts_text_from_legacy_pdf_uploads(tmp_pat
     text = service.read_text(attachment.thread_id, attachment.attachment_id)
 
     assert "FOXP3" in text
+    refreshed = service.get(attachment.thread_id, attachment.attachment_id)
+    assert refreshed.text_path is not None
+
+
+def test_attachment_service_concurrent_metadata_writes_use_unique_temp_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = tmp_path / "concurrent-paper.pdf"
+    source.write_bytes((Path(__file__).parent / "fixtures" / "page_aware_source.pdf").read_bytes())
+    service = AttachmentService(tmp_path)
+    attachment = service.create(
+        "thread_" + "7" * 32,
+        source,
+        original_name="concurrent-paper.pdf",
+        media_type="application/pdf",
+    )
+
+    # Separate service instances model independent tool/API callers. Force both
+    # writers to finish before either replaces metadata.json. The old fixed
+    # metadata.json.tmp path then fails deterministically on Windows.
+    service_a = AttachmentService(tmp_path)
+    service_b = AttachmentService(tmp_path)
+    record_a = attachment.model_copy(update={"text_hash": "sha256:a"})
+    record_b = attachment.model_copy(update={"text_hash": "sha256:b"})
+    write_barrier = threading.Barrier(2)
+    temporary_paths: list[str] = []
+    temporary_paths_lock = threading.Lock()
+    original_write_text = Path.write_text
+
+    def synchronized_write_text(path: Path, *args, **kwargs):
+        result = original_write_text(path, *args, **kwargs)
+        if path.name.startswith("metadata.") and path.name.endswith(".json.tmp"):
+            with temporary_paths_lock:
+                temporary_paths.append(str(path.resolve()))
+            write_barrier.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(Path, "write_text", synchronized_write_text)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(
+                reader._write_record,
+                record,
+            )
+            for reader, record in ((service_a, record_a), (service_b, record_b))
+        ]
+        errors = []
+        for future in futures:
+            try:
+                future.result()
+            except Exception as error:  # pragma: no cover - assertion below reports it
+                errors.append(error)
+
+    assert not errors
+    assert len(temporary_paths) == 2
+    assert len(set(temporary_paths)) == 2
+
+
+def test_attachment_service_concurrent_lazy_reads_share_projection_safely(tmp_path: Path):
+    source = tmp_path / "concurrent-paper.pdf"
+    source.write_bytes((Path(__file__).parent / "fixtures" / "page_aware_source.pdf").read_bytes())
+    service = AttachmentService(tmp_path)
+    attachment = service.create(
+        "thread_" + "8" * 32,
+        source,
+        original_name="concurrent-paper.pdf",
+        media_type="application/pdf",
+    )
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [
+            executor.submit(service.read_text, attachment.thread_id, attachment.attachment_id)
+            for _ in range(8)
+        ]
+        texts = [future.result() for future in futures]
+
+    assert all("FOXP3" in text for text in texts)
     refreshed = service.get(attachment.thread_id, attachment.attachment_id)
     assert refreshed.text_path is not None
 
@@ -273,9 +449,10 @@ def test_attachment_tool_reads_legacy_pdf_after_lazy_extraction(tmp_path: Path):
     )
 
     # Simulate metadata written before PDF extraction was supported.
-    text_path = Path(attachment.text_path or "")
-    text_path.unlink()
-    metadata_path = text_path.parent / "metadata.json"
+    attachment_dir = Path(attachment.stored_path).parent
+    text_path = attachment_dir / "text.txt"
+    text_path.unlink(missing_ok=True)
+    metadata_path = attachment_dir / "metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["text_path"] = None
     metadata["text_hash"] = None
@@ -763,7 +940,64 @@ def test_final_answer_tool_accepts_attachment_grounding(tmp_path: Path):
 
     assert result["knowledge_scope"] == "attachment"
     assert result["verification_level"] == "unvalidated"
+    assert result["confidence"] == "low"
     assert result["citations"][0]["attachment_id"].startswith("att_")
+
+
+def test_final_answer_tool_promotes_read_attachment_evidence(tmp_path: Path):
+    tool = build_final_answer_tool(tmp_path)
+    attachment_id = "att_" + "e" * 32
+    record_attachment_read(attachment_id)
+
+    result = json.loads(
+        tool.invoke(
+            {
+                "answer": "The attachment mentions regulatory T cells.",
+                "citations": [{"attachment_id": attachment_id, "locator": "Page 1"}],
+                "confidence": "high",
+                "knowledge_scope": "attachment",
+            }
+        )
+    )
+
+    assert result["verification_level"] == "evidence"
+    assert result["confidence"] == "high"
+
+
+def test_final_answer_tool_normalizes_provider_attachment_citations_with_omitted_ids(
+    tmp_path: Path,
+):
+    """Provider display fields and omitted IDs must not abort an attachment answer."""
+
+    tool = build_final_answer_tool(tmp_path)
+    attachment_id = "att_" + "d" * 32
+
+    result = json.loads(
+        tool.invoke(
+            {
+                "answer": "The attachment describes several T-cell subsets.",
+                "citations": [
+                    {
+                        "attachment_id": attachment_id,
+                        "file": "paper.pdf",
+                        "locator": "Page 1",
+                        "quote": "T-cell subsets",
+                    },
+                    {"locator": "Page 2", "quote": "memory T cells"},
+                    {"locator": "Page 3", "quote": "regulatory T cells"},
+                ],
+                "confidence": "high",
+                "knowledge_scope": "attachment",
+            }
+        )
+    )
+
+    assert len(result["citations"]) == 3
+    assert {citation["attachment_id"] for citation in result["citations"]} == {attachment_id}
+    assert result["citations"][0]["section_locator"] == "Page 1"
+    assert result["citations"][1]["section_locator"] == "Page 2"
+    assert result["citations"][2]["section_locator"] == "Page 3"
+    assert all("file" not in citation for citation in result["citations"])
 
 
 def test_final_answer_tool_preserves_attachment_locator_as_section_locator(tmp_path: Path):

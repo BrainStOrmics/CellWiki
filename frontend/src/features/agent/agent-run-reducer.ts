@@ -159,6 +159,7 @@ function settleRun(
       : "completed";
   return updateRunMessage(messages, runId, (message) => ({
     ...message,
+    runStatus: status,
     text: status === "failed"
       ? message.text || terminalText.failed
       : status === "cancelled"
@@ -172,6 +173,7 @@ function settleRun(
     role: "agent",
     text: status === "failed" ? terminalText.failed : terminalText.cancelled,
     runId,
+    runStatus: status,
     streaming: false,
   } : null);
 }
@@ -200,4 +202,3 @@ function updateRunMessage(
   next[index] = update(next[index]);
   return next;
 }
-

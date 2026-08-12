@@ -22,6 +22,7 @@ from cellwiki.domain.contracts import (
 )
 from cellwiki.domain.query import QueryHit, QueryPage, QueryResponse
 from cellwiki.services.changesets import ChangeSetRepository
+from cellwiki.services.attachments import attachment_read_ids
 from cellwiki.services.operations import current_agent_run_id
 from cellwiki.services.pipeline import KnowledgePipelineHarness
 
@@ -65,11 +66,41 @@ class FormalQuerySession:
     def validate(self, answer: AgentAnswer) -> AgentAnswer:
         declared_confidence = answer.declared_confidence or answer.confidence
         issues: list[ValidationIssue] = []
-        if answer.knowledge_scope in {"general", "attachment"}:
+        if answer.knowledge_scope == "general":
             return answer.model_copy(
                 update={
                     "declared_confidence": declared_confidence,
                     "verification_level": VerificationLevel.UNVALIDATED,
+                    "validation_issues": [],
+                    "validation_warnings": [],
+                }
+            )
+        if answer.knowledge_scope == "attachment":
+            read_ids = attachment_read_ids(current_agent_run_id())
+            attachment_issues = [
+                f"attachment citation was not backed by a tool read: {citation.attachment_id or citation.page_id}"
+                for citation in answer.citations
+                if not citation.attachment_id or citation.attachment_id not in read_ids
+            ]
+            if not answer.citations:
+                attachment_issues.append("attachment-grounded answers require at least one citation")
+            if attachment_issues:
+                return answer.model_copy(
+                    update={
+                        "declared_confidence": declared_confidence,
+                        "confidence": "low",
+                        "verification_level": VerificationLevel.UNVALIDATED,
+                        "validation_warnings": [
+                            *answer.validation_warnings,
+                            *attachment_issues,
+                        ],
+                    }
+                )
+            return answer.model_copy(
+                update={
+                    "declared_confidence": declared_confidence,
+                    "confidence": declared_confidence,
+                    "verification_level": VerificationLevel.EVIDENCE,
                     "validation_issues": [],
                     "validation_warnings": [],
                 }
@@ -101,6 +132,15 @@ class FormalQuerySession:
                 )
             )
         for citation_index, citation in enumerate(answer.citations):
+            if citation.page_id is None:
+                issues.append(
+                    ValidationIssue(
+                        code=ValidationIssueCode.UNREAD_PAGE,
+                        message="formal answers require Wiki page citations",
+                        citation_index=citation_index,
+                    )
+                )
+                continue
             page = self.pages.get(citation.page_id)
             if page is None:
                 issues.append(
@@ -241,7 +281,11 @@ class FormalAnswerGate:
         if candidate.knowledge_scope == "formal":
             unread: list[str] = []
             for citation in candidate.citations:
-                if citation.page_id not in self.session.pages and citation.page_id not in unread:
+                if (
+                    citation.page_id is not None
+                    and citation.page_id not in self.session.pages
+                    and citation.page_id not in unread
+                ):
                     unread.append(citation.page_id)
             for page_id in unread[: self.MAX_REPAIR_PAGES]:
                 try:

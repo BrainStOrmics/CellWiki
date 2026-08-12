@@ -199,6 +199,67 @@ def test_product_api_restores_and_deletes_complete_thread_history(tmp_path: Path
         runtime.close()
 
 
+def test_product_api_returns_not_found_for_invalid_thread_delete(tmp_path: Path):
+    client = TestClient(create_app(tmp_path))
+
+    response = client.delete("/api/agent/threads/thread_not-a-valid-id")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "agent thread not found"
+
+
+def test_product_api_persists_sent_attachment_metadata_in_user_message(tmp_path: Path):
+    runtime = AgentRuntimeManager(tmp_path, adapter=_ApiAgentAdapter())
+    client = TestClient(create_app(tmp_path, agent_runtime=runtime))
+    try:
+        thread = client.post("/api/agent/threads").json()["thread_id"]
+        uploaded = client.post(
+            f"/api/agent/threads/{thread}/attachments",
+            files={"files": ("notes.txt", b"FOXP3 attachment evidence.", "text/plain")},
+        )
+        attachment = uploaded.json()[0]
+
+        started = client.post(
+            "/api/agent/runs",
+            json={
+                "thread_id": thread,
+                "message": "Read the attached notes.",
+                "attachment_ids": [attachment["attachment_id"]],
+            },
+        )
+        assert started.status_code == 202
+        run_id = started.json()["run_id"]
+
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            run = client.get(f"/api/agent/runs/{run_id}").json()
+            if run["status"] == "succeeded":
+                break
+            time.sleep(0.01)
+
+        assert run["status"] == "succeeded"
+        messages = client.get(f"/api/agent/threads/{thread}/messages").json()
+        assert messages[0]["role"] == "user"
+        assert messages[0]["data"]["attachments"] == [
+            {
+                "attachment_id": attachment["attachment_id"],
+                "original_name": "notes.txt",
+                "media_type": "text/plain",
+                "content_hash": attachment["content_hash"],
+                "size_bytes": len(b"FOXP3 attachment evidence."),
+            }
+        ]
+        assert "text" not in messages[0]["data"]["attachments"][0]
+
+        cannot_delete = client.delete(
+            f"/api/agent/threads/{thread}/attachments/{attachment['attachment_id']}"
+        )
+        assert cannot_delete.status_code == 409
+        assert client.get(f"/api/agent/threads/{thread}/attachments").json() == [attachment]
+    finally:
+        runtime.close()
+
+
 def test_product_api_manages_thread_scoped_agent_attachments(tmp_path: Path):
     client = TestClient(create_app(tmp_path))
     thread = client.post("/api/agent/threads").json()["thread_id"]
@@ -216,6 +277,24 @@ def test_product_api_manages_thread_scoped_agent_attachments(tmp_path: Path):
     assert attachment["media_type"] == "text/plain"
     assert attachment["promoted_source_id"] is None
     assert client.get(f"/api/agent/threads/{thread}/attachments").json() == [attachment]
+
+    deleted_pending = client.delete(
+        f"/api/agent/threads/{thread}/attachments/{attachment['attachment_id']}"
+    )
+
+    assert deleted_pending.status_code == 200
+    assert deleted_pending.json() == {
+        "thread_id": thread,
+        "attachment_id": attachment["attachment_id"],
+        "deleted": True,
+    }
+    assert client.get(f"/api/agent/threads/{thread}/attachments").json() == []
+
+    remaining = client.post(
+        f"/api/agent/threads/{thread}/attachments",
+        files={"files": ("remaining.txt", b"still pending", "text/plain")},
+    )
+    assert remaining.status_code == 201
 
     deleted = client.delete(f"/api/agent/threads/{thread}")
     assert deleted.status_code == 200

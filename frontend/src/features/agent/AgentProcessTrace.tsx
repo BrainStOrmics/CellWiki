@@ -1,6 +1,6 @@
 import { CircleAlert, CircleCheck, ChevronDown, LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { AgentProcessStep } from "../../types";
+import type { AgentProcessStep, AgentRunStatus } from "../../types";
 
 type AgentProcessTraceProps = {
   steps: AgentProcessStep[];
@@ -8,6 +8,9 @@ type AgentProcessTraceProps = {
   title: string;
   liveLabel: string;
   completedLabel: string;
+  failedLabel: string;
+  cancelledLabel: string;
+  terminalStatus?: AgentRunStatus;
   emptyLabel: string;
 };
 
@@ -18,6 +21,9 @@ export function AgentProcessTrace({
   title,
   liveLabel,
   completedLabel,
+  failedLabel,
+  cancelledLabel,
+  terminalStatus,
   emptyLabel,
 }: AgentProcessTraceProps) {
   const [open, setOpen] = useState(live);
@@ -29,16 +35,31 @@ export function AgentProcessTrace({
     wasLive.current = live;
   }, [live]);
 
+  const statusLabel = live
+    ? liveLabel
+    : terminalStatus === "cancelled"
+      ? cancelledLabel
+      : terminalStatus === "failed"
+        ? failedLabel
+        : completedLabel;
+  const statusClass = live
+    ? "is-live"
+    : terminalStatus === "cancelled"
+      ? "is-cancelled"
+      : terminalStatus === "failed"
+        ? "is-failed"
+        : "is-complete";
+
   return (
     <details
-      className={`agent-process-trace ${live ? "is-live" : "is-complete"}`}
+      className={`agent-process-trace ${statusClass}`}
       open={open}
       onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}
     >
       <summary>
         <ChevronDown size={13} />
         <span>{title}</span>
-        <small>{live ? liveLabel : completedLabel}</small>
+        <small>{statusLabel}</small>
       </summary>
       <div className="agent-process-trace-list">
         {steps.length === 0 && <p className="agent-process-empty">{emptyLabel}</p>}

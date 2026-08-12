@@ -1,4 +1,4 @@
-import { BookOpenCheck, Bot } from "lucide-react";
+import { BookOpenCheck, Bot, Paperclip } from "lucide-react";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { AgentProcessTrace } from "./AgentProcessTrace";
 import { AgentRunDiagnostics } from "./AgentRunDiagnostics";
@@ -12,6 +12,8 @@ type AgentMessageBubbleProps = {
   processTitle: string;
   processLiveLabel: string;
   processCompletedLabel: string;
+  processFailedLabel: string;
+  processCancelledLabel: string;
   processEmptyLabel: string;
   diagnosticsLabel: string;
   onCitationOpen: (citation: Citation) => void;
@@ -26,6 +28,8 @@ export function AgentMessageBubble({
   processTitle,
   processLiveLabel,
   processCompletedLabel,
+  processFailedLabel,
+  processCancelledLabel,
   processEmptyLabel,
   diagnosticsLabel,
   onCitationOpen,
@@ -36,6 +40,16 @@ export function AgentMessageBubble({
   return (
     <div className={`message ${message.role} ${message.streaming ? "is-streaming" : ""}`}>
       <div className="message-author">{isAgent ? <><Bot size={13} />{agentLabel}</> : userLabel}</div>
+      {!isAgent && message.attachments && message.attachments.length > 0 && (
+        <div className="message-attachments">
+          {message.attachments.map((attachment) => (
+            <span className="message-attachment" key={attachment.attachment_id} title={attachment.attachment_id}>
+              <Paperclip size={12} />
+              <span>{attachment.original_name ?? attachment.attachment_id}</span>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="message-bubble">
         {isAgent && process.length > 0 && (
           <AgentProcessTrace
@@ -44,6 +58,9 @@ export function AgentMessageBubble({
             title={processTitle}
             liveLabel={processLiveLabel}
             completedLabel={processCompletedLabel}
+            failedLabel={processFailedLabel}
+            cancelledLabel={processCancelledLabel}
+            terminalStatus={message.runStatus}
             emptyLabel={processEmptyLabel}
           />
         )}

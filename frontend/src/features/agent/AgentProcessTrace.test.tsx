@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AgentProcessTrace } from "./AgentProcessTrace";
 import type { AgentProcessStep } from "../../types";
@@ -24,6 +24,8 @@ describe("AgentProcessTrace", () => {
         title="Agent 过程"
         liveLabel="正在执行"
         completedLabel="已完成"
+        failedLabel="失败"
+        cancelledLabel="已取消"
         emptyLabel="暂无过程"
       />,
     );
@@ -38,6 +40,8 @@ describe("AgentProcessTrace", () => {
         title="Agent 过程"
         liveLabel="正在执行"
         completedLabel="已完成"
+        failedLabel="失败"
+        cancelledLabel="已取消"
         emptyLabel="暂无过程"
       />,
     );
@@ -53,10 +57,32 @@ describe("AgentProcessTrace", () => {
         title="Agent 过程"
         liveLabel="正在执行"
         completedLabel="已完成"
+        failedLabel="失败"
+        cancelledLabel="已取消"
         emptyLabel="暂无过程"
       />,
     );
 
     expect(container.querySelector(".agent-process-step.failed")).not.toBeNull();
+  });
+
+  it("shows the cancelled terminal status instead of completed", () => {
+    const { container } = render(
+      <AgentProcessTrace
+        steps={steps}
+        live={false}
+        terminalStatus="cancelled"
+        title="Agent 过程"
+        liveLabel="正在执行"
+        completedLabel="已完成"
+        failedLabel="失败"
+        cancelledLabel="已取消"
+        emptyLabel="暂无过程"
+      />,
+    );
+
+    const scoped = within(container);
+    expect(scoped.getByText("已取消")).toBeInTheDocument();
+    expect(scoped.queryByText("已完成")).not.toBeInTheDocument();
   });
 });
