@@ -1117,12 +1117,16 @@ def test_ingest_tool_uses_durable_agent_run_as_cancellation_authority(
             run_id: str,
             *,
             cancellation_id: str,
-            agent_draft_run_id: str | None = None,
+            agent_draft_run_id: str,
+            revision_id: str | None = None,
+            parent_change_set_id: str | None = None,
+            parent_revision_id: str | None = None,
         ):
             captured.update(
                 source_id=source_id,
                 run_id=run_id,
                 cancellation_id=cancellation_id,
+                agent_draft_run_id=agent_draft_run_id,
             )
             return SimpleNamespace(
                 snapshot_id=snapshot.snapshot_id,
@@ -1135,12 +1139,19 @@ def test_ingest_tool_uses_durable_agent_run_as_cancellation_authority(
     # The model controls run_id, so it must never be able to redirect the
     # cancellation token away from the durable runtime-owned Agent run.
     with bind_agent_run("agent-run-durable"):
-        prepare.invoke({"source_id": source.source_id, "run_id": "model-task-id"})
+        prepare.invoke(
+            {
+                "source_id": source.source_id,
+                "run_id": "model-task-id",
+                "agent_draft_run_id": "draft-test",
+            }
+        )
 
     assert captured == {
         "source_id": source.source_id,
         "run_id": "model-task-id",
         "cancellation_id": "agent-run-durable",
+        "agent_draft_run_id": "draft-test",
     }
 
 
@@ -1158,7 +1169,15 @@ def test_ingest_tool_returns_the_full_pipeline_snapshot(tmp_path: Path, monkeypa
             assert project_root == tmp_path.resolve()
 
         def prepare_change_set(
-            self, source_id, run_id, *, cancellation_id, agent_draft_run_id: str | None = None
+            self,
+            source_id,
+            run_id,
+            *,
+            cancellation_id,
+            agent_draft_run_id: str,
+            revision_id: str | None = None,
+            parent_change_set_id: str | None = None,
+            parent_revision_id: str | None = None,
         ):
             return SimpleNamespace(
                 snapshot_id=snapshot.snapshot_id,
@@ -1169,7 +1188,13 @@ def test_ingest_tool_returns_the_full_pipeline_snapshot(tmp_path: Path, monkeypa
     prepare = build_ingest_tools(tmp_path)[0]
 
     payload = json.loads(
-        prepare.invoke({"source_id": source.source_id, "run_id": "snapshot-ingest-run"})
+        prepare.invoke(
+            {
+                "source_id": source.source_id,
+                "run_id": "snapshot-ingest-run",
+                "agent_draft_run_id": "draft-snapshot",
+            }
+        )
     )
 
     assert payload["source_id"] == source.source_id
@@ -1196,7 +1221,15 @@ def test_ingest_tool_resolves_full_content_hash_alias_to_canonical_source_id(
             assert project_root == tmp_path.resolve()
 
         def prepare_change_set(
-            self, source_id, run_id, *, cancellation_id, agent_draft_run_id: str | None = None
+            self,
+            source_id,
+            run_id,
+            *,
+            cancellation_id,
+            agent_draft_run_id: str,
+            revision_id: str | None = None,
+            parent_change_set_id: str | None = None,
+            parent_revision_id: str | None = None,
         ):
             captured.update(
                 source_id=source_id,
@@ -1213,7 +1246,13 @@ def test_ingest_tool_resolves_full_content_hash_alias_to_canonical_source_id(
     full_hash_alias = "src_" + source.content_hash.removeprefix("sha256:")
 
     payload = json.loads(
-        prepare.invoke({"source_id": full_hash_alias, "run_id": "hash-alias-run"})
+        prepare.invoke(
+            {
+                "source_id": full_hash_alias,
+                "run_id": "hash-alias-run",
+                "agent_draft_run_id": "draft-hash",
+            }
+        )
     )
 
     assert captured["source_id"] == source.source_id
@@ -1221,28 +1260,17 @@ def test_ingest_tool_resolves_full_content_hash_alias_to_canonical_source_id(
     assert payload["change_set"]["change_set_id"] == "cs-hash-alias"
 
 
-def test_revision_tool_preserves_feedback_and_prepares_a_child_changeset(
+def test_revision_tool_records_feedback_and_guides_next_extraction_step(
     tmp_path: Path,
     monkeypatch,
 ):
     captured: dict[str, object] = {}
-    snapshot = KnowledgePipelineHarness(tmp_path).capture_snapshot(
-        task_type=PipelineTaskType.INGEST,
-        run_id="model-revision-run",
-    )
 
     class FakeRevision:
         revision_id = "revision-test"
 
         def model_dump(self, mode="json"):
             return {"revision_id": self.revision_id, "status": "ready"}
-
-    class FakeChangeSet:
-        change_set_id = "cs-child"
-        snapshot_id = snapshot.snapshot_id
-
-        def model_dump(self, mode="json"):
-            return {"change_set_id": self.change_set_id, "revision_id": "revision-test"}
 
     class FakeRevisionService:
         def __init__(self, project_root, *, ingest):
@@ -1253,31 +1281,25 @@ def test_revision_tool_preserves_feedback_and_prepares_a_child_changeset(
             captured.update(change_set_id=change_set_id, reviewer=reviewer, comments=comments)
             return FakeRevision()
 
-        def prepare_revision(self, revision_id, *, run_id, cancellation_id):
-            captured.update(revision_id=revision_id, run_id=run_id, cancellation_id=cancellation_id)
-            return FakeChangeSet()
-
         def get(self, revision_id):
             return FakeRevision()
 
     monkeypatch.setattr("cellwiki.agent.tools.IngestRevisionService", FakeRevisionService)
     tools = {tool.name: tool for tool in build_ingest_tools(tmp_path)}
 
-    with bind_agent_run("agent-run-revision"):
-        payload = json.loads(
-            tools["request_ingest_revision"].invoke(
-                {
-                    "change_set_id": "cs-parent",
-                    "comments": ["Add the evidence locator."],
-                    "reviewer": "default-reviewer",
-                    "run_id": "model-revision-run",
-                }
-            )
+    payload = json.loads(
+        tools["request_ingest_revision"].invoke(
+            {
+                "change_set_id": "cs-parent",
+                "comments": ["Add the evidence locator."],
+                "reviewer": "default-reviewer",
+            }
         )
+    )
 
-    assert payload["change_set"]["change_set_id"] == "cs-child"
+    assert payload["revision"]["revision_id"] == "revision-test"
     assert captured["comments"] == ["Add the evidence locator."]
-    assert captured["cancellation_id"] == "agent-run-revision"
-    assert payload["approval_policy"] == "auto_low_risk"
-    assert payload["requires_human_review"] is True
-    assert payload["snapshot"]["snapshot_id"] == snapshot.snapshot_id
+    assert captured["reviewer"] == "default-reviewer"
+    assert captured["change_set_id"] == "cs-parent"
+    assert "revision_id=revision-test" in payload["next_step"]
+    assert "prepare_ingest_change_set" in payload["next_step"]

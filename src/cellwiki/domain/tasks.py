@@ -9,11 +9,6 @@ from pydantic import Field, model_validator
 from cellwiki.domain.contracts import ContractModel
 
 
-class IngestTask(ContractModel):
-    kind: Literal["ingest"] = "ingest"
-    source_id: str = Field(min_length=1, max_length=256)
-
-
 class IngestRevisionTask(ContractModel):
     kind: Literal["ingest_revision"] = "ingest_revision"
     change_set_id: str = Field(min_length=1, max_length=256)
@@ -56,7 +51,7 @@ class LintTask(ContractModel):
 
 
 AgentTask = Annotated[
-    IngestTask | IngestRevisionTask | LintTask,
+    IngestRevisionTask | LintTask,
     Field(discriminator="kind"),
 ]
 
@@ -72,7 +67,6 @@ class TaskProposal(ContractModel):
 __all__ = [
     "AgentTask",
     "IngestRevisionTask",
-    "IngestTask",
     "LintScope",
     "LintTask",
     "PageLintScope",

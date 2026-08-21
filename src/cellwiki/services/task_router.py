@@ -8,8 +8,6 @@ from dataclasses import dataclass
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.tasks import (
     AgentTask,
-    IngestRevisionTask,
-    IngestTask,
     LintTask,
     PageLintScope,
     ProjectLintScope,
@@ -37,12 +35,6 @@ class TaskRouter:
         lint = self._lint_route(normalized, context)
         if lint is not None:
             return lint
-        ingest = self._ingest_route(normalized, context)
-        if ingest is not None:
-            return ingest
-        revision = self._revision_route(normalized)
-        if revision is not None:
-            return revision
         return self._lint_fix_route(normalized)
 
     def _lint_route(self, text: str, context: WikiAgentContext) -> TaskRoute | None:
@@ -71,39 +63,10 @@ class TaskRouter:
             reason="The user explicitly requested a read-only Lint inspection.",
         )
 
-    def _ingest_route(self, text: str, context: WikiAgentContext) -> TaskRoute | None:
-        has_ingest = any(marker in text for marker in ("摄取", "ingest", "导入来源", "导入当前来源"))
-        has_action = any(marker in text for marker in self._EXPLICIT_ACTION)
-        if not (has_ingest and has_action and context.source_id):
-            return None
-        return TaskRoute(
-            task=IngestTask(source_id=context.source_id),
-            requires_confirmation=True,
-            reason="The user requested Ingest for the currently selected SourceRecord.",
-        )
-
     def _looks_like_explanation(self, text: str) -> bool:
         return (
             any(marker in text for marker in self._QUESTION_MARKERS)
             and not any(marker in text for marker in self._EXPLICIT_ACTION)
-        )
-
-    def _revision_route(self, text: str) -> TaskRoute | None:
-        if not any(marker in text for marker in ("revision", "修订", "重新摄取", "重新导入")):
-            return None
-        if not any(marker in text for marker in self._EXPLICIT_ACTION):
-            return None
-        change_set = re.search(r"\bcs_[a-z0-9_.:-]+\b", text)
-        if change_set is None:
-            return None
-        return TaskRoute(
-            task=IngestRevisionTask(
-                change_set_id=change_set.group(0),
-                comments=[text[:1000]],
-                reviewer="desktop-user",
-            ),
-            requires_confirmation=True,
-            reason="The user requested a revision for an explicit ChangeSet.",
         )
 
     def _lint_fix_route(self, text: str) -> TaskRoute | None:

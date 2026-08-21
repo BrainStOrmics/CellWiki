@@ -75,17 +75,10 @@ class Settings(BaseSettings):
     # 最大重试次数，避免无限制重试耗尽 API 配额
     ingest_max_attempts: int = Field(default=3, ge=1, le=5)
     # 默认串行调用，避免长结构化请求在代理/Provider连接层互相影响；
-    # 已验证支持并发的 Provider 仍可通过环境变量显式提高该值。
-    ingest_max_concurrency: int = Field(default=1, ge=1, le=4)
-    # 每次提取的最大输出 token 数，控制单次 LLM 调用的成本
-    ingest_max_output_tokens: int = Field(default=5000, ge=500, le=20_000)
+    # 每次整篇 Agent 草稿定稿的最大输出 token 数（上限 64K）
+    ingest_max_output_tokens: int = Field(default=12000, ge=500, le=65_536)
 
     # ---- 证据优先的 Ingest Agent 设置（Phase A/B）----
-    # 提取通道：agent（整篇草稿 + 确定性护栏）或 chunked（原分块管线回退）。
-    # prepare_ingest_change_set 未提供 agent_draft_run_id 时仍走 chunked 路径，
-    # 因此该默认值不会改变既有调用行为。
-    ingest_extraction_mode: str = "agent"
-    ingest_agent_enabled: bool = True
     # 逐字接地未命中的证据回给 Agent 改写的最大轮次
     ingest_agent_max_grounding_passes: int = Field(default=2, ge=1, le=5)
     # 可选独立模型；为空则与协调器共用配置模型

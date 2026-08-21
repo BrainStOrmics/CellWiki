@@ -101,3 +101,8 @@ def test_staged_draft_flows_through_revise_loop_into_changeset(tmp_path):
     assert change_set["evidence"]
     # Cluster identifiers cannot leak into durable names even from drafts.
     assert all(c["standard_name"] != "c01" for c in change_set["operations"][0]["payload"]["cell_types"])
+def test_prepare_ingest_tool_requires_agent_draft_run_id(tmp_path):
+    tool = _tool_map(build_ingest_tools(tmp_path))["prepare_ingest_change_set"]
+
+    assert "default" not in tool.args["agent_draft_run_id"]
+    assert "default" in tool.args["run_id"]

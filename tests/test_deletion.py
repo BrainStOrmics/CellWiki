@@ -32,28 +32,28 @@ from cellwiki.services.tasks import TaskEventRepository
 FIXTURE = Path(__file__).parent / "fixtures" / "sample_source.md"
 
 
-class DeleteFixtureExtractor:
-    """Deterministic extractor proposing an entity that appears in the fixture."""
+def _stage_draft(project_root: Path, source, *, run_id: str = "draft_1") -> str:
+    from cellwiki.services.ingest_draft import AgentIngestDraftStore
 
-    name = "delete-fixture"
-    version = "1"
-    cache_identity = "delete-fixture:1"
-
-    def extract(self, chunk, source, *, control=None, review_feedback=None):
-        from cellwiki.domain.extraction import ExtractionResult, PaperReference
-        from cellwiki.models import CellTypeExtract
-
-        paper = PaperReference(paper_id=source.source_id, title="Delete fixture", local_path=source.stored_path)
-        return ExtractionResult(
-            paper=paper,
-            cell_types=[
-                CellTypeExtract(
-                    name="Regulatory T cell",
-                    standard_name="regulatory_t_cell",
-                    paper_ref=paper,
-                )
+    AgentIngestDraftStore(project_root).save(
+        source.source_id,
+        run_id,
+        {
+            "paper_info": {"title": "Delete fixture", "doi": "", "year": 2024},
+            "cell_types": [
+                {
+                    "name": "Regulatory T cell",
+                    "standard_name": "regulatory_t_cell",
+                    "markers": [
+                        {"gene_symbol": "FOXP3", "marker_type": "positive", "evidence": "FOXP3"}
+                    ],
+                }
             ],
-        )
+        },
+    )
+    return run_id
+
+
 
 
 def _save_changeset(project_root: Path, source_id: str) -> ChangeSet:
@@ -94,9 +94,11 @@ def _tombstones(project_root: Path) -> list[dict]:
 # ---------------------------------------------------------------------------
 def test_rejected_changeset_delete_removes_proposal_and_audit_artifacts(tmp_path: Path) -> None:
     source = SourceRegistry(tmp_path).register(FIXTURE, source_type="paper")
-    change_set = IngestService(tmp_path, extractor=DeleteFixtureExtractor()).prepare_change_set(
+    _stage_draft(tmp_path, source, run_id="draft_reject_delete")
+    change_set = IngestService(tmp_path).prepare_change_set(
         source.source_id,
         "run_reject_delete",
+        agent_draft_run_id="draft_reject_delete",
     )
     change_set_id = change_set.change_set_id
     client = TestClient(create_app(tmp_path))
@@ -186,9 +188,11 @@ def test_awaiting_review_changeset_deletable_after_decision_without_terminal_eve
     这类提案（已拒绝/已回滚）不应被永远当作 run_waiting 挡住删除。
     """
     source = SourceRegistry(tmp_path).register(FIXTURE, source_type="paper")
-    change_set = IngestService(tmp_path, extractor=DeleteFixtureExtractor()).prepare_change_set(
+    _stage_draft(tmp_path, source, run_id="draft_agent_decided")
+    change_set = IngestService(tmp_path).prepare_change_set(
         source.source_id,
         "run_agent_decided",
+        agent_draft_run_id="draft_agent_decided",
     )
     ApprovalRepository(tmp_path).save(
         change_set.change_set_id,
@@ -276,9 +280,11 @@ def test_source_delete_is_blocked_while_changesets_reference_it(tmp_path: Path) 
 def test_source_deletable_after_ingest_run_left_awaiting_review(tmp_path: Path) -> None:
     """Regression: 已结束的历史运行（账本停在 awaiting_review）不应阻止来源删除。"""
     source = SourceRegistry(tmp_path).register(FIXTURE, source_type="paper")
-    change_set = IngestService(tmp_path, extractor=DeleteFixtureExtractor()).prepare_change_set(
+    _stage_draft(tmp_path, source, run_id="draft_src_finished")
+    change_set = IngestService(tmp_path).prepare_change_set(
         source.source_id,
         "run_src_finished",
+        agent_draft_run_id="draft_src_finished",
     )
     client = TestClient(create_app(tmp_path))
 

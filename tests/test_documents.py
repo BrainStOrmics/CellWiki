@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 from cellwiki.domain.contracts import Claim, EvidenceReference
-from cellwiki.services.chunking import chunk_document
 from cellwiki.services.parsing import DocumentParsingService, PdfPlumberParser
 from cellwiki.services.sources import SourceRegistry
 
@@ -33,37 +32,6 @@ def test_markdown_parser_retains_sections_and_uses_deterministic_cache(tmp_path:
     assert first.parser_config["encoding"] == "utf-8"
     assert first.pages[0].page_number == 1
     assert [block.section for block in first.all_blocks() if block.section][-1] == "Context"
-
-
-def test_chunking_retains_page_and_block_locators(tmp_path: Path):
-    source = SourceRegistry(tmp_path).register(
-        FIXTURES / "sample_source.md", source_type="paper"
-    )
-    document = DocumentParsingService(tmp_path).parse(source)
-
-    chunks = chunk_document(document, max_characters=500, overlap_characters=80)
-
-    assert chunks
-    assert all(chunk.source_id == source.source_id for chunk in chunks)
-    assert all(chunk.block_ids for chunk in chunks)
-    assert all(chunk.page_start == 1 and chunk.page_end == 1 for chunk in chunks)
-    assert len({chunk.chunk_id for chunk in chunks}) == len(chunks)
-
-
-def test_chunking_splits_oversized_blocks_without_losing_original_locator(tmp_path: Path):
-    path = tmp_path / "oversized.txt"
-    path.write_text(" ".join(f"marker{i}" for i in range(1_000)), encoding="utf-8")
-    source = SourceRegistry(tmp_path).register(path, source_type="paper")
-    document = DocumentParsingService(tmp_path).parse(source)
-    original_block = document.pages[0].blocks[0]
-
-    chunks = chunk_document(document, max_characters=700, overlap_characters=0)
-
-    assert len(chunks) > 1
-    assert all(len(chunk.text) <= 700 for chunk in chunks)
-    assert all(chunk.page_start == 1 and chunk.page_end == 1 for chunk in chunks)
-    assert all(chunk.block_ids == [original_block.block_id] for chunk in chunks)
-    assert all(chunk.text in original_block.text for chunk in chunks)
 
 
 def test_pdf_adapter_keeps_real_page_numbers(monkeypatch, tmp_path: Path):
@@ -115,20 +83,6 @@ def test_real_pdf_fixtures_preserve_pages_and_two_column_text(tmp_path: Path):
     first_page = " ".join(block.text for block in column_document.pages[0].blocks)
     assert "Regulatory T cell" in first_page
     assert "CD8 T cell" in first_page
-
-
-def test_long_pdf_is_chunked_with_rebuildable_page_locators(tmp_path: Path):
-    source = SourceRegistry(tmp_path).register(
-        FIXTURES / "long_52_page_source.pdf", source_type="paper"
-    )
-    document = DocumentParsingService(tmp_path).parse(source)
-    chunks = chunk_document(document, max_characters=1_000, overlap_characters=100)
-
-    assert len(document.pages) == 52
-    assert chunks
-    assert chunks[0].page_start == 1
-    assert chunks[-1].page_end == 52
-    assert all(document.block(block_id).page_number >= chunk.page_start for chunk in chunks for block_id in chunk.block_ids)
 
 
 def test_claim_requires_valid_source_evidence():

@@ -131,8 +131,9 @@ class IngestRevisionService:
         *,
         run_id: str,
         cancellation_id: str | None = None,
+        agent_draft_run_id: str,
     ) -> ChangeSet:
-        """Run the normal ingest pipeline with the revision's feedback injected."""
+        """Finalize a staged ingest-agent draft as the revision's extraction."""
 
         revision = self.repository.get(revision_id)
         if revision.change_set_id is not None:
@@ -150,22 +151,36 @@ class IngestRevisionService:
             change_set = self.ingest.prepare_change_set(
                 revision.source_id,
                 run_id,
-                review_feedback=[comment.body for comment in revision.comments],
+                agent_draft_run_id=agent_draft_run_id,
                 revision_id=revision.revision_id,
                 parent_change_set_id=revision.parent_change_set_id,
                 parent_revision_id=revision.parent_revision_id,
                 cancellation_id=cancellation_id,
             )
         except Exception as error:
-            self.repository.update(
-                running.model_copy(
-                    update={
-                        "status": RevisionStatus.FAILED,
-                        "error_message": str(error),
-                        "updated_at": datetime.now(UTC),
-                    }
+            if str(error).startswith("ingest is agent-only"):
+                # Missing-draft precondition failures return the revision to
+                # REQUESTED so the coordinator can retry with a staged draft.
+                self.repository.update(
+                    running.model_copy(
+                        update={
+                            "status": RevisionStatus.REQUESTED,
+                            "run_id": None,
+                            "error_message": str(error),
+                            "updated_at": datetime.now(UTC),
+                        }
+                    )
                 )
-            )
+            else:
+                self.repository.update(
+                    running.model_copy(
+                        update={
+                            "status": RevisionStatus.FAILED,
+                            "error_message": str(error),
+                            "updated_at": datetime.now(UTC),
+                        }
+                    )
+                )
             raise
         self.repository.update(
             running.model_copy(

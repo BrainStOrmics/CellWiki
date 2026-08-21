@@ -625,11 +625,20 @@ def build_ingest_tools(project_root: Path) -> list[BaseTool]:
     pipeline = KnowledgePipelineHarness(root)
 
     @tool("prepare_ingest_change_set")
-    def prepare_ingest_change_set(source_id: str, run_id: str = "", agent_draft_run_id: str = "") -> str:
-        """Analyze one registered source and persist a proposed extraction ChangeSet without publishing it.
+    def prepare_ingest_change_set(
+        source_id: str,
+        run_id: str = "",
+        *,
+        agent_draft_run_id: str,
+        revision_id: str = "",
+        parent_change_set_id: str = "",
+        parent_revision_id: str = "",
+    ) -> str:
+        """Finalize a staged ingest-agent extraction draft into a proposed ChangeSet.
 
-        Pass agent_draft_run_id to finalize a staged agent extraction draft through deterministic
-        canonicalize/ground/merge guards instead of the chunked extraction pipeline."""
+        agent_draft_run_id is mandatory: ingest is agent-only, so the draft must be
+        produced by the ingest-agent before a ChangeSet can be prepared. For revisions
+        pass revision_id (and parent linkage) to anchor the proposal to the revision."""
         requested_source_id = source_id
         try:
             source_id = _resolve_registered_source_id(sources, source_id)
@@ -652,6 +661,9 @@ def build_ingest_tools(project_root: Path) -> list[BaseTool]:
             # 取消权限来自持久化运行时上下文，而非模型提供的任务标识符
             cancellation_id=current_agent_run_id() or effective_run_id,
             agent_draft_run_id=agent_draft_run_id.strip() or None,
+            revision_id=revision_id.strip() or None,
+            parent_change_set_id=parent_change_set_id.strip() or None,
+            parent_revision_id=parent_revision_id.strip() or None,
         )
         policy = pipeline.approval_policy()
         snapshot_id = getattr(change_set, "snapshot_id", None)
@@ -677,36 +689,22 @@ def build_ingest_tools(project_root: Path) -> list[BaseTool]:
         change_set_id: str,
         comments: list[str],
         reviewer: str = "default-reviewer",
-        run_id: str = "",
     ) -> str:
-        """Record review feedback and prepare a new same-source ingest ChangeSet."""
+        """Record review feedback as a revision request (no extraction here)."""
 
         revision = revisions.request_revision(
             change_set_id,
             reviewer=reviewer,
             comments=comments,
         )
-        effective_run_id = run_id.strip() or current_agent_run_id() or f"revision_{uuid.uuid4().hex}"
-        change_set = revisions.prepare_revision(
-            revision.revision_id,
-            run_id=effective_run_id,
-            cancellation_id=current_agent_run_id() or effective_run_id,
-        )
-        policy = pipeline.approval_policy()
-        snapshot_id = getattr(change_set, "snapshot_id", None)
-        snapshot = (
-            pipeline.get_snapshot(snapshot_id).model_dump(mode="json")
-            if snapshot_id
-            else None
-        )
         return json.dumps(
             {
                 "revision": revisions.get(revision.revision_id).model_dump(mode="json"),
-                "change_set": change_set.model_dump(mode="json"),
-                "snapshot": snapshot,
-                "run_id": effective_run_id,
-                "approval_policy": policy.value,
-                "requires_human_review": policy is not ApprovalPolicy.AUTO_ALL,
+                "next_step": (
+                    "Re-delegate the source to the ingest-agent with the review feedback, "
+                    "then call prepare_ingest_change_set with agent_draft_run_id and "
+                    f"revision_id={revision.revision_id}."
+                ),
             },
             ensure_ascii=False,
         )

@@ -8,13 +8,11 @@
 # 核心流程：
 # 1. 读取注册来源（SourceRecord）
 # 2. 选择解析器解析文档（ParsedDocument）
-# 3. 分块（DocumentChunk）
-# 4. 调用 LLM 提取实体
-# 5. 验证提取结果
-# 6. 检测与现有知识的冲突
-# 7. 生成不可变的 ChangeSet（不发布）
-# 导入管线支持取消操作和进度报告，通过 OperationControl 实现。
-# 使用缓存避免重复解析相同内容的来源。
+# 3. 读取 ingest-agent 已 staging 的提取草稿（agent_draft_run_id 必填）
+# 4. 确定性护栏定稿：命名/逐字证据/合并/ungrounded 门禁
+# 5. 检测与现有知识的冲突
+# 6. 生成不可变的 ChangeSet（不发布）
+# 草稿必须由 ingest-agent 产出；无草稿直接失败（不静默回退 chunked）。
 # ---------------------------------------------------------------------------
 
 """Evidence-grounded ingest module from registered source to immutable ChangeSet."""
@@ -22,15 +20,11 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
 from pathlib import Path
 from cellwiki.config import settings
-from cellwiki.adapters.openai_extraction import OpenAIChunkExtractor
 from cellwiki.domain.contracts import (
     ChangeOperation,
     ChangeOperationType,
@@ -56,31 +50,20 @@ from cellwiki.domain.extraction import (
     Marker,
 )
 from cellwiki.services.changesets import ChangeSetRepository
-from cellwiki.services.chunking import chunk_document
 from cellwiki.services.ingest_draft import AgentIngestDraftStore
 from cellwiki.services.naming import (
     canonicalize_standard_name,
     is_cluster_identifier,
     normalize_standard_name,
 )
-from cellwiki.services.extraction import ChunkExtractor
 from cellwiki.services.parsing import DocumentParsingService
 from cellwiki.services.sources import SourceRegistry
 from cellwiki.services.tasks import TaskEventRepository
 from cellwiki.services.operations import (
     CancellationRegistry,
     OperationCancelled,
-    OperationControl,
-    OperationProgress,
 )
 from cellwiki.services.pipeline import KnowledgePipelineHarness
-
-
-@dataclass
-class _ParallelProgress:
-    completed: int = 0
-    live_completed: int = 0
-    total_live_duration: float = 0.0
 
 
 class IngestService:
@@ -90,27 +73,20 @@ class IngestService:
         self,
         project_root: Path,
         *,
-        extractor: ChunkExtractor | None = None,
         parsing: DocumentParsingService | None = None,
         sources: SourceRegistry | None = None,
         changesets: ChangeSetRepository | None = None,
         tasks: TaskEventRepository | None = None,
         cancellations: CancellationRegistry | None = None,
         pipeline: KnowledgePipelineHarness | None = None,
-        max_workers: int | None = None,
     ):
         self.project_root = Path(project_root).resolve()
-        self.extractor = extractor or OpenAIChunkExtractor()
         self.parsing = parsing or DocumentParsingService(self.project_root)
         self.sources = sources or SourceRegistry(self.project_root)
         self.changesets = changesets or ChangeSetRepository(self.project_root)
         self.tasks = tasks or TaskEventRepository(self.project_root)
         self.cancellations = cancellations or CancellationRegistry.for_project(self.project_root)
         self.pipeline = pipeline or KnowledgePipelineHarness(self.project_root)
-        self.max_workers = max_workers or settings.ingest_max_concurrency
-        if not 1 <= self.max_workers <= 4:
-            raise ValueError("ingest max_workers must be between 1 and 4")
-        self.cache_root = self.project_root / "data" / "runtime" / "extraction_cache"
         self._event_lock = threading.Lock()
 
     def prepare_change_set(
@@ -119,24 +95,20 @@ class IngestService:
         run_id: str,
         *,
         force_parse: bool = False,
-        force_extract: bool = False,
         cancellation_id: str | None = None,
-        review_feedback: list[str] | None = None,
         revision_id: str | None = None,
         parent_change_set_id: str | None = None,
         parent_revision_id: str | None = None,
         agent_draft_run_id: str | None = None,
     ) -> ChangeSet:
-        """Create a grounded proposal after reading the whole project state."""
+        """Finalize a staged ingest-agent extraction draft into a grounded proposal."""
 
         with self.pipeline.acquire(task_type=PipelineTaskType.INGEST, run_id=run_id) as lease:
             return self._prepare_change_set(
                 source_id,
                 run_id,
                 force_parse=force_parse,
-                force_extract=force_extract,
                 cancellation_id=cancellation_id,
-                review_feedback=review_feedback,
                 revision_id=revision_id,
                 parent_change_set_id=parent_change_set_id,
                 parent_revision_id=parent_revision_id,
@@ -150,9 +122,7 @@ class IngestService:
         run_id: str,
         *,
         force_parse: bool,
-        force_extract: bool,
         cancellation_id: str | None,
-        review_feedback: list[str] | None,
         revision_id: str | None,
         parent_change_set_id: str | None,
         parent_revision_id: str | None,
@@ -169,6 +139,12 @@ class IngestService:
         try:
             if cancellation.is_set():
                 raise OperationCancelled(f"operation {operation_id} was cancelled")
+            if agent_draft_run_id is None:
+                raise ValueError(
+                    "ingest is agent-only: agent_draft_run_id is required. Route the "
+                    "source through the ingest-agent subagent first so it can stage "
+                    "an extraction draft."
+                )
             source = self.sources.get(source_id)
             progress = 15
             self._event(run_id, source_id, IngestStage.PARSING, "Parsing the source with page locators.", progress)
@@ -184,181 +160,29 @@ class IngestService:
             )
 
             progress = 25
-            if agent_draft_run_id is not None:
-                draft = AgentIngestDraftStore(self.project_root).load(source_id, agent_draft_run_id)
-                if draft is None:
-                    raise ValueError(
-                        f"agent ingest draft {agent_draft_run_id!r} was not found for source {source_id}"
-                    )
-                self._event(
-                    run_id,
-                    source_id,
-                    IngestStage.CHUNKING,
-                    "Finalizing staged agent ingest draft with deterministic guards.",
-                    progress,
-                    detail={
-                        "draft_run_id": agent_draft_run_id,
-                        "candidate_cell_types": len(draft.get("payload", {}).get("cell_types", [])),
-                    },
+            draft = AgentIngestDraftStore(self.project_root).load(source_id, agent_draft_run_id)
+            if draft is None:
+                raise ValueError(
+                    "ingest is agent-only: no staged agent draft exists for source "
+                    f"{source_id} (agent_draft_run_id={agent_draft_run_id!r}). Route ingest "
+                    "through the ingest-agent subagent so it can produce an extraction "
+                    "draft before preparing a ChangeSet."
                 )
-                extraction, review_items = _finalize_agent_draft(source, document, draft["payload"])
-                progress = 68
-                conflicts = [item for item in review_items if item.severity == RiskLevel.HIGH]
-            else:
-                # Smaller evidence chunks keep structured responses bounded. Two workers
-                # recover throughput without creating an unbounded provider burst.
-                chunks = chunk_document(
-                    document,
-                    max_characters=7_000,
-                    overlap_characters=400,
-                )
-                self._event(
-                    run_id,
-                    source_id,
-                    IngestStage.CHUNKING,
-                    f"Prepared {len(chunks)} evidence-aware document chunk(s).",
-                    progress,
-                    detail={"chunk_count": len(chunks), "page_count": len(document.pages)},
-                )
-                if not chunks:
-                    raise ValueError("parsed source produced no extractable document chunks")
-
-                progress_state = _ParallelProgress()
-                progress_lock = threading.Lock()
-                batch_abort = threading.Event()
-                results: dict[int, tuple[ExtractionResult, list[ReviewItem]]] = {}
-
-                def progress_detail(
-                    index: int,
-                    update: OperationProgress | None = None,
-                ) -> dict[str, int | float | str | None]:
-                    with progress_lock:
-                        elapsed = max(0.0, time.monotonic() - operation_started)
-                        average = (
-                            progress_state.total_live_duration / progress_state.live_completed
-                            if progress_state.live_completed
-                            else None
-                        )
-                        remaining = len(chunks) - progress_state.completed
-                        eta = (
-                            average * ((remaining + self.max_workers - 1) // self.max_workers)
-                            if average is not None
-                            else None
-                        )
-                        return {
-                            "chunk_index": index,
-                            "chunk_count": len(chunks),
-                            "completed_chunks": progress_state.completed,
-                            "concurrency": min(self.max_workers, len(chunks)),
-                            "elapsed_seconds": round(elapsed, 1),
-                            "estimated_remaining_seconds": round(eta, 1) if eta is not None else None,
-                            "request_state": update.state if update else None,
-                            "attempt": update.attempt if update else None,
-                            "max_attempts": update.max_attempts if update else None,
-                            "attempt_elapsed_seconds": (
-                                round(update.attempt_elapsed_seconds, 1) if update else None
-                            ),
-                            "error": update.error if update else None,
-                        }
-
-                def extract_one(
-                    index: int,
-                    chunk: DocumentChunk,
-                ) -> tuple[int, ExtractionResult, list[ReviewItem]]:
-                    control = OperationControl(
-                        operation_id,
-                        cancellation,
-                        additional_cancellation=batch_abort,
-                        progress=lambda update: self._event(
-                            run_id,
-                            source_id,
-                            IngestStage.ENTITY_EXTRACTION,
-                            (
-                                f"Chunk {index}/{len(chunks)} model attempt "
-                                f"{update.attempt}/{update.max_attempts}: {update.state}."
-                            ),
-                            25 + int(35 * progress_state.completed / max(1, len(chunks))),
-                            detail=progress_detail(index, update),
-                        ),
-                    )
-                    control.raise_if_cancelled()
-                    chunk_started = time.monotonic()
-                    self._event(
-                        run_id,
-                        source_id,
-                        IngestStage.ENTITY_EXTRACTION,
-                        f"Extracting grounded facts from chunk {index}/{len(chunks)}.",
-                        25 + int(35 * progress_state.completed / max(1, len(chunks))),
-                        detail={
-                            **progress_detail(index),
-                            "chunk_id": chunk.chunk_id,
-                            "page_start": chunk.page_start,
-                            "page_end": chunk.page_end,
-                        },
-                    )
-                    extraction, cache_hit = self._extract_chunk(
-                        source,
-                        document,
-                        chunk,
-                        force=force_extract,
-                        control=control,
-                        review_feedback=review_feedback,
-                    )
-                    validated, gaps = _ground_extraction(source, document, chunk, extraction)
-                    control.raise_if_cancelled()
-                    duration = time.monotonic() - chunk_started
-                    with progress_lock:
-                        progress_state.completed += 1
-                        if not cache_hit:
-                            progress_state.live_completed += 1
-                            progress_state.total_live_duration += duration
-                        completed = progress_state.completed
-                    self._event(
-                        run_id,
-                        source_id,
-                        IngestStage.ENTITY_EXTRACTION,
-                        f"Completed grounded extraction for chunk {index}/{len(chunks)}.",
-                        25 + int(35 * completed / max(1, len(chunks))),
-                        detail={
-                            **progress_detail(index),
-                            "chunk_duration_seconds": round(duration, 1),
-                            "cache_hit": cache_hit,
-                        },
-                    )
-                    return index, validated, gaps
-
-
-                with ThreadPoolExecutor(
-                    max_workers=min(self.max_workers, len(chunks)),
-                    thread_name_prefix="cellwiki-ingest",
-                ) as executor:
-                    futures = {
-                        executor.submit(extract_one, index, chunk): index
-                        for index, chunk in enumerate(chunks, start=1)
-                    }
-                    try:
-                        for future in as_completed(futures):
-                            index, extraction_chunk, gaps = future.result()
-                            results[index] = (extraction_chunk, gaps)
-                    except Exception:
-                        # Stop requests already running beside the failed chunk. Their
-                        # cancellation errors are secondary; the primary error is re-raised.
-                        batch_abort.set()
-                        for future in futures:
-                            future.cancel()
-                        raise
-
-                grounded = [results[index][0] for index in sorted(results)]
-                review_items = [
-                    item
-                    for index in sorted(results)
-                    for item in results[index][1]
-                ]
-
-                progress = 68
-                self._event(run_id, source_id, IngestStage.CONFLICT_ANALYSIS, "Merging duplicate entities and detecting conflicts.", progress)
-                extraction, conflicts = _merge_extractions(source, document, grounded)
-                review_items.extend(conflicts)
+            self._event(
+                run_id,
+                source_id,
+                IngestStage.CHUNKING,
+                "Finalizing staged agent ingest draft with deterministic guards.",
+                progress,
+                detail={
+                    "draft_run_id": agent_draft_run_id,
+                    "candidate_cell_types": len(draft.get("payload", {}).get("cell_types", [])),
+                    "extraction_mode": "agent_draft",
+                },
+            )
+            extraction, review_items = _finalize_agent_draft(source, document, draft["payload"])
+            progress = 68
+            conflicts = [item for item in review_items if item.severity == RiskLevel.HIGH]
             source_candidates = self.sources.find_paper_candidates(
                 source_id,
                 doi=extraction.paper.doi,
@@ -469,7 +293,21 @@ class IngestService:
                 detail={"elapsed_seconds": round(time.monotonic() - operation_started, 1)},
             )
             raise
-        except Exception as error:
+        except ValueError as error:
+            # Agent-only precondition failures (missing / unknown draft) are
+            # coordination errors, not source-analysis failures: do not mark the
+            # source FAILED and keep the run ledger diagnostic.
+            if str(error).startswith("ingest is agent-only"):
+                self._event(
+                    run_id,
+                    source_id,
+                    IngestStage.SOURCE_READ,
+                    str(error),
+                    progress,
+                    status=TaskStatus.FAILED,
+                    detail={"error": str(error)},
+                )
+                raise
             self.sources.mark_failed(source_id, str(error))
             self._event(
                 run_id,
@@ -481,50 +319,6 @@ class IngestService:
                 detail={"error": str(error)},
             )
             raise
-
-    def _extract_chunk(
-        self,
-        source: SourceRecord,
-        document: ParsedDocument,
-        chunk: DocumentChunk,
-        *,
-        force: bool,
-        control: OperationControl,
-        review_feedback: list[str] | None = None,
-    ) -> tuple[ExtractionResult, bool]:
-        control.raise_if_cancelled()
-        material = "\0".join(
-            [
-                source.content_hash,
-                document.parse_hash,
-                chunk.chunk_id,
-                self.extractor.cache_identity,
-                "schema:3",
-                json.dumps(review_feedback or [], ensure_ascii=False, separators=(",", ":")),
-            ]
-        )
-        key = hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
-        cache_path = self.cache_root / source.source_id / f"{key}.json"
-        if cache_path.exists() and not force:
-            return (
-                ExtractionResult.model_validate_json(cache_path.read_text(encoding="utf-8")),
-                True,
-            )
-        if review_feedback:
-            result = self.extractor.extract(
-                chunk,
-                source,
-                control=control,
-                review_feedback=review_feedback,
-            )
-        else:
-            result = self.extractor.extract(chunk, source, control=control)
-        control.raise_if_cancelled()
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = cache_path.with_suffix(".json.tmp")
-        temporary.write_text(result.model_dump_json(indent=2), encoding="utf-8")
-        temporary.replace(cache_path)
-        return result, False
 
     def _event(
         self,
@@ -549,16 +343,6 @@ class IngestService:
                 change_set_id=change_set_id,
                 detail=detail or {},
             )
-
-
-def _ground_extraction(
-    source: SourceRecord,
-    document: ParsedDocument,
-    chunk: DocumentChunk,
-    extraction: ExtractionResult,
-) -> tuple[ExtractionResult, list[ReviewItem]]:
-    """Drop ungrounded fields and produce claims only from exact source occurrences."""
-    return _ground_extraction_impl(source, document, extraction, chunk=chunk)
 
 
 def _ground_extraction_document(
@@ -894,6 +678,11 @@ def _evidence_for_term_document(
         if located is None:
             continue
         start, end = located
+        # Sentence-boundary excerpts keep the surrounding evidence in context,
+        # matching the evidence shape of the removed chunked pipeline.
+        start = max(0, block.text.rfind(".", 0, start) + 1)
+        end_marker = block.text.find(".", end)
+        end = len(block.text) if end_marker == -1 else end_marker + 1
         if end - start > 600:
             start = max(0, start - 220)
             end = min(len(block.text), end + 320)

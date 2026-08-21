@@ -24,20 +24,22 @@ def _imports(path: Path) -> set[str]:
     return names
 
 
-def test_ingest_module_depends_on_extraction_interface_not_legacy_implementation() -> None:
+def test_ingest_module_is_agent_draft_only_and_imports_no_chunked_pipeline() -> None:
     imports = _imports(PACKAGE_ROOT / "services" / "ingest.py")
 
-    assert "cellwiki.services.extraction" in imports
+    assert "cellwiki.services.ingest_draft" in imports
+    assert "cellwiki.services.chunking" not in imports
+    assert "cellwiki.adapters.openai_extraction" not in imports
     assert "cellwiki.llm_extract" not in imports
 
 
-def test_default_ingest_extractor_is_an_external_adapter(tmp_path: Path) -> None:
-    from cellwiki.adapters.openai_extraction import OpenAIChunkExtractor
+def test_ingest_service_has_no_chunked_extractor(tmp_path: Path) -> None:
     from cellwiki.services.ingest import IngestService
 
     ingest = IngestService(tmp_path)
 
-    assert isinstance(ingest.extractor, OpenAIChunkExtractor)
+    assert not hasattr(ingest, "extractor")
+    assert not hasattr(ingest, "cache_root")
 
 
 def test_projection_module_depends_on_renderer_interface_not_legacy_modules() -> None:
@@ -65,7 +67,6 @@ def test_product_modules_use_domain_extraction_contracts() -> None:
         PACKAGE_ROOT / "services" / "rendering.py",
         PACKAGE_ROOT / "services" / "quality.py",
         PACKAGE_ROOT / "services" / "central_writer.py",
-        PACKAGE_ROOT / "adapters" / "openai_extraction.py",
         PACKAGE_ROOT / "adapters" / "wiki_renderer.py",
     ]
 
@@ -85,10 +86,9 @@ def test_legacy_extraction_model_exports_resolve_to_domain_contracts() -> None:
     assert LegacyExtractionResult is ExtractionResult
 
 
-def test_openai_adapter_owns_structured_extraction_implementation() -> None:
-    imports = _imports(PACKAGE_ROOT / "adapters" / "openai_extraction.py")
+def test_structured_extraction_adapter_keeps_legacy_out() -> None:
+    imports = _imports(PACKAGE_ROOT / "adapters" / "openai_structured_output.py")
 
-    assert "cellwiki.adapters.openai_structured_output" in imports
     assert "cellwiki.llm_extract" not in imports
 
 

@@ -1,12 +1,9 @@
 """Contract tests for the two OpenAI protocol shapes supported by CellWiki."""
 
-from types import SimpleNamespace
-from unittest.mock import patch
 
 import httpx
 from langchain_core.messages import HumanMessage
 
-from cellwiki.adapters.openai_extraction import OpenAIChunkExtractor
 from cellwiki.adapters.openai_model import (
     OPENAI_PROTOCOL_CHAT_COMPLETIONS,
     OPENAI_PROTOCOL_RESPONSES,
@@ -144,44 +141,4 @@ def test_provider_specific_options_are_owned_by_the_shared_adapter() -> None:
         "https://unknown-provider.example/v1",
         "qwen3-compatible-name",
         purpose="router",
-    ) is None
-
-
-def test_extraction_cache_identity_changes_with_endpoint_and_protocol() -> None:
-    compatible = _settings(OPENAI_PROTOCOL_CHAT_COMPLETIONS)
-    responses = compatible.model_copy(
-        update={
-            "openai_base_url": "https://responses.example/v1",
-            "openai_api_protocol": OPENAI_PROTOCOL_RESPONSES,
-        }
-    )
-
-    compatible_identity = OpenAIChunkExtractor(compatible).cache_identity
-    responses_identity = OpenAIChunkExtractor(responses).cache_identity
-
-    assert compatible_identity != responses_identity
-    assert compatible.openai_api_key not in compatible_identity
-    assert compatible.openai_base_url not in compatible_identity
-
-
-def test_chunk_extractor_passes_its_configuration_to_structured_adapter() -> None:
-    configuration = _settings(OPENAI_PROTOCOL_RESPONSES)
-    extractor = OpenAIChunkExtractor(configuration)
-    expected = object()
-
-    with patch(
-        "cellwiki.adapters.openai_extraction.extract_cell_types_from_chunk",
-        return_value=expected,
-    ) as extract:
-        result = extractor.extract(
-            SimpleNamespace(text="bounded evidence"),
-            SimpleNamespace(stored_path="paper.pdf"),
-        )
-
-    assert result is expected
-    assert extract.call_args.kwargs["configuration"] is configuration
-    assert provider_request_options(
-        "https://provider.example/v1",
-        "provider-model",
-        purpose="structured",
     ) is None
