@@ -9,6 +9,7 @@ import {
   FileText,
   Folder,
   FolderOpen,
+  History,
   Library,
   MessageSquareText,
   Network,
@@ -22,7 +23,9 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { SourceReview } from "../components/SourceReview";
+import { ChangesetList } from "../components/ChangesetList";
+import { ChangesetReview } from "../components/ChangesetReview";
+import { SourceDetail } from "../components/SourceDetail";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { ZoomController } from "../components/ZoomController";
 import { useI18n } from "../i18n";
@@ -36,10 +39,7 @@ import { ThreadList } from "../features/agent/ThreadList";
 import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
 import { AgentReviewCard, type AgentReviewSummary } from "../features/agent/AgentReviewCard";
 import { reduceAgentRunMessages } from "../features/agent/agent-run-reducer";
-import {
-  ReviewsWorkspace,
-  SearchWorkspace,
-} from "../features/discovery/FeatureWorkspaces";
+import { SearchWorkspace } from "../features/discovery/FeatureWorkspaces";
 
 const GraphWorkspace = lazy(() => import("../features/graph/GraphWorkspace").then((module) => ({
   default: module.GraphWorkspace,
@@ -361,10 +361,9 @@ export function AppShell() {
 
   const selectedPage = pages.find((page) => page.page_id === selectedId);
   const selectedSource = sources.find((source) => source.source_id === selectedSourceId);
-  const selectedReview = reviews.find((review) => review.change_set.change_set_id === selectedChangeSetId)
-    ?? reviews.find((review) =>
-      review.change_set.operations.some((operation) => operation.target_id === selectedSourceId),
-    );
+  const selectedReview = selectedChangeSetId
+    ? reviews.find((review) => review.change_set.change_set_id === selectedChangeSetId)
+    : undefined;
   const selectedTitle = String(detail.frontmatter.display_name ?? selectedPage?.title ?? selectedId.replaceAll("_", " "));
   const selectedPath = selectedPage?.path ?? (selectedId ? `wiki/cell_types/${selectedId}.md` : "cellwiki");
   const contextTitle = (selectedSource?.original_name ?? selectedTitle) || t("reader.workspace");
@@ -945,6 +944,62 @@ export function AppShell() {
     }
   }
 
+  function describeDeleteError(error: unknown): string {
+    const detail = error instanceof ProductApiError ? error.detail : undefined;
+    if (detail && typeof detail === "object") {
+      const record = detail as { detail?: unknown; error?: unknown };
+      // FastAPI 的 HTTPException 会把 409 负载放在 { detail: {...} } 内
+      if (record.detail && typeof record.detail === "object") {
+        const inner = record.detail as { detail?: unknown; error?: unknown };
+        if (typeof inner.detail === "string") return inner.detail;
+        if (typeof inner.error === "string") return inner.error;
+      }
+      if (typeof record.detail === "string") return record.detail;
+      if (typeof record.error === "string") return record.error;
+    }
+    return error instanceof Error ? error.message : "Unknown delete error";
+  }
+
+  async function deleteChangeSet() {
+    const changeSetId = selectedReview?.change_set.change_set_id;
+    if (!changeSetId || agentBusy) return;
+    if (!window.confirm(t("changesets.deleteConfirm"))) return;
+    setAgentBusy(true);
+    try {
+      await deleteJson(`/api/changesets/${encodeURIComponent(changeSetId)}`);
+      await refreshWorkspace();
+      setSelectedChangeSetId(null);
+      setActiveRunId(null);
+      setTaskEvents([]);
+      setWorkflow({ phase: "idle", message: t("workflow.ready") });
+    } catch (error) {
+      setWorkflow({
+        phase: "failed",
+        message: t("changesets.deleteFailed"),
+        error: describeDeleteError(error),
+      });
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function deleteSource() {
+    const sourceId = selectedSource?.source_id;
+    if (!sourceId || agentBusy) return;
+    if (!window.confirm(t("sources.deleteConfirm"))) return;
+    setAgentBusy(true);
+    try {
+      await deleteJson(`/api/sources/${encodeURIComponent(sourceId)}`);
+      await refreshWorkspace();
+      setSelectedSourceId(null);
+      setWorkflow({ phase: "idle", message: t("workflow.ready") });
+    } catch (error) {
+      window.alert(describeDeleteError(error) || t("sources.deleteFailed"));
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
   async function cancelActiveAgentRun() {
     if (!activeAgentRunId) return;
     setWorkflow((current) => current.phase === "preparing"
@@ -1177,6 +1232,7 @@ export function AppShell() {
             <button className="rail-button" onClick={() => document.querySelector<HTMLTextAreaElement>(".chat-compose textarea")?.focus()} title={t("nav.agent")} aria-label={t("nav.agent")}><MessageSquareText size={19} /></button>
             <button className={activeView === "search" ? "rail-button active" : "rail-button"} onClick={() => setActiveView("search")} title={t("nav.search")} aria-label={t("nav.search")}><Search size={19} /></button>
             <button className={activeView === "sources" ? "rail-button active" : "rail-button"} onClick={() => { setActiveView("sources"); if (sources[0] && !selectedSourceId) setSelectedSourceId(sources[0].source_id); else if (!sources[0]) fileRef.current?.click(); }} title={t("nav.sources")} aria-label={t("nav.sources")}><Database size={19} /></button>
+            <button className={activeView === "changesets" ? "rail-button active" : "rail-button"} onClick={() => { setActiveView("changesets"); setSelectedSourceId(null); }} title={t("nav.changesets")} aria-label={t("nav.changesets")}><History size={19} /></button>
           </div>
           <div className="rail-bottom">
             <span className={apiOnline ? "rail-health online" : "rail-health"} title={apiOnline ? t("runtime.online") : t("runtime.offline")} />
@@ -1191,6 +1247,14 @@ export function AppShell() {
         ) : (
         <div className="workbench" ref={workbenchRef}>
           <aside className="file-panel" style={{ width: leftWidth }}>
+            {activeView === "changesets" ? (
+              <ChangesetList
+                reviews={reviews}
+                selectedId={selectedChangeSetId}
+                onSelect={(changeSetId) => setSelectedChangeSetId(changeSetId)}
+              />
+            ) : (
+              <>
             <div className="panel-toolbar">
               <span>{t("explorer.title")}</span>
               <button className="icon-button" onClick={() => fileRef.current?.click()} title={t("explorer.register")} aria-label={t("explorer.register")}><Upload size={14} /></button>
@@ -1259,6 +1323,8 @@ export function AppShell() {
                 }}
               />
             </div>
+                        </>
+            )}
           </aside>
 
           <div className="resize-handle" onMouseDown={(event) => beginResize("left", event)} role="separator" aria-label={t("explorer.resize")} />
@@ -1266,12 +1332,12 @@ export function AppShell() {
           <section className="reader-panel">
             <div className="reader-toolbar">
               <div className="breadcrumb-path">
-                {selectedSource ? <Database size={14} /> : <Library size={14} />}
+                {selectedSource || activeView === "changesets" ? <Database size={14} /> : <Library size={14} />}
                 {contextPath.split("/").map((part, index, parts) => (
                   <span key={`${part}-${index}`}>{part}{index < parts.length - 1 && <ChevronRight size={12} />}</span>
                 ))}
               </div>
-              <span className={selectedSource ? "published-state review" : "published-state"}><i />{selectedSource ? t("reader.review") : t("reader.published")}</span>
+              <span className={selectedSource || activeView === "changesets" ? "published-state review" : "published-state"}><i />{selectedSource || activeView === "changesets" ? t("reader.review") : t("reader.published")}</span>
             </div>
 
             <div className="reader-scroll">
@@ -1289,27 +1355,26 @@ export function AppShell() {
                 </Suspense>
               ) : activeView === "search" ? (
                 <SearchWorkspace onOpen={openSearchResult} />
-              ) : activeView === "reviews" ? (
-                <ReviewsWorkspace
-                  reviews={reviews}
-                  onOpen={(review) => {
-                    setSelectedChangeSetId(review.change_set.change_set_id);
-                    const target = review.change_set.operations[0]?.target_id;
-                    if (target && sources.some((source) => source.source_id === target)) setSelectedSourceId(target);
-                    setActiveView("sources");
-                  }}
-                />
+              ) : activeView === "changesets" ? (
+                selectedReview ? (
+                  <ChangesetReview
+                    review={selectedReview}
+                    workflow={workflow}
+                    quality={quality}
+                    taskEvents={taskEvents}
+                    onApprove={() => void approveChangeSet()}
+                    onReject={() => void rejectChangeSet()}
+                    onRollback={() => void rollbackChangeSet()}
+                    onDelete={() => void deleteChangeSet()}
+                    onRequestRevision={(comment) => void requestIngestRevision(comment)}
+                  />
+                ) : (
+                  <div className="feature-state">{t("changesets.noSelection")}</div>
+                )
               ) : selectedSource ? (
-                <SourceReview
+                <SourceDetail
                   source={selectedSource}
-                  review={selectedReview}
-                  workflow={workflow}
-                  quality={quality}
-                  taskEvents={taskEvents}
-                  onApprove={() => void approveChangeSet()}
-                  onReject={() => void rejectChangeSet()}
-                  onRollback={() => void rollbackChangeSet()}
-                  onRequestRevision={(comment) => void requestIngestRevision(comment)}
+                  onDelete={() => void deleteSource()}
                 />
               ) : !selectedId ? (
                 <div className="feature-state onboarding-empty">

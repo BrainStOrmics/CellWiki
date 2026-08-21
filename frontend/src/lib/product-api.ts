@@ -12,12 +12,11 @@ export class ProductApiError extends Error {
 
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
-    const detail = await response.json().catch(() => null) as { detail?: string } | null;
-    throw new ProductApiError(
-      detail?.detail ?? `${response.status} ${response.statusText}`,
-      response.status,
-      detail,
-    );
+    const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+    const message = body && typeof body.detail === "string"
+      ? body.detail
+      : `${response.status} ${response.statusText}`;
+    throw new ProductApiError(message, response.status, body);
   }
   return response.json() as Promise<T>;
 }
@@ -35,7 +34,10 @@ export async function postJson<T>(path: string, body: unknown): Promise<T> {
 }
 
 export async function deleteJson<T>(path: string): Promise<T> {
-  return parseResponse<T>(await productFetch(path, { method: "DELETE" }));
+  const response = await productFetch(path, { method: "DELETE" });
+  // DELETE 端点使用 204 No Content；空响应体不能走 parseResponse 的 json() 解析
+  if (response.status === 204) return undefined as T;
+  return parseResponse<T>(response);
 }
 
 export async function uploadFile<T>(path: string, file: File): Promise<T> {

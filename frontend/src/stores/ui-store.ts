@@ -4,6 +4,7 @@ import { persist } from "zustand/middleware";
 export type WorkspaceView =
   | "wiki"
   | "sources"
+  | "changesets"
   | "reviews"
   | "lint"
   | "search"
