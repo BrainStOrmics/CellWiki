@@ -572,7 +572,7 @@ def test_default_harness_exposes_only_read_only_conversation_capabilities(
 
     specs = captured["subagents"]
     names = {spec["name"] for spec in specs}
-    assert names == {"query-agent"}
+    assert names == {"query-agent", "ingest-agent"}
     top_level_tool_names = {tool.name for tool in captured["tools"]}
     assert "submit_agent_answer" in top_level_tool_names
     assert "list_thread_attachments" in top_level_tool_names
@@ -1117,6 +1117,7 @@ def test_ingest_tool_uses_durable_agent_run_as_cancellation_authority(
             run_id: str,
             *,
             cancellation_id: str,
+            agent_draft_run_id: str | None = None,
         ):
             captured.update(
                 source_id=source_id,
@@ -1156,7 +1157,9 @@ def test_ingest_tool_returns_the_full_pipeline_snapshot(tmp_path: Path, monkeypa
         def __init__(self, project_root: Path):
             assert project_root == tmp_path.resolve()
 
-        def prepare_change_set(self, source_id, run_id, *, cancellation_id):
+        def prepare_change_set(
+            self, source_id, run_id, *, cancellation_id, agent_draft_run_id: str | None = None
+        ):
             return SimpleNamespace(
                 snapshot_id=snapshot.snapshot_id,
                 model_dump_json=lambda: '{"change_set_id":"cs-snapshot"}',
@@ -1192,7 +1195,9 @@ def test_ingest_tool_resolves_full_content_hash_alias_to_canonical_source_id(
         def __init__(self, project_root: Path):
             assert project_root == tmp_path.resolve()
 
-        def prepare_change_set(self, source_id, run_id, *, cancellation_id):
+        def prepare_change_set(
+            self, source_id, run_id, *, cancellation_id, agent_draft_run_id: str | None = None
+        ):
             captured.update(
                 source_id=source_id,
                 run_id=run_id,

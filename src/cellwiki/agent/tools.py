@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from cellwiki.api.reader import WikiReader
 from cellwiki.config import settings
+from cellwiki.domain.extraction import ExtractionResult
 from cellwiki.domain.contracts import (
     AgentAnswer,
     ApprovalPolicy,
@@ -37,7 +38,9 @@ from cellwiki.domain.contracts import (
 from cellwiki.services.central_writer import CentralWriter
 from cellwiki.services.changesets import ChangeSetRepository
 from cellwiki.services.quality import inspect_projection
-from cellwiki.services.ingest import IngestService
+from cellwiki.services.ingest import IngestService, _evidence_for_term_document
+from cellwiki.services.ingest_draft import AgentIngestDraftStore
+from cellwiki.services.parsing import DocumentParsingService
 from cellwiki.services.revisions import IngestRevisionService
 from cellwiki.services.linting import LintFixService
 from cellwiki.services.sources import SourceRegistry
@@ -622,8 +625,11 @@ def build_ingest_tools(project_root: Path) -> list[BaseTool]:
     pipeline = KnowledgePipelineHarness(root)
 
     @tool("prepare_ingest_change_set")
-    def prepare_ingest_change_set(source_id: str, run_id: str = "") -> str:
-        """Analyze one registered source and persist a proposed extraction ChangeSet without publishing it."""
+    def prepare_ingest_change_set(source_id: str, run_id: str = "", agent_draft_run_id: str = "") -> str:
+        """Analyze one registered source and persist a proposed extraction ChangeSet without publishing it.
+
+        Pass agent_draft_run_id to finalize a staged agent extraction draft through deterministic
+        canonicalize/ground/merge guards instead of the chunked extraction pipeline."""
         requested_source_id = source_id
         try:
             source_id = _resolve_registered_source_id(sources, source_id)
@@ -645,6 +651,7 @@ def build_ingest_tools(project_root: Path) -> list[BaseTool]:
             effective_run_id,
             # 取消权限来自持久化运行时上下文，而非模型提供的任务标识符
             cancellation_id=current_agent_run_id() or effective_run_id,
+            agent_draft_run_id=agent_draft_run_id.strip() or None,
         )
         policy = pipeline.approval_policy()
         snapshot_id = getattr(change_set, "snapshot_id", None)
@@ -705,6 +712,233 @@ def build_ingest_tools(project_root: Path) -> list[BaseTool]:
         )
 
     return [prepare_ingest_change_set, request_ingest_revision]
+
+
+def build_ingest_agent_tools(project_root: Path) -> list[BaseTool]:
+    """Build the restricted tool surface for the ingest-agent subagent.
+
+    The ingest-agent may read the whole source, consult existing knowledge, and
+    stage extraction drafts, but it can never write formal knowledge.  A draft
+    only becomes a ChangeSet through the deterministic guards in
+    ``IngestService.prepare_change_set(agent_draft_run_id=...)``.
+    """
+    root = Path(project_root).resolve()
+    sources = SourceRegistry(root)
+    parsing = DocumentParsingService(root)
+    store = AgentIngestDraftStore(root)
+    extraction_dir = root / "data" / "extraction"
+
+    def _grounding_report(source, payload: dict) -> dict[str, Any]:
+        document = parsing.parse(source)
+        unmatched: list[dict[str, Any]] = []
+        for index, cell in enumerate(payload.get("cell_types", [])):
+            if not isinstance(cell, dict):
+                continue
+            name = str(cell.get("name", ""))
+            standard_name = str(cell.get("standard_name", ""))
+            located = bool(
+                name and _evidence_for_term_document(source, document, name)
+            ) or bool(
+                standard_name and _evidence_for_term_document(source, document, standard_name.replace("_", " "))
+            )
+            if not located:
+                unmatched.append(
+                    {
+                        "item_id": f"cell_{index}",
+                        "field": "name",
+                        "term": name,
+                        "reason": "entity name was not found verbatim in the source",
+                    }
+                )
+            for m_index, marker in enumerate(cell.get("markers", [])):
+                gene = str(marker.get("gene_symbol", ""))
+                evidence = str(marker.get("evidence", ""))
+                located = bool(gene and _evidence_for_term_document(source, document, gene)) or bool(
+                    evidence and _evidence_for_term_document(source, document, evidence)
+                )
+                if not located:
+                    unmatched.append(
+                        {
+                            "item_id": f"cell_{index}.marker_{m_index}",
+                            "field": "marker",
+                            "term": gene,
+                            "reason": "marker gene or its evidence was not found verbatim in the source",
+                        }
+                    )
+            for f_index, function in enumerate(cell.get("functions", [])):
+                evidence = str(function.get("evidence", "") or function.get("description", ""))
+                if evidence and not _evidence_for_term_document(source, document, evidence):
+                    unmatched.append(
+                        {
+                            "item_id": f"cell_{index}.function_{f_index}",
+                            "field": "function",
+                            "term": evidence[:120],
+                            "reason": "function evidence was not found verbatim in the source",
+                        }
+                    )
+        return {
+            "entity_count": len(payload.get("cell_types", [])),
+            "marker_count": sum(len(cell.get("markers", [])) for cell in payload.get("cell_types", [])),
+            "unmatched_count": len(unmatched),
+            "unmatched": unmatched,
+        }
+
+    @tool("read_source_full")
+    def read_source_full(source_id: str) -> str:
+        """Read one registered source in full with page/block structure for whole-paper extraction."""
+        try:
+            resolved = _resolve_registered_source_id(sources, source_id)
+        except KeyError:
+            return json.dumps({"error": "source_not_found", "source_id": source_id}, ensure_ascii=False)
+        source = sources.get(resolved)
+        document = parsing.parse(source)
+        blocks = document.all_blocks()
+        text = "\n".join(block.text for block in blocks)
+        return json.dumps(
+            {
+                "source_id": resolved,
+                "title": source.original_name,
+                "page_count": len(document.pages),
+                "block_count": len(blocks),
+                "parse_hash": document.parse_hash,
+                "text": text,
+            },
+            ensure_ascii=False,
+        )
+
+    @tool("read_existing_knowledge")
+    def read_existing_knowledge(query: str, limit: int = 10) -> str:
+        """Search existing formal extraction records to avoid duplicate or conflicting naming."""
+        needle = query.casefold()
+        matches: list[dict[str, Any]] = []
+        if extraction_dir.is_dir():
+            for path in sorted(extraction_dir.glob("*.json")):
+                try:
+                    extraction = ExtractionResult.model_validate_json(path.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                for cell in extraction.cell_types:
+                    haystack = " ".join(
+                        [cell.standard_name, cell.name, *cell.synonyms, *(m.gene_symbol for m in cell.markers)]
+                    ).casefold()
+                    if needle and needle not in haystack:
+                        continue
+                    matches.append(
+                        {
+                            "standard_name": cell.standard_name,
+                            "name": cell.name,
+                            "aliases": cell.synonyms,
+                            "markers": [m.gene_symbol for m in cell.markers],
+                            "source": extraction.paper.paper_id,
+                        }
+                    )
+                    if len(matches) >= limit:
+                        break
+                if len(matches) >= limit:
+                    break
+        return json.dumps({"query": query, "count": len(matches), "results": matches}, ensure_ascii=False)
+
+    @tool("submit_extraction_draft")
+    def submit_extraction_draft(source_id: str, payload: dict, run_id: str = "") -> str:
+        """Stage a whole-paper structured extraction draft; returns unmatched verbatim evidence."""
+        try:
+            resolved = _resolve_registered_source_id(sources, source_id)
+        except KeyError:
+            return json.dumps({"error": "source_not_found", "source_id": source_id}, ensure_ascii=False)
+        if not isinstance(payload, dict) or not isinstance(payload.get("cell_types"), list):
+            return json.dumps(
+                {"error": "invalid_draft", "message": "payload must be an object with a cell_types list."},
+                ensure_ascii=False,
+            )
+        for index, cell in enumerate(payload["cell_types"]):
+            if not isinstance(cell, dict) or not cell.get("name") or not cell.get("standard_name"):
+                return json.dumps(
+                    {
+                        "error": "invalid_draft",
+                        "message": f"cell_types[{index}] requires string name and standard_name fields.",
+                    },
+                    ensure_ascii=False,
+                )
+        source = sources.get(resolved)
+        effective_run_id = run_id.strip() or current_agent_run_id() or f"ingest_agent_{uuid.uuid4().hex}"
+        report = _grounding_report(source, payload)
+        path = store.save(resolved, effective_run_id, payload, grounding=report)
+        return json.dumps(
+            {
+                "status": "draft_saved",
+                "source_id": resolved,
+                "draft_run_id": effective_run_id,
+                "draft_path": str(path),
+                "revision": 0,
+                "entity_count": report["entity_count"],
+                "marker_count": report["marker_count"],
+                "ungrounded_count": report["unmatched_count"],
+                "ungrounded_evidence": report["unmatched"],
+            },
+            ensure_ascii=False,
+        )
+
+    @tool("revise_evidence")
+    def revise_evidence(source_id: str, draft_run_id: str, rewrites: list[dict]) -> str:
+        """Rewrite unmatched evidence in a staged draft to verbatim source quotes."""
+        try:
+            resolved = _resolve_registered_source_id(sources, source_id)
+        except KeyError:
+            return json.dumps({"error": "source_not_found", "source_id": source_id}, ensure_ascii=False)
+        record = store.load(resolved, draft_run_id)
+        if record is None:
+            return json.dumps({"error": "draft_not_found", "draft_run_id": draft_run_id}, ensure_ascii=False)
+        payload = record["payload"]
+        revision = int(record.get("revision", 0)) + 1
+        applied: list[str] = []
+        for item in rewrites or []:
+            if not isinstance(item, dict):
+                continue
+            item_id = str(item.get("item_id", ""))
+            evidence = str(item.get("evidence", ""))
+            parts = item_id.split(".")
+            if len(parts) == 2 and parts[0].startswith("cell_"):
+                try:
+                    cell_index = int(parts[0][len("cell_"):])
+                except ValueError:
+                    continue
+                cells = payload.get("cell_types", [])
+                if not (0 <= cell_index < len(cells)):
+                    continue
+                if parts[1].startswith("marker_"):
+                    try:
+                        field_index = int(parts[1][len("marker_"):])
+                    except ValueError:
+                        continue
+                    if 0 <= field_index < len(cells[cell_index].get("markers", [])):
+                        cells[cell_index]["markers"][field_index]["evidence"] = evidence
+                        applied.append(item_id)
+                elif parts[1].startswith("function_"):
+                    try:
+                        field_index = int(parts[1][len("function_"):])
+                    except ValueError:
+                        continue
+                    if 0 <= field_index < len(cells[cell_index].get("functions", [])):
+                        cells[cell_index]["functions"][field_index]["evidence"] = evidence
+                        applied.append(item_id)
+        source = sources.get(resolved)
+        report = _grounding_report(source, payload)
+        path = store.save(resolved, draft_run_id, payload, revision=revision, grounding=report)
+        return json.dumps(
+            {
+                "status": "draft_revised",
+                "source_id": resolved,
+                "draft_run_id": draft_run_id,
+                "draft_path": str(path),
+                "revision": revision,
+                "applied_rewrites": applied,
+                "ungrounded_count": report["unmatched_count"],
+                "remaining_ungrounded_evidence": report["unmatched"],
+            },
+            ensure_ascii=False,
+        )
+
+    return [read_source_full, read_existing_knowledge, submit_extraction_draft, revise_evidence]
 
 
 def build_lint_tools(project_root: Path) -> list[BaseTool]:

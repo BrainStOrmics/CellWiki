@@ -7,11 +7,29 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import shutil
+from datetime import UTC, datetime
 from pathlib import Path
 
-from cellwiki.domain.contracts import SourceRecord, SourceStatus
+from filelock import FileLock
+
+from cellwiki.domain.contracts import SourceRecord, SourceStatus, TaskStatus
+
+
+# ---------------------------------------------------------------------------
+# SourceDeleteBlockedError —— 来源删除被阻止异常
+# 当派生提案或活跃运行仍依赖该来源时抛出
+# ---------------------------------------------------------------------------
+class SourceDeleteBlockedError(RuntimeError):
+    """Raised when a source cannot be deleted while derived proposals or live runs depend on it."""
+
+    def __init__(self, detail: str, blocking_change_set_ids: list[str], active_run_ids: list[str]):
+        super().__init__(detail)
+        self.detail = detail
+        self.blocking_change_set_ids = blocking_change_set_ids
+        self.active_run_ids = active_run_ids
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +86,92 @@ class SourceRegistry:
         temporary_record.write_text(record.model_dump_json(indent=2), encoding="utf-8")
         temporary_record.replace(record_path)
         return record
+
+    # 硬删除一个已注册来源及其派生缓存：先落 tombstone，再级联删除
+    def delete(self, source_id: str) -> None:
+        """Hard-delete a registered source and its derived caches after a tombstone.
+
+        Deletion is blocked while any ChangeSet references the source (delete the
+        proposals first) or while a live ingest run is still using it, so evidence
+        resolution and in-flight tasks never dangle.
+        """
+        if not re.fullmatch(r"src_[a-f0-9]{20}", source_id):
+            raise KeyError(source_id)
+        record_path = self.records_dir / f"{source_id}.json"
+        if not record_path.exists():
+            raise KeyError(source_id)
+
+        lock_path = self.records_dir / ".sources.delete.lock"
+        with FileLock(str(lock_path)):
+            if not record_path.exists():
+                raise KeyError(source_id)
+            referencing = self._referencing_change_sets(source_id)
+            if referencing:
+                raise SourceDeleteBlockedError(
+                    detail="Delete the ChangeSets referencing this source first.",
+                    blocking_change_set_ids=[
+                        change_set.change_set_id for change_set in referencing
+                    ],
+                    active_run_ids=[],
+                )
+            active_run_ids = self._active_run_ids(source_id)
+            if active_run_ids:
+                raise SourceDeleteBlockedError(
+                    detail="A live ingest run is still using this source.",
+                    blocking_change_set_ids=[],
+                    active_run_ids=active_run_ids,
+                )
+            self._write_tombstone(
+                {
+                    "source_id": source_id,
+                    "deleted_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            # 级联删除：受管源文件目录 + 注册记录 + 解析/提取缓存
+            source_dir = self.sources_dir / source_id
+            if source_dir.exists():
+                shutil.rmtree(source_dir)
+            record_path.unlink(missing_ok=True)
+            for cache_name in ("parsing", "extraction_cache"):
+                cache_dir = self.project_root / "data" / "runtime" / cache_name / source_id
+                if cache_dir.exists():
+                    shutil.rmtree(cache_dir)
+
+    # 找出仍引用该来源的 ChangeSet（任何状态都阻止删除）
+    def _referencing_change_sets(self, source_id: str):
+        from cellwiki.services.changesets import ChangeSetRepository
+
+        return ChangeSetRepository(self.project_root).list(target_id=source_id)
+
+    # 找出仍在使用该来源的活跃 ingest 运行。
+    # 只把真正在跑（RUNNING/COMMITTING）的运行视为活跃；账本停在
+    # AWAITING_REVIEW 只代表提案曾等待审核，不代表运行还活着——已结束的
+    # 历史运行不应永久阻止来源删除（提案本身由 _referencing_change_sets 兜底）。
+    def _active_run_ids(self, source_id: str) -> list[str]:
+        from cellwiki.services.tasks import TaskEventRepository
+
+        active = {
+            TaskStatus.RUNNING.value,
+            TaskStatus.COMMITTING.value,
+        }
+        return [
+            run["run_id"]
+            for run in TaskEventRepository(self.project_root).list_runs(source_id=source_id)
+            if run["status"] in active
+        ]
+
+    # 先落审计 tombstone，再物理删除，文件名带时间戳避免内容寻址复用冲突
+    def _write_tombstone(self, payload: dict) -> None:
+        deleted_dir = self.project_root / "data" / "runtime" / "deleted"
+        deleted_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%f")
+        path = deleted_dir / f"{payload['source_id']}.deleted.{timestamp}.json"
+        temporary = path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
 
     def get(self, source_id: str) -> SourceRecord:
         if not re.fullmatch(r"src_[a-f0-9]{20}", source_id):

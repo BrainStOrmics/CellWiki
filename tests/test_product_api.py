@@ -619,6 +619,7 @@ def test_quality_fix_is_proposed_then_rebuilds_projection_after_approval(tmp_pat
             CellTypeExtract(
                 name="Regulatory T cell",
                 standard_name="regulatory_t_cell",
+                description="Regulatory T cells suppress excessive immune activation.",
                 paper_ref=paper,
             )
         ],
@@ -670,6 +671,7 @@ def test_quality_fix_is_auto_committed_when_project_policy_is_auto_all(tmp_path:
             CellTypeExtract(
                 name="Regulatory T cell",
                 standard_name="regulatory_t_cell",
+                description="Regulatory T cells suppress excessive immune activation.",
                 paper_ref=paper,
             )
         ],

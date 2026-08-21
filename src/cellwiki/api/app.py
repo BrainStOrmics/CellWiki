@@ -20,7 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, File, Header, HTTPException, Query, Request, UploadFile, status
+from fastapi import FastAPI, File, Header, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -48,15 +48,16 @@ from cellwiki.services.agent_runtime import (
     is_retryable_run,
 )
 from cellwiki.services.approvals import ApprovalConflictError, ApprovalRepository
+from cellwiki.services.batch_approvals import AdminBatchApprovalService
 from cellwiki.services.attachments import AttachmentService
 from cellwiki.services.central_writer import CentralWriter, VersionConflictError
-from cellwiki.services.changesets import ChangeSetNotFoundError, ChangeSetRepository
+from cellwiki.services.changesets import ChangeSetDeleteBlockedError, ChangeSetNotFoundError, ChangeSetRepository
 from cellwiki.services.environment import EnvironmentSettingsService
 from cellwiki.services.diffing import ChangeSetDiffService
 from cellwiki.services.linting import LintFixService
 from cellwiki.services.parsing import DocumentParsingService
 from cellwiki.services.quality import inspect_projection
-from cellwiki.services.sources import SourceRegistry
+from cellwiki.services.sources import SourceDeleteBlockedError, SourceRegistry
 from cellwiki.services.tasks import TaskEventRepository
 from cellwiki.services.pipeline import KnowledgePipelineHarness
 from cellwiki.services.query import FormalQueryService
@@ -121,6 +122,15 @@ class IngestRevisionRequest(BaseModel):
 
 class RollbackRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)            # 回滚原因
+
+
+# ---- 管理员批量审批 ----
+class AdminBatchApprovalRequest(BaseModel):
+    """Approve and commit several ChangeSets under one auditable admin batch."""
+    change_set_ids: list[str] = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=1000)
+    decided_by: str = Field(default="admin-user", max_length=128)
+    role: str = Field(default="admin", max_length=64)
 
 # ---- 智能体运行请求 ----
 class AgentRunRequest(BaseModel):
@@ -339,6 +349,26 @@ def create_app(
         except (KeyError, ValueError):
             raise HTTPException(status_code=404, detail="evidence block not found") from None
         return block.model_dump(mode="json")
+
+    # ==================== Source 删除 ====================
+    @app.delete("/api/sources/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_source(source_id: str) -> Response:
+        """Delete a registered source and derived caches after all referencing ChangeSets are gone."""
+        try:
+            sources.delete(source_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="source not found") from None
+        except SourceDeleteBlockedError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "source is in use",
+                    "detail": error.detail,
+                    "blocking_change_set_ids": error.blocking_change_set_ids,
+                    "active_run_ids": error.active_run_ids,
+                },
+            ) from None
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # ==================== 设置管理 ====================
     @app.get("/api/settings")
@@ -823,6 +853,20 @@ def create_app(
             # CentralWriter 在此错误到达边界之前已回滚
             raise HTTPException(status_code=422, detail=str(error)) from None
 
+    # ==================== 管理员批量审批 ====================
+    @app.post("/api/admin/approvals/batch")
+    def batch_approve_change_sets(request: AdminBatchApprovalRequest) -> dict:
+        """Approve and commit multiple ChangeSets in one auditable admin batch."""
+        try:
+            return AdminBatchApprovalService(root).approve_batch(
+                request.change_set_ids,
+                decided_by=request.decided_by,
+                reason=request.reason,
+                role=request.role,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+
     # ==================== 质量检查 ====================
     @app.get("/api/quality")
     def quality_report() -> dict:
@@ -898,6 +942,26 @@ def create_app(
             raise HTTPException(status_code=404, detail=str(error)) from None
         except (ValueError, RuntimeError) as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
+
+    # ==================== ChangeSet 删除 ====================
+    @app.delete("/api/changesets/{change_set_id}", status_code=status.HTTP_204_NO_CONTENT)
+    def delete_change_set(change_set_id: str) -> Response:
+        """Delete a terminal proposal and its audit artifacts; committed ChangeSets must be rolled back first."""
+        try:
+            changesets.delete(change_set_id)
+        except ChangeSetNotFoundError:
+            raise HTTPException(status_code=404, detail="change set not found") from None
+        except ChangeSetDeleteBlockedError as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "change set is in use",
+                    "blocking": error.blocking,
+                    "detail": error.detail,
+                    "run_ids": error.run_ids,
+                },
+            ) from None
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # 关闭时清理智能体运行时
     def close_agent_runtime() -> None:

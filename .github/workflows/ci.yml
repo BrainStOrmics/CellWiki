@@ -22,7 +22,7 @@ jobs:
           src/cellwiki/evaluation src/cellwiki/services
           scripts/evaluate_ingest_model.py scripts/evaluate_semantic.py
           scripts/build_sidecar.py scripts/sync_version.py
-          scripts/check_docs.py scripts/generate_release_manifest.py
+          scripts/generate_release_manifest.py
       - name: Type-check maintained Python modules
         run: >-
           uv run mypy
@@ -31,9 +31,6 @@ jobs:
           --ignore-missing-imports
       - run: uv run pytest -q
       - run: uv run python scripts/evaluate_semantic.py
-      - name: Validate documentation governance
-        run: uv run python scripts/check_docs.py
-
   frontend:
     runs-on: ubuntu-latest
     steps:

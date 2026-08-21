@@ -14,6 +14,7 @@ import yaml
 
 from cellwiki.domain.linting import LintFinding, LintLevel, LintSeverity
 from cellwiki.domain.extraction import ExtractionResult
+from cellwiki.services.naming import is_cluster_identifier
 
 
 # ---------------------------------------------------------------------------
@@ -322,9 +323,50 @@ def _inspect_extractions(root: Path) -> list[dict[str, Any]]:
                     )
 
         for cell in extraction.cell_types:
+            if is_cluster_identifier(cell.standard_name) or (
+                cell.parent_type and is_cluster_identifier(cell.parent_type)
+            ):
+                issues.append(
+                    _issue(
+                        path,
+                        "cluster_id_standard_name",
+                        "standard_name or parent_type contains a paper-internal cluster identifier.",
+                        level="L0",
+                        category="identity",
+                        severity="error",
+                        target_id=cell.standard_name,
+                        locator=f"{locator}#cell={cell.standard_name}",
+                    )
+                )
+            if not cell.description and not cell.markers and not cell.functions and not cell.parent_type:
+                issues.append(
+                    _issue(
+                        path,
+                        "empty_cell_type",
+                        "Extraction entry is an empty shell without description, markers, functions, or parent.",
+                        level="L0",
+                        category="content",
+                        severity="error",
+                        target_id=cell.standard_name,
+                        locator=f"{locator}#cell={cell.standard_name}",
+                    )
+                )
             directions: dict[str, set[str]] = {}
             for marker in cell.markers:
                 gene = marker.gene_symbol.upper()
+                if not marker.evidence.strip():
+                    issues.append(
+                        _issue(
+                            path,
+                            "missing_verbatim_marker_evidence",
+                            f"Marker {marker.gene_symbol} has no verbatim evidence text.",
+                            level="L0",
+                            category="marker",
+                            severity="error",
+                            target_id=cell.standard_name,
+                            locator=f"{locator}#cell={cell.standard_name}&marker={gene}",
+                        )
+                    )
                 directions.setdefault(gene, set()).add(marker.marker_type.value)
                 if not _MARKER_SYMBOL.fullmatch(marker.gene_symbol):
                     issues.append(

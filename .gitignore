@@ -69,3 +69,6 @@ output/playwright/
 docs/
 design/
 HANDOFF.md
+
+# Ingest test data (large, local-only)
+data/ingest/

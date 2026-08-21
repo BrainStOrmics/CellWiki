@@ -80,6 +80,19 @@ class Settings(BaseSettings):
     # 每次提取的最大输出 token 数，控制单次 LLM 调用的成本
     ingest_max_output_tokens: int = Field(default=5000, ge=500, le=20_000)
 
+    # ---- 证据优先的 Ingest Agent 设置（Phase A/B）----
+    # 提取通道：agent（整篇草稿 + 确定性护栏）或 chunked（原分块管线回退）。
+    # prepare_ingest_change_set 未提供 agent_draft_run_id 时仍走 chunked 路径，
+    # 因此该默认值不会改变既有调用行为。
+    ingest_extraction_mode: str = "agent"
+    ingest_agent_enabled: bool = True
+    # 逐字接地未命中的证据回给 Agent 改写的最大轮次
+    ingest_agent_max_grounding_passes: int = Field(default=2, ge=1, le=5)
+    # 可选独立模型；为空则与协调器共用配置模型
+    ingest_agent_model: str | None = None
+    # 未落地实体占候选实体比例超过该阈值时，生成阻塞性审查项
+    ingest_ungrounded_entity_ratio_limit: float = Field(default=0.10, ge=0.0, le=1.0)
+
     # ---- 实验性功能（Phase 7）- 默认关闭 ----
     # 在语义评估证明对基线有可衡量的改进之前保持 opt-in
     enable_agent_memory: bool = False       # 是否启用智能体长期记忆

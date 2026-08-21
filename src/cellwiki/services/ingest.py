@@ -49,6 +49,7 @@ from cellwiki.domain.contracts import (
 )
 from cellwiki.domain.documents import DocumentChunk, ParsedDocument
 from cellwiki.domain.extraction import (
+    PaperReference,
     CellTypeExtract,
     ExtractionResult,
     FunctionalCharacteristic,
@@ -56,6 +57,12 @@ from cellwiki.domain.extraction import (
 )
 from cellwiki.services.changesets import ChangeSetRepository
 from cellwiki.services.chunking import chunk_document
+from cellwiki.services.ingest_draft import AgentIngestDraftStore
+from cellwiki.services.naming import (
+    canonicalize_standard_name,
+    is_cluster_identifier,
+    normalize_standard_name,
+)
 from cellwiki.services.extraction import ChunkExtractor
 from cellwiki.services.parsing import DocumentParsingService
 from cellwiki.services.sources import SourceRegistry
@@ -118,6 +125,7 @@ class IngestService:
         revision_id: str | None = None,
         parent_change_set_id: str | None = None,
         parent_revision_id: str | None = None,
+        agent_draft_run_id: str | None = None,
     ) -> ChangeSet:
         """Create a grounded proposal after reading the whole project state."""
 
@@ -132,6 +140,7 @@ class IngestService:
                 revision_id=revision_id,
                 parent_change_set_id=parent_change_set_id,
                 parent_revision_id=parent_revision_id,
+                agent_draft_run_id=agent_draft_run_id,
                 snapshot=lease.snapshot,
             )
 
@@ -147,6 +156,7 @@ class IngestService:
         revision_id: str | None,
         parent_change_set_id: str | None,
         parent_revision_id: str | None,
+        agent_draft_run_id: str | None,
         snapshot: KnowledgeSnapshot,
     ) -> ChangeSet:
         """Build a proposal while the caller holds the project pipeline lease."""
@@ -174,159 +184,181 @@ class IngestService:
             )
 
             progress = 25
-            # Smaller evidence chunks keep structured responses bounded. Two workers
-            # recover throughput without creating an unbounded provider burst.
-            chunks = chunk_document(
-                document,
-                max_characters=7_000,
-                overlap_characters=400,
-            )
-            self._event(
-                run_id,
-                source_id,
-                IngestStage.CHUNKING,
-                f"Prepared {len(chunks)} evidence-aware document chunk(s).",
-                progress,
-                detail={"chunk_count": len(chunks), "page_count": len(document.pages)},
-            )
-            if not chunks:
-                raise ValueError("parsed source produced no extractable document chunks")
-
-            progress_state = _ParallelProgress()
-            progress_lock = threading.Lock()
-            batch_abort = threading.Event()
-            results: dict[int, tuple[ExtractionResult, list[ReviewItem]]] = {}
-
-            def progress_detail(
-                index: int,
-                update: OperationProgress | None = None,
-            ) -> dict[str, int | float | str | None]:
-                with progress_lock:
-                    elapsed = max(0.0, time.monotonic() - operation_started)
-                    average = (
-                        progress_state.total_live_duration / progress_state.live_completed
-                        if progress_state.live_completed
-                        else None
+            if agent_draft_run_id is not None:
+                draft = AgentIngestDraftStore(self.project_root).load(source_id, agent_draft_run_id)
+                if draft is None:
+                    raise ValueError(
+                        f"agent ingest draft {agent_draft_run_id!r} was not found for source {source_id}"
                     )
-                    remaining = len(chunks) - progress_state.completed
-                    eta = (
-                        average * ((remaining + self.max_workers - 1) // self.max_workers)
-                        if average is not None
-                        else None
-                    )
-                    return {
-                        "chunk_index": index,
-                        "chunk_count": len(chunks),
-                        "completed_chunks": progress_state.completed,
-                        "concurrency": min(self.max_workers, len(chunks)),
-                        "elapsed_seconds": round(elapsed, 1),
-                        "estimated_remaining_seconds": round(eta, 1) if eta is not None else None,
-                        "request_state": update.state if update else None,
-                        "attempt": update.attempt if update else None,
-                        "max_attempts": update.max_attempts if update else None,
-                        "attempt_elapsed_seconds": (
-                            round(update.attempt_elapsed_seconds, 1) if update else None
+                self._event(
+                    run_id,
+                    source_id,
+                    IngestStage.CHUNKING,
+                    "Finalizing staged agent ingest draft with deterministic guards.",
+                    progress,
+                    detail={
+                        "draft_run_id": agent_draft_run_id,
+                        "candidate_cell_types": len(draft.get("payload", {}).get("cell_types", [])),
+                    },
+                )
+                extraction, review_items = _finalize_agent_draft(source, document, draft["payload"])
+                progress = 68
+                conflicts = [item for item in review_items if item.severity == RiskLevel.HIGH]
+            else:
+                # Smaller evidence chunks keep structured responses bounded. Two workers
+                # recover throughput without creating an unbounded provider burst.
+                chunks = chunk_document(
+                    document,
+                    max_characters=7_000,
+                    overlap_characters=400,
+                )
+                self._event(
+                    run_id,
+                    source_id,
+                    IngestStage.CHUNKING,
+                    f"Prepared {len(chunks)} evidence-aware document chunk(s).",
+                    progress,
+                    detail={"chunk_count": len(chunks), "page_count": len(document.pages)},
+                )
+                if not chunks:
+                    raise ValueError("parsed source produced no extractable document chunks")
+
+                progress_state = _ParallelProgress()
+                progress_lock = threading.Lock()
+                batch_abort = threading.Event()
+                results: dict[int, tuple[ExtractionResult, list[ReviewItem]]] = {}
+
+                def progress_detail(
+                    index: int,
+                    update: OperationProgress | None = None,
+                ) -> dict[str, int | float | str | None]:
+                    with progress_lock:
+                        elapsed = max(0.0, time.monotonic() - operation_started)
+                        average = (
+                            progress_state.total_live_duration / progress_state.live_completed
+                            if progress_state.live_completed
+                            else None
+                        )
+                        remaining = len(chunks) - progress_state.completed
+                        eta = (
+                            average * ((remaining + self.max_workers - 1) // self.max_workers)
+                            if average is not None
+                            else None
+                        )
+                        return {
+                            "chunk_index": index,
+                            "chunk_count": len(chunks),
+                            "completed_chunks": progress_state.completed,
+                            "concurrency": min(self.max_workers, len(chunks)),
+                            "elapsed_seconds": round(elapsed, 1),
+                            "estimated_remaining_seconds": round(eta, 1) if eta is not None else None,
+                            "request_state": update.state if update else None,
+                            "attempt": update.attempt if update else None,
+                            "max_attempts": update.max_attempts if update else None,
+                            "attempt_elapsed_seconds": (
+                                round(update.attempt_elapsed_seconds, 1) if update else None
+                            ),
+                            "error": update.error if update else None,
+                        }
+
+                def extract_one(
+                    index: int,
+                    chunk: DocumentChunk,
+                ) -> tuple[int, ExtractionResult, list[ReviewItem]]:
+                    control = OperationControl(
+                        operation_id,
+                        cancellation,
+                        additional_cancellation=batch_abort,
+                        progress=lambda update: self._event(
+                            run_id,
+                            source_id,
+                            IngestStage.ENTITY_EXTRACTION,
+                            (
+                                f"Chunk {index}/{len(chunks)} model attempt "
+                                f"{update.attempt}/{update.max_attempts}: {update.state}."
+                            ),
+                            25 + int(35 * progress_state.completed / max(1, len(chunks))),
+                            detail=progress_detail(index, update),
                         ),
-                        "error": update.error if update else None,
-                    }
-
-            def extract_one(
-                index: int,
-                chunk: DocumentChunk,
-            ) -> tuple[int, ExtractionResult, list[ReviewItem]]:
-                control = OperationControl(
-                    operation_id,
-                    cancellation,
-                    additional_cancellation=batch_abort,
-                    progress=lambda update: self._event(
+                    )
+                    control.raise_if_cancelled()
+                    chunk_started = time.monotonic()
+                    self._event(
                         run_id,
                         source_id,
                         IngestStage.ENTITY_EXTRACTION,
-                        (
-                            f"Chunk {index}/{len(chunks)} model attempt "
-                            f"{update.attempt}/{update.max_attempts}: {update.state}."
-                        ),
+                        f"Extracting grounded facts from chunk {index}/{len(chunks)}.",
                         25 + int(35 * progress_state.completed / max(1, len(chunks))),
-                        detail=progress_detail(index, update),
-                    ),
-                )
-                control.raise_if_cancelled()
-                chunk_started = time.monotonic()
-                self._event(
-                    run_id,
-                    source_id,
-                    IngestStage.ENTITY_EXTRACTION,
-                    f"Extracting grounded facts from chunk {index}/{len(chunks)}.",
-                    25 + int(35 * progress_state.completed / max(1, len(chunks))),
-                    detail={
-                        **progress_detail(index),
-                        "chunk_id": chunk.chunk_id,
-                        "page_start": chunk.page_start,
-                        "page_end": chunk.page_end,
-                    },
-                )
-                extraction, cache_hit = self._extract_chunk(
-                    source,
-                    document,
-                    chunk,
-                    force=force_extract,
-                    control=control,
-                    review_feedback=review_feedback,
-                )
-                validated, gaps = _ground_extraction(source, document, chunk, extraction)
-                control.raise_if_cancelled()
-                duration = time.monotonic() - chunk_started
-                with progress_lock:
-                    progress_state.completed += 1
-                    if not cache_hit:
-                        progress_state.live_completed += 1
-                        progress_state.total_live_duration += duration
-                    completed = progress_state.completed
-                self._event(
-                    run_id,
-                    source_id,
-                    IngestStage.ENTITY_EXTRACTION,
-                    f"Completed grounded extraction for chunk {index}/{len(chunks)}.",
-                    25 + int(35 * completed / max(1, len(chunks))),
-                    detail={
-                        **progress_detail(index),
-                        "chunk_duration_seconds": round(duration, 1),
-                        "cache_hit": cache_hit,
-                    },
-                )
-                return index, validated, gaps
+                        detail={
+                            **progress_detail(index),
+                            "chunk_id": chunk.chunk_id,
+                            "page_start": chunk.page_start,
+                            "page_end": chunk.page_end,
+                        },
+                    )
+                    extraction, cache_hit = self._extract_chunk(
+                        source,
+                        document,
+                        chunk,
+                        force=force_extract,
+                        control=control,
+                        review_feedback=review_feedback,
+                    )
+                    validated, gaps = _ground_extraction(source, document, chunk, extraction)
+                    control.raise_if_cancelled()
+                    duration = time.monotonic() - chunk_started
+                    with progress_lock:
+                        progress_state.completed += 1
+                        if not cache_hit:
+                            progress_state.live_completed += 1
+                            progress_state.total_live_duration += duration
+                        completed = progress_state.completed
+                    self._event(
+                        run_id,
+                        source_id,
+                        IngestStage.ENTITY_EXTRACTION,
+                        f"Completed grounded extraction for chunk {index}/{len(chunks)}.",
+                        25 + int(35 * completed / max(1, len(chunks))),
+                        detail={
+                            **progress_detail(index),
+                            "chunk_duration_seconds": round(duration, 1),
+                            "cache_hit": cache_hit,
+                        },
+                    )
+                    return index, validated, gaps
 
-            with ThreadPoolExecutor(
-                max_workers=min(self.max_workers, len(chunks)),
-                thread_name_prefix="cellwiki-ingest",
-            ) as executor:
-                futures = {
-                    executor.submit(extract_one, index, chunk): index
-                    for index, chunk in enumerate(chunks, start=1)
-                }
-                try:
-                    for future in as_completed(futures):
-                        index, extraction, gaps = future.result()
-                        results[index] = (extraction, gaps)
-                except Exception:
-                    # Stop requests already running beside the failed chunk. Their
-                    # cancellation errors are secondary; the primary error is re-raised.
-                    batch_abort.set()
-                    for future in futures:
-                        future.cancel()
-                    raise
 
-            grounded = [results[index][0] for index in sorted(results)]
-            review_items = [
-                item
-                for index in sorted(results)
-                for item in results[index][1]
-            ]
+                with ThreadPoolExecutor(
+                    max_workers=min(self.max_workers, len(chunks)),
+                    thread_name_prefix="cellwiki-ingest",
+                ) as executor:
+                    futures = {
+                        executor.submit(extract_one, index, chunk): index
+                        for index, chunk in enumerate(chunks, start=1)
+                    }
+                    try:
+                        for future in as_completed(futures):
+                            index, extraction_chunk, gaps = future.result()
+                            results[index] = (extraction_chunk, gaps)
+                    except Exception:
+                        # Stop requests already running beside the failed chunk. Their
+                        # cancellation errors are secondary; the primary error is re-raised.
+                        batch_abort.set()
+                        for future in futures:
+                            future.cancel()
+                        raise
 
-            progress = 68
-            self._event(run_id, source_id, IngestStage.CONFLICT_ANALYSIS, "Merging duplicate entities and detecting conflicts.", progress)
-            extraction, conflicts = _merge_extractions(source, document, grounded)
-            review_items.extend(conflicts)
+                grounded = [results[index][0] for index in sorted(results)]
+                review_items = [
+                    item
+                    for index in sorted(results)
+                    for item in results[index][1]
+                ]
+
+                progress = 68
+                self._event(run_id, source_id, IngestStage.CONFLICT_ANALYSIS, "Merging duplicate entities and detecting conflicts.", progress)
+                extraction, conflicts = _merge_extractions(source, document, grounded)
+                review_items.extend(conflicts)
             source_candidates = self.sources.find_paper_candidates(
                 source_id,
                 doi=extraction.paper.doi,
@@ -526,40 +558,90 @@ def _ground_extraction(
     extraction: ExtractionResult,
 ) -> tuple[ExtractionResult, list[ReviewItem]]:
     """Drop ungrounded fields and produce claims only from exact source occurrences."""
+    return _ground_extraction_impl(source, document, extraction, chunk=chunk)
 
+
+def _ground_extraction_document(
+    source: SourceRecord,
+    document: ParsedDocument,
+    extraction: ExtractionResult,
+) -> tuple[ExtractionResult, list[ReviewItem]]:
+    """Document-wide grounding for staged agent drafts (no chunk boundary)."""
+    return _ground_extraction_impl(source, document, extraction, chunk=None)
+
+
+def _ground_extraction_impl(
+    source: SourceRecord,
+    document: ParsedDocument,
+    extraction: ExtractionResult,
+    *,
+    chunk: DocumentChunk | None,
+) -> tuple[ExtractionResult, list[ReviewItem]]:
+    """Drop ungrounded fields and produce claims only from exact source occurrences."""
     paper = extraction.paper.model_copy(update={"paper_id": source.source_id, "local_path": source.stored_path})
     cell_types: list[CellTypeExtract] = []
     claims: list[Claim] = []
     gaps: list[ReviewItem] = []
 
+    def lookup(term: str) -> EvidenceReference | None:
+        if chunk is not None:
+            return _evidence_for_term(source, document, chunk, term)
+        return _evidence_for_term_document(source, document, term)
+
     for candidate in extraction.cell_types:
-        mention = _evidence_for_term(source, document, chunk, candidate.name)
-        if mention is None:
-            mention = _evidence_for_term(
-                source, document, chunk, candidate.standard_name.replace("_", " ")
+        # Naming guard: paper-internal cluster identifiers never become durable names.
+        raw = candidate.standard_name
+        canonical, _issue = canonicalize_standard_name(raw)
+        fallback = ""
+        if canonical is None:
+            fallback = normalize_standard_name(candidate.name)
+            if fallback and not is_cluster_identifier(fallback):
+                canonical = fallback
+        if canonical is None:
+            gaps.append(
+                _review_item(
+                    "cluster_id_standard_name",
+                    raw or candidate.name,
+                    (
+                        f"The extracted entity {candidate.name!r} uses a paper-internal cluster "
+                        "identifier and has no safe biological name; it was not published."
+                    ),
+                    RiskLevel.HIGH,
+                )
             )
+            continue
+        if fallback:
+            candidate = candidate.model_copy(
+                update={"standard_name": canonical, "synonyms": [*(candidate.synonyms or []), raw]}
+            )
+
+        mention = lookup(candidate.name)
+        if mention is None:
+            mention = lookup(canonical.replace("_", " "))
         if mention is None:
             gaps.append(
                 _review_item(
                     "ungrounded_entity",
-                    candidate.standard_name or candidate.name,
-                    f"The extracted entity {candidate.name!r} could not be located in its source chunk.",
+                    canonical,
+                    f"The extracted entity {candidate.name!r} could not be located verbatim in the source.",
                     RiskLevel.HIGH,
                 )
             )
             continue
 
-        subject = candidate.standard_name or _normalize_identifier(candidate.name)
+        subject = canonical
         claims.append(_claim(subject, "mentioned_as", candidate.name, mention))
         markers: list[Marker] = []
         for marker in candidate.markers:
-            evidence = _evidence_for_term(source, document, chunk, marker.gene_symbol)
+            evidence = lookup(marker.gene_symbol)
+            if marker.evidence:
+                evidence = lookup(marker.evidence) or evidence
             if evidence is None:
                 gaps.append(
                     _review_item(
                         "missing_marker_evidence",
                         subject,
-                        f"Marker {marker.gene_symbol} was proposed without an exact source occurrence.",
+                        f"Marker {marker.gene_symbol} was proposed without a verbatim source occurrence.",
                         RiskLevel.MEDIUM,
                     )
                 )
@@ -575,7 +657,7 @@ def _ground_extraction(
         functions: list[FunctionalCharacteristic] = []
         for function in candidate.functions:
             search_term = function.evidence or function.description
-            evidence = _evidence_for_term(source, document, chunk, search_term)
+            evidence = lookup(search_term)
             if evidence is None:
                 continue
             claims.append(_claim(subject, "has_function", function.description, evidence))
@@ -589,7 +671,7 @@ def _ground_extraction(
         ):
             grounded_values: list[str] = []
             for value in values:
-                evidence = _evidence_for_term(source, document, chunk, value)
+                evidence = lookup(value)
                 if evidence is not None:
                     grounded_values.append(value)
                     claims.append(_claim(subject, predicate, value, evidence))
@@ -597,11 +679,22 @@ def _ground_extraction(
 
         parent_type = candidate.parent_type
         if parent_type:
-            parent_evidence = _evidence_for_term(source, document, chunk, parent_type.replace("_", " "))
-            if parent_evidence is None:
+            if is_cluster_identifier(parent_type):
+                gaps.append(
+                    _review_item(
+                        "cluster_id_parent_type",
+                        subject,
+                        f"Parent type {parent_type!r} is a paper-internal cluster identifier; parent was dropped.",
+                        RiskLevel.MEDIUM,
+                    )
+                )
                 parent_type = None
             else:
-                claims.append(_claim(subject, "is_a", parent_type, parent_evidence))
+                parent_evidence = lookup(parent_type.replace("_", " "))
+                if parent_evidence is None:
+                    parent_type = None
+                else:
+                    claims.append(_claim(subject, "is_a", parent_type, parent_evidence))
 
         cell_types.append(
             candidate.model_copy(
@@ -618,7 +711,7 @@ def _ground_extraction(
                     "synonyms": [
                         synonym
                         for synonym in candidate.synonyms
-                        if _evidence_for_term(source, document, chunk, synonym) is not None
+                        if lookup(synonym) is not None
                     ],
                     "subpopulations": [],
                 }
@@ -643,6 +736,8 @@ def _ground_extraction(
     )
 
 
+
+
 def _merge_extractions(
     source: SourceRecord,
     document: ParsedDocument,
@@ -657,10 +752,18 @@ def _merge_extractions(
 
     for extraction in extractions:
         for candidate in extraction.cell_types:
-            existing = merged.get(candidate.standard_name)
-            if existing is None:
-                merged[candidate.standard_name] = candidate
+            key = normalize_standard_name(candidate.standard_name)
+            if not key:
                 continue
+            existing = merged.get(key)
+            if existing is None:
+                candidate = _attach_casing_alias(candidate, key)
+                merged[key] = candidate
+                continue
+            if candidate.standard_name != existing.standard_name:
+                existing = existing.model_copy(
+                    update={"synonyms": sorted(set(existing.synonyms + [candidate.standard_name]))}
+                )
             if existing.cl_id and candidate.cl_id and existing.cl_id != candidate.cl_id:
                 conflicts.append(
                     _review_item(
@@ -704,7 +807,7 @@ def _merge_extractions(
                                 claim_ids=related,
                             )
                         )
-            merged[candidate.standard_name] = existing.model_copy(
+            merged[key] = existing.model_copy(
                 update={
                     "synonyms": sorted(set(existing.synonyms + candidate.synonyms)),
                     "markers": _unique_markers(existing.markers + candidate.markers),
@@ -777,6 +880,71 @@ def _evidence_for_term(
     return None
 
 
+def _evidence_for_term_document(
+    source: SourceRecord,
+    document: ParsedDocument,
+    term: str,
+) -> EvidenceReference | None:
+    """Locate a verbatim term anywhere in the parsed document (whitespace-normalized)."""
+    needle = term.strip()
+    if len(needle) < 2 or len(needle) > 2000:
+        return None
+    for block in document.all_blocks():
+        located = _normalized_locate(block.text, needle)
+        if located is None:
+            continue
+        start, end = located
+        if end - start > 600:
+            start = max(0, start - 220)
+            end = min(len(block.text), end + 320)
+        excerpt = block.text[start:end].strip()
+        if not excerpt:
+            continue
+        evidence_material = f"{source.source_id}\0{block.block_id}\0{start}\0{end}\0{excerpt}"
+        evidence_id = f"ev_{hashlib.sha256(evidence_material.encode('utf-8')).hexdigest()[:20]}"
+        locator = f"page {block.page_number}"
+        if block.section:
+            locator += f" \u00b7 {block.section}"
+        return EvidenceReference(
+            evidence_id=evidence_id,
+            source_id=source.source_id,
+            locator=locator,
+            excerpt=excerpt,
+            page_start=block.page_number,
+            page_end=block.page_number,
+            section=block.section,
+            block_id=block.block_id,
+            char_start=start,
+            char_end=end,
+            evidence_type=EvidenceType.DIRECT,
+            confidence="high",
+        )
+    return None
+
+
+def _normalized_locate(text: str, needle: str) -> tuple[int, int] | None:
+    """Return original offsets of a case/whitespace-normalized substring match."""
+    norm_text = re.sub(r"\s+", " ", text)
+    norm_needle = re.sub(r"\s+", " ", needle).strip()
+    pos = norm_text.casefold().find(norm_needle.casefold())
+    if pos < 0:
+        return None
+    mapping: list[int] = []
+    i = 0
+    while i < len(text):
+        if text[i].isspace():
+            mapping.append(i)
+            while i < len(text) and text[i].isspace():
+                i += 1
+        else:
+            mapping.append(i)
+            i += 1
+    if pos + len(norm_needle) - 1 >= len(mapping):
+        return None
+    return mapping[pos], mapping[pos + len(norm_needle) - 1] + 1
+
+
+
 def _claim(subject: str, predicate: str, object_value: str, evidence: EvidenceReference) -> Claim:
     material = f"{subject}\0{predicate}\0{object_value}\0{evidence.evidence_id}"
     return Claim(
@@ -799,6 +967,76 @@ def _validate_claim_evidence(document: ParsedDocument, claims: list[Claim]) -> N
                 raise ValueError(f"claim {claim.claim_id} evidence excerpt is not present in its source block")
             if evidence.page_start != block.page_number:
                 raise ValueError(f"claim {claim.claim_id} evidence page does not match its source block")
+
+
+def _attach_casing_alias(candidate: CellTypeExtract, key: str) -> CellTypeExtract:
+    """Keep differently-cased forms of the same canonical name as synonyms only."""
+    if candidate.standard_name == key:
+        return candidate
+    return candidate.model_copy(
+        update={"standard_name": key, "synonyms": sorted(set(candidate.synonyms + [candidate.standard_name]))}
+    )
+
+
+def _finalize_agent_draft(
+    source: SourceRecord,
+    document: ParsedDocument,
+    payload: dict,
+) -> tuple[ExtractionResult, list[ReviewItem]]:
+    """Run deterministic guards over a staged agent extraction draft."""
+    raw_cell_types = payload.get("cell_types", [])
+    if not isinstance(raw_cell_types, list) or not raw_cell_types:
+        raise ValueError("agent ingest draft contains no cell_types")
+    paper_info = payload.get("paper_info") or {}
+    paper = PaperReference(
+        paper_id=source.source_id,
+        title=str(paper_info.get("title", "") or ""),
+        doi=str(paper_info.get("doi", "") or ""),
+        year=int(paper_info.get("year", 0) or 0),
+        local_path=source.stored_path,
+    )
+    candidates: list[CellTypeExtract] = []
+    errors: list[str] = []
+    for index, item in enumerate(raw_cell_types):
+        if not isinstance(item, dict):
+            errors.append(f"cell_types[{index}] is not an object")
+            continue
+        try:
+            candidates.append(CellTypeExtract.model_validate({**item, "paper_ref": paper}))
+        except Exception as error:
+            errors.append(f"cell_types[{index}] failed schema validation: {error}")
+    if errors:
+        raise ValueError("agent ingest draft failed validation: " + "; ".join(errors[:3]))
+
+    extraction = ExtractionResult(
+        paper=paper,
+        cell_types=candidates,
+        raw_relationships=payload.get("relationships") or [],
+        source_document={
+            "source_id": source.source_id,
+            "parse_hash": document.parse_hash,
+            "parser_name": document.parser_name,
+            "parser_version": document.parser_version,
+            "parser_config": document.parser_config,
+        },
+    )
+    grounded, gaps = _ground_extraction_document(source, document, extraction)
+    merged, conflicts = _merge_extractions(source, document, [grounded])
+    review_items = _unique_review_items([*gaps, *conflicts])
+    entity_unmatched = sum(1 for item in review_items if item.type == "ungrounded_entity")
+    if candidates and entity_unmatched / len(candidates) > settings.ingest_ungrounded_entity_ratio_limit:
+        review_items.append(
+            _review_item(
+                "excessive_ungrounded_entities",
+                source.source_id,
+                (
+                    f"{entity_unmatched}/{len(candidates)} candidate entities could not be located "
+                    f"verbatim; exceeds the {int(settings.ingest_ungrounded_entity_ratio_limit * 100)}% L0 limit."
+                ),
+                RiskLevel.HIGH,
+            )
+        )
+    return merged, review_items
 
 
 def _review_item(

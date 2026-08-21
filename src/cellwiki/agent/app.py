@@ -32,6 +32,7 @@ from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.agent.tools import (
     build_attachment_tools,
     build_final_answer_tool,
+    build_ingest_agent_tools,
     build_ingest_tools,
     build_lint_tools,
     build_memory_tools,
@@ -293,9 +294,35 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
 # - lint-agent: 质量检查与外部知识刷新
 # 每种子智能体有自己的系统提示词、工具集和响应格式。
 # ---------------------------------------------------------------------------
+INGEST_AGENT_SYSTEM_PROMPT = """You are the CellWiki ingest specialist.
+
+Your job is to turn ONE whole registered source into a structured cell-type
+extraction draft. Read the full source with read_source_full before drafting
+anything. Consult read_existing_knowledge before choosing standard names so you
+reuse canonical names instead of creating near-duplicates.
+
+Naming discipline (deterministic guards will enforce this too):
+- standard_name must be lowercase snake_case, e.g. lrrc15_positive_fibroblast.
+- Never use paper-internal cluster identifiers (c01, SC-C4, Ttr03, t02) as
+  standard_name or parent_type; put them in synonyms only.
+- Keep gene symbols in markers as the paper writes them; marker_type is one of
+  positive / negative / transcript.
+
+Evidence discipline:
+- Every marker and function needs verbatim evidence: copy the exact sentence
+  from the source that states the fact. Paraphrases will be rejected.
+- Submit your draft with submit_extraction_draft. If the tool returns
+  ungrounded_evidence, rewrite those items as exact source quotes with
+  revise_evidence (bounded to two revise rounds), or remove the item.
+- You only stage candidate drafts. Never claim that anything was published or
+  committed; the coordinator owns approval and publication.
+"""
+
+
 def build_subagent_specs(
     model: BaseChatModel | str,
     read_tools: list,
+    ingest_agent_tools: list | None = None,
 ) -> list[dict[str, Any]]:
     # 只读子智能体的共享提示词：严格限定在只读工具范围内工作
     read_only_prompt = (
@@ -306,7 +333,7 @@ def build_subagent_specs(
     query_tools = [
         tool for tool in read_tools if getattr(tool, "name", None) != "get_change_set"
     ]
-    return [
+    specs: list[dict[str, Any]] = [
         {
             "name": "query-agent",           # 知识问答智能体
             "description": "Answer questions from published CellWiki pages with citations.",
@@ -317,6 +344,22 @@ def build_subagent_specs(
             "interrupt_on": {},
         },
     ]
+    if ingest_agent_tools:
+        specs.append(
+            {
+                "name": "ingest-agent",
+                "description": (
+                    "Analyze one whole registered source and stage a structured "
+                    "cell-type extraction draft for governed ingest."
+                ),
+                "system_prompt": INGEST_AGENT_SYSTEM_PROMPT,
+                "model": model,
+                "tools": ingest_agent_tools,
+                "middleware": [_CellWikiToolBoundaryMiddleware()],
+                "interrupt_on": {},
+            }
+        )
+    return specs
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +400,7 @@ def build_wiki_agent(
     coordinator_model = model or build_model()
     # 构建工具集
     read_tools = build_read_tools(root)
+    ingest_agent_tools = build_ingest_agent_tools(root)
     # The coordinator owns the product decision loop. Domain tools stay visible
     # at this level so the model can choose query, ingest, or lint from the
     # user's natural-language request; only bounded evidence work is delegated.
@@ -390,6 +434,7 @@ def build_wiki_agent(
             build_subagent_specs(
                 coordinator_model,
                 read_tools,
+                ingest_agent_tools,
             ),
         ),
         backend=StateBackend(),

@@ -65,6 +65,15 @@ def load_all_extractions() -> list[ExtractionResult]:
 # - 保留更长的描述文本
 # - 去重引用和来源
 # ---------------------------------------------------------------------------
+def _casefold_key(wiki: dict[str, WikiCellType], key: str) -> str | None:
+    """Return the first existing wiki key equal to ``key`` under case folding."""
+    folded = key.casefold()
+    for existing in wiki:
+        if existing.casefold() == folded:
+            return existing
+    return None
+
+
 def merge_to_wiki(extractions: list[ExtractionResult]) -> dict[str, WikiCellType]:
     """Merge all extraction results into a dictionary of WikiCellType.
 
@@ -82,20 +91,27 @@ def merge_to_wiki(extractions: list[ExtractionResult]) -> dict[str, WikiCellType
                 continue
 
             key = ct.standard_name
+            # Windows 大小写不敏感文件系统: 仅大小写不同的 standard_name 必须合并，
+            # 否则两个页面文件名会互相覆盖（曾导致整篇审阅结果作废）。
+            target_key = _casefold_key(wiki, key)
+            if target_key is None:
+                target_key = key
             # 如果该细胞类型尚未在 wiki 中，创建新条目
-            if key not in wiki:
+            if target_key not in wiki:
                 # 延迟导入避免循环依赖
                 from cellwiki.adapters.markdown_renderer import _proper_title_case
-                display = _proper_title_case(key)
-                wiki[key] = WikiCellType(
-                    standard_name=key,
+                display = _proper_title_case(target_key)
+                wiki[target_key] = WikiCellType(
+                    standard_name=target_key,
                     display_name=display,
                     cl_id=ct.cl_id,
                     description=ct.description,
                     parent_type=ct.parent_type,
                 )
 
-            wiki_type = wiki[key]
+            wiki_type = wiki[target_key]
+            if target_key != key:
+                wiki_type.aliases.add(key)
 
             # ---- 合并别名 ----
             # 添加原始名称和同义词作为别名，方便搜索时发现
