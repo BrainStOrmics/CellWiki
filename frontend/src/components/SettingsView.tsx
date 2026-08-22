@@ -22,7 +22,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { useI18n } from "../i18n";
-import { openLogsDirectory, productFetch, restartBackend, runtimeConfig } from "../runtime";
+import { isDesktopRuntime, openLogsDirectory, productFetch, restartBackend, runtimeConfig } from "../runtime";
 import type { AppSettings, PipelineStatus, ProviderTestResult } from "../types";
 
 type SettingsSection = "model" | "interface" | "runtime";
@@ -128,6 +128,15 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         kind: payload.restart_required ? "restart" : "ok",
         text: payload.restart_required ? t("settings.savedRestart") : t("settings.saved"),
       });
+      if (payload.restart_required && isDesktopRuntime) {
+        try {
+          const newRuntime = await restartBackend();
+          setRuntime(newRuntime);
+          setNotice({ kind: "ok", text: t("settings.saved") + " " + t("settings.backendRestarted") });
+        } catch (restartError) {
+          setNotice({ kind: "error", text: t("settings.restartFailed") + " " + (restartError instanceof Error ? restartError.message : String(restartError)) });
+        }
+      }
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.saveError") });
     } finally {
