@@ -242,6 +242,7 @@ export type AgentRunStatus =
   | "failed"
   | "retrying"
   | "cancelling"
+  | "unfinished"
   | "cancelled";
 
 export type AgentRun = {
@@ -260,6 +261,8 @@ export type AgentRun = {
   retry_count: number;
   retryable: boolean;
   cancellable: boolean;
+  resumable: boolean;
+  answer?: string;
   error_type?: string | null;
   error_message?: string | null;
   usage: {
@@ -385,6 +388,7 @@ export type IngestPhase =
   | "idle"
   | "preparing"
   | "cancelling"
+  | "unfinished"
   | "cancelled"
   | "awaiting_review"
   | "committing"

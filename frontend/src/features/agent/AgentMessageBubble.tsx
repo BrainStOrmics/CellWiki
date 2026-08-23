@@ -2,6 +2,7 @@ import { BookOpenCheck, Bot, Paperclip } from "lucide-react";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { AgentProcessTrace } from "./AgentProcessTrace";
 import { AgentRunDiagnostics } from "./AgentRunDiagnostics";
+import { QuestionCard } from "./QuestionCard";
 import type { ChatMessage, Citation } from "../../types";
 
 type AgentMessageBubbleProps = {
@@ -114,8 +115,13 @@ export function AgentMessageBubble({
         </div>
       )}
       {message.meta && <small className="message-meta">{message.meta}</small>}
-      {isAgent && message.runId && !message.streaming && (
-        <AgentRunDiagnostics runId={message.runId} label={diagnosticsLabel} />
+      {isAgent && message.runId && (
+        <>
+          {!message.streaming && (
+            <AgentRunDiagnostics runId={message.runId} label={diagnosticsLabel} />
+          )}
+          <QuestionCard runId={message.runId} />
+        </>
       )}
     </div>
   );

@@ -2035,3 +2035,62 @@ select:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+
+/* ask_user_question 5+1 卡片 */
+.question-card {
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 10px;
+  background: #f7f7f8;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  max-width: 460px;
+}
+.question-card-title {
+  font-weight: 600;
+}
+.question-card-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.question-card-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.question-card-option,
+.question-card-submit,
+.question-card-timeout {
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+  padding: 4px 10px;
+  background: #fff;
+  cursor: pointer;
+}
+.question-card-option:hover,
+.question-card-submit:hover {
+  background: #e8f0fe;
+}
+.question-card-free {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+.question-card-free input {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid rgba(128, 128, 128, 0.4);
+  border-radius: 6px;
+  background: #fff;
+}
+.question-card-timeout {
+  opacity: 0.75;
+}
+.question-card-error {
+  color: #c0392b;
+  font-size: 12px;
+}

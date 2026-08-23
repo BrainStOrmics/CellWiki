@@ -6,6 +6,7 @@ const labels = {
   evidenceMeta: "evidence",
   failed: "failed",
   cancelled: "cancelled",
+  unfinished: "unfinished",
   formatConfidence: (value: "low" | "medium" | "high") => value,
 };
 

@@ -282,6 +282,7 @@ function workflowTitle(phase: IngestWorkflow["phase"], t: ReturnType<typeof useI
     preparing: t("source.preparingTitle"),
     cancelling: t("source.cancellingTitle"),
     cancelled: t("source.cancelledTitle"),
+    unfinished: t("workflow.unfinished"),
     awaiting_review: t("source.reviewTitle"),
     committing: t("source.committingTitle"),
     committed: t("source.committedTitle"),

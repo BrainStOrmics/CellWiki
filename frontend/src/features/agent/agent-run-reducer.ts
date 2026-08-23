@@ -11,6 +11,7 @@ export type AgentRunReducerLabels = {
   evidenceMeta: string;
   failed: string;
   cancelled: string;
+  unfinished: string;
   formatConfidence: (confidence: "low" | "medium" | "high") => string;
 };
 

@@ -14,6 +14,7 @@ import {
   MessageSquareText,
   Network,
   PanelLeft,
+  Play,
   RotateCcw,
   Search,
   Send,
@@ -206,6 +207,7 @@ export function AppShell() {
   const [agentBusy, setAgentBusy] = useState(false);
   const [activeAgentRunId, setActiveAgentRunId] = useState<string | null>(null);
   const [retryableAgentRunId, setRetryableAgentRunId] = useState<string | null>(null);
+  const [resumableAgentRunId, setResumableAgentRunId] = useState<string | null>(null);
   const [agentActivity, setAgentActivity] = useState("");
   const [pendingInterrupt, setPendingInterrupt] = useState<PendingInterrupt | null>(null);
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
@@ -285,6 +287,7 @@ export function AppShell() {
         preparing: t("workflow.preparing"),
         cancelling: t("workflow.cancelling"),
         cancelled: t("workflow.cancelled"),
+        unfinished: t("workflow.unfinished"),
         awaiting_review: t("workflow.review"),
         committing: t("workflow.committing"),
         committed: t("workflow.committed"),
@@ -326,15 +329,17 @@ export function AppShell() {
 
   useEffect(() => {
     agentThreadIdRef.current = activeThreadId;
-    const savedRunId = activeThreadId ? window.localStorage.getItem(agentRunStorageKey(activeThreadId)) : null;
-    if (agentThreadIdRef.current) void restoreAgentThread(agentThreadIdRef.current, savedRunId ?? undefined);
+    if (!activeThreadId) return;
+    const savedRunId = window.localStorage.getItem(agentRunStorageKey(activeThreadId));
+    if (savedRunId) void restoreAgentThread(activeThreadId, savedRunId);
 
     return () => {
       streamGenerationRef.current += 1;
       agentEventSourceRef.current?.close();
       agentEventSourceRef.current = null;
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeThreadId]);
 
   useEffect(() => {
     if (pageQuery.data) setDetail(pageQuery.data);
@@ -561,6 +566,7 @@ export function AppShell() {
         evidenceMeta: t("chat.evidenceMeta"),
         failed: t("chat.runFailed"),
         cancelled: t("chat.runCancelled"),
+        unfinished: t("chat.runUnfinished"),
         formatConfidence: (confidence) => localizedConfidence(confidence, language),
       }));
     }
@@ -613,6 +619,10 @@ export function AppShell() {
             ? { phase: "cancelled", message: t("workflow.cancelled") }
             : current
         ));
+      }
+      if (status === "unfinished") {
+        setAgentActivity(t("chat.runUnfinished"));
+        setResumableAgentRunId(event.run_id);
       }
       if (status && terminalAgentStatuses.has(status)) {
         setAgentBusy(false);
@@ -742,6 +752,11 @@ export function AppShell() {
         );
       }
       if (run.status === "waiting_confirmation" || run.status === "waiting_approval") {
+        setActiveAgentRunId(runId);
+        setAgentBusy(false);
+      } else if (run.status === "unfinished") {
+        setAgentActivity(t("chat.runUnfinished"));
+        setResumableAgentRunId(runId);
         setActiveAgentRunId(runId);
         setAgentBusy(false);
       } else if (!terminalAgentStatuses.has(run.status)) {
@@ -1032,6 +1047,20 @@ export function AppShell() {
         meta: "RUNTIME · CANCEL ERROR",
       }]);
     }
+  }
+
+  async function resumeUnfinishedAgentRun() {
+    if (!resumableAgentRunId || agentBusy) return;
+    const resumedRunId = resumableAgentRunId;
+    setResumableAgentRunId(null);
+    setAgentBusy(true);
+    setAgentActivity(t("chat.resuming"));
+    await postJson<AgentRun>(`/api/agent/runs/${encodeURIComponent(resumedRunId)}/resume`, {});
+    setActiveAgentRunId(resumedRunId);
+    if (agentThreadIdRef.current) {
+      window.localStorage.setItem(agentRunStorageKey(agentThreadIdRef.current), resumedRunId);
+    }
+    await subscribeToAgentRun(resumedRunId);
   }
 
   async function retryAgentRun() {
@@ -1522,6 +1551,11 @@ export function AppShell() {
               {retryableAgentRunId && !agentBusy && (
                 <button className="agent-retry" onClick={() => void retryAgentRun()}>
                   <RotateCcw size={12} />{t("chat.retry")}
+                </button>
+              )}
+              {resumableAgentRunId && !agentBusy && (
+                <button className="agent-retry" onClick={() => void resumeUnfinishedAgentRun()}>
+                  <Play size={12} />{t("chat.resume")}
                 </button>
               )}
               {agentBusy && <div className="agent-thinking"><i /><i /><i /><span>{agentActivity || t("chat.tracing")}</span></div>}
