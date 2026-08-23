@@ -4,11 +4,8 @@
 
 """Tests for Pydantic data models."""
 
-import json
-import pytest
 from cellwiki.models import (
-    Marker, MarkerType, FunctionalCharacteristic, PaperReference,
-    CellTypeExtract, ExtractionResult, WikiCellType,
+    Marker, MarkerType, CellTypeExtract, ExtractionResult, WikiCellType,
 )
 
 

@@ -4,15 +4,12 @@
 
 """Tests for knowledge base merging and deduplication."""
 
-import json
-import pytest
-from unittest.mock import patch
 
 from cellwiki.models import (
-    Marker, MarkerType, FunctionalCharacteristic, PaperReference,
+    Marker, MarkerType, PaperReference,
     CellTypeExtract, ExtractionResult, WikiCellType,
 )
-from cellwiki.knowledge import merge_to_wiki, deduplicate_by_cl_id, _merge_wiki_type
+from cellwiki.knowledge import merge_to_wiki, deduplicate_by_cl_id
 
 
 def make_cell_type(name, standard_name, paper_id, cl_id=None, markers=None):

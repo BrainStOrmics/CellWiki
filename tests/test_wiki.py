@@ -4,7 +4,6 @@
 
 """Tests for wiki page generation and title formatting."""
 
-import pytest
 from unittest.mock import patch
 
 from cellwiki.models import WikiCellType

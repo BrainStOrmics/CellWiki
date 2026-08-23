@@ -5,9 +5,7 @@
 """Tests for logging context management and run correlation."""
 
 import logging
-from pathlib import Path
 
-import pytest
 
 from cellwiki.services.logging_context import (
     ContextFilter,

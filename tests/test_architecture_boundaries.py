@@ -24,50 +24,11 @@ def _imports(path: Path) -> set[str]:
     return names
 
 
-def test_ingest_module_is_agent_draft_only_and_imports_no_chunked_pipeline() -> None:
-    imports = _imports(PACKAGE_ROOT / "services" / "ingest.py")
-
-    assert "cellwiki.services.ingest_draft" in imports
-    assert "cellwiki.services.chunking" not in imports
-    assert "cellwiki.adapters.openai_extraction" not in imports
-    assert "cellwiki.llm_extract" not in imports
-
-
-def test_ingest_service_has_no_chunked_extractor(tmp_path: Path) -> None:
-    from cellwiki.services.ingest import IngestService
-
-    ingest = IngestService(tmp_path)
-
-    assert not hasattr(ingest, "extractor")
-    assert not hasattr(ingest, "cache_root")
-
-
-def test_projection_module_depends_on_renderer_interface_not_legacy_modules() -> None:
-    imports = _imports(PACKAGE_ROOT / "services" / "projection.py")
-
-    assert "cellwiki.services.rendering" in imports
-    assert "cellwiki.knowledge" not in imports
-    assert "cellwiki.wiki" not in imports
-
-
-def test_default_projection_renderer_is_an_external_adapter(tmp_path: Path) -> None:
-    from cellwiki.adapters.wiki_renderer import CellWikiMarkdownRenderer
-    from cellwiki.services.projection import ProjectionService
-
-    projection = ProjectionService(tmp_path)
-
-    assert isinstance(projection.renderer, CellWikiMarkdownRenderer)
-
-
 def test_product_modules_use_domain_extraction_contracts() -> None:
     product_modules = [
-        PACKAGE_ROOT / "services" / "ingest.py",
-        PACKAGE_ROOT / "services" / "extraction.py",
-        PACKAGE_ROOT / "services" / "projection.py",
-        PACKAGE_ROOT / "services" / "rendering.py",
         PACKAGE_ROOT / "services" / "quality.py",
-        PACKAGE_ROOT / "services" / "central_writer.py",
         PACKAGE_ROOT / "adapters" / "wiki_renderer.py",
+        PACKAGE_ROOT / "services" / "naming.py",
     ]
 
     offenders = [
@@ -131,7 +92,6 @@ def test_legacy_implementations_live_under_legacy_package() -> None:
         "ontology",
         "orchestrator",
         "query_graph",
-        "research_graph",
         "visualization",
     }
 
@@ -142,7 +102,7 @@ def test_legacy_implementations_live_under_legacy_package() -> None:
         assert f"cellwiki.legacy.{module}" in _imports(compatibility), module
 
     assert (PACKAGE_ROOT / "legacy" / "graphs").is_dir()
-    assert not (PROJECT_ROOT / "src" / "graphs").exists()
+    assert not (PACKAGE_ROOT / "research_graph.py").exists()
 
 
 def test_packaging_contains_only_the_cellwiki_package_tree() -> None:

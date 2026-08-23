@@ -4,12 +4,9 @@
 
 """Tests for Cell Ontology parsing and CL ID resolution."""
 
-import json
-import pytest
-from pathlib import Path
 
 from cellwiki.ontology import (
-    load_cell_ontology, resolve_cell_type_to_cl, load_cl_id_registry,
+    resolve_cell_type_to_cl, load_cl_id_registry,
 )
 
 
