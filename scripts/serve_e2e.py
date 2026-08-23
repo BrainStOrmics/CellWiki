@@ -9,7 +9,6 @@ import uvicorn
 
 from cellwiki.api.app import create_app
 from cellwiki.domain.runs import AgentEventType, AgentRun, AgentRunStatus
-from cellwiki.services.sources import SourceRegistry
 from cellwiki.services.runtime_store import RuntimeStore
 
 
@@ -46,7 +45,7 @@ Activation state must be considered before interpreting a single marker.
         "Fixture source: regulatory T-cell marker context and activation caveats.",
         encoding="utf-8",
     )
-    SourceRegistry(PROJECT).register(source_path, source_type="paper")
+    # 阶段 0 后无独立 source registry：fixture 源文件直接写入即可
     seed_agent_history()
     # Reset only the generated fixture settings so repeated local runs always
     # exercise the documented default-Chinese then switch-to-English flow.
