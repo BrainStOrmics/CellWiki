@@ -13,7 +13,6 @@ error reports, run events, and temporary files to prevent unbounded disk growth.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path

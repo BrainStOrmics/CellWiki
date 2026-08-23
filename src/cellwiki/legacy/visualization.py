@@ -14,7 +14,6 @@ writes three graph representations plus an optional SVG render."""
 import json
 from pathlib import Path
 from cellwiki.config import settings
-from cellwiki.models import WikiCellType
 from cellwiki.knowledge import load_all_extractions, merge_to_wiki
 
 

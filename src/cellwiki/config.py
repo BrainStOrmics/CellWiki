@@ -93,6 +93,16 @@ class Settings(BaseSettings):
     # 单次记忆召回查询的 token 预算上限，防止单个智能体回合导致上下文无限增长
     memory_recall_token_budget: int = 800
 
+    # ---- 工作区版 Agent 运行时设置（阶段 4/5）----
+    # 单次 run 的最大工具步数（阶段 4 使用）；超限进入 unfinished 状态
+    agent_max_tool_steps: int = Field(default=100, ge=1, le=500)
+    # 单次 run 的墙钟超时（秒），防止模型调用卡死
+    agent_run_max_seconds: int = Field(default=7200, ge=60, le=86_400)
+    # 会话上下文上限（token）；阶段 5 的分层 prompt 按 512K/80%/32K 压缩
+    agent_context_max_tokens: int = Field(default=512_000, ge=8_000, le=2_000_000)
+    agent_context_auto_compact_ratio: float = Field(default=0.8, ge=0.5, le=0.95)
+    agent_context_retained_tokens: int = Field(default=32_768, ge=4_000, le=200_000)
+
     # ---- 日志级别 ----
     log_level: str = "INFO"
 

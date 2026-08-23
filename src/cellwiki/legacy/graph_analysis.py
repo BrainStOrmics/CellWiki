@@ -21,9 +21,7 @@ Usage:
     insights = graph.analyze()
 """
 
-import json
 import logging
-from pathlib import Path
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
@@ -273,7 +271,7 @@ def build_and_analyze():
     print(f"Components: {insights.get('components', 0)}")
 
     if insights.get("top_hubs"):
-        print(f"\nTop hubs:")
+        print("\nTop hubs:")
         for h in insights["top_hubs"][:5]:
             print(f"  {h['node']}: degree {h['degree']}")
 

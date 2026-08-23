@@ -212,7 +212,7 @@ class EnvironmentSettingsService:
             from cellwiki.adapters.openai_model import build_openai_chat_model
             from cellwiki.config import Settings
 
-            configuration = Settings(
+            configuration = Settings(  # type: ignore[call-arg]  # pydantic-settings 的 _env_file 参数 mypy 无法识别
                 _env_file=None,
                 openai_api_key=api_key,
                 openai_base_url=base_url,

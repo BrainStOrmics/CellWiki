@@ -33,6 +33,7 @@ class AgentRunStatus(str, Enum):
     REJECTED = "rejected"                 # 被拒绝
     FAILED = "failed"                     # 失败
     RETRYING = "retrying"                 # 正在重试
+    UNFINISHED = "unfinished"             # 未完成：预算/超时进入，可继续/恢复
     CANCELLING = "cancelling"             # 正在取消
     CANCELLED = "cancelled"               # 已取消
 
@@ -76,8 +77,8 @@ class AgentEventType(str, Enum):
 # ---- 运行预算 ----
 # 每次智能体运行的资源预算，防止无限执行
 class RunBudget(ContractModel):
-    max_model_calls: int = Field(default=30, ge=1)       # 最大模型调用次数
-    max_runtime_seconds: int = Field(default=1800, ge=1)  # 最大运行时间（秒）
+    max_model_calls: int = Field(default=100, ge=1)       # 最大模型调用次数（默认对齐 AGENT_MAX_TOOL_STEPS）
+    max_runtime_seconds: int = Field(default=7200, ge=1)  # 最大运行时间（秒）（默认对齐 AGENT_RUN_MAX_SECONDS）
     max_retries: int = Field(default=3, ge=0)             # 最大重试次数
 
 
@@ -109,6 +110,8 @@ class AgentRun(ContractModel):
     selected_text: str | None = None                          # 用户选中的文本
     attachment_ids: list[str] = Field(default_factory=list)   # 当前运行可用的线程附件
     input_message: str = ""                                   # 用户输入消息
+    snapshot_commit: str | None = None      # 运行开始时的 git HEAD（pending diff 快照点）
+    pending_diff_id: str | None = None      # 运行产出的待确认 diff 标识
     task_kind: str = "conversation"                           # 结构化任务类型
     task_payload: dict[str, Any] = Field(default_factory=dict) # 结构化任务参数
     checkpoint_id: str | None = None                           # 新运行按 run 隔离；旧记录回退 thread

@@ -34,6 +34,7 @@ from cellwiki.domain.runs import (
     AgentRunStatus,
     RunUsage,
 )
+from cellwiki.domain.pending_diff import PendingDiff, PendingDiffStatus
 
 
 _TRANSITIONS: dict[AgentRunStatus, set[AgentRunStatus]] = {
@@ -41,8 +42,11 @@ _TRANSITIONS: dict[AgentRunStatus, set[AgentRunStatus]] = {
         AgentRunStatus.RUNNING,
         AgentRunStatus.WAITING_CONFIRMATION,
         AgentRunStatus.CANCELLED,
+        AgentRunStatus.UNFINISHED,
+        AgentRunStatus.FAILED,
     },
     AgentRunStatus.RUNNING: {
+        AgentRunStatus.UNFINISHED,          # 预算/超时进入，可继续/恢复
         AgentRunStatus.WAITING_CONFIRMATION,
         AgentRunStatus.WAITING_APPROVAL,
         AgentRunStatus.APPLYING,
@@ -54,6 +58,7 @@ _TRANSITIONS: dict[AgentRunStatus, set[AgentRunStatus]] = {
     AgentRunStatus.WAITING_CONFIRMATION: {
         AgentRunStatus.RUNNING,
         AgentRunStatus.CANCELLED,
+        AgentRunStatus.UNFINISHED,  # 问题超时 -> 非终态待续
     },
     AgentRunStatus.WAITING_APPROVAL: {
         AgentRunStatus.RUNNING,
@@ -69,7 +74,8 @@ _TRANSITIONS: dict[AgentRunStatus, set[AgentRunStatus]] = {
         AgentRunStatus.FAILED,
     },
     AgentRunStatus.FAILED: {AgentRunStatus.RETRYING},
-    AgentRunStatus.RETRYING: {AgentRunStatus.RUNNING, AgentRunStatus.FAILED},
+    AgentRunStatus.RETRYING: {AgentRunStatus.RUNNING, AgentRunStatus.FAILED, AgentRunStatus.UNFINISHED},
+    AgentRunStatus.UNFINISHED: {AgentRunStatus.RUNNING, AgentRunStatus.FAILED, AgentRunStatus.CANCELLED},
     AgentRunStatus.CANCELLING: {AgentRunStatus.CANCELLED, AgentRunStatus.FAILED},
     AgentRunStatus.SUCCEEDED: set(),
     AgentRunStatus.REJECTED: set(),
@@ -260,6 +266,167 @@ class RuntimeStore:
                 add(attachment_id)
         return attachment_ids
 
+    # ---- 挂起问题（ask_user_question）----
+    def save_pending_question(self, question: Any) -> dict:
+        """Persist one open question bound to a run + tool call."""
+        from cellwiki.domain.questions import PendingQuestion
+
+        if not isinstance(question, PendingQuestion):
+            question = PendingQuestion.model_validate(question)
+        payload = question.model_dump_json()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO agent_questions(
+                    question_id, run_id, thread_id, payload, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    question.question_id,
+                    question.run_id,
+                    question.thread_id,
+                    payload,
+                    question.status,
+                    question.created_at.isoformat(),
+                ),
+            )
+        return question.to_payload()
+
+    def get_open_question(self, run_id: str) -> dict | None:
+        """Return the newest pending question for a run, if any."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload FROM agent_questions
+                WHERE run_id = ? AND status = 'pending'
+                ORDER BY created_at DESC, question_id LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    def answer_question(
+        self,
+        run_id: str,
+        answers: list[Any],
+        *,
+        timed_out: bool = False,
+    ) -> dict | None:
+        """Close an open question with the user's answers; returns the record."""
+        question_id: str | None = None
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT question_id, payload FROM agent_questions
+                WHERE run_id = ? AND status = 'pending'
+                ORDER BY created_at DESC, question_id LIMIT 1
+                """,
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            question_id, payload = row
+            question = json.loads(payload)
+            question["status"] = "timed_out" if timed_out else "answered"
+            question["answers"] = answers
+            question["answered_at"] = datetime.now(UTC).isoformat()
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                UPDATE agent_questions SET payload = ?, status = ?
+                WHERE question_id = ?
+                """,
+                (json.dumps(question, ensure_ascii=False), question["status"], question_id),
+            )
+        return question
+
+    def list_questions(self, run_id: str) -> list[dict]:
+        """Return every question asked in a run, newest first."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload FROM agent_questions
+                WHERE run_id = ? ORDER BY created_at DESC, question_id
+                """,
+                (run_id,),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    # ---- 线程身份 ----
+    def create_thread(self, thread_id: str) -> None:
+        """Persist one durable conversation identity."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                "INSERT OR IGNORE INTO agent_threads(thread_id, created_at) VALUES (?, ?)",
+                (thread_id, datetime.now(UTC).isoformat()),
+            )
+
+    def thread_exists(self, thread_id: str) -> bool:
+        """Whether a conversation identity was previously allocated."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT 1 FROM agent_threads WHERE thread_id = ?", (thread_id,)
+            ).fetchone()
+        return row is not None
+
+    # ---- 线程附件记录 ----
+    def save_attachment(self, attachment: Any) -> dict:
+        """Persist one thread-scoped attachment record (files live in AttachmentFileStore)."""
+        from cellwiki.domain.attachments import ThreadAttachment
+
+        if not isinstance(attachment, ThreadAttachment):
+            attachment = ThreadAttachment.model_validate(attachment)
+        payload = attachment.model_dump_json()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO agent_attachments(attachment_id, thread_id, payload, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (attachment.attachment_id, attachment.thread_id, payload, attachment.created_at.isoformat()),
+            )
+        return attachment.to_payload()
+
+    def list_attachments(self, thread_id: str) -> list[dict]:
+        """Return the attachment records owned by one thread, newest first."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT payload FROM agent_attachments
+                WHERE thread_id = ? ORDER BY created_at DESC, attachment_id
+                """,
+                (thread_id,),
+            ).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def get_attachment(self, thread_id: str, attachment_id: str) -> dict | None:
+        """Return one attachment record only when it belongs to the given thread."""
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT payload FROM agent_attachments
+                WHERE thread_id = ? AND attachment_id = ?
+                """,
+                (thread_id, attachment_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    def delete_attachments_for_thread(self, thread_id: str) -> int:
+        """Delete every attachment record for a thread; returns the count removed."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "DELETE FROM agent_attachments WHERE thread_id = ?", (thread_id,)
+            )
+        return cursor.rowcount
+
     def delete_thread(self, thread_id: str) -> int:
         """Delete all product records for a thread and return its run count."""
         with self._connect() as connection:
@@ -274,7 +441,142 @@ class RuntimeStore:
                 (thread_id,),
             )
             connection.execute("DELETE FROM agent_runs WHERE thread_id = ?", (thread_id,))
+            connection.execute(
+                "DELETE FROM pending_diffs WHERE thread_id = ?", (thread_id,)
+            )
+            connection.execute(
+                "DELETE FROM agent_attachments WHERE thread_id = ?", (thread_id,)
+            )
+            connection.execute("DELETE FROM agent_threads WHERE thread_id = ?", (thread_id,))
         return int(run_count)
+
+    # ---- 待确认 diff 持久化（阶段 4）----
+    def save_pending_diff(self, diff: PendingDiff) -> None:
+        """Create or update one pending diff row (idempotent by diff_id)."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
+                """
+                INSERT INTO pending_diffs (diff_id, run_id, thread_id, status, payload, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(diff_id) DO UPDATE SET
+                    run_id = excluded.run_id,
+                    thread_id = excluded.thread_id,
+                    status = excluded.status,
+                    payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    diff.diff_id,
+                    diff.run_id,
+                    diff.thread_id,
+                    diff.status.value,
+                    diff.model_dump_json(),
+                    diff.created_at.isoformat(),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+
+    def get_pending_diff(self, diff_id: str) -> PendingDiff:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM pending_diffs WHERE diff_id = ?", (diff_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(diff_id)
+        return PendingDiff.model_validate_json(row[0])
+
+    def list_pending_diffs(
+        self, *, run_id: str | None = None, limit: int = 200
+    ) -> list[PendingDiff]:
+        query = "SELECT payload FROM pending_diffs"
+        parameters: tuple = ()
+        if run_id:
+            query += " WHERE run_id = ?"
+            parameters = (run_id,)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        parameters += (limit,)
+        with self._connect() as connection:
+            rows = connection.execute(query, parameters).fetchall()
+        return [PendingDiff.model_validate_json(row[0]) for row in rows]
+
+    def update_pending_diff(
+        self,
+        diff_id: str,
+        *,
+        status: PendingDiffStatus,
+        resolution: str | None = None,
+    ) -> PendingDiff:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM pending_diffs WHERE diff_id = ?", (diff_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(diff_id)
+            current = PendingDiff.model_validate_json(row[0])
+            resolved_at = (
+                datetime.now(UTC)
+                if status in (PendingDiffStatus.ACCEPTED, PendingDiffStatus.REJECTED)
+                else None
+            )
+            updated = current.model_copy(
+                update={
+                    "status": status,
+                    "resolution": resolution,
+                    "resolved_at": resolved_at,
+                }
+            )
+            connection.execute(
+                "UPDATE pending_diffs SET status = ?, payload = ?, updated_at = ? WHERE diff_id = ?",
+                (status.value, updated.model_dump_json(), datetime.now(UTC).isoformat(), diff_id),
+            )
+        return updated
+
+    def update_run(self, run: AgentRun) -> AgentRun:
+        """Persist the full run payload (used for snapshot/diff bookkeeping)."""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE agent_runs SET status = ?, payload = ?, updated_at = ? WHERE run_id = ?",
+                (run.status.value, run.model_dump_json(), datetime.now(UTC).isoformat(), run.run_id),
+            )
+        return run
+
+    def claim_resume_unfinished(self, run_id: str) -> AgentRun:
+        """Transition an unfinished run back to running (resume from checkpoint)."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = AgentRun.model_validate_json(row[0])
+            if AgentRunStatus.RUNNING not in _TRANSITIONS[current.status]:
+                raise InvalidRunTransitionError(
+                    f"invalid resume: {current.status.value} -> {AgentRunStatus.RUNNING.value}"
+                )
+            updated = current.model_copy(
+                update={
+                    "status": AgentRunStatus.RUNNING,
+                    "finished_at": None,
+                    "error_type": None,
+                    "error_message": None,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            connection.execute(
+                "UPDATE agent_runs SET status = ?, payload = ?, updated_at = ? WHERE run_id = ?",
+                (AgentRunStatus.RUNNING.value, updated.model_dump_json(), updated.updated_at.isoformat(), run_id),
+            )
+            self._insert_event(
+                connection,
+                updated,
+                AgentEventType.RUN_STATUS,
+                message="Run resumed from the unfinished checkpoint.",
+                data={"status": AgentRunStatus.RUNNING.value},
+            )
+        return updated
 
     def get_run(self, run_id: str) -> AgentRun:
         with self._connect() as connection:
@@ -297,6 +599,49 @@ class RuntimeStore:
             rows = connection.execute(query, parameters).fetchall()
         return [AgentRun.model_validate_json(row[0]) for row in rows]
 
+    def recover_stale_runs(self) -> list[AgentRun]:
+        """服务启动时收敛"孤儿"运行：RUNNING/RETRYING -> UNFINISHED(TIMEOUT)、
+        CANCELLING -> CANCELLED、QUEUED -> UNFINISHED。worker 随进程消亡，
+        任何 active 运行在重启后都无法继续推进，必须恢复后再手动继续。"""
+        recovered: list[AgentRun] = []
+        now = datetime.now(UTC)
+        for run in self.list_runs(limit=10_000):
+            if run.status == AgentRunStatus.CANCELLING:
+                recovered.append(
+                    self.transition(
+                        run.run_id,
+                        AgentRunStatus.CANCELLED,
+                        message="Cancelled after restart.",
+                        finished_at=now,
+                    )
+                )
+            elif run.status == AgentRunStatus.QUEUED:
+                recovered.append(
+                    self.transition(
+                        run.run_id,
+                        AgentRunStatus.UNFINISHED,
+                        error_type=AgentErrorType.TIMEOUT,
+                        error_message="Interrupted before starting (restart).",
+                        message="Run paused before execution (restart). Resume to continue.",
+                        finished_at=now,
+                    )
+                )
+            elif run.status in {
+                AgentRunStatus.RUNNING,
+                AgentRunStatus.RETRYING,
+            }:
+                recovered.append(
+                    self.transition(
+                        run.run_id,
+                        AgentRunStatus.UNFINISHED,
+                        error_type=AgentErrorType.TIMEOUT,
+                        error_message="Interrupted by restart while running.",
+                        message="Run paused (restart). Resume to continue.",
+                        finished_at=now,
+                    )
+                )
+        return recovered
+
     def transition(
         self,
         run_id: str,
@@ -307,6 +652,7 @@ class RuntimeStore:
         message: str | None = None,
         progress: int | None = None,
         data: dict | None = None,
+        finished_at: datetime | None = None,
     ) -> AgentRun:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -320,14 +666,15 @@ class RuntimeStore:
                 raise InvalidRunTransitionError(
                     f"invalid run transition: {current.status.value} -> {status.value}"
                 )
-            updated = current.model_copy(
-                update={
-                    "status": status,
-                    "error_type": error_type,
-                    "error_message": error_message,
-                    "updated_at": datetime.now(UTC),
-                }
-            )
+            update_fields: dict = {
+                "status": status,
+                "error_type": error_type,
+                "error_message": error_message,
+                "updated_at": datetime.now(UTC),
+            }
+            if finished_at is not None:
+                update_fields["finished_at"] = finished_at
+            updated = current.model_copy(update=update_fields)
             connection.execute(
                 "UPDATE agent_runs SET status = ?, payload = ?, updated_at = ? WHERE run_id = ?",
                 (status.value, updated.model_dump_json(), updated.updated_at.isoformat(), run_id),
@@ -714,7 +1061,38 @@ class RuntimeStore:
                 );
                 CREATE INDEX IF NOT EXISTS ix_agent_spans_run
                     ON agent_spans(run_id, started_at);
-                PRAGMA user_version=2;
+                CREATE TABLE IF NOT EXISTS pending_diffs (
+                    diff_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS agent_attachments (
+        attachment_id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_agent_attachments_thread
+        ON agent_attachments(thread_id, created_at);
+    CREATE TABLE IF NOT EXISTS agent_threads (
+        thread_id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS agent_questions (
+        question_id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        payload TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_agent_questions_run
+        ON agent_questions(run_id, status, created_at);
+    PRAGMA user_version=6;
                 """
             )
 

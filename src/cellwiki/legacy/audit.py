@@ -13,7 +13,6 @@ specific failure mode (missing ontology IDs, contradictory marker evidence, brok
 cross-references, etc.). Results can be rendered as a Rich terminal table or written
 to a Markdown report."""
 
-import json
 from pathlib import Path
 from cellwiki.config import settings
 from cellwiki.knowledge import load_all_extractions, merge_to_wiki

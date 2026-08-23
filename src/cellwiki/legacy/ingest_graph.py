@@ -21,16 +21,14 @@ Usage:
     result = graph.invoke({"source_path": "path/to/paper.pdf", ...})
 """
 
-import json
 import logging
 from pathlib import Path
-from typing import Any
 
 from langgraph.graph import StateGraph, END
 from langgraph.types import interrupt
 
 from cellwiki.legacy.graphs.checkpointer import get_checkpointer
-from cellwiki.legacy.graphs.states import IngestState, merge_dict, append_list
+from cellwiki.legacy.graphs.states import IngestState
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +83,6 @@ def detect_entities(state: IngestState) -> dict:
 
     try:
         from cellwiki.llm_extract import extract_cell_types_from_paper
-        from cellwiki.config import settings
 
         result = extract_cell_types_from_paper(paper_text, Path(state.get("source_path", "")))
 
@@ -194,7 +191,7 @@ def build_analysis(state: IngestState) -> dict:
             for marker in entity.get("markers", []):
                 gene = marker.get("gene_symbol", "")
                 mtype = marker.get("marker_type", "")
-                if gene and f"CONFLICT" in existing_content:
+                if gene and "CONFLICT" in existing_content:
                     contradictions.append({
                         "entity": name,
                         "description": f"Potential marker conflict for {gene} ({mtype})",
@@ -240,7 +237,6 @@ def review_node(state: IngestState) -> dict:
 
 def generate_pages(state: IngestState) -> dict:
     """Generate/update wiki pages based on analysis."""
-    from cellwiki.config import settings
     from cellwiki.knowledge import load_all_extractions, merge_to_wiki
 
     analysis = state.get("analysis", {})
@@ -253,7 +249,7 @@ def generate_pages(state: IngestState) -> dict:
         wiki = merge_to_wiki(extractions)
 
         # Generate cell type pages
-        from cellwiki.wiki import generate_cell_type_page, _proper_title_case
+        from cellwiki.wiki import generate_cell_type_page
 
         for key, wt in wiki.items():
             generate_cell_type_page(key, wt)
@@ -326,7 +322,7 @@ def update_index_log(state: IngestState) -> dict:
             ct_dir = settings.wiki_cell_types_dir
             ct_count = len(list(ct_dir.glob("*.md"))) if ct_dir.exists() else 0
             stats_content = stats_content.replace("| cell_type | 0 |", f"| cell_type | {ct_count} |")
-            stats_content = stats_content.replace(f"| **总计** | 0 |", f"| **总计** | {ct_count} |")
+            stats_content = stats_content.replace("| **总计** | 0 |", f"| **总计** | {ct_count} |")
             stats_path.write_text(stats_content, encoding="utf-8")
 
     except Exception as e:

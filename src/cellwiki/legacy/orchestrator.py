@@ -24,7 +24,6 @@ Usage:
     result = run_command("lint", {"auto_fix": True})
 """
 
-from pathlib import Path
 
 
 # ---------------------------------------------------------------------------
@@ -36,7 +35,6 @@ from pathlib import Path
 def build_orchestrator():
     """Build and compile the orchestrator StateGraph."""
     from langgraph.graph import StateGraph, END
-    from langgraph.checkpoint.memory import MemorySaver
     from cellwiki.legacy.graphs.checkpointer import get_checkpointer
     from cellwiki.legacy.graphs.states import OrchestratorState
 

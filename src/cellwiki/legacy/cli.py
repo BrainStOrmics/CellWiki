@@ -24,7 +24,7 @@ from cellwiki.config import settings, ensure_dirs
 from cellwiki.knowledge import load_all_extractions, save_extraction, rebuild_wiki
 from cellwiki.legacy.extract import extract_pdf_to_text
 from cellwiki.llm_extract import extract_cell_types_from_paper
-from cellwiki.wiki import generate_cell_type_page, generate_index_page, _proper_title_case
+from cellwiki.wiki import generate_index_page
 
 
 # v2.0 LangGraph imports — graceful degradation when optional deps are missing
@@ -92,11 +92,11 @@ def cmd_add(args):
             print(f"Already exists: {dest} (skipping copy)")
 
         # Extract text
-        print(f"Extracting text...")
+        print("Extracting text...")
         text = extract_pdf_to_text(str(dest))
 
         # LLM extraction
-        print(f"Extracting cell types via LLM...")
+        print("Extracting cell types via LLM...")
         result = extract_cell_types_from_paper(text, dest)
         print(f"  Extracted {len(result.cell_types)} cell types")
 
@@ -105,7 +105,7 @@ def cmd_add(args):
         print(f"  Saved extraction: {paper_id}")
 
     # Rebuild wiki once after all papers, not per-paper, to avoid N rebuilds
-    print(f"\nBuilding wiki pages...")
+    print("\nBuilding wiki pages...")
     rebuild_wiki()
 
 
@@ -136,12 +136,12 @@ def cmd_query(args):
         matches = [p.stem for p in settings.wiki_cell_types_dir.glob("*.md")
                    if name in p.stem.lower() or p.stem.lower().replace("_", " ") == name]
         if matches:
-            print(f"Did you mean one of these?")
+            print("Did you mean one of these?")
             for m in matches[:5]:
                 print(f"  {m}")
         else:
             print(f"Cell type not found: {name}")
-            print(f"Available types:")
+            print("Available types:")
             for p in sorted(settings.wiki_cell_types_dir.glob("*.md")):
                 print(f"  {p.stem}")
         return
@@ -199,7 +199,7 @@ def cmd_remove(args):
 
     if not extraction_file.exists():
         print(f"No extraction found for: {paper_id}")
-        print(f"Available extractions:")
+        print("Available extractions:")
         for f in sorted(settings.extraction_dir.glob("*.json")):
             print(f"  {f.stem}")
         return
@@ -215,7 +215,6 @@ def cmd_remove(args):
 
 def cmd_diff(args):
     """Show what changed in the wiki after the most recent addition."""
-    import yaml
 
     extractions = load_all_extractions()
     if len(extractions) < 2:
@@ -242,12 +241,12 @@ def cmd_diff(args):
     print(f"  Total extracted: {len(last_cell_types)}")
 
     if new_types:
-        print(f"\nNew cell types:")
+        print("\nNew cell types:")
         for t in sorted(new_types):
             print(f"  + {t}")
 
     if shared:
-        print(f"\nUpdated cell types (now have more data from this paper):")
+        print("\nUpdated cell types (now have more data from this paper):")
         for t in sorted(shared):
             print(f"  ~ {t}")
 
@@ -314,9 +313,8 @@ def cmd_review(args):
     from rich.prompt import Prompt, Confirm
     from rich.panel import Panel
     from rich.table import Table
-    from cellwiki.legacy.audit import run_audit, SEVERITY_HIGH, SEVERITY_MEDIUM, SEVERITY_LOW
+    from cellwiki.legacy.audit import run_audit
     from cellwiki.legacy.ontology import load_cell_ontology, load_cl_id_registry, load_manual_corrections
-    import json
 
     console = Console()
     ensure_dirs()

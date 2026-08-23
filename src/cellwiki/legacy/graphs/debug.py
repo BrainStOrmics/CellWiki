@@ -30,9 +30,7 @@ Usage:
 
 import json
 import time
-from datetime import datetime
-from typing import Any, Optional
-from pathlib import Path
+from typing import Any
 
 
 # ============================================================================
@@ -287,7 +285,7 @@ def trace_execution(graph, initial_state: dict, thread_id: str = "debug") -> dic
     print("=" * 60)
 
     # 打印初始状态
-    print(f"\n[INITIAL STATE]")
+    print("\n[INITIAL STATE]")
     debugger.print_state(initial_state)
 
     step = 0
@@ -315,7 +313,7 @@ def trace_execution(graph, initial_state: dict, thread_id: str = "debug") -> dic
         # 尝试获取最终状态
         try:
             final_state = graph.get_state(config=config)
-            print(f"\n[FINAL STATE]")
+            print("\n[FINAL STATE]")
             debugger.print_state(final_state.values)
         except Exception:
             pass
@@ -422,8 +420,8 @@ def visualize_state_history(thread_id: str, db_path: str = None) -> str:
         lines.append(f"   Node: {node}")
         lines.append(f"   Status: {status}")
         if i < len(history) - 1:
-            lines.append(f"   │")
-            lines.append(f"   ▼")
+            lines.append("   │")
+            lines.append("   ▼")
 
     lines.append("=" * 60)
     return "\n".join(lines)

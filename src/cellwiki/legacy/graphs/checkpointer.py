@@ -16,9 +16,7 @@ Defined in MASTER_PLAN.md Section 4.7.
 """
 
 import os
-import json
 from pathlib import Path
-from typing import Optional
 
 from langgraph.checkpoint.memory import MemorySaver
 

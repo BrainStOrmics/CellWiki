@@ -18,7 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, status
 
-from cellwiki.services.retention import RetentionPolicy, RetentionService
+from cellwiki.services.retention import RetentionService
 
 
 def create_retention_router(project_root: Path) -> APIRouter:
