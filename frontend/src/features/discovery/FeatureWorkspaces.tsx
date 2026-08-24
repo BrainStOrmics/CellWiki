@@ -1,42 +1,11 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  BookMarked,
-  Search,
-} from "lucide-react";
+import { Search } from "lucide-react";
 import { getJson } from "../../lib/product-api";
-import type { ChangeSetReview, SearchResult } from "../../types";
+import type { SearchResult } from "../../types";
 import { useI18n } from "../../i18n";
 
 type OpenResult = (result: SearchResult) => void;
-
-export function ReviewsWorkspace({
-  reviews,
-  onOpen,
-}: {
-  reviews: ChangeSetReview[];
-  onOpen: (review: ChangeSetReview) => void;
-}) {
-  const { t } = useI18n();
-  return (
-    <div className="feature-workspace">
-      <header className="feature-header"><div><BookMarked size={17} /><span><strong>{t("reviews.title")}</strong><small>{t("reviews.subtitle")}</small></span></div></header>
-      <div className="feature-list">
-        {reviews.length === 0 && <div className="feature-state">{t("reviews.empty")}</div>}
-        {reviews.map((review) => (
-          <button className="review-list-card" key={review.change_set.change_set_id} onClick={() => onOpen(review)}>
-            <span className={`review-risk ${review.change_set.risk}`}>{review.change_set.risk}</span>
-            <span>
-              <strong>{review.change_set.reason}</strong>
-              <small>{review.change_set.operations.length} {t("common.operations")} · {review.change_set.evidence.length} {t("common.evidenceLocators")}</small>
-            </span>
-            <em>{review.status.replaceAll("_", " ")}</em>
-          </button>
-        ))}
-      </div>
-    </div>
-  );
-}
 
 export function SearchWorkspace({ onOpen }: { onOpen: OpenResult }) {
   const { t } = useI18n();

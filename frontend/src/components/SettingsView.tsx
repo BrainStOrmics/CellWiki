@@ -9,23 +9,21 @@ import {
   EyeOff,
   FolderOpen,
   FlaskConical,
-  RefreshCw,
   KeyRound,
   Languages,
   LoaderCircle,
   RotateCcw,
   Save,
   Server,
-  ShieldCheck,
   SlidersHorizontal,
   TestTube2,
   XCircle,
 } from "lucide-react";
 import { useI18n } from "../i18n";
 import { isDesktopRuntime, openLogsDirectory, productFetch, restartBackend, runtimeConfig } from "../runtime";
-import type { AppSettings, PipelineStatus, ProviderTestResult } from "../types";
+import type { AppSettings, ProviderTestResult } from "../types";
 
-type SettingsSection = "model" | "interface" | "runtime";
+type SettingsSection = "model" | "interface" | "runtime" | "workspace";
 
 type SettingsDraft = {
   openai_base_url: string;
@@ -65,9 +63,8 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const [notice, setNotice] = useState<{ kind: "ok" | "error" | "restart"; text: string }>();
   const [testResult, setTestResult] = useState<ProviderTestResult>();
   const [runtime, setRuntime] = useState(() => runtimeConfig());
-  const [pipeline, setPipeline] = useState<PipelineStatus>();
-  const [pipelineLoading, setPipelineLoading] = useState(true);
-  const [pipelineSaving, setPipelineSaving] = useState(false);
+  const [workspacePath, setWorkspacePath] = useState("");
+  const [workspaceSaving, setWorkspaceSaving] = useState(false);
 
   async function loadSettings() {
     setLoading(true);
@@ -97,7 +94,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
 
   useEffect(() => {
     void loadSettings();
-    void loadPipelineStatus();
+    void loadWorkspace();
     // Product API owns the durable Agent runtime; the old :2024 server is debug-only.
     void productFetch("/health")
       .then((response) => setRuntime({ ...runtimeConfig(), ready: response.ok }))
@@ -167,35 +164,47 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function loadPipelineStatus() {
-    setPipelineLoading(true);
+  async function loadWorkspace() {
     try {
-      const response = await productFetch("/api/pipeline/status");
-      if (!response.ok) throw new Error(t("settings.pipelineLoadError"));
-      setPipeline(await response.json() as PipelineStatus);
+      const response = await productFetch("/api/workspace");
+      if (!response.ok) throw new Error(t("settings.workspaceLoadError"));
+      const payload = await response.json() as { path?: string };
+      setWorkspacePath(payload.path ?? "");
     } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.pipelineLoadError") });
-    } finally {
-      setPipelineLoading(false);
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.workspaceLoadError") });
     }
   }
 
-  async function updateApprovalPolicy(policy: PipelineStatus["approval_policy"]) {
-    setPipelineSaving(true);
+  async function pickWorkspaceDirectory() {
     try {
-      const response = await productFetch("/api/pipeline/approval-policy", {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({ directory: true, multiple: false });
+      if (typeof selected === "string" && selected) setWorkspacePath(selected);
+    } catch (error) {
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.workspaceError") });
+    }
+  }
+
+  async function selectWorkspace() {
+    setWorkspaceSaving(true);
+    setNotice(undefined);
+    try {
+      const response = await productFetch("/api/workspace/select", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ policy }),
+        body: JSON.stringify({ path: workspacePath.trim() }),
       });
-      const payload = await response.json().catch(() => null) as { approval_policy?: PipelineStatus["approval_policy"]; detail?: string } | null;
-      if (!response.ok || !payload?.approval_policy) throw new Error(payload?.detail ?? t("settings.pipelineSaveError"));
-      setPipeline((current) => current ? { ...current, approval_policy: payload.approval_policy! } : current);
-      setNotice({ kind: "ok", text: t("settings.pipelineSaved") });
+      const payload = await response.json().catch(() => null) as { path?: string; status?: string; requires_restart?: boolean; detail?: string } | null;
+      if (!response.ok || !payload) throw new Error(payload?.detail ?? t("settings.workspaceError"));
+      if (payload.path) setWorkspacePath(payload.path);
+      setNotice({
+        kind: payload.requires_restart ? "restart" : "ok",
+        text: payload.requires_restart ? t("settings.workspaceSavedRestart") : t("settings.saved"),
+      });
     } catch (error) {
-      setNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.pipelineSaveError") });
+      setNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.workspaceError") });
     } finally {
-      setPipelineSaving(false);
+      setWorkspaceSaving(false);
     }
   }
 
@@ -203,7 +212,9 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
     ? { eyebrow: t("settings.wikiAgent"), title: t("settings.modelTitle"), description: t("settings.modelDescription") }
     : section === "interface"
       ? { eyebrow: t("settings.interfaceEyebrow"), title: t("settings.interfaceTitle"), description: t("settings.interfaceDescription") }
-      : { eyebrow: t("settings.localServices"), title: t("settings.runtimeTitle"), description: t("settings.runtimeDescription") };
+      : section === "workspace"
+        ? { eyebrow: t("settings.workspace"), title: t("settings.workspaceTitle"), description: t("settings.workspaceDescription") }
+        : { eyebrow: t("settings.localServices"), title: t("settings.runtimeTitle"), description: t("settings.runtimeDescription") };
 
   return (
     <section className="settings-workspace">
@@ -223,6 +234,9 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
           <button className={section === "runtime" ? "active" : ""} onClick={() => setSection("runtime")}>
             <Activity size={15} /><span><b>{t("settings.runtime")}</b><small>{t("settings.runtimeHint")}</small></span>
           </button>
+          <button data-testid="settings-workspace-nav" className={section === "workspace" ? "active" : ""} onClick={() => setSection("workspace")}>
+            <FolderOpen size={15} /><span><b>{t("settings.workspace")}</b><small>{t("settings.workspaceHint")}</small></span>
+          </button>
         </nav>
         <button className="settings-back" onClick={onClose}><ArrowLeft size={14} />{t("settings.back")}</button>
       </aside>
@@ -239,6 +253,15 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
 
         {loading ? (
           <div className="settings-loading"><LoaderCircle className="spin" size={18} />{t("settings.loading")}</div>
+        ) : section === "workspace" ? (
+          <div className="settings-content">
+            <section className="settings-card workspace-card">
+              <div className="settings-card-title"><Server size={16} /><div><h3>{t("settings.workspaceTitle")}</h3><p>{t("settings.workspaceDescription")}</p></div></div>
+              <label className="settings-field"><span>{t("settings.workspacePath")}</span><input data-testid="workspace-path" value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} placeholder="D:\KB\my-kb" />{isDesktopRuntime && <button className="workspace-browse" type="button" onClick={() => void pickWorkspaceDirectory()}>{t("settings.workspaceBrowse")}</button>}</label>
+              <button className="workspace-select" type="button" onClick={() => void selectWorkspace()} disabled={workspaceSaving || !workspacePath.trim()}>{workspaceSaving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{t("settings.workspaceSelect")}</button>
+              <small>{t("settings.workspaceRestartHint")}</small>
+            </section>
+          </div>
         ) : section === "model" ? (
           <div className="settings-content">
             <section className="settings-card provider-identity">
@@ -279,24 +302,6 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             <section className="settings-card runtime-grid">
               <RuntimeStatus label="Product API + Agent Runtime" endpoint={runtime.productApiOrigin || "127.0.0.1"} online={runtime.ready} />
               <RuntimeStatus label="Runtime mode" endpoint={runtime.mode} online={runtime.ready} />
-            </section>
-            <section className="settings-card pipeline-governance">
-              <div className="settings-card-title"><ShieldCheck size={16} /><div><h3>{t("settings.pipelineTitle")}</h3><p>{t("settings.pipelineHint")}</p></div><span>{t("settings.pipelineGoverned")}</span></div>
-              {pipelineLoading ? (
-                <div className="pipeline-loading"><LoaderCircle className="spin" size={15} />{t("settings.pipelineLoading")}</div>
-              ) : pipeline ? (
-                <>
-                  <div className="pipeline-meta">
-                    <div><span>{t("settings.pipelineVersion")}</span><code>{pipeline.knowledge_version}</code></div>
-                    <div><span>{t("settings.pipelineReviewer")}</span><b>{pipeline.default_reviewer}</b></div>
-                    <div><span>{t("settings.pipelineTask")}</span><b>{pipeline.active_task ? `${pipeline.active_task.task_type} · ${pipeline.active_task.run_id}` : t("settings.pipelineIdle")}</b></div>
-                  </div>
-                  <label className="settings-field pipeline-policy-field"><span>{t("settings.pipelinePolicy")}</span><select data-testid="pipeline-policy" value={pipeline.approval_policy} disabled={pipelineSaving} onChange={(event) => void updateApprovalPolicy(event.target.value as PipelineStatus["approval_policy"])}><option value="manual">{t("settings.pipelineManual")}</option><option value="auto_all">{t("settings.pipelineAutoAll")}</option></select><small>{t("settings.pipelinePolicyHint")}</small></label>
-                  <button className="pipeline-refresh" type="button" onClick={() => void loadPipelineStatus()} disabled={pipelineLoading}><RefreshCw size={13} />{t("settings.pipelineRefresh")}</button>
-                </>
-              ) : (
-                <div className="pipeline-loading error"><XCircle size={15} />{t("settings.pipelineLoadError")}</div>
-              )}
             </section>
             <section className="settings-card">
               <div className="settings-card-title"><Activity size={16} /><div><h3>{t("settings.logging")}</h3><p>{t("settings.loggingHint")}</p></div></div>

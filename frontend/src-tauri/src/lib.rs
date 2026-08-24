@@ -433,6 +433,7 @@ fn open_logs(runtime: State<'_, DesktopRuntime>) -> Result<(), String> {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .invoke_handler(tauri::generate_handler![
             runtime_config,

@@ -21,41 +21,45 @@ const { productFetch } = vi.hoisted(() => ({
         }),
       });
     }
-    if (path === "/api/pipeline/status") {
+    if (path === "/api/workspace") {
       return Promise.resolve({
         ok: true,
-        json: async () => ({
-          project_id: "cellwiki",
-          knowledge_version: "sha256:test",
-          approval_policy: "manual",
-          default_reviewer: "default-reviewer",
-          active_task: null,
-        }),
+        json: async () => ({ path: "D:\\KB\\current", git_ready: true, wiki_page_count: 3 }),
+      });
+    }
+    if (path === "/api/workspace/select") {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ path: "D:\\KB\\new", status: "saved", requires_restart: true }),
       });
     }
     if (path === "/health") return Promise.resolve({ ok: true });
-    return Promise.resolve({ ok: true, json: async () => ({ approval_policy: "auto_all" }) });
+    return Promise.resolve({ ok: true, json: async () => ({}) });
   }),
 }));
 
 vi.mock("../runtime", () => ({
+  isDesktopRuntime: false,
   productFetch,
   openLogsDirectory: vi.fn(),
   restartBackend: vi.fn(),
   runtimeConfig: () => ({ productApiOrigin: "http://127.0.0.1:8000", mode: "development", logsDir: "logs", ready: true }),
 }));
 
-describe("SettingsView pipeline governance", () => {
-  it("shows the approval policy and can switch it", async () => {
+describe("SettingsView workspace", () => {
+  it("shows the current workspace path and switches to a new one", async () => {
     render(<LanguageProvider><SettingsView onClose={vi.fn()} /></LanguageProvider>);
 
-    fireEvent.click(screen.getByRole("button", { name: /运行环境/ }));
-    await waitFor(() => expect(screen.getByTestId("pipeline-policy")).toHaveValue("manual"));
-    fireEvent.change(screen.getByTestId("pipeline-policy"), { target: { value: "auto_all" } });
+    fireEvent.click(screen.getByTestId("settings-workspace-nav"));
+    await waitFor(() => expect(screen.getByTestId("workspace-path")).toHaveValue("D:\\KB\\current"));
 
-    expect(productFetch).toHaveBeenCalledWith(
-      "/api/pipeline/approval-policy",
+    fireEvent.change(screen.getByTestId("workspace-path"), { target: { value: "D:\\KB\\new" } });
+    fireEvent.click(screen.getByRole("button", { name: /切换并使用/ }));
+
+    await waitFor(() => expect(productFetch).toHaveBeenCalledWith(
+      "/api/workspace/select",
       expect.objectContaining({ method: "POST" }),
-    );
+    ));
+    await waitFor(() => expect(screen.getByTestId("workspace-path")).toHaveValue("D:\\KB\\new"));
   });
 });

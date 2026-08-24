@@ -30,6 +30,7 @@ _DEFAULTS = {
     "ENABLE_AGENT_MEMORY": "false",
     "ENABLE_EXTERNAL_RESEARCH": "false",
     "MEMORY_RECALL_TOKEN_BUDGET": "800",
+    "PROJECT_ROOT": "",
 }
 # 用户可编辑的配置键
 _EDITABLE_KEYS = tuple(_DEFAULTS)
@@ -172,6 +173,7 @@ class EnvironmentSettingsService:
             )
         )
         persisted = dict(normalized)
+        persisted["PROJECT_ROOT"] = current.get("PROJECT_ROOT", "")
         if (
             self.secret_store is not None
             and normalized["OPENAI_API_KEY"]
@@ -182,6 +184,12 @@ class EnvironmentSettingsService:
             persisted["OPENAI_API_KEY"] = ""
         self._write_values(persisted)
         return runtime_changed
+
+    def set_workspace_path(self, path: str) -> None:
+        """Persist the selected workspace root; the next process start reads PROJECT_ROOT."""
+        values = self._effective_values()
+        values["PROJECT_ROOT"] = self._single_line(path.strip(), "workspace path")
+        self._write_values(values)
 
     def test_connection(
         self,

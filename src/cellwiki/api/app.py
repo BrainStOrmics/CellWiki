@@ -39,7 +39,6 @@ from cellwiki.api.errors import create_error_router
 from cellwiki.api.retention import create_retention_router
 from cellwiki.api.security import DesktopTokenMiddleware
 from cellwiki.domain.contracts import WikiAgentContext
-from cellwiki.domain.pending_diff import PendingDiff
 from cellwiki.domain.runs import AgentRun, AgentRunStatus, RunBudget
 from cellwiki.services.attachment_store import (
     AttachmentFileStore,
@@ -88,6 +87,12 @@ class AnswerQuestionRequest(BaseModel):
 
     answers: str | list[str] | None = None
     timed_out: bool = False
+
+
+class WorkspaceSelectRequest(BaseModel):
+    """请求切换工作区根目录（写入 PROJECT_ROOT，重启后生效）。"""
+
+    path: str = Field(min_length=1, max_length=4096)
 
 
 class AgentRunRequest(BaseModel):
@@ -269,69 +274,42 @@ def create_app(
             )
         return results
 
-    @app.get("/api/sources")
-    def sources() -> list[dict]:
-        """阶段 0 后无独立 source registry：cli/workspace 直接读取 wiki 文件。"""
-        return []
-
-    @app.get("/api/quality")
-    def quality() -> dict:
-        """质量报告：基于当前 wiki 投影的快照（详细 L0/L1/L2 检查在后续阶段接入）。"""
-        tree = reader.tree()
-        page_count = len(tree)
+    # ==================== 工作区管理 ====================
+    @app.get("/api/workspace")
+    def get_workspace() -> dict:
+        """返回当前工作区根目录与初始化状态。"""
         return {
-            "status": "passed",
-            "page_count": page_count,
-            "issue_count": 0,
-            "error_count": 0,
-            "warning_count": 0,
-            "levels": {
-                "L0": {"status": "passed", "issue_count": 0, "description": "连接完整性检查"},
-                "L1": {"status": "not_run", "issue_count": 0, "description": "结构规范检查（未运行）"},
-                "L2": {"status": "not_run", "issue_count": 0, "description": "语义一致性检查（未运行）"},
-            },
-            "issues": [],
+            "path": str(root),
+            "git_ready": (root / ".git").exists(),
+            "wiki_page_count": len(reader.tree()),
         }
 
-    @app.get("/api/changesets")
-    def list_changesets() -> list[dict]:
-        """审批队列：待办 diff（agent 生成、等待人工审批）映射为变更集审查卡。"""
-        runtime = get_agent_runtime()
-        return [
-            _changeset_review(diff)
-            for diff in runtime.store.list_pending_diffs(limit=200)
-        ]
+    @app.post("/api/workspace/select")
+    def select_workspace(request: WorkspaceSelectRequest) -> dict:
+        """校验并持久化一个新的工作区根目录（重启后生效）。"""
+        from cellwiki.services.workspace import ensure_workspace, WorkspaceNotInitializedError
 
-    @app.get("/api/changesets/{change_set_id}/review")
-    def changeset_review(change_set_id: str) -> dict:
-        runtime = get_agent_runtime()
+        raw = request.path.strip()
+        if not raw or "\x00" in raw:
+            raise HTTPException(
+                status_code=422,
+                detail="workspace path is required and must not contain NUL bytes",
+            )
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            raise HTTPException(status_code=422, detail="workspace path must be absolute")
         try:
-            diff = runtime.store.get_pending_diff(change_set_id)
-        except KeyError:
-            raise HTTPException(status_code=404, detail="changeset not found") from None
-        return _changeset_review(diff)
-
-    @app.post("/api/changesets/{change_set_id}/decision")
-    def changeset_decision(change_set_id: str, body: dict | None) -> dict:
-        payload = body or {}
-        runtime = get_agent_runtime()
-        if payload.get("approved") is True:
-            runtime.accept_pending_diff(change_set_id)
-        else:
-            runtime.reject_pending_diff(change_set_id)
-        return _changeset_review(runtime.store.get_pending_diff(change_set_id))
-
-    @app.post("/api/changesets/{change_set_id}/rollback")
-    def changeset_rollback(change_set_id: str) -> dict:
-        runtime = get_agent_runtime()
-        runtime.reject_pending_diff(change_set_id)
-        return _changeset_review(runtime.store.get_pending_diff(change_set_id))
-
-    @app.delete("/api/changesets/{change_set_id}")
-    def changeset_reopen(change_set_id: str) -> dict:
-        runtime = get_agent_runtime()
-        runtime.reopen_pending_diff(change_set_id)
-        return {}
+            resolved = candidate.resolve()
+        except OSError as error:
+            raise HTTPException(status_code=422, detail=f"cannot resolve workspace path: {error}") from None
+        if resolved == root:
+            return {"path": str(root), "status": "unchanged", "requires_restart": False}
+        try:
+            ensure_workspace(resolved)
+        except (WorkspaceNotInitializedError, OSError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        environment.set_workspace_path(str(resolved))
+        return {"path": str(resolved), "status": "saved", "requires_restart": True}
 
     # ==================== 智能体线程管理 ====================
     @app.post("/api/agent/threads", status_code=status.HTTP_201_CREATED)
@@ -647,41 +625,6 @@ def create_app(
 # ===========================================================================
 # 辅助函数
 # ===========================================================================
-
-# 构建智能体运行负载：移除内部字段，添加 UI 辅助标记
-def _changeset_review(diff: PendingDiff) -> dict:
-    """pending diff -> 变更集审查卡（阶段 5 的审批 UI 消费此形状）。"""
-    ops: list[dict] = []
-    for path in diff.files:
-        op_type = "page_delete" if not Path(path).exists() else "page_update"
-        ops.append(
-            {
-                "type": op_type,
-                "target_id": path,
-                "payload": {"path": path, "status": "M", "additions": 0, "deletions": 0},
-            }
-        )
-    change_set = {
-        "change_set_id": diff.diff_id,
-        "run_id": diff.run_id,
-        "project_id": "cellwiki",
-        "operations": ops,
-        "evidence": [{"kind": "note", "note": f"pending diff from run {diff.run_id}"}],
-        "review_items": [],
-        "risk": "low",
-        "reason": diff.resolution or "Agent 修改待审批",
-        "created_at": diff.created_at.isoformat(),
-    }
-    return {
-        "change_set": change_set,
-        "status": "awaiting_review",
-        "review_status": "pending",
-        "reason": change_set["reason"],
-        "evidence": change_set["evidence"],
-        "review_items": [],
-        "preview": {"operations": ops, "total_operations": len(ops)},
-    }
-
 
 def _agent_run_payload(run: AgentRun, store: RuntimeStore | None = None) -> dict:
     payload = run.model_dump(mode="json")

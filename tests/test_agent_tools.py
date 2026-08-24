@@ -196,3 +196,11 @@ def test_runtime_tool_schema_is_exactly_the_whitelist(tmp_path: Path):
         "read_attachment",
         "submit_agent_answer",
     }
+
+def test_ls_with_empty_folder_defaults_to_root(tmp_path: Path):
+    """模型把 folder 传成空串时，ls 应归一化为工作区根而不是报错。"""
+    root = _workspace(tmp_path)
+    tools = _tools(root)
+    payload = json.loads(tools["ls"].invoke({"folder": ""}))
+    assert "error" not in payload, payload
+    assert payload["results"], "根目录应能列出条目"

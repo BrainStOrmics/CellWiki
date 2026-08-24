@@ -4,18 +4,15 @@ import {
   Bot,
   ChevronDown,
   ChevronRight,
-  CirclePlus,
-  Database,
   FileText,
   Folder,
   FolderOpen,
-  History,
   Library,
   MessageSquareText,
-  Network,
   PanelLeft,
   Play,
   RotateCcw,
+  CirclePlus,
   Search,
   Send,
   Settings,
@@ -24,9 +21,6 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { ChangesetList } from "../components/ChangesetList";
-import { ChangesetReview } from "../components/ChangesetReview";
-import { SourceDetail } from "../components/SourceDetail";
 import { ThemeToggle } from "../components/ThemeToggle";
 import { ZoomController } from "../components/ZoomController";
 import { useI18n } from "../i18n";
@@ -38,13 +32,9 @@ import { appendAsyncTask, attachmentReferencesForIds } from "./attachment-upload
 import { CommandPalette } from "../features/search/CommandPalette";
 import { ThreadList } from "../features/agent/ThreadList";
 import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
-import { AgentReviewCard, type AgentReviewSummary } from "../features/agent/AgentReviewCard";
 import { reduceAgentRunMessages } from "../features/agent/agent-run-reducer";
 import { SearchWorkspace } from "../features/discovery/FeatureWorkspaces";
 
-const GraphWorkspace = lazy(() => import("../features/graph/GraphWorkspace").then((module) => ({
-  default: module.GraphWorkspace,
-})));
 const SettingsView = lazy(() => import("../components/SettingsView").then((module) => ({
   default: module.SettingsView,
 })));
@@ -58,20 +48,14 @@ import type {
   AgentRun,
   AgentRunStatus,
   AttachmentRecord,
-  ChangeSetReview,
   Citation,
   ChatMessage,
-  IngestWorkflow,
   Page,
   PageDetail,
-  QualityReport,
   SearchResult,
-  Source,
-  TaskEvent,
 } from "../types";
 
 type ResizeSide = "left" | "right";
-type PendingInterrupt = { threadId: string; runId: string; changeSetId: string };
 
 const agentEventTypes: AgentEventType[] = [
   "run_status",
@@ -147,19 +131,11 @@ const emptyPageDetail: PageDetail = { page_id: "", frontmatter: {}, markdown: ""
 
 type WorkspaceData = {
   pages: Page[];
-  sources: Source[];
-  reviews: ChangeSetReview[];
-  quality: QualityReport;
 };
 
 async function loadWorkspaceData(): Promise<WorkspaceData> {
-  const [pages, sources, reviews, quality] = await Promise.all([
-    getJson<Page[]>("/api/projects/cellwiki/tree"),
-    getJson<Source[]>("/api/sources"),
-    getJson<ChangeSetReview[]>("/api/changesets"),
-    getJson<QualityReport>("/api/quality"),
-  ]);
-  return { pages, sources, reviews, quality };
+  const pages = await getJson<Page[]>("/api/projects/cellwiki/tree");
+  return { pages };
 }
 
 function clamp(value: number, minimum: number, maximum: number) {
@@ -192,16 +168,8 @@ export function AppShell() {
     () => useUiStore.getState().composerPageRef?.page_id ?? "",
   );
   const [detail, setDetail] = useState<PageDetail>(emptyPageDetail);
-  const [sources, setSources] = useState<Source[]>([]);
-  const [reviews, setReviews] = useState<ChangeSetReview[]>([]);
-  const [selectedChangeSetId, setSelectedChangeSetId] = useState<string | null>(null);
-  const [quality, setQuality] = useState<QualityReport>();
-  const [activeRunId, setActiveRunId] = useState<string | null>(null);
-  const [taskEvents, setTaskEvents] = useState<TaskEvent[]>([]);
-  const [selectedSourceId, setSelectedSourceId] = useState<string | null>(null);
-  const [workflow, setWorkflow] = useState<IngestWorkflow>({ phase: "idle", message: t("workflow.ready") });
   const [filter, setFilter] = useState("");
-  const [expanded, setExpanded] = useState(() => new Set(["root", "wiki", "cell-types", "sources"]));
+  const [expanded, setExpanded] = useState(() => new Set(["root", "wiki", "cell-types"]));
   const [messages, setMessages] = useState<ChatMessage[]>([initialAgentMessage]);
   const [draft, setDraft] = useState("");
   const [agentBusy, setAgentBusy] = useState(false);
@@ -209,8 +177,9 @@ export function AppShell() {
   const [retryableAgentRunId, setRetryableAgentRunId] = useState<string | null>(null);
   const [resumableAgentRunId, setResumableAgentRunId] = useState<string | null>(null);
   const [agentActivity, setAgentActivity] = useState("");
-  const [pendingInterrupt, setPendingInterrupt] = useState<PendingInterrupt | null>(null);
   const [attachments, setAttachments] = useState<AttachmentRecord[]>([]);
+  const [pendingInterrupt, setPendingInterrupt] = useState(null as { threadId: string; runId: string; changeSetId: string } | null);
+  const [workflow, setWorkflow] = useState<{ phase: string; message: string; error?: string }>({ phase: "idle", message: t("workflow.ready") });
   const [attachmentUploadBusy, setAttachmentUploadBusy] = useState(false);
   const [apiOnline, setApiOnline] = useState(false);
   const leftWidth = useUiStore((state) => state.leftWidth);
@@ -231,7 +200,6 @@ export function AppShell() {
   const setActiveView = useUiStore((state) => state.setActiveView);
   const setCommandPaletteOpen = useUiStore((state) => state.setCommandPaletteOpen);
   const workbenchRef = useRef<HTMLDivElement>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
   const attachmentRef = useRef<HTMLInputElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
@@ -302,9 +270,6 @@ export function AppShell() {
   useEffect(() => {
     if (!workspaceQuery.data) return;
     setPages(workspaceQuery.data.pages);
-    setSources(workspaceQuery.data.sources);
-    setReviews(workspaceQuery.data.reviews);
-    setQuality(workspaceQuery.data.quality);
     setApiOnline(true);
     if (workspaceQuery.data.pages.length === 0) {
       setSelectedId("");
@@ -365,14 +330,10 @@ export function AppShell() {
   }, [messages, agentBusy]);
 
   const selectedPage = pages.find((page) => page.page_id === selectedId);
-  const selectedSource = sources.find((source) => source.source_id === selectedSourceId);
-  const selectedReview = selectedChangeSetId
-    ? reviews.find((review) => review.change_set.change_set_id === selectedChangeSetId)
-    : undefined;
   const selectedTitle = String(detail.frontmatter.display_name ?? selectedPage?.title ?? selectedId.replaceAll("_", " "));
   const selectedPath = selectedPage?.path ?? (selectedId ? `wiki/cell_types/${selectedId}.md` : "cellwiki");
-  const contextTitle = (selectedSource?.original_name ?? selectedTitle) || t("reader.workspace");
-  const contextPath = selectedSource ? `sources/${selectedSource.source_id}` : selectedPath;
+  const contextTitle = selectedTitle || t("reader.workspace");
+  const contextPath = selectedPath;
   const references = Array.isArray(detail.frontmatter.references) ? detail.frontmatter.references : [];
   const activeAttachments = activeAttachmentIds
     .map((attachmentId) => attachments.find((attachment) => attachment.attachment_id === attachmentId))
@@ -385,66 +346,6 @@ export function AppShell() {
       return searchable.includes(normalizedFilter);
     });
   }, [normalizedFilter, pages]);
-
-  useEffect(() => {
-    if (
-      !selectedReview
-      || workflow.phase === "preparing"
-      || workflow.phase === "cancelling"
-      || workflow.phase === "cancelled"
-      || workflow.phase === "committing"
-      || workflow.phase === "failed"
-    ) return;
-    const phase = selectedReview.status === "committed"
-      ? "committed"
-      : selectedReview.status === "rolled_back"
-        ? "rolled_back"
-      : selectedReview.status === "rejected"
-        ? "rejected"
-        : "awaiting_review";
-    setWorkflow({
-      phase,
-      message: phase === "committed"
-        ? t("workflow.committed")
-        : phase === "rolled_back"
-          ? t("workflow.rolledBack")
-        : phase === "rejected"
-          ? t("workflow.rejected")
-          : t("workflow.review"),
-    });
-  }, [selectedReview?.change_set.change_set_id, selectedReview?.status]);
-
-  useEffect(() => {
-    if (selectedReview) {
-      setActiveRunId(selectedReview.change_set.run_id);
-      return;
-    }
-    if (workflow.phase !== "preparing" && workflow.phase !== "cancelling" && workflow.phase !== "cancelled") {
-      setActiveRunId(null);
-      setTaskEvents([]);
-    }
-  }, [selectedReview?.change_set.run_id, selectedSourceId, workflow.phase]);
-
-  useEffect(() => {
-    if (!activeRunId) return;
-    let disposed = false;
-    const loadTimeline = async () => {
-      try {
-        const result = await getJson<{ run_id: string; events: TaskEvent[] }>(`/api/tasks/${encodeURIComponent(activeRunId)}`);
-        if (!disposed) setTaskEvents(result.events);
-      } catch {
-        // The Agent can take a moment to emit the first event after the run ID is allocated.
-      }
-    };
-
-    void loadTimeline();
-    const isActive = workflow.phase === "preparing" || workflow.phase === "cancelling" || workflow.phase === "committing";
-    const timer = isActive ? window.setInterval(() => void loadTimeline(), 700) : undefined;
-    return () => {
-      disposed = true;
-      if (timer !== undefined) window.clearInterval(timer);
-    };
-  }, [activeRunId, workflow.phase]);
 
   function toggleFolder(id: string) {
     setExpanded((current) => {
@@ -573,35 +474,6 @@ export function AppShell() {
     if (event.type === "error" && event.data.retryable === true) {
       setRetryableAgentRunId(event.run_id);
     }
-    if (event.type === "review_required") {
-      const changeSetId = findNestedString(event.data, "change_set_id");
-      if (changeSetId) {
-        setPendingInterrupt({ threadId: event.thread_id, runId: event.run_id, changeSetId });
-        setSelectedChangeSetId(changeSetId);
-        setMessages((current) => current.some(
-          (message) => message.runId === event.run_id && message.meta === t("chat.humanReviewMeta"),
-        ) ? current : [...current, {
-          role: "agent",
-          text: t("workflow.approvalRequired").replace("{id}", changeSetId),
-          meta: t("chat.humanReviewMeta"),
-          runId: event.run_id,
-        }]);
-        void refreshWorkspace();
-      }
-    } else if (event.type === "changeset_ready") {
-      const changeSetId = findNestedString(event.data, "change_set_id");
-      if (changeSetId) {
-        setSelectedChangeSetId(changeSetId);
-        setPendingInterrupt({
-          threadId: event.thread_id,
-          runId: event.run_id,
-          changeSetId,
-        });
-        void refreshWorkspace();
-      }
-      setAgentActivity(event.message || t("workflow.review"));
-    }
-
     if (event.type === "tool_started") setAgentActivity(t("chat.toolRunning"));
     if (event.type === "tool_completed") setAgentActivity(t("chat.toolCompleted"));
     if (event.type === "subagent_completed") setAgentActivity(t("chat.subagentCompleted"));
@@ -703,9 +575,6 @@ export function AppShell() {
     setRetryableAgentRunId(null);
     setAgentActivity("");
     setAgentBusy(false);
-    setPendingInterrupt(null);
-    setSelectedChangeSetId(null);
-    setActiveRunId(null);
     setWorkflow({ phase: "idle", message: t("workflow.ready") });
     replaceAttachmentRecords([]);
     clearActiveAttachments();
@@ -790,7 +659,6 @@ export function AppShell() {
         clearActiveAttachments();
         setActiveAgentRunId(null);
         setRetryableAgentRunId(null);
-        setPendingInterrupt(null);
         setMessages([initialAgentMessage]);
       }
     } catch (error) {
@@ -841,180 +709,6 @@ export function AppShell() {
     }
   }
 
-  async function loadChangeSetReview(changeSetId: string) {
-    const cached = reviews.find((review) => review.change_set.change_set_id === changeSetId);
-    return cached ?? getJson<ChangeSetReview>(`/api/changesets/${encodeURIComponent(changeSetId)}/review`);
-  }
-
-  async function requestIngestRevision(comment: string) {
-    const changeSetId = selectedReview?.change_set.change_set_id;
-    if (!changeSetId) return;
-    await requestIngestRevisionForChangeSet(changeSetId, comment);
-  }
-
-  async function requestIngestRevisionForChangeSet(changeSetId: string, comment: string) {
-    if (agentBusy) return;
-    setWorkflow({ phase: "preparing", message: t("workflow.preparing") });
-    setAgentBusy(true);
-    setMessages((current) => [
-      ...current,
-      { role: "user", text: `${t("source.requestRevision")}: ${comment}` },
-    ]);
-    try {
-      if (pendingInterrupt?.changeSetId === changeSetId) {
-        await resumeAgent(pendingInterrupt.runId, "reject");
-        setPendingInterrupt(null);
-      }
-      await runAgent(
-        `Revise ChangeSet ${changeSetId} using this reviewer feedback: ${comment}`,
-      );
-    } catch (error) {
-      setWorkflow({
-        phase: "failed",
-        message: t("workflow.proposalFailed"),
-        error: error instanceof Error ? error.message : "Unknown revision error",
-      });
-    } finally {
-      setAgentBusy(false);
-    }
-  }
-
-  async function approveChangeSet(requestedChangeSetId?: string) {
-    const changeSetId = requestedChangeSetId ?? selectedReview?.change_set.change_set_id;
-    if (!changeSetId || agentBusy) return;
-    setWorkflow({ phase: "committing", message: t("workflow.committing") });
-    setAgentBusy(true);
-    try {
-      const review = await loadChangeSetReview(changeSetId);
-      setSelectedChangeSetId(changeSetId);
-      setActiveRunId(review.change_set.run_id);
-      if (pendingInterrupt?.changeSetId === changeSetId) {
-        await resumeAgent(pendingInterrupt.runId, "approve");
-        setPendingInterrupt(null);
-      } else {
-        await postJson<ChangeSetReview>(`/api/changesets/${changeSetId}/decision`, {
-          approved: true,
-          reason: "Reviewed and approved in the CellWiki desktop workspace.",
-        });
-      }
-      const refreshed = await refreshWorkspace();
-      const committed = refreshed.reviews.find((review) => review.change_set.change_set_id === changeSetId);
-      if (committed?.status !== "committed") throw new Error("The commit did not reach a committed state.");
-      setWorkflow({ phase: "committed", message: t("workflow.committed") });
-      setMessages((current) => [...current, { role: "agent", text: `${changeSetId} was committed. The Wiki projection and quality report are refreshed.`, meta: t("chat.commitMeta") }]);
-    } catch (error) {
-      setWorkflow({ phase: "failed", message: t("workflow.commitFailed"), error: error instanceof Error ? error.message : "Unknown commit error" });
-    } finally {
-      setAgentBusy(false);
-    }
-  }
-
-  async function rejectChangeSet(requestedChangeSetId?: string) {
-    const changeSetId = requestedChangeSetId ?? selectedReview?.change_set.change_set_id;
-    if (!changeSetId || agentBusy) return;
-    setAgentBusy(true);
-    try {
-      const review = await loadChangeSetReview(changeSetId);
-      setSelectedChangeSetId(changeSetId);
-      setActiveRunId(review.change_set.run_id);
-      if (pendingInterrupt?.changeSetId === changeSetId) {
-        await resumeAgent(pendingInterrupt.runId, "reject");
-        setPendingInterrupt(null);
-      }
-      await postJson<ChangeSetReview>(`/api/changesets/${changeSetId}/decision`, {
-        approved: false,
-        reason: "Rejected in the CellWiki desktop workspace.",
-      });
-      await refreshWorkspace();
-      setWorkflow({ phase: "rejected", message: t("workflow.rejected") });
-      setMessages((current) => [...current, { role: "agent", text: `${changeSetId} was rejected. No formal knowledge was changed.`, meta: t("chat.rejectedMeta") }]);
-    } catch (error) {
-      setWorkflow({ phase: "failed", message: t("workflow.rejectFailed"), error: error instanceof Error ? error.message : "Unknown review error" });
-    } finally {
-      setAgentBusy(false);
-    }
-  }
-
-  async function rollbackChangeSet() {
-    if (!selectedReview || selectedReview.status !== "committed" || agentBusy) return;
-    if (!window.confirm(t("source.rollbackConfirm"))) return;
-    const changeSetId = selectedReview.change_set.change_set_id;
-    setWorkflow({ phase: "committing", message: t("workflow.rollback") });
-    setAgentBusy(true);
-    try {
-      await postJson<ChangeSetReview>(`/api/changesets/${changeSetId}/rollback`, {
-        reason: "Rolled back from the CellWiki desktop review workspace.",
-      });
-      await refreshWorkspace();
-      setSelectedChangeSetId(changeSetId);
-      setWorkflow({ phase: "rolled_back", message: t("workflow.rolledBack") });
-    } catch (error) {
-      setWorkflow({
-        phase: "failed",
-        message: t("workflow.rollbackFailed"),
-        error: error instanceof Error ? error.message : t("workflow.rollbackFailed"),
-      });
-    } finally {
-      setAgentBusy(false);
-    }
-  }
-
-  function describeDeleteError(error: unknown): string {
-    const detail = error instanceof ProductApiError ? error.detail : undefined;
-    if (detail && typeof detail === "object") {
-      const record = detail as { detail?: unknown; error?: unknown };
-      // FastAPI 的 HTTPException 会把 409 负载放在 { detail: {...} } 内
-      if (record.detail && typeof record.detail === "object") {
-        const inner = record.detail as { detail?: unknown; error?: unknown };
-        if (typeof inner.detail === "string") return inner.detail;
-        if (typeof inner.error === "string") return inner.error;
-      }
-      if (typeof record.detail === "string") return record.detail;
-      if (typeof record.error === "string") return record.error;
-    }
-    return error instanceof Error ? error.message : "Unknown delete error";
-  }
-
-  async function deleteChangeSet() {
-    const changeSetId = selectedReview?.change_set.change_set_id;
-    if (!changeSetId || agentBusy) return;
-    if (!window.confirm(t("changesets.deleteConfirm"))) return;
-    setAgentBusy(true);
-    try {
-      await deleteJson(`/api/changesets/${encodeURIComponent(changeSetId)}`);
-      await refreshWorkspace();
-      setSelectedChangeSetId(null);
-      setActiveRunId(null);
-      setTaskEvents([]);
-      setWorkflow({ phase: "idle", message: t("workflow.ready") });
-    } catch (error) {
-      setWorkflow({
-        phase: "failed",
-        message: t("changesets.deleteFailed"),
-        error: describeDeleteError(error),
-      });
-    } finally {
-      setAgentBusy(false);
-    }
-  }
-
-  async function deleteSource() {
-    const sourceId = selectedSource?.source_id;
-    if (!sourceId || agentBusy) return;
-    if (!window.confirm(t("sources.deleteConfirm"))) return;
-    setAgentBusy(true);
-    try {
-      await deleteJson(`/api/sources/${encodeURIComponent(sourceId)}`);
-      await refreshWorkspace();
-      setSelectedSourceId(null);
-      setWorkflow({ phase: "idle", message: t("workflow.ready") });
-    } catch (error) {
-      window.alert(describeDeleteError(error) || t("sources.deleteFailed"));
-    } finally {
-      setAgentBusy(false);
-    }
-  }
-
   async function cancelActiveAgentRun() {
     if (!activeAgentRunId) return;
     setWorkflow((current) => current.phase === "preparing"
@@ -1029,7 +723,6 @@ export function AppShell() {
         setWorkflow((current) => current.phase === "preparing" || current.phase === "cancelling"
           ? { phase: "cancelled", message: t("workflow.cancelled") }
           : current);
-        setPendingInterrupt(null);
         setActiveAgentRunId(null);
         setAgentBusy(false);
         setAgentActivity(t("chat.runCancelled"));
@@ -1080,30 +773,6 @@ export function AppShell() {
         role: "agent",
         text: error instanceof Error ? error.message : t("chat.runFailed"),
         meta: "RUNTIME · RETRY ERROR",
-      }]);
-    }
-  }
-
-  async function uploadSource(file: File) {
-    const body = new FormData();
-    body.append("file", file);
-    try {
-      const response = await productFetch("/api/sources", { method: "POST", body });
-      if (!response.ok) throw new Error("upload failed");
-      const source = await response.json() as Source;
-      setSources((current) => [source, ...current.filter((item) => item.source_id !== source.source_id)]);
-      setSelectedSourceId(source.source_id);
-      setWorkflow({ phase: "idle", message: t("workflow.ready") });
-      setMessages((current) => [...current, {
-        role: "agent",
-        text: t("workflow.sourceRegistered").replace("{name}", source.original_name),
-        meta: t("chat.sourceReadyMeta"),
-      }]);
-    } catch {
-      setMessages((current) => [...current, {
-        role: "agent",
-        text: t("workflow.sourceRegistrationFailed"),
-        meta: t("chat.sourceErrorMeta"),
       }]);
     }
   }
@@ -1177,7 +846,7 @@ export function AppShell() {
   }
 
   async function startNewChat() {
-    if (agentBusy || pendingInterrupt || attachmentUploadBusy || attachmentUploadRef.current) return;
+    if (agentBusy || attachmentUploadBusy || attachmentUploadRef.current) return;
     agentEventSourceRef.current?.close();
     streamGenerationRef.current += 1;
     agentThreadIdRef.current = null;
@@ -1187,7 +856,6 @@ export function AppShell() {
     setAgentActivity("");
     agentEventSequenceRef.current = 0;
     processedAgentEventsRef.current.clear();
-    setPendingInterrupt(null);
     replaceAttachmentRecords([]);
     clearActiveAttachments();
     setDraft("");
@@ -1210,26 +878,14 @@ export function AppShell() {
   function openCitation(citation: Citation) {
     if (!citation.page_id) return;
     // A citation changes only the reader context; the conversation remains intact.
-    setSelectedSourceId(null);
     setSelectedId(citation.page_id);
     setActiveView("wiki");
   }
 
   function openSearchResult(result: SearchResult) {
-    if (result.source_id && result.type === "source") {
-      setSelectedSourceId(result.source_id);
-      setActiveView("sources");
-      return;
-    }
     if (result.page_id) {
       setSelectedId(result.page_id);
-      setSelectedSourceId(null);
       setActiveView("wiki");
-      return;
-    }
-    if (result.source_id) {
-      setSelectedSourceId(result.source_id);
-      setActiveView("sources");
     }
   }
 
@@ -1257,11 +913,9 @@ export function AppShell() {
       <div className="app-body">
         <nav className="icon-rail" aria-label={t("nav.workspace")}>
           <div className="rail-main">
-            <button className={activeView === "wiki" ? "rail-button active" : "rail-button"} onClick={() => { setActiveView("wiki"); setSelectedSourceId(null); setSelectedChangeSetId(null); }} title={t("nav.wiki")} aria-label={t("nav.wiki")}><PanelLeft size={19} /></button>
+            <button className={activeView === "wiki" ? "rail-button active" : "rail-button"} onClick={() => setActiveView("wiki")} title={t("nav.wiki")} aria-label={t("nav.wiki")}><PanelLeft size={19} /></button>
             <button className="rail-button" onClick={() => document.querySelector<HTMLTextAreaElement>(".chat-compose textarea")?.focus()} title={t("nav.agent")} aria-label={t("nav.agent")}><MessageSquareText size={19} /></button>
             <button className={activeView === "search" ? "rail-button active" : "rail-button"} onClick={() => setActiveView("search")} title={t("nav.search")} aria-label={t("nav.search")}><Search size={19} /></button>
-            <button className={activeView === "sources" ? "rail-button active" : "rail-button"} onClick={() => { setActiveView("sources"); if (sources[0] && !selectedSourceId) setSelectedSourceId(sources[0].source_id); else if (!sources[0]) fileRef.current?.click(); }} title={t("nav.sources")} aria-label={t("nav.sources")}><Database size={19} /></button>
-            <button className={activeView === "changesets" ? "rail-button active" : "rail-button"} onClick={() => { setActiveView("changesets"); setSelectedSourceId(null); }} title={t("nav.changesets")} aria-label={t("nav.changesets")}><History size={19} /></button>
           </div>
           <div className="rail-bottom">
             <span className={apiOnline ? "rail-health online" : "rail-health"} title={apiOnline ? t("runtime.online") : t("runtime.offline")} />
@@ -1276,17 +930,9 @@ export function AppShell() {
         ) : (
         <div className="workbench" ref={workbenchRef}>
           <aside className="file-panel" style={{ width: leftWidth }}>
-            {activeView === "changesets" ? (
-              <ChangesetList
-                reviews={reviews}
-                selectedId={selectedChangeSetId}
-                onSelect={(changeSetId) => setSelectedChangeSetId(changeSetId)}
-              />
-            ) : (
               <>
             <div className="panel-toolbar">
               <span>{t("explorer.title")}</span>
-              <button className="icon-button" onClick={() => fileRef.current?.click()} title={t("explorer.register")} aria-label={t("explorer.register")}><Upload size={14} /></button>
             </div>
             <div className="file-search">
               <Search size={14} />
@@ -1312,8 +958,6 @@ export function AppShell() {
                             title: page.title ?? fileNameForPage(page),
                             path: page.path,
                           });
-                          setSelectedSourceId(null);
-                          setSelectedChangeSetId(null);
                         }}
                         title={page.path}
                       >
@@ -1324,36 +968,13 @@ export function AppShell() {
                     {filteredPages.length === 0 && <div className="tree-empty">{t("explorer.noMatches")}</div>}
                   </TreeFolder>
                 </TreeFolder>
-                <TreeFolder label="sources" depth={1} open={expanded.has("sources")} onToggle={() => toggleFolder("sources")} count={sources.length}>
-                  {sources.map((source) => (
-                    <button className={source.source_id === selectedSourceId ? "tree-source selected" : "tree-source"} style={{ paddingLeft: 18 + 16 * 2 }} key={source.source_id} title={source.content_hash} onClick={() => { setActiveView("sources"); setSelectedSourceId(source.source_id); setSelectedChangeSetId(null); }}>
-                      <FileText size={14} />
-                      <span>{source.original_name}</span>
-                      <i className={source.status === "analyzed" ? "source-state analyzed" : "source-state ready"} />
-                    </button>
-                  ))}
-                  {sources.length === 0 && <div className="tree-empty source-empty">{t("explorer.noSources")}</div>}
-                </TreeFolder>
               </TreeFolder>
             </div>
 
             <div className="file-panel-footer">
-              <button onClick={() => fileRef.current?.click()}><CirclePlus size={14} />{t("explorer.register")}</button>
               <span>{pages.length} {t("explorer.pages")}</span>
-              <input
-                ref={fileRef}
-                type="file"
-                accept=".pdf,.md,.txt"
-                hidden
-                onChange={(event) => {
-                  const file = event.target.files?.[0];
-                  if (file) void uploadSource(file);
-                  event.currentTarget.value = "";
-                }}
-              />
             </div>
                         </>
-            )}
           </aside>
 
           <div className="resize-handle" onMouseDown={(event) => beginResize("left", event)} role="separator" aria-label={t("explorer.resize")} />
@@ -1361,12 +982,12 @@ export function AppShell() {
           <section className="reader-panel">
             <div className="reader-toolbar">
               <div className="breadcrumb-path">
-                {selectedSource || activeView === "changesets" ? <Database size={14} /> : <Library size={14} />}
+                <Library size={14} />
                 {contextPath.split("/").map((part, index, parts) => (
                   <span key={`${part}-${index}`}>{part}{index < parts.length - 1 && <ChevronRight size={12} />}</span>
                 ))}
               </div>
-              <span className={selectedSource || activeView === "changesets" ? "published-state review" : "published-state"}><i />{selectedSource || activeView === "changesets" ? t("reader.review") : t("reader.published")}</span>
+              <span className="published-state"><i />{t("reader.published")}</span>
             </div>
 
             <div className="reader-scroll">
@@ -1374,43 +995,14 @@ export function AppShell() {
                 <div className="feature-state">{t("workspace.loading")}</div>
               ) : workspaceQuery.isError ? (
                 <div className="feature-state error">{t("workspace.offline")}</div>
-              ) : activeView === "graph" ? (
-                <Suspense fallback={<div className="feature-state">{t("workspace.graphLoading")}</div>}>
-                  <GraphWorkspace
-                    focus={`cell_type:${selectedId}`}
-                    onOpenPage={(pageId) => { setSelectedId(pageId); setSelectedSourceId(null); setActiveView("wiki"); }}
-                    onOpenSource={(sourceId) => { setSelectedSourceId(sourceId); setActiveView("sources"); }}
-                  />
-                </Suspense>
               ) : activeView === "search" ? (
                 <SearchWorkspace onOpen={openSearchResult} />
-              ) : activeView === "changesets" ? (
-                selectedReview ? (
-                  <ChangesetReview
-                    review={selectedReview}
-                    workflow={workflow}
-                    quality={quality}
-                    taskEvents={taskEvents}
-                    onApprove={() => void approveChangeSet()}
-                    onReject={() => void rejectChangeSet()}
-                    onRollback={() => void rollbackChangeSet()}
-                    onDelete={() => void deleteChangeSet()}
-                    onRequestRevision={(comment) => void requestIngestRevision(comment)}
-                  />
-                ) : (
-                  <div className="feature-state">{t("changesets.noSelection")}</div>
-                )
-              ) : selectedSource ? (
-                <SourceDetail
-                  source={selectedSource}
-                  onDelete={() => void deleteSource()}
-                />
               ) : !selectedId ? (
                 <div className="feature-state onboarding-empty">
                   <Library size={28} />
                   <strong>{t("reader.emptyTitle")}</strong>
                   <span>{t("reader.emptyBody")}</span>
-                  <button onClick={() => fileRef.current?.click()}><Upload size={14} />{t("reader.addSource")}</button>
+                  <button onClick={() => setActiveView("search")}><Search size={14} />{t("nav.search")}</button>
                 </div>
               ) : pageQuery.isLoading ? (
                 <div className="feature-state">{t("reader.pageLoading")}</div>
@@ -1424,21 +1016,12 @@ export function AppShell() {
                     <span>{references.length} {t("reader.references")}</span>
                     <span>{t("reader.stable")}</span>
                     <span>{t("reader.verified")}</span>
-                    <button
-                      className="document-graph-action"
-                      onClick={() => setActiveView("graph")}
-                      title={t("reader.viewGraph")}
-                    >
-                      <Network size={13} />
-                      {t("reader.viewGraph")}
-                    </button>
                   </div>
                   <MarkdownReader
                     markdown={detail.markdown}
                     onWikiLink={(pageId) => {
                       if (pages.some((page) => page.page_id === pageId)) {
                         setSelectedId(pageId);
-                        setSelectedSourceId(null);
                       }
                     }}
                     onAskSelection={(text) => {
@@ -1479,7 +1062,7 @@ export function AppShell() {
                 {activeAgentRunId && (
                   <button className="icon-button stop-run" onClick={() => void cancelActiveAgentRun()} title={t("chat.cancel")} aria-label={t("chat.cancel")}><Square size={13} /></button>
                 )}
-                <button className="icon-button" disabled={agentBusy || pendingInterrupt !== null || attachmentUploadBusy} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
+                <button className="icon-button" disabled={agentBusy || attachmentUploadBusy} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
               </div>
             </div>
             <ThreadList
@@ -1504,30 +1087,6 @@ export function AppShell() {
               )}
               {selectedText && <blockquote>{selectedText}</blockquote>}
             </div>
-
-            {pendingInterrupt && (
-              <AgentReviewCard
-                changeSetId={pendingInterrupt.changeSetId}
-                summary={(() => {
-                  const review = reviews.find((item) => item.change_set.change_set_id === pendingInterrupt.changeSetId);
-                  if (!review) return undefined;
-                  return {
-                    reason: review.change_set.reason,
-                    risk: review.change_set.risk,
-                    operationCount: review.change_set.operations.length,
-                    evidenceCount: review.change_set.evidence.length,
-                  } satisfies AgentReviewSummary;
-                })()}
-                allowRevision={(() => {
-                  const review = reviews.find((item) => item.change_set.change_set_id === pendingInterrupt.changeSetId);
-                  return !review?.change_set.operations.some((operation) => operation.type === "apply_lint_fix");
-                })()}
-                disabled={agentBusy}
-                onApprove={() => void approveChangeSet(pendingInterrupt.changeSetId)}
-                onReject={() => void rejectChangeSet(pendingInterrupt.changeSetId)}
-                onRequestRevision={(comment) => void requestIngestRevisionForChangeSet(pendingInterrupt.changeSetId, comment)}
-              />
-            )}
 
             <div className="chat-scroll" ref={chatScrollRef}>
               <div className="chat-day">{t("chat.session")}</div>

@@ -701,3 +701,87 @@ def test_real_graph_interrupt_pause_and_command_resume(tmp_path: Path):
     assert result["status"] == AgentRunStatus.SUCCEEDED.value
     messages = runtime.store.list_context_messages(thread_id)
     assert any("已按你的选择完成" in item["content"] for item in messages)
+
+def test_pending_diff_published_when_workspace_had_no_commits(tmp_path: Path):
+    """Bug 回归：fresh 工作区（无初始 commit）的首个 Agent 提交也必须发布待确认 diff。"""
+    from cellwiki.services.workspace import ensure_workspace
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    ensure_workspace(repo)  # 初始化但无初始 commit -> run 快照为 None
+
+    class FirstWritingAdapter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "note.md").write_text("agent first change", encoding="utf-8")
+            git = GitExecutor(repo)
+            git.run("add", "note.md")
+            git.run("commit", "-m", "first agent change")
+            yield RuntimeSignal(
+                type=AgentEventType.FINAL_RESPONSE, message="done", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=FirstWritingAdapter())
+    try:
+        started = manager.start(
+            thread_id="t_first", message="写笔记", context=_context("t_first")
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diffs = manager.store.list_pending_diffs(run_id=started.run_id)
+        for _ in range(100):
+            if diffs:
+                break
+            time.sleep(0.02)
+            diffs = manager.store.list_pending_diffs(run_id=started.run_id)
+        assert len(diffs) == 1, diffs
+        diff = diffs[0]
+        assert diff.snapshot_commit is None
+        assert diff.commits, "首个 commit 应被收集"
+        assert (repo / "note.md").exists()
+        accepted = manager.accept_pending_diff(diff.diff_id)
+        assert accepted.status == PendingDiffStatus.ACCEPTED
+    finally:
+        manager.close()
+
+def test_pending_diff_blocks_new_run_until_resolved(tmp_path: Path):
+    """pending diff 门禁：存在未审 PENDING diff 时，新 run（含只读）被拒绝；
+    接受 diff 后可以继续。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    class WritingAdapter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "note.md").write_text("agent note", encoding="utf-8")
+            git = GitExecutor(repo)
+            git.run("add", "note.md")
+            git.run("commit", "-m", "agent change")
+            yield RuntimeSignal(
+                type=AgentEventType.FINAL_RESPONSE, message="done", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=WritingAdapter())
+    try:
+        started = manager.start(
+            thread_id="t_gate_diff", message="写笔记", context=_context("t_gate_diff")
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diffs = manager.store.list_pending_diffs(run_id=started.run_id)
+        for _ in range(100):
+            if diffs:
+                break
+            time.sleep(0.02)
+            diffs = manager.store.list_pending_diffs(run_id=started.run_id)
+        assert len(diffs) == 1
+        # PENDING diff 阻塞新 run
+        with pytest.raises(AgentRunInProgressError):
+            manager.start(
+                thread_id="t_gate_diff2", message="只读", context=_context("t_gate_diff2")
+            )
+        # 接受后放行
+        manager.accept_pending_diff(diffs[0].diff_id)
+        read_only = manager.start(
+            thread_id="t_gate_diff3", message="只读", context=_context("t_gate_diff3")
+        )
+        assert read_only.status in (AgentRunStatus.QUEUED, AgentRunStatus.RUNNING)
+    finally:
+        manager.close()

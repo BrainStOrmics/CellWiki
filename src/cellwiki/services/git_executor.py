@@ -71,6 +71,9 @@ _FORBIDDEN_FLAGS: dict[str, frozenset[str]] = {
     "diff": frozenset(),
     "log": frozenset({"--follow", "-p", "--all", "--graph", "--grep", "--author"}),
 }
+# git 空树（empty tree）的规范哈希：用于 fresh 工作区（无 HEAD）的根 diff
+_EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+
 _REF_RE = re.compile(r"^(HEAD|[0-9a-fA-F]{7,40})(\^[0-9]*|~[0-9]*)?$")
 _LOG_COUNT_FLAGS = re.compile(r"^-\d+$")
 
@@ -145,15 +148,24 @@ class GitExecutor:
         except GitCommandError:
             return False
 
-    def commits_since(self, snapshot: str) -> list[str]:
-        """Return run commits after ``snapshot``, newest first (excluding merge commits)."""
-        self._validate_ref(snapshot, None)
-        output = self._run_unchecked("log", "--no-merges", "--format=%H", f"{snapshot}..HEAD")
+    def commits_since(self, snapshot: str | None) -> list[str]:
+        """Return run commits after ``snapshot``, newest first (excluding merge commits).
+
+        ``None`` means the workspace had no commits when the run started; all
+        current commits are returned (the run produced the repo's first commit(s)).
+        """
+        if snapshot is None:
+            output = self._run_unchecked("log", "--no-merges", "--format=%H", "HEAD")
+        else:
+            self._validate_ref(snapshot, None)
+            output = self._run_unchecked(
+                "log", "--no-merges", "--format=%H", f"{snapshot}..HEAD"
+            )
         return [line.strip() for line in output.splitlines() if line.strip()]
 
     def diff_between(
         self,
-        left: str,
+        left: str | None,
         right: str = "HEAD",
         *,
         include_paths: Iterable[str] = (),
@@ -161,7 +173,11 @@ class GitExecutor:
         enabled_refs: frozenset[str] | None = None,
     ) -> GitDiff:
         """Diff ``left``..``right`` with optional pathspec include/exclude filters."""
-        self._validate_ref(left, enabled_refs)
+        if left is None:
+            # 系统级空树：工作区首个提交与空快照之间不存在可引用的 ref
+            left = _EMPTY_TREE
+        else:
+            self._validate_ref(left, enabled_refs)
         self._validate_ref(right, enabled_refs)
         pathspec = self._build_pathspec(include_paths, exclude_paths)
         padding = ["--", *pathspec] if pathspec else []

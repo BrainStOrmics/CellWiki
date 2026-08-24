@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import appShellSource from "./AppShell.tsx?raw";
-import graphWorkspaceSource from "../features/graph/GraphWorkspace.tsx?raw";
 
 describe("Agent sidebar layout", () => {
   it("does not render a standalone timeline outside the message process trace", () => {
@@ -32,7 +31,7 @@ describe("Agent sidebar layout", () => {
     const runEnd = appShellSource.indexOf("async function resumeAgent", runStart);
     const runSource = appShellSource.slice(runStart, runEnd);
     const sendStart = appShellSource.indexOf("async function sendMessage()");
-    const sendEnd = appShellSource.indexOf("async function loadChangeSetReview", sendStart);
+    const sendEnd = appShellSource.indexOf("async function cancelActiveAgentRun", sendStart);
     const sendSource = appShellSource.slice(sendStart, sendEnd);
 
     expect(runSource).toContain("onAccepted?: () => void");
@@ -52,11 +51,6 @@ describe("Agent sidebar layout", () => {
     expect(appShellSource).not.toContain("<strong>{contextTitle}</strong>");
   });
 
-  it("does not expose graph nodes as a separate attach-to-Agent shortcut", () => {
-    expect(appShellSource).not.toContain("onAttachNode");
-    expect(graphWorkspaceSource).not.toContain("graph.attach");
-  });
-
   it("clears the previous thread runtime state before restoring another thread", () => {
     const restoreStart = appShellSource.indexOf("async function restoreAgentThread");
     const restoreEnd = appShellSource.indexOf("async function restoreAgentRun", restoreStart);
@@ -66,10 +60,19 @@ describe("Agent sidebar layout", () => {
     const eventSource = appShellSource.slice(eventStart, eventEnd);
 
     expect(restoreSource).toContain("agentEventSourceRef.current?.close()");
-    expect(restoreSource).toContain("setPendingInterrupt(null)");
+    expect(restoreSource).not.toContain("setPendingInterrupt(");
     expect(restoreSource).toContain("setActiveAgentRunId(null)");
     expect(restoreSource).toContain("setMessages([initialAgentMessage])");
     expect(restoreSource).not.toContain("setActiveAttachmentIds(");
     expect(eventSource).toContain("event.thread_id !== agentThreadIdRef.current");
+  });
+
+  it("no longer keeps removed registry/review/graph workspace code paths", () => {
+    expect(appShellSource).not.toContain("/api/sources");
+    expect(appShellSource).not.toContain("/api/changesets");
+    expect(appShellSource).not.toContain("/api/quality");
+    expect(appShellSource).not.toContain("/api/tasks/");
+    expect(appShellSource).not.toContain("loadChangeSetReview");
+    expect(appShellSource).not.toContain("GraphWorkspace");
   });
 });

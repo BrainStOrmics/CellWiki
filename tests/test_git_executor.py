@@ -186,3 +186,24 @@ def test_enabled_refs_limit_diff_inputs(repo):
     # enabled_refs 中的 ref 放行
     diff = executor.diff_between(snapshot, enabled_refs=frozenset({snapshot, "HEAD"}))
     assert diff.files == ["wiki/a.md"]
+
+def test_commits_since_none_and_diff_from_empty_workspace(tmp_path: Path):
+    """空快照（工作区尚无提交）时：commits_since(None) 返回全部提交，
+    diff_between(None) 从 git 空树起算，首轮 Agent 提交可进待确认 diff。"""
+    root = tmp_path / "kb"
+    ensure_workspace(root)
+    executor = GitExecutor(root)
+    assert executor.has_commits() is False
+    executor.run("add", ".")
+    executor.run("commit", "-m", "first")
+    _write(root, "wiki/cell_types/a.md", "# A\n")
+    executor.run("add", "wiki/cell_types/a.md")
+    executor.run("commit", "-m", "second")
+    shas = executor.commits_since(None)
+    assert len(shas) == 2, shas
+    diff = executor.diff_between(None)
+    assert "wiki/cell_types/a.md" in diff.files
+    assert diff.insertions > 0
+    # 非空快照行为保持
+    snapshot = executor.current_head()
+    assert executor.commits_since(snapshot) == []

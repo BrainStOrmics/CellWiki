@@ -245,7 +245,11 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
     def ls(folder: str = ".", recursive: bool = False) -> str:
         """List directory entries inside the workspace (excludes .git)."""
         try:
-            base = validate_workspace_path(root, folder, allow_missing=True)
+            # 模型可能把 folder 传成空串或 "."：归一化为工作区根
+            if folder not in ("", "."):
+                base = validate_workspace_path(root, folder, allow_missing=True)
+            else:
+                base = root
         except PathGuardError as error:
             return _tool_json({"error": str(error)})
         if not base.is_dir():
@@ -312,7 +316,7 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
     def glob(pattern: str, folder: str = ".") -> str:
         """List workspace files matching a glob pattern (e.g. **/*.md); excludes .git."""
         base = root
-        if folder != ".":
+        if (folder or ".") != ".":
             try:
                 base = validate_workspace_path(root, folder, allow_missing=True)
             except PathGuardError as error:
@@ -337,7 +341,7 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
         max_results: int = MAX_GREP_RESULTS,
     ) -> str:
         """Search workspace text files line by line for a literal pattern; excludes .git."""
-        if path == ".":
+        if (path or ".") == ".":
             base = root
         else:
             try:

@@ -385,6 +385,15 @@ class AgentRuntimeManager:
             raise AgentRunInProgressError(
                 f"another agent run is active: {active.run_id} ({active.status.value})"
             )
+        pending = [
+            diff
+            for diff in self.store.list_pending_diffs(limit=50)
+            if diff.status == PendingDiffStatus.PENDING
+        ]
+        if pending:
+            raise AgentRunInProgressError(
+                f"a pending diff requires review before a new run: {pending[0].diff_id}"
+            )
         run_id = _new_run_id()
         snapshot = self._git_snapshot()
         budget = budget or RunBudget(
@@ -964,21 +973,22 @@ class AgentRuntimeManager:
     def _maybe_publish_pending_diff(self, run_id: str) -> None:
         """Collect the run's git commits into a pending diff, if any exist."""
         run = self.store.get_run(run_id)
-        if not run.snapshot_commit:
+        if run is None:
             return
         git = self._git_executor()
         if git is None:
             return
         try:
+            # snapshot 为 None = run 前工作区尚无提交：取该 run 产出的首个 commit(s)
             commits = git.commits_since(run.snapshot_commit)
         except GitCommandError:
             return
         if not commits:
             return
-        diff = git.diff_between(
-            run.snapshot_commit,
-            enabled_refs=frozenset({run.snapshot_commit, "HEAD"}),
-        )
+        refs = frozenset({"HEAD"})
+        if run.snapshot_commit is not None:
+            refs = frozenset({run.snapshot_commit, "HEAD"})
+        diff = git.diff_between(run.snapshot_commit, enabled_refs=refs)
         pending = PendingDiff(
             diff_id=f"diff_{run.run_id}",
             run_id=run.run_id,

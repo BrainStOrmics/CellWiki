@@ -231,16 +231,16 @@ def test_agent_run_retry_via_api(tmp_path: Path):
 
 
 def test_consumer_endpoints_restored_or_removed(tmp_path: Path):
-    # 阶段 5：审批队列/质量/来源接口恢复（前端 workspace 加载依赖），管线配置已并入 settings
+    # 残留 stub 端点（来源/质量/变更集）已彻底移除；真实工作区/搜索端点保留
     _write_workspace(tmp_path)
     client = TestClient(create_app(tmp_path))
-    response = client.get("/api/changesets")
-    assert response.status_code == 200 and response.json() == []
-    assert client.get("/api/quality").status_code == 200
-    assert client.get("/api/sources").json() == []
+    assert client.get("/api/changesets").status_code == 404
+    assert client.get("/api/quality").status_code == 404
+    assert client.get("/api/sources").status_code == 404
     assert client.get("/api/pipeline/status").status_code == 404
-    assert client.post("/api/sources", files={"file": ("x.pdf", b"%PDF-1.4", "application/pdf")}).status_code in {404, 405}
-    # 全局搜索（阶段 6 前端 CommandPalette 依赖）：按内容命中页面
+    # 工作区信息与全局搜索（阶段 6 前端依赖的真实端点）
+    workspace = client.get("/api/workspace").json()
+    assert workspace["path"] == str(tmp_path.resolve())
     hits = client.get("/api/search", params={"q": "FOXP3"}).json()
     assert any(hit["document_id"] == "alpha" and hit["type"] == "page" for hit in hits)
 
@@ -461,3 +461,24 @@ def test_agent_question_flow_via_api(tmp_path: Path):
         json={"answers": "写入"},
     )
     assert again.status_code == 409
+
+def test_workspace_select_persists_project_root(tmp_path: Path):
+    # 切换工作区：校验 + 初始化新目录 + 把 PROJECT_ROOT 写入当前 .env（重启后生效）
+    _write_workspace(tmp_path)
+    client = TestClient(create_app(tmp_path))
+    target = tmp_path / "kb2"
+    response = client.post("/api/workspace/select", json={"path": str(target)})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "saved" and payload["requires_restart"] is True
+    assert payload["path"] == str(target.resolve())
+    assert (target / ".git").exists(), "目标目录应初始化为 git 工作区"
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "PROJECT_ROOT" in env_text
+    assert str(target.resolve()) in env_text
+    # 相对路径 / 空路径被拒绝
+    assert client.post("/api/workspace/select", json={"path": "kb3"}).status_code == 422
+    assert client.post("/api/workspace/select", json={"path": ""}).status_code == 422
+    # 选择当前目录 -> unchanged
+    same = client.post("/api/workspace/select", json={"path": str(tmp_path)})
+    assert same.status_code == 200 and same.json()["status"] == "unchanged"
