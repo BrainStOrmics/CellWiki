@@ -15,41 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel, Field
-
 from cellwiki.services.quality import inspect_projection
-
-
-class FinalAnswerInput(BaseModel):
-    """Plain-text final answer with optional workspace-relative file references."""
-
-    answer: str = Field(min_length=1)
-    file_paths: list[str] = Field(default_factory=list)
-
-
-def build_final_answer_tool(project_root: Path) -> BaseTool:
-    """Build the coordinator's direct-return plain-text answer boundary."""
-
-    @tool("submit_agent_answer", args_schema=FinalAnswerInput, return_direct=True)
-    def submit_agent_answer(answer: str, file_paths: list[str] | None = None) -> str:
-        """Finish with a plain-text answer and the workspace-relative files you referenced."""
-
-        normalized_paths: list[str] = []
-        for raw in file_paths or []:
-            value = str(raw).strip().replace("\\", "/")
-            if (
-                value
-                and not value.startswith(("/", ".."))
-                and ":" not in value
-                and value not in normalized_paths
-            ):
-                normalized_paths.append(value)
-        return json.dumps(
-            {"answer": answer, "file_paths": normalized_paths},
-            ensure_ascii=False,
-        )
-
-    return submit_agent_answer
 
 
 def _workspace_markdown_paths(root: Path) -> list[Path]:

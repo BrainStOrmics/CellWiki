@@ -30,7 +30,7 @@ from fastapi import (
     status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from cellwiki.config import settings
@@ -48,9 +48,11 @@ from cellwiki.services.agent_runtime import (
     AgentRuntimeBusyError,
     AgentRuntimeManager,
     InvalidRunTransitionError,
+    AgentRunInProgressError,
     is_retryable_run,
 )
 from cellwiki.services.environment import EnvironmentSettingsService
+from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 from cellwiki.services.runtime_store import RuntimeStore
 
 
@@ -89,6 +91,11 @@ class AnswerQuestionRequest(BaseModel):
     timed_out: bool = False
 
 
+class WorkspaceEditRequest(BaseModel):
+    """APP 受控编辑：md/txt 内容保存（走合成 run + pending diff 审批）。"""
+    path: str = Field(min_length=1, max_length=4096)
+    content: str = Field(max_length=400_000)
+
 class WorkspaceSelectRequest(BaseModel):
     """请求切换工作区根目录（写入 PROJECT_ROOT，重启后生效）。"""
 
@@ -116,15 +123,18 @@ class AgentRunRequest(BaseModel):
 def create_app(
     project_root: Path | None = None,
     *,
+    env_root: Path | None = None,
     agent_runtime: AgentRuntimeManager | None = None,
     local_token: str | None = None,
     shutdown_callback: Callable[[], None] | None = None,
 ) -> FastAPI:
     # 解析项目根目录
-    root = Path(project_root or settings.project_root).resolve()
+    root = Path(project_root or settings.workspace_root).resolve()
     # 初始化服务依赖
     reader = WikiReader(root)                    # Wiki Markdown 页面读取器
-    environment = EnvironmentSettingsService(root)  # 环境设置
+    # .env 定位：显式传入 project_root（测试/嵌入方）时跟随该根，生产默认固定应用根
+    resolved_env_root = Path(env_root or (project_root if project_root is not None else settings.project_root)).resolve()
+    environment = EnvironmentSettingsService(resolved_env_root)
     # 智能体运行时（延迟加载）
     runtime = agent_runtime
     runtime_lock = threading.Lock()
@@ -310,6 +320,81 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(error)) from None
         environment.set_workspace_path(str(resolved))
         return {"path": str(resolved), "status": "saved", "requires_restart": True}
+
+    # ---- 工作区文件浏览器（Obsidian 式文件树 / 只读 / 受控编辑）----
+    _workflow_tree_excludes = frozenset({".git", "data", "node_modules", ".venv", "build"})
+    _viewable_suffixes = frozenset({".md", ".txt", ".pdf", ".json", ".mmd", ".dot", ".yml", ".yaml"})
+
+    def _resolve_workspace_file(path: str) -> Path:
+        """Validate a readable workspace file; raise HTTPException on violation."""
+        try:
+            target = validate_workspace_path(root, path)
+        except PathGuardError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="file not found")
+        if ".git" in target.parts or "data" in target.parts:
+            raise HTTPException(status_code=403, detail="runtime and git files are not readable")
+        if target.name.endswith(".staging") or target.name.startswith("."):
+            raise HTTPException(status_code=403, detail="hidden or staging files are not readable")
+        if target.suffix.lower() not in _viewable_suffixes:
+            raise HTTPException(status_code=422, detail="unsupported file type")
+        return target
+
+    @app.get("/api/workspace/tree")
+    def workspace_tree() -> list[dict]:
+        """Return a flat workspace file tree (wiki/, raw/, root md, schema.md)."""
+        entries: list[dict] = []
+        include_dirs = {"wiki", "raw"}
+        for candidate in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+            if candidate.name in _workflow_tree_excludes or candidate.name.startswith("."):
+                continue
+            if candidate.is_dir():
+                if candidate.name not in include_dirs:
+                    continue
+                entries.append(
+                    {"name": candidate.name, "path": candidate.name, "kind": "dir", "type": "dir", "size": None}
+                )
+                for child in sorted(candidate.rglob("*"), key=lambda item: (not item.is_dir(), item.name.lower())):
+                    if ".git" in child.parts or child.name.endswith(".staging"):
+                        continue
+                    rel = child.relative_to(root).as_posix()
+                    if child.is_dir():
+                        entries.append({"name": child.name, "path": rel, "kind": "dir", "type": "dir", "size": None})
+                    else:
+                        suffix = child.suffix.lower().lstrip(".")
+                        ftype = suffix if suffix in {"md", "txt", "pdf"} else "binary"
+                        entries.append(
+                            {"name": child.name, "path": rel, "kind": "file", "type": ftype, "size": child.stat().st_size}
+                        )
+            elif candidate.is_file() and candidate.suffix.lower() in {".md"}:
+                entries.append(
+                    {"name": candidate.name, "path": candidate.name, "kind": "file", "type": "md", "size": candidate.stat().st_size}
+                )
+        return entries
+
+    @app.get("/api/workspace/file")
+    def workspace_file(path: str = Query(min_length=1, max_length=4096)) -> Response:
+        """Serve one workspace file read-only (PDF binary for inline preview)."""
+        target = _resolve_workspace_file(path)
+        data = target.read_bytes()
+        suffix = target.suffix.lower()
+        if suffix == ".pdf":
+            return Response(content=data, media_type="application/pdf")
+        if suffix in {".md", ".txt", ".json", ".mmd", ".dot", ".yml", ".yaml"}:
+            return Response(content=data.decode("utf-8", errors="replace"), media_type="text/plain; charset=utf-8")
+        return Response(content=data, media_type="application/octet-stream")
+
+    @app.post("/api/workspace/edit")
+    def workspace_edit(request: WorkspaceEditRequest) -> dict:
+        """Stage a controlled md/txt edit: synthetic run + git commit + pending diff."""
+        try:
+            run = get_agent_runtime().propose_workspace_edit(request.path, request.content)
+            return {"run_id": run.run_id, "status": run.status.value, "pending_diff_id": run.pending_diff_id}
+        except AgentRunInProgressError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
 
     # ==================== 智能体线程管理 ====================
     @app.post("/api/agent/threads", status_code=status.HTTP_201_CREATED)
@@ -557,6 +642,15 @@ def create_app(
             return get_agent_runtime().store.get_pending_diff(diff_id).model_dump()
         except KeyError:
             raise HTTPException(status_code=404, detail="pending diff not found") from None
+
+    @app.get("/api/pending-diffs/{diff_id}/patch")
+    def get_pending_diff_patch(diff_id: str) -> dict:
+        """返回待确认 diff 的统一补丁文本（侧边栏 diff 查看）。"""
+        try:
+            patch = get_agent_runtime().pending_diff_patch(diff_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="pending diff not found") from None
+        return {"diff_id": diff_id, "patch": patch}
 
     @app.post("/api/pending-diffs/{diff_id}/accept", status_code=status.HTTP_200_OK)
     def accept_pending_diff(diff_id: str) -> dict:

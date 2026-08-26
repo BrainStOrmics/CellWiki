@@ -102,34 +102,82 @@ class Settings(BaseSettings):
     agent_context_max_tokens: int = Field(default=512_000, ge=8_000, le=2_000_000)
     agent_context_auto_compact_ratio: float = Field(default=0.8, ge=0.5, le=0.95)
     agent_context_retained_tokens: int = Field(default=32_768, ge=4_000, le=200_000)
+    # ---- 附件感知与读取预算（附件驱动导入）----
+    agent_attachment_preview_chars: int = Field(default=2000, ge=0, le=20_000)
+    agent_attachment_read_budget_chars: int = Field(default=400_000, ge=0, le=20_000_000)  # 0 = 不限制
 
     # ---- 日志级别 ----
     log_level: str = "INFO"
 
-    # ---- 项目路径（相对项目根目录）----
-    # 使用 __file__ 计算路径，确保无论以 wheel 安装还是源码运行都能工作
-    # 不依赖固定工作目录或 PYTHONPATH
-    project_root: Path = Path(__file__).parent.parent.parent
-    data_dir: Path = project_root / "data"
-    references_dir: Path = data_dir / "references"
-    extraction_dir: Path = data_dir / "extraction"
-    cell_ontology_dir: Path = data_dir / "cell_ontology"
-
-    wiki_dir: Path = project_root / "wiki"
-    wiki_cell_types_dir: Path = wiki_dir / "cell_types"
+    # ---- 项目路径（应用根与工作区根分离）----
+    # 应用根 = 代码仓库根：由 __file__ 固定推断，不依赖工作目录；env alias
+    # 指向不会出现的变量名，因此不会被 .env 的 PROJECT_ROOT 覆盖。
+    project_root: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parent.parent.parent,
+        validation_alias="CELLWIKI_APP_ROOT",
+    )
+    # 工作区根 = 用户选择的知识库目录：Settings UI 持久化到 .env 的
+    # PROJECT_ROOT；未选择时回退到应用根（单目录工作流）。
+    workspace_root: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parent.parent.parent,
+        validation_alias="PROJECT_ROOT",
+    )
 
     # ---- 细胞本体论（Cell Ontology）----
     cell_ontology_url: str = "https://purl.obolibrary.org/obo/cl.obo"
-    cell_ontology_file: Path = cell_ontology_dir / "cl.obo"
 
+    # ---- 知识库派生路径（基于工作区根，动态计算）----
+    @property
+    def data_dir(self) -> Path:
+        return self.workspace_root / "data"
 
-    # ---- Wiki 子目录 ----
-    wiki_marker_genes_dir: Path = wiki_dir / "marker_genes"
-    wiki_tissues_dir: Path = wiki_dir / "tissues"
-    wiki_diseases_dir: Path = wiki_dir / "diseases"
-    wiki_methods_dir: Path = wiki_dir / "methods"
-    wiki_trajectories_dir: Path = wiki_dir / "trajectories"
-    wiki_state_spaces_dir: Path = wiki_dir / "state_spaces"
+    @property
+    def references_dir(self) -> Path:
+        return self.data_dir / "references"
+
+    @property
+    def extraction_dir(self) -> Path:
+        return self.data_dir / "extraction"
+
+    @property
+    def cell_ontology_dir(self) -> Path:
+        return self.data_dir / "cell_ontology"
+
+    @property
+    def cell_ontology_file(self) -> Path:
+        return self.cell_ontology_dir / "cl.obo"
+
+    @property
+    def wiki_dir(self) -> Path:
+        return self.workspace_root / "wiki"
+
+    @property
+    def wiki_cell_types_dir(self) -> Path:
+        return self.wiki_dir / "cell_types"
+
+    @property
+    def wiki_marker_genes_dir(self) -> Path:
+        return self.wiki_dir / "marker_genes"
+
+    @property
+    def wiki_tissues_dir(self) -> Path:
+        return self.wiki_dir / "tissues"
+
+    @property
+    def wiki_diseases_dir(self) -> Path:
+        return self.wiki_dir / "diseases"
+
+    @property
+    def wiki_methods_dir(self) -> Path:
+        return self.wiki_dir / "methods"
+
+    @property
+    def wiki_trajectories_dir(self) -> Path:
+        return self.wiki_dir / "trajectories"
+
+    @property
+    def wiki_state_spaces_dir(self) -> Path:
+        return self.wiki_dir / "state_spaces"
 
 # ---- 模块级单例 ----
 # 所有下游模块导入此单例，配置在导入时解析一次而不是每次访问时构造。

@@ -100,3 +100,51 @@ test("Agent composer references stay separate from threads and temporary attachm
   await expect(page.locator(".composer-chip.attachment-chip")).toHaveCount(0);
   await expect.poll(() => persistedActiveThreadId(page)).not.toBe(firstThreadId);
 });
+
+test("Agent streams ordinary text through the browser, runtime, SSE, and durable store", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto("/", { waitUntil: "domcontentloaded", timeout: 120_000 });
+  await expect(page.getByText("CellWiki", { exact: true }).first()).toBeVisible();
+
+  await page.getByRole("button", { name: /新建对话|New conversation/ }).click();
+  await expect.poll(() => persistedActiveThreadId(page)).not.toBeNull();
+  const threadId = await persistedActiveThreadId(page);
+  expect(threadId).not.toBeNull();
+
+  const prompt = "请查找 FOXP3 并说明你实际读取了哪些文件。";
+  await page.locator(".chat-compose textarea").fill(prompt);
+  await page.getByRole("button", { name: /发送消息|Send message/ }).click();
+
+  await expect(page.locator(".message.user .message-bubble").last()).toContainText("FOXP3");
+  const answer = page.locator(".message.agent .message-bubble", {
+    hasText: "FOXP3 是 Regulatory T cell 的证据标记。",
+  });
+  await expect(answer).toBeVisible();
+  await expect(answer).toContainText("实际读取：wiki/cell_types/regulatory_t_cell.md");
+  await expect(page.locator(".message.agent.is-streaming")).toHaveCount(0);
+
+  const evidence = await page.evaluate(async ({ activeThreadId }) => {
+    const origin = "http://127.0.0.1:18000";
+    const runs = await fetch(`${origin}/api/agent/runs?thread_id=${encodeURIComponent(activeThreadId)}&limit=10`)
+      .then((response) => response.json());
+    const run = runs.find((candidate: { thread_id: string }) => candidate.thread_id === activeThreadId);
+    const [events, messages] = await Promise.all([
+      fetch(`${origin}/api/agent/runs/${encodeURIComponent(run.run_id)}/events`).then((response) => response.json()),
+      fetch(`${origin}/api/agent/threads/${encodeURIComponent(activeThreadId)}/messages`).then((response) => response.json()),
+    ]);
+    return { run, events, messages };
+  }, { activeThreadId: threadId! });
+
+  expect(evidence.run.status).toBe("succeeded");
+  expect(evidence.events.map((event: { type: string }) => event.type)).toEqual(expect.arrayContaining([
+    "tool_started",
+    "tool_completed",
+    "message_delta",
+    "final_response",
+    "run_status",
+  ]));
+  const final = evidence.events.find((event: { type: string }) => event.type === "final_response");
+  expect(final.message).toContain("FOXP3 是 Regulatory T cell 的证据标记。");
+  const assistant = evidence.messages.find((message: { role: string }) => message.role === "assistant");
+  expect(assistant.content).toContain("实际读取：wiki/cell_types/regulatory_t_cell.md");
+});

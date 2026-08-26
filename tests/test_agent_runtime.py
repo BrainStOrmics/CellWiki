@@ -74,6 +74,7 @@ class BlockingAdapter:
     def execute(self, *, thread_id: str, message, context) -> Iterable[RuntimeSignal]:
         self.release.wait(timeout=2)
         yield RuntimeSignal(type=AgentEventType.PROGRESS, progress=50)
+        yield RuntimeSignal(type=AgentEventType.MESSAGE_DELTA, message="完成")
 
     def close(self) -> None:
         self.release.set()
@@ -226,7 +227,7 @@ def test_budget_gate_marks_run_as_unfinished_and_resume_advances(tmp_path: Path)
         )
         for index in range(6)
     ]
-    adapter = ScriptedAdapter([signals, []])
+    adapter = ScriptedAdapter([signals, [RuntimeSignal(type=AgentEventType.MESSAGE_DELTA, message="继续完成", model_call_id="resume_model")]])
     manager = AgentRuntimeManager(tmp_path, adapter=adapter)
     try:
         started = manager.start(
@@ -272,19 +273,82 @@ def test_delete_thread_removes_complete_conversation(tmp_path: Path):
         manager.close()
 
 
-def test_signals_from_stream_item_emits_tool_lifecycle_and_final_response():
+def test_signals_from_stream_item_emits_tool_lifecycle_and_text_chunks():
     messages = [
         AIMessage(content="", tool_calls=[{"name": "read_wiki_page", "args": {}, "id": "call_x", "type": "tool_call"}]),
-        ToolMessage(content='{"answer": "plain result", "file_paths": []}', tool_call_id="call_x", name="submit_agent_answer"),
+        ToolMessage(content='{"results": ["wiki/a.md"]}', tool_call_id="call_x", name="ls"),
     ]
     signals = list(_signals_from_stream_item(("messages", (messages[0], {}))))
     signals += list(_signals_from_stream_item(("messages", (messages[1], {}))))
     types = [signal.type for signal in signals]
     assert AgentEventType.TOOL_STARTED in types
-    # submit_agent_answer 只发 FINAL_RESPONSE（阶段 4 简化：不重复发完成事件）
-    assert AgentEventType.TOOL_COMPLETED not in types
-    final = next(signal for signal in signals if signal.type == AgentEventType.FINAL_RESPONSE)
-    assert "plain result" in final.message
+    assert AgentEventType.TOOL_COMPLETED in types
+    completed = next(signal for signal in signals if signal.type == AgentEventType.TOOL_COMPLETED)
+    assert "wiki/a.md" in completed.message
+
+    text_signals = list(_signals_from_stream_item((
+        "messages",
+        (AIMessageChunk(content="普通回答"), {"thread_id": "t"}),
+    )))
+    assert len(text_signals) == 1
+    assert text_signals[0].type == AgentEventType.MESSAGE_DELTA
+    assert text_signals[0].message == "普通回答"
+
+
+def test_streamed_text_is_preserved_as_final_response(tmp_path: Path):
+    adapter = ScriptedAdapter([[
+        RuntimeSignal(
+            type=AgentEventType.MESSAGE_DELTA,
+            message="第一段 ",
+            model_call_id="model_1",
+        ),
+        RuntimeSignal(
+            type=AgentEventType.MESSAGE_DELTA,
+            message="最终答案",
+            model_call_id="model_1",
+        ),
+    ]])
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id="thread_text_answer",
+            message="直接回答",
+            context=_context("thread_text_answer"),
+        )
+        completed = _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        assert completed.usage.model_calls == 1
+        messages = manager.store.list_context_messages("thread_text_answer")
+        assert messages[-1]["role"] == "assistant"
+        assert messages[-1]["content"] == "第一段 最终答案"
+        events = manager.store.list_events(started.run_id)
+        assert [event.type for event in events].count(AgentEventType.MESSAGE_DELTA) == 2
+        final = next(event for event in events if event.type == AgentEventType.FINAL_RESPONSE)
+        assert final.message == "第一段 最终答案"
+        assert final.data["label_args"]["answer"] == "第一段 最终答案"
+    finally:
+        manager.close()
+
+
+def test_run_without_textual_answer_is_failed(tmp_path: Path):
+    manager = AgentRuntimeManager(
+        tmp_path,
+        adapter=ScriptedAdapter([[RuntimeSignal(type=AgentEventType.PROGRESS, progress=100)]]),
+    )
+    try:
+        started = manager.start(
+            thread_id="thread_empty_answer",
+            message="没有答案",
+            context=_context("thread_empty_answer"),
+        )
+        failed = _wait_for_status(manager, started.run_id, {AgentRunStatus.FAILED})
+        assert failed.error_type == AgentErrorType.SYSTEM
+        assert failed.error_message == "Agent completed without a textual answer."
+        assert not any(
+            item["role"] == "assistant"
+            for item in manager.store.list_context_messages("thread_empty_answer")
+        )
+    finally:
+        manager.close()
 
 
 def test_classify_agent_error_maps_timeout_and_rate_limit():
@@ -371,6 +435,8 @@ def test_pending_diff_lifecycle_accept_reject_reopen(tmp_path: Path):
         diff = diffs[0]
         assert diff.status == PendingDiffStatus.PENDING
         assert diff.commits, "运行产出的 commit 应被收集"
+        patch = manager.pending_diff_patch(diff.diff_id)
+        assert "note.md" in patch and "agent note" in patch
         assert (repo / "note.md").exists()
         # accept：commit 保留，审计生效
         accepted = manager.accept_pending_diff(diff.diff_id)
@@ -417,6 +483,41 @@ def test_recover_stale_runs_on_start_marks_orphans_unfinished(tmp_path: Path):
     final = first.store.get_run(started.run_id)
     assert final.status == AgentRunStatus.UNFINISHED, final.status
     first.close()
+
+def test_pending_diff_patch_not_truncated_for_large_diff(tmp_path: Path):
+    """审查 UI 的 patch 使用独立 executor，不被 Agent 默认 200KB 输出上限截断。"""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    class BulkAdapter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            lines = [f"line {i:08d} payload" for i in range(20_000)]
+            (repo / "large.md").write_text("\n".join(lines), encoding="utf-8")
+            git = GitExecutor(repo)
+            git.run("add", "large.md")
+            git.run("commit", "-m", "bulk change")
+            yield RuntimeSignal(
+                type=AgentEventType.FINAL_RESPONSE, message="done", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=BulkAdapter())
+    try:
+        started = manager.start(thread_id="t_bulk", message="写入大文件", context=_context("t_bulk"))
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diffs = manager.store.list_pending_diffs(run_id=started.run_id)
+        for _ in range(100):
+            if diffs:
+                break
+            time.sleep(0.02)
+            diffs = manager.store.list_pending_diffs(run_id=started.run_id)
+        assert len(diffs) == 1, diffs
+        patch = manager.pending_diff_patch(diffs[0].diff_id)
+        # 补丁超过默认 200KB 上限仍应完整返回（含尾部内容，证明未被截断）
+        assert len(patch) > 200_000
+        assert "line 00019999 payload" in patch
+    finally:
+        manager.close()
 
 
 def test_recover_stale_runs_handles_cancelling_and_queued(tmp_path: Path):
@@ -598,6 +699,60 @@ def test_question_timeout_finalizes_unfinished(tmp_path: Path):
     assert question["status"] == "timed_out"
 
 
+def test_cancel_waiting_confirmation_closes_question_and_releases_gate(tmp_path: Path):
+    # 用户主动取消等待回答的 run：问题关闭、run 直接终结为 CANCELLED，串行闸门释放
+    adapter = QuestionCapableAdapter(
+        scripts=[
+            [
+                RuntimeSignal(
+                    type=AgentEventType.TASK_CONFIRMATION_REQUIRED,
+                    message="Waiting for the user: 是否继续？",
+                    data={
+                        "interrupt": {
+                            "question": "是否继续？",
+                            "options": ["是", "否"],
+                            "required": True,
+                        }
+                    },
+                ),
+            ],
+            [RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="ok")],
+        ],
+        resume_script=[],
+    )
+    runtime = AgentRuntimeManager(tmp_path, adapter=adapter)
+    thread_id = f"thread_q_{abs(hash(tmp_path)) & 0xFFFF}"
+    try:
+        started = runtime.start(
+            thread_id=thread_id,
+            message="开始",
+            context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
+        )
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            current = runtime.store.get_run(started.run_id)
+            if current is not None and current.status == AgentRunStatus.WAITING_CONFIRMATION:
+                break
+            time.sleep(0.02)
+        assert runtime.store.get_run(started.run_id).status == AgentRunStatus.WAITING_CONFIRMATION
+
+        cancelled = runtime.cancel(started.run_id)
+        assert cancelled.status == AgentRunStatus.CANCELLED
+        assert runtime.store.get_run(started.run_id).status == AgentRunStatus.CANCELLED
+        # 未回答的问题被关闭，不再作为 open question 阻塞
+        assert runtime.store.get_open_question(started.run_id) is None
+
+        # 串行闸门释放：可再次启动新 run 并正常结束
+        again = runtime.start(
+            thread_id=thread_id,
+            message="再来",
+            context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
+        )
+        _wait_for_status(runtime, again.run_id, {AgentRunStatus.SUCCEEDED})
+    finally:
+        runtime.close()
+
+
 def test_interrupt_signal_parsing_translates_to_confirmation():
     # langgraph Interrupt 对象（含 value 包装）转 TASK_CONFIRMATION_REQUIRED 信号
     from cellwiki.services.agent_runtime import _signals_from_interrupt
@@ -656,19 +811,8 @@ class _InterruptFakeModel(BaseChatModel):
                 )
             )
         else:
-            # 与真实协调器一致：最终回答走 submit_agent_answer（return_direct 工具）
             yield ChatGenerationChunk(
-                message=AIMessageChunk(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "submit_agent_answer",
-                            "args": {"answer": "已按你的选择完成", "file_paths": []},
-                            "id": "call_final",
-                            "type": "tool_call",
-                        }
-                    ],
-                )
+                message=AIMessageChunk(content="已按你的选择完成")
             )
 
 

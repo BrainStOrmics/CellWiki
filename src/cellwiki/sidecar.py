@@ -101,10 +101,9 @@ def main() -> None:
     from cellwiki.api.app import create_app
 
     app = create_app(
-        paths.project_root,
         local_token=token,
         shutdown_callback=request_shutdown,
-    )
+    )  # root 默认为 settings.workspace_root（已选工作区）
     app.state.application_paths = paths
     config = uvicorn.Config(
         app,

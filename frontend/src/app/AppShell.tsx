@@ -1,16 +1,15 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   Bot,
-  ChevronDown,
   ChevronRight,
   FileText,
-  Folder,
-  FolderOpen,
+  GitPullRequest,
   Library,
   MessageSquareText,
   PanelLeft,
   Play,
+  RefreshCw,
   RotateCcw,
   CirclePlus,
   Search,
@@ -33,7 +32,11 @@ import { CommandPalette } from "../features/search/CommandPalette";
 import { ThreadList } from "../features/agent/ThreadList";
 import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
 import { reduceAgentRunMessages } from "../features/agent/agent-run-reducer";
+import { QuestionCard } from "../features/agent/QuestionCard";
 import { SearchWorkspace } from "../features/discovery/FeatureWorkspaces";
+import { WorkspaceFileBrowser, type WorkspaceTreeEntry } from "../features/workspace/WorkspaceFileBrowser";
+import { WorkspaceFileViewer } from "../features/workspace/WorkspaceFileViewer";
+import { DiffBrowser } from "../features/diff/DiffBrowser";
 
 const SettingsView = lazy(() => import("../components/SettingsView").then((module) => ({
   default: module.SettingsView,
@@ -80,6 +83,13 @@ const terminalAgentStatuses = new Set<AgentRunStatus>([
   "rejected",
   "failed",
   "cancelled",
+]);
+
+/** 暂停态 run：恢复会话时必须把事件流渲染回聊天，否则刷新后回答与问题卡会一起消失。 */
+const pausedAgentStatuses = new Set<AgentRunStatus>([
+  "waiting_confirmation",
+  "waiting_approval",
+  "unfinished",
 ]);
 function agentRunStorageKey(contextKey: string) {
   return `cellwiki.agent.active_run_id.${contextKey}`;
@@ -169,7 +179,16 @@ export function AppShell() {
   );
   const [detail, setDetail] = useState<PageDetail>(emptyPageDetail);
   const [filter, setFilter] = useState("");
-  const [expanded, setExpanded] = useState(() => new Set(["root", "wiki", "cell-types"]));
+  const [workspaceFile, setWorkspaceFile] = useState<WorkspaceTreeEntry | null>(null);
+  const [diffPanelOpen, setDiffPanelOpen] = useState(false);
+  // 记录打开 diff 审查前正在查看的页面/文件，关闭时恢复
+  const diffReturnRef = useRef<{ workspaceFile: WorkspaceTreeEntry | null; selectedId: string }>({
+    workspaceFile: null,
+    selectedId: "",
+  });
+  const [pendingDiffCount, setPendingDiffCount] = useState(0);
+  const [treeRefreshSignal, setTreeRefreshSignal] = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([initialAgentMessage]);
   const [draft, setDraft] = useState("");
   const [agentBusy, setAgentBusy] = useState(false);
@@ -292,6 +311,31 @@ export function AppShell() {
     return result.data;
   }
 
+  async function loadPendingDiffCount() {
+    try {
+      const data = await getJson<{ pending_diffs: { status: string }[] }>("/api/pending-diffs");
+      setPendingDiffCount(data.pending_diffs.filter((item) => item.status === "pending").length);
+    } catch {
+      // 徽标保持当前值；DiffBrowser 打开时会自行刷新
+    }
+  }
+
+  async function refreshWorkspaceState() {
+    setRefreshing(true);
+    try {
+      await Promise.allSettled([workspaceQuery.refetch(), loadPendingDiffCount()]);
+    } finally {
+      setRefreshing(false);
+    }
+    setTreeRefreshSignal((current) => current + 1);
+  }
+
+  useEffect(() => {
+    // 初始加载一次待审 Diff 徽标，避免 DiffBrowser 打开前恒为 0
+    void loadPendingDiffCount();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => {
     agentThreadIdRef.current = activeThreadId;
     if (!activeThreadId) return;
@@ -334,28 +378,18 @@ export function AppShell() {
   const selectedPath = selectedPage?.path ?? (selectedId ? `wiki/cell_types/${selectedId}.md` : "cellwiki");
   const contextTitle = selectedTitle || t("reader.workspace");
   const contextPath = selectedPath;
+  const workspaceSelectedPath = workspaceFile?.path ?? (selectedPath.startsWith("wiki/") ? selectedPath : null);
   const references = Array.isArray(detail.frontmatter.references) ? detail.frontmatter.references : [];
   const activeAttachments = activeAttachmentIds
     .map((attachmentId) => attachments.find((attachment) => attachment.attachment_id === attachmentId))
     .filter((attachment): attachment is AttachmentRecord => Boolean(attachment));
-  const normalizedFilter = filter.trim().toLowerCase();
-  const filteredPages = useMemo(() => {
-    if (!normalizedFilter) return pages;
-    return pages.filter((page) => {
-      const searchable = `${page.page_id} ${page.title ?? ""} ${page.path ?? ""}`.toLowerCase();
-      return searchable.includes(normalizedFilter);
-    });
-  }, [normalizedFilter, pages]);
-
-  function toggleFolder(id: string) {
-    setExpanded((current) => {
-      const next = new Set(current);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
+  // 等待用户回答确认问题期间禁止发送新消息，并渲染问题卡/提示
+  const waitingOnQuestion = activeAgentRunId != null
+    && messages.some((message) => (
+      message.role === "agent"
+      && message.runId === activeAgentRunId
+      && (message.runStatus === "waiting_confirmation" || message.runStatus === "waiting_approval")
+    ));
   function beginResize(side: ResizeSide, event: MouseEvent<HTMLDivElement>) {
     event.preventDefault();
     const workbench = workbenchRef.current;
@@ -498,6 +532,8 @@ export function AppShell() {
       }
       if (status && terminalAgentStatuses.has(status)) {
         setAgentBusy(false);
+        // Agent 运行结束（含 ingest 完成）后刷新文件树/页面/待审徽标
+        void refreshWorkspaceState();
         if (status !== "waiting_approval") {
           setPendingInterrupt((current) => (
             current?.runId === event.run_id ? null : current
@@ -523,7 +559,14 @@ export function AppShell() {
         agentEventSourceRef.current = source;
 
         const handleEvent = (message: MessageEvent<string>) => {
-          const event = JSON.parse(message.data) as AgentEvent;
+          let event: AgentEvent;
+          try {
+            event = JSON.parse(message.data) as AgentEvent;
+          } catch {
+            // 畸形/空 payload 只丢弃当前事件，不再中断后续事件处理
+            console.warn("[cellwiki] ignoring malformed agent event", message.data);
+            return;
+          }
           applyAgentEvent(event);
           if (event.type === "run_status") {
             const status = event.data.status as AgentRunStatus | undefined;
@@ -608,7 +651,9 @@ export function AppShell() {
       ]);
       agentThreadIdRef.current = run.thread_id;
       setActiveThreadId(run.thread_id);
-      events.forEach((event) => applyAgentEvent(event, options));
+      // 暂停态 run 的回答只存在于事件流：恢复会话时必须渲染回聊天。
+      const replayChat = options.replayChat === true || pausedAgentStatuses.has(run.status);
+      events.forEach((event) => applyAgentEvent(event, { replayChat }));
       if (
         terminalAgentStatuses.has(run.status)
         && !events.some(
@@ -617,7 +662,7 @@ export function AppShell() {
       ) {
         applyAgentEvent(
           legacyTerminalEvent(run, (events.at(-1)?.sequence ?? 0) + 1),
-          options,
+          { replayChat },
         );
       }
       if (run.status === "waiting_confirmation" || run.status === "waiting_approval") {
@@ -672,7 +717,7 @@ export function AppShell() {
 
   async function sendMessage() {
     const text = draft.trim();
-    if (!text || agentBusy) return;
+    if (!text || agentBusy || waitingOnQuestion) return;
     setAgentBusy(true);
     try {
       await waitForAgentAttachmentUploads();
@@ -727,6 +772,8 @@ export function AppShell() {
         setAgentBusy(false);
         setAgentActivity(t("chat.runCancelled"));
         if (agentThreadIdRef.current) window.localStorage.removeItem(agentRunStorageKey(agentThreadIdRef.current));
+        // 让等待确认/未完成的气泡落定到 cancelled，并让问题卡停止轮询
+        applyAgentEvent(legacyTerminalEvent(run, agentEventSequenceRef.current + 1));
       } else {
         setAgentActivity(t("chat.cancelling"));
       }
@@ -889,6 +936,60 @@ export function AppShell() {
     }
   }
 
+  // 工作区文件树打开：wiki 页面走现有阅读器，其余文件走工作区查看器
+  function openWorkspaceFile(entry: WorkspaceTreeEntry) {
+    setActiveView("wiki");
+    if (entry.kind === "file" && entry.type === "md" && entry.path.startsWith("wiki/")) {
+      const page = pages.find((candidate) => candidate.path === entry.path);
+      if (page) {
+        setWorkspaceFile(null);
+        setSelectedId(page.page_id);
+        setComposerPageRef({
+          page_id: page.page_id,
+          title: page.title ?? fileNameForPage(page),
+          path: entry.path,
+        });
+        return;
+      }
+    }
+    setWorkspaceFile(entry);
+  }
+
+  async function openWikiTarget(pageId: string) {
+    // 优先按页面注册表跳转 Wiki 阅读器；找不到时在工作区树里按文件名解析并打开
+    if (pages.some((page) => page.page_id === pageId)) {
+      setWorkspaceFile(null);
+      setSelectedId(pageId);
+      return;
+    }
+    try {
+      const tree = await getJson<WorkspaceTreeEntry[]>("/api/workspace/tree");
+      const fileName = `${pageId}.md`;
+      const match = tree.find(
+        (entry) => entry.kind === "file"
+          && (entry.path === fileName || entry.path.endsWith(`/${fileName}`)),
+      );
+      if (match) openWorkspaceFile(match);
+    } catch {
+      // 工作区树加载失败时保持当前视图
+    }
+  }
+
+  function openDiffPanel() {
+    // 打开前记录正在查看的页面/文件，关闭时恢复
+    diffReturnRef.current = { workspaceFile, selectedId };
+    setDiffPanelOpen(true);
+    setActiveView("wiki");
+    setWorkspaceFile(null);
+  }
+
+  function closeDiffPanel() {
+    setDiffPanelOpen(false);
+    const saved = diffReturnRef.current;
+    setWorkspaceFile(saved.workspaceFile);
+    setSelectedId(saved.selectedId);
+  }
+
   return (
     <main className="app-shell">
       <ZoomController
@@ -906,6 +1007,15 @@ export function AppShell() {
         <div className="titlebar-status">
           <span className={apiOnline ? "connection online" : "connection"}><i />{apiOnline ? t("app.apiConnected") : t("app.localPreview")}</span>
           {isDesktopRuntime && <span>{t("app.desktop")}</span>}
+          <button
+            className="titlebar-refresh"
+            onClick={() => void refreshWorkspaceState()}
+            disabled={refreshing}
+            title={t("app.refresh")}
+            aria-label={t("app.refresh")}
+          >
+            <RefreshCw size={13} className={refreshing ? "spinning" : undefined} />
+          </button>
           <ThemeToggle lightLabel={t("theme.switchLight")} darkLabel={t("theme.switchDark")} />
         </div>
       </header>
@@ -941,38 +1051,27 @@ export function AppShell() {
             </div>
 
             <div className="file-tree-scroll">
-              <div className="tree-label">CELLWIKI</div>
-              <TreeFolder label="CellWiki" depth={0} open={expanded.has("root")} onToggle={() => toggleFolder("root")}>
-                <TreeFolder label="wiki" depth={1} open={expanded.has("wiki")} onToggle={() => toggleFolder("wiki")}>
-                  <TreeFolder label="cell_types" depth={2} open={expanded.has("cell-types")} onToggle={() => toggleFolder("cell-types")} count={filteredPages.length}>
-                    {filteredPages.map((page) => (
-                      <button
-                        className={page.page_id === selectedId ? "tree-file selected" : "tree-file"}
-                        style={{ paddingLeft: 18 + 16 * 3 }}
-                        key={page.page_id}
-                        onClick={() => {
-                          setActiveView("wiki");
-                          setSelectedId(page.page_id);
-                          setComposerPageRef({
-                            page_id: page.page_id,
-                            title: page.title ?? fileNameForPage(page),
-                            path: page.path,
-                          });
-                        }}
-                        title={page.path}
-                      >
-                        <FileText size={14} />
-                        <span>{fileNameForPage(page)}</span>
-                      </button>
-                    ))}
-                    {filteredPages.length === 0 && <div className="tree-empty">{t("explorer.noMatches")}</div>}
-                  </TreeFolder>
-                </TreeFolder>
-              </TreeFolder>
+              <div className="tree-label">WORKSPACE</div>
+              <div className="workspace-browser-section">
+                <WorkspaceFileBrowser
+                  filter={filter}
+                  selectedPath={workspaceSelectedPath}
+                  onOpenFile={openWorkspaceFile}
+                  refreshSignal={treeRefreshSignal}
+                />
+              </div>
             </div>
 
             <div className="file-panel-footer">
               <span>{pages.length} {t("explorer.pages")}</span>
+              <button
+                className={diffPanelOpen ? "diff-entry active" : "diff-entry"}
+                onClick={() => (diffPanelOpen ? closeDiffPanel() : openDiffPanel())}
+                title="待确认 Diff"
+              >
+                <GitPullRequest size={13} /> 待审 Diff
+                {pendingDiffCount > 0 && <b>{pendingDiffCount}</b>}
+              </button>
             </div>
                         </>
           </aside>
@@ -995,8 +1094,17 @@ export function AppShell() {
                 <div className="feature-state">{t("workspace.loading")}</div>
               ) : workspaceQuery.isError ? (
                 <div className="feature-state error">{t("workspace.offline")}</div>
+              ) : diffPanelOpen ? (
+                <DiffBrowser onExit={closeDiffPanel} onCountChange={setPendingDiffCount} />
               ) : activeView === "search" ? (
                 <SearchWorkspace onOpen={openSearchResult} />
+              ) : workspaceFile ? (
+                <div className="workspace-file-preview">
+                  <div className="workspace-file-preview-bar">
+                    <button onClick={() => setWorkspaceFile(null)} title="返回 wiki 阅读器"><X size={13} /> 返回</button>
+                  </div>
+                  <WorkspaceFileViewer entry={workspaceFile} onWikiLink={(pageId) => { void openWikiTarget(pageId); }} />
+                </div>
               ) : !selectedId ? (
                 <div className="feature-state onboarding-empty">
                   <Library size={28} />
@@ -1019,11 +1127,7 @@ export function AppShell() {
                   </div>
                   <MarkdownReader
                     markdown={detail.markdown}
-                    onWikiLink={(pageId) => {
-                      if (pages.some((page) => page.page_id === pageId)) {
-                        setSelectedId(pageId);
-                      }
-                    }}
+                    onWikiLink={(pageId) => { void openWikiTarget(pageId); }}
                     onAskSelection={(text) => {
                       setSelectedText(text);
                       setDraft(text);
@@ -1105,6 +1209,7 @@ export function AppShell() {
                   processEmptyLabel={t("chat.processEmpty")}
                   diagnosticsLabel={t("chat.runDetails")}
                   onCitationOpen={openCitation}
+                  onQuestionAnswered={(runId) => { void restoreAgentRun(runId); }}
                 />
               ))}
               {retryableAgentRunId && !agentBusy && (
@@ -1118,6 +1223,12 @@ export function AppShell() {
                 </button>
               )}
               {agentBusy && <div className="agent-thinking"><i /><i /><i /><span>{agentActivity || t("chat.tracing")}</span></div>}
+              {waitingOnQuestion && (
+                <div className="composer-waiting-hint">{t("chat.waitingForConfirmation")}</div>
+              )}
+              {waitingOnQuestion
+                && !messages.some((message) => message.role === "agent" && message.runId === activeAgentRunId)
+                && <QuestionCard runId={activeAgentRunId} onAnswered={(runId) => { void restoreAgentRun(runId); }} />}
             </div>
 
             <div className="composer-wrap">
@@ -1176,7 +1287,7 @@ export function AppShell() {
                     </button>
                     <span>{activeAttachments.length > 0 ? t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length)) : t("chat.agentContext")}</span>
                   </div>
-                  <button onClick={() => void sendMessage()} disabled={!draft.trim() || agentBusy} aria-label={t("chat.send")}><Send size={15} /></button>
+                  <button onClick={() => void sendMessage()} disabled={!draft.trim() || agentBusy || waitingOnQuestion} aria-label={t("chat.send")}><Send size={15} /></button>
                 </div>
                 <input
                   ref={attachmentRef}
@@ -1261,23 +1372,4 @@ function localizedConfidence(value: string, language: "zh-CN" | "en") {
   return `${({ high: "高", medium: "中", low: "低" }[value.toLowerCase()] ?? value)}置信度`;
 }
 
-function TreeFolder({ label, depth, open, onToggle, count, children }: {
-  label: string;
-  depth: number;
-  open: boolean;
-  onToggle: () => void;
-  count?: number;
-  children: ReactNode;
-}) {
-  return (
-    <div className="tree-folder">
-      <button className="tree-folder-row" style={{ paddingLeft: 8 + depth * 16 }} onClick={onToggle}>
-        {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-        {open ? <FolderOpen size={14} /> : <Folder size={14} />}
-        <span>{label}</span>
-        {count !== undefined && <small>{count}</small>}
-      </button>
-      {open && children}
-    </div>
-  );
-}
+

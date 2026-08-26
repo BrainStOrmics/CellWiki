@@ -18,6 +18,7 @@ type AgentMessageBubbleProps = {
   processEmptyLabel: string;
   diagnosticsLabel: string;
   onCitationOpen: (citation: Citation) => void;
+  onQuestionAnswered?: (runId: string) => void;
 };
 
 /** Render one durable chat message while keeping role layout and content semantics together. */
@@ -34,6 +35,7 @@ export function AgentMessageBubble({
   processEmptyLabel,
   diagnosticsLabel,
   onCitationOpen,
+  onQuestionAnswered,
 }: AgentMessageBubbleProps) {
   const isAgent = message.role === "agent";
   const process = message.process ?? [];
@@ -120,7 +122,7 @@ export function AgentMessageBubble({
           {!message.streaming && (
             <AgentRunDiagnostics runId={message.runId} label={diagnosticsLabel} />
           )}
-          <QuestionCard runId={message.runId} />
+          <QuestionCard runId={message.runId} onAnswered={onQuestionAnswered} />
         </>
       )}
     </div>

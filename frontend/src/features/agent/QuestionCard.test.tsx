@@ -62,6 +62,16 @@ describe("QuestionCard", () => {
     );
   });
 
+  it("notifies the caller after an answer is submitted", async () => {
+    mockedGet.mockResolvedValue(question());
+    mockedPost.mockResolvedValue({});
+    const onAnswered = vi.fn();
+    render(<QuestionCard runId="run_1" onAnswered={onAnswered} />);
+    const optionButton = await screen.findByText("仅回答");
+    fireEvent.click(optionButton);
+    await waitFor(() => expect(onAnswered).toHaveBeenCalledWith("run_1"));
+  });
+
   it("stops polling when no open question exists (404)", async () => {
     mockedGet.mockRejectedValue(Object.assign(new Error("no"), { status: 404 }));
     render(<QuestionCard runId="run_1" />);

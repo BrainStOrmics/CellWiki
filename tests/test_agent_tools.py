@@ -1,9 +1,9 @@
 # =============================================================================
-# 白名单工具测试 —— File/Glob/Grep/Git/PowerShell 工具 + lint + 最终回答
+# 白名单工具测试 —— File/Glob/Grep/Git/PowerShell 工具 + lint
 # =============================================================================
 # P1/P2 边界由 test_path_guard.py 覆盖；这里验证工具级契约：读写编辑、
 # glob/grep 范围、git 直达白名单执行器、run_powershell 只读白名单，
-# 以及 lint 报告与最终回答 JSON 信封。
+# 以及 lint 报告。
 # =============================================================================
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 
 from cellwiki.agent.executor import build_workspace_tools
-from cellwiki.agent.tools import build_final_answer_tool, build_lint_tools
+from cellwiki.agent.tools import build_lint_tools
 
 
 def _workspace(root: Path) -> Path:
@@ -119,20 +119,6 @@ def test_lint_knowledge_base_returns_json_report(tmp_path: Path):
     assert "issues" in payload or "status" in payload
 
 
-def test_final_answer_tool_returns_json_envelope(tmp_path: Path):
-    _workspace(tmp_path)
-    tool = build_final_answer_tool(tmp_path)
-    payload = json.loads(
-        tool.invoke(
-            {
-                "answer": "结论是 X。",
-                "file_paths": ["wiki/cell_types/alpha-cell.md", "../escape.md"],
-            }
-        )
-    )
-    assert payload["answer"] == "结论是 X。"
-    assert payload["file_paths"] == ["wiki/cell_types/alpha-cell.md"]
-
 def test_ls_delete_and_rename_single_files(tmp_path: Path):
     root = _workspace(tmp_path)
     tools = _tools(root)
@@ -194,7 +180,8 @@ def test_runtime_tool_schema_is_exactly_the_whitelist(tmp_path: Path):
         "lint_knowledge_base",
         "ask_user_question",
         "read_attachment",
-        "submit_agent_answer",
+        "promote_attachment",
+        "ingest_sources",
     }
 
 def test_ls_with_empty_folder_defaults_to_root(tmp_path: Path):

@@ -69,12 +69,22 @@ CellWiki tools needed for that plan.
 - Run lint_knowledge_base for the deterministic quality report; it is read-only.
 - Ask the user with ask_user_question when a choice must be confirmed; the run
   pauses until the user answers (up to 5 fixed options plus free text).
-- Read uploaded attachments with read_attachment (thread-scoped, temporary
-  Agent context; never register them as governed pages).
-- Finish with submit_agent_answer: a plain-text answer plus the
-  workspace-relative file paths you referenced. Ground scientific claims in
-  the files you actually read, identify missing evidence, and never invent
-  citations.
+- Read uploaded attachments: a manifest (id, name, type, size, text_available,
+  est_tokens, path, preview) is injected into the run context snapshot at start;
+  use read_file (or the read_attachment alias) with offset/length to page through
+  large text. Attachments are thread-scoped temporary context until you promote
+  them.
+- Promote a paper into the formal source area with promote_attachment (raw/<id>/)
+  only after the user confirms via ask_user_question; the runtime registers the
+  source and commits it.
+- Ingest registered sources with ingest_sources: first read schema.md from the
+  workspace root if present (pluggable contract; otherwise a built-in default is
+  used), then generate page drafts and write them with write_file. review the
+  draft summary in the conversation; the runtime presents the whole run as a
+  pending diff for approval.
+- When the request is complete, answer the user directly in plain text. Ground
+  scientific claims in the files you actually read, identify missing evidence,
+  and never invent citations.
 
 Never call generic filesystem or shell tools beyond the whitelist; use only
 the visible CellWiki tools. Answer in the user's language.
@@ -126,6 +136,37 @@ def _page_outline(markdown: str, max_headings: int = 24) -> list[str]:
     return outline
 
 
+# 附件清单段预算：多附件按份收敛 preview，避免挤占快照（快照整体另有 8000 上限）
+_ATTACHMENT_BLOCK_BUDGET = 3000
+
+
+def _render_attachment_block(attachments: list[dict[str, Any]]) -> str:
+    """将附件清单渲染为紧凑快照段（元数据 + 收敛 preview，不泄露全文）。"""
+    lines = ["## current attachments"]
+    per_item = max(120, _ATTACHMENT_BLOCK_BUDGET // max(1, len(attachments)))
+    for att in attachments:
+        att_id = str(att.get("attachment_id") or att.get("id") or "?")
+        name = str(att.get("original_name") or att.get("name") or "?")
+        media_type = str(att.get("media_type") or "?")
+        size = att.get("size_bytes")
+        size_s = f"{size} bytes" if isinstance(size, int) else "?"
+        available = bool(att.get("text_available"))
+        available_s = "yes" if available else "no (needs OCR or a clearer PDF)"
+        tokens = att.get("est_tokens", "?")
+        path = str(att.get("path") or "?")
+        header = (
+            f"- id={att_id} name={name} type={media_type} size={size_s} "
+            f"text_available={available_s} est_tokens={tokens} path={path}"
+        )
+        lines.append(header)
+        preview = str(att.get("preview") or "")
+        budget = max(0, per_item - len(header) - 12)
+        if preview and budget > 0:
+            lines.append(f"  preview: {preview[:budget]}")
+    block = "\n".join(lines)
+    return block[: _ATTACHMENT_BLOCK_BUDGET]
+
+
 def build_layer_b_snapshot(
     *,
     current_message: str,
@@ -133,6 +174,7 @@ def build_layer_b_snapshot(
     open_page: dict[str, Any] | None = None,
     pending_question: str | None = None,
     recent_transcript: list[dict[str, str]] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
     limit_transcript: int = 6,
 ) -> str:
     """Layer B：run 启动时快照的 run 动态上下文（纯文本、紧凑、不泄露原始内容）。"""
@@ -153,6 +195,10 @@ def build_layer_b_snapshot(
             for item in recent_transcript[-limit_transcript:]
         ]
         parts.append("- recent transcript:\n" + "\n".join(transcript_lines))
+    if attachments:
+        block = _render_attachment_block(attachments)
+        if block:
+            parts.append(block)
     parts.append(f"- current run goal: {current_message[:800]}")
     snapshot = "\n".join(parts)
     return snapshot[:8_000]

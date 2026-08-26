@@ -27,12 +27,12 @@ from pydantic import BaseModel, Field
 from cellwiki.services.git_executor import GitCommandError, GitExecutor
 from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 
-MAX_READ_BYTES = 200_000          # read_file 单文件上限
+MAX_READ_BYTES = 20 * 1024 * 1024  # read_file/edit_file 单文件字节上限（范围读取取代 200KB 硬失败）
 MAX_WRITE_BYTES = 400_000         # write_file 单次写入上限
 MAX_GLOB_RESULTS = 500
 MAX_GREP_RESULTS = 200
 MAX_TOOL_OUTPUT = 60_000          # 工具返回给模型的输出上限
-MAX_ATTACHMENT_READ_BYTES = 200_000  # read_attachment 单文件读取上限
+MAX_ATTACHMENT_READ_BYTES = MAX_READ_BYTES  # 附件读取沿用同一字节上限
 
 # run_powershell：只读 examine 动词白名单（其余动词一律拒绝）
 _PS_EXAMINE_VERBS = (
@@ -118,13 +118,18 @@ WHITELISTED_TOOL_NAMES = frozenset(
         "lint_knowledge_base",
         "ask_user_question",
         "read_attachment",
-        "submit_agent_answer",
+        "promote_attachment",
+        "ingest_sources",
     }
 )
 
-# read_attachment 的线程作用域解析器：由 AgentRuntimeManager 在每次 run 前安装
+# read_attachment 的线程作用域解析器与附件读取预算：由 AgentRuntimeManager 在每次 run 前安装
 # （严格串行执行，因此单一槽位即可；run 结束或异常后必须清除）。
 _ATTACHMENT_RESOLVER: Any = None
+_ATTACHMENT_WORKSPACE_ROOT: Path | None = None
+_ATTACHMENT_THREAD_DIR: Path | None = None
+_ATTACHMENT_READ_CHARS: int = 0
+_ATTACHMENT_BUDGET_TOTAL: int = 0
 
 
 def set_attachment_resolver(resolver: Any) -> None:
@@ -139,12 +144,171 @@ def clear_attachment_resolver() -> None:
     _ATTACHMENT_RESOLVER = None
 
 
+def set_attachment_scope(
+    resolver: Any,
+    workspace_root: Path,
+    thread_dir: Path | None,
+    budget_chars: int,
+) -> None:
+    """Install the current run attachment scope (resolver, allowed dir, read budget)."""
+    global _ATTACHMENT_RESOLVER, _ATTACHMENT_WORKSPACE_ROOT, _ATTACHMENT_THREAD_DIR
+    global _ATTACHMENT_READ_CHARS, _ATTACHMENT_BUDGET_TOTAL
+    _ATTACHMENT_RESOLVER = resolver
+    _ATTACHMENT_WORKSPACE_ROOT = Path(workspace_root).resolve() if workspace_root else None
+    _ATTACHMENT_THREAD_DIR = Path(thread_dir).resolve() if thread_dir else None
+    _ATTACHMENT_READ_CHARS = 0
+    _ATTACHMENT_BUDGET_TOTAL = max(0, int(budget_chars or 0))
+
+
+def clear_attachment_scope() -> None:
+    """Drop the attachment scope after a run ends (never leak across runs)."""
+    global _ATTACHMENT_RESOLVER, _ATTACHMENT_WORKSPACE_ROOT, _ATTACHMENT_THREAD_DIR
+    global _ATTACHMENT_READ_CHARS, _ATTACHMENT_BUDGET_TOTAL
+    _ATTACHMENT_RESOLVER = None
+    _ATTACHMENT_WORKSPACE_ROOT = None
+    _ATTACHMENT_THREAD_DIR = None
+    _ATTACHMENT_READ_CHARS = 0
+    _ATTACHMENT_BUDGET_TOTAL = 0
+    global _PROMOTE_HANDLER
+    _PROMOTE_HANDLER = None
+
+
+def get_attachment_scope() -> tuple[Any, Any, Any]:
+    """Return (resolver, workspace_root, thread_dir) for the current run."""
+    return _ATTACHMENT_RESOLVER, _ATTACHMENT_WORKSPACE_ROOT, _ATTACHMENT_THREAD_DIR
+
+def attachment_read_stats() -> tuple[int, int]:
+    """Return (chars_read, est_tokens) consumed by attachment reads this run."""
+    return _ATTACHMENT_READ_CHARS, (_ATTACHMENT_READ_CHARS + 3) // 4
+
+# promote 回调：由 AgentRuntimeManager 安装，把登记结果写回附件记录
+_PROMOTE_HANDLER: Any = None
+
+
+def set_promotion_handler(handler: Any) -> None:
+    """Install the thread-scoped post-promote callback for the current run."""
+    global _PROMOTE_HANDLER
+    _PROMOTE_HANDLER = handler
+
+
+def get_promotion_handler() -> Any:
+    """Return the installed post-promote callback (None when absent)."""
+    return _PROMOTE_HANDLER
+
+
+def _is_attachment_path(target: Path, root: Path) -> bool:
+    """True when the target lives under data/runtime/attachments/ in the workspace."""
+    try:
+        rel = target.relative_to(root).as_posix()
+    except ValueError:
+        return False
+    return rel.startswith('data/runtime/attachments/')
+
+
+def _attachment_allowed(target: Path) -> bool:
+    """Only the current thread attachment directory is readable."""
+    if _ATTACHMENT_THREAD_DIR is None:
+        return False
+    try:
+        target.relative_to(_ATTACHMENT_THREAD_DIR)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_blocked_runtime_file(target: Path) -> bool:
+    """Deny runtime databases, staging files, and git internals."""
+    if target.name == 'cellwiki.db':
+        return True
+    if target.name.endswith('.staging'):
+        return True
+    if '.git' in target.parts:
+        return True
+    return False
+
+
+def _remaining_budget() -> int | None:
+    """Remaining attachment read budget; None when unlimited (budget 0)."""
+    if _ATTACHMENT_BUDGET_TOTAL <= 0:
+        return None
+    return max(0, _ATTACHMENT_BUDGET_TOTAL - _ATTACHMENT_READ_CHARS)
+
+
+def _rel_or_name(root: Path | None, target: Path) -> str:
+    """Workspace-relative path, or the bare name when the root is unknown."""
+    if root is not None:
+        try:
+            return target.relative_to(root).as_posix()
+        except ValueError:
+            pass
+    return target.name
+
+
+def _read_workspace_text(
+    root: Path | None,
+    target: Path,
+    *,
+    offset: int = 0,
+    length: int = 0,
+    attachment: bool = False,
+) -> dict[str, Any]:
+    """Read UTF-8 text with char-based range support, output caps, and budget."""
+    global _ATTACHMENT_READ_CHARS
+    try:
+        data = target.read_bytes()
+    except OSError as error:
+        return {"error": f"cannot read {target.name}: {error}"}
+    if len(data) > MAX_READ_BYTES:
+        return {
+            "error": f"file exceeds the {MAX_READ_BYTES}-byte read limit; use the extracted text when present",
+            "path": _rel_or_name(root, target),
+        }
+    if b"\x00" in data[:4096]:
+        return {"error": "file is not valid UTF-8 text", "path": _rel_or_name(root, target)}
+    text = data.decode("utf-8", errors="replace")
+    total = len(text)
+    start = min(total, max(0, int(offset or 0)))
+    end = total
+    if length and int(length) > 0:
+        end = min(total, start + int(length))
+    if end < start:
+        end = start
+    sliced = text[start:end]
+    if attachment:
+        remaining = _remaining_budget()
+        if remaining is not None and remaining <= 0:
+            return {
+                "error": "attachment_read_budget_exceeded",
+                "budget_chars": _ATTACHMENT_BUDGET_TOTAL,
+                "read_chars": _ATTACHMENT_READ_CHARS,
+                "suggestion": "focus on one paper or use the preview to triage",
+            }
+        if remaining is not None and len(sliced) > remaining:
+            sliced = sliced[:remaining]
+    if len(sliced) > MAX_TOOL_OUTPUT:
+        sliced = sliced[:MAX_TOOL_OUTPUT]
+    if attachment:
+        _ATTACHMENT_READ_CHARS += len(sliced)
+    next_offset = start + len(sliced)
+    return {
+        "path": _rel_or_name(root, target),
+        "content": sliced,
+        "offset": start,
+        "next_offset": next_offset if next_offset < total else None,
+        "truncated": next_offset < total,
+        "total_chars": total,
+    }
+
+
+
+
 def build_attachment_tools() -> list[BaseTool]:
     """Provide thread-scoped read of uploaded attachments (temporary Agent context)."""
 
     @tool("read_attachment")
-    def read_attachment(attachment_id: str) -> str:
-        """Read one thread-scoped uploaded attachment as UTF-8 text (binary rejected)."""
+    def read_attachment(attachment_id: str, offset: int = 0, length: int = 0) -> str:
+        """Read one thread-scoped attachment as UTF-8 text (alias of read_file with
+        the same range/budget semantics)."""
         resolver = _ATTACHMENT_RESOLVER
         if resolver is None:
             return _tool_json({"error": "no active run context"})
@@ -154,10 +318,15 @@ def build_attachment_tools() -> list[BaseTool]:
             return _tool_json({"error": f"cannot resolve attachment: {error}"})
         if target is None:
             return _tool_json({"error": "attachment_not_found"})
-        content = _read_text_safely(target, MAX_ATTACHMENT_READ_BYTES)
-        if len(content) > MAX_TOOL_OUTPUT:
-            content = content[:MAX_TOOL_OUTPUT] + "\n...[truncated]"
-        return _tool_json({"attachment_id": attachment_id, "content": content})
+        return _tool_json(
+            _read_workspace_text(
+                _ATTACHMENT_WORKSPACE_ROOT,
+                target,
+                offset=offset,
+                length=length,
+                attachment=True,
+            )
+        )
 
     return [read_attachment]
 
@@ -184,19 +353,28 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
     root = Path(project_root).resolve()
 
     @tool("read_file")
-    def read_file(path: str) -> str:
-        """Read a UTF-8 text file inside the workspace; binary files and oversized files are rejected."""
+    def read_file(path: str, offset: int = 0, length: int = 0) -> str:
+        """Read a UTF-8 text file inside the workspace; supports char-based range
+        reads (offset/length), structured errors, and a per-run attachment budget."""
         try:
             target = validate_workspace_path(root, path)
         except PathGuardError as error:
             return _tool_json({"error": str(error)})
+        if _is_blocked_runtime_file(target):
+            return _tool_json({"error": "runtime file is not readable", "path": path})
         if not target.is_file():
-            return _tool_json({"error": "file_not_found", "path": target.relative_to(root).as_posix()})
-        content = _read_text_safely(target, MAX_READ_BYTES)
-        if len(content) > MAX_TOOL_OUTPUT:
-            content = content[:MAX_TOOL_OUTPUT] + "\n...[truncated]"
+            return _tool_json({"error": "file_not_found", "path": _rel_or_name(root, target)})
+        attachment = _is_attachment_path(target, root)
+        if attachment and not _attachment_allowed(target):
+            return _tool_json({"error": "attachment_not_found", "path": path})
         return _tool_json(
-            {"path": target.relative_to(root).as_posix(), "content": content}
+            _read_workspace_text(
+                root,
+                target,
+                offset=offset,
+                length=length,
+                attachment=attachment,
+            )
         )
 
     @tool("write_file")

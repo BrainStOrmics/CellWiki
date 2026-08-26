@@ -47,6 +47,33 @@ class RetentionService:
         self.project_root = Path(project_root)
         self.policy = policy or RetentionPolicy()
     
+    def cleanup_attachments(self) -> int:
+        """Delete thread attachment files older than the temp-file horizon (24h default).
+
+        Files under data/runtime/attachments/<thread_id>/ are temporary Agent
+        context; promoted attachments are removed by the promote flow immediately,
+        and this age-based sweep is the fallback for never-promoted uploads.
+        """
+        attachments_dir = self.project_root / "data" / "runtime" / "attachments"
+        if not attachments_dir.is_dir():
+            return 0
+        cutoff = datetime.now(UTC) - timedelta(hours=self.policy.temp_files_max_age_hours)
+        deleted = 0
+        for candidate in attachments_dir.rglob("*"):
+            if not candidate.is_file() or candidate.name.endswith(".staging"):
+                continue
+            try:
+                mtime = datetime.fromtimestamp(candidate.stat().st_mtime, UTC)
+            except OSError:
+                continue
+            if mtime < cutoff:
+                try:
+                    candidate.unlink(missing_ok=True)
+                    deleted += 1
+                except OSError:
+                    continue
+        return deleted
+
     def cleanup_all(self) -> dict[str, int]:
         """Run all cleanup tasks and return counts of deleted items.
         
@@ -61,6 +88,7 @@ class RetentionService:
             "error_reports": self.cleanup_error_reports(),
             "task_events": self.cleanup_task_events(),
             "temp_files": self.cleanup_temp_files(),
+            "attachments": self.cleanup_attachments(),
         }
         
         total = sum(results.values())

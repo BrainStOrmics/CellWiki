@@ -188,6 +188,23 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 }
 .titlebar-separator { width: 1px; height: 13px; background: var(--line); }
 .titlebar-status { gap: 14px; color: var(--subtle); }
+.titlebar-refresh {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  color: var(--subtle);
+  background: transparent;
+  cursor: pointer;
+}
+.titlebar-refresh:hover { color: var(--text-2); background: var(--bg-hover); }
+.titlebar-refresh:disabled { cursor: default; opacity: 0.5; }
+.titlebar-refresh svg.spinning { animation: cellwiki-spin 0.8s linear infinite; }
+@keyframes cellwiki-spin { to { transform: rotate(360deg); } }
 .connection { gap: 6px; }
 .connection i { width: 6px; height: 6px; border-radius: 50%; background: #b46b72; }
 .connection.online i { background: var(--green); box-shadow: 0 0 8px rgba(104, 211, 145, 0.45); }
@@ -296,6 +313,13 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .secret-input:focus-within { border-color: #5277ae; }
 .settings-field > select { appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E"); background-position: right 12px center; background-repeat: no-repeat; background-size: 16px; padding-right: 40px; }
 .settings-field > small { display: block; margin-top: 5px; color: #555f6b; font-size: 8px; }
+.workspace-actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+.workspace-browse { display: inline-flex; height: 30px; align-items: center; gap: 6px; padding: 0 12px; border: 1px solid #333a45; border-radius: var(--radius-m); color: #aeb5bf; background: #161a20; font-size: 11px; }
+.workspace-browse:hover { color: #c2c8d0; border-color: #3b4552; }
+.workspace-select { display: inline-flex; height: 32px; align-items: center; gap: 6px; padding: 0 14px; border: 0; border-radius: var(--radius-m); color: #11161c; background: #8fb4f5; font-size: 12px; font-weight: 620; }
+.workspace-select:hover { background: #a4c3f9; }
+.workspace-select:disabled { cursor: default; opacity: 0.45; }
+.workspace-card > small { display: block; margin-top: 8px; color: #555f6b; font-size: 9px; }
 .secret-input { display: flex; align-items: center; padding-left: 9px; color: #637186; }
 .secret-input input { min-width: 0; flex: 1; height: 32px; border: 0; outline: 0; color: #d9dde3; background: transparent; padding: 0 8px; font-size: 10px; }
 .secret-input button { display: grid; width: 31px; height: 31px; place-items: center; border: 0; color: #697482; background: transparent; }
@@ -1473,6 +1497,7 @@ button.message-citation:hover { border-color: #587caf; color: #c4d8fa; backgroun
 :root[data-theme="light"] .thread-list-items { border-color: var(--border-strong); background: var(--bg-popover); box-shadow: var(--shadow-2); }
 :root[data-theme="light"] .thread-list-items button:hover { background: var(--bg-hover); }
 :root[data-theme="light"] .thread-list-delete:hover { color: var(--danger); background: var(--danger-soft); }
+:root[data-theme="dark"] .thread-list-toggle { color: var(--muted); background: var(--bg-panel); }
 :root[data-theme="light"] .graph-filter-bar button.active { border-color: rgba(44, 109, 178, 0.45); color: var(--accent); background: var(--accent-soft); }
 :root[data-theme="light"] .graph-stage { background: radial-gradient(circle, #ffffff 0, #edf1f5 72%); }
 :root[data-theme="light"] .graph-inspector { border-color: var(--border-strong); background: rgba(255, 255, 255, 0.96); box-shadow: var(--shadow-2); }
@@ -1943,6 +1968,7 @@ select:focus-visible {
 
 /* Message citations and evidence */
 :root[data-theme="light"] .message-citations button { border-color: #c1d3e6; color: #2865a1; background: #f0f6fc; }
+:root[data-theme="light"] .message-attachment { border-color: #c1d3e6; color: #2865a1; background: #f0f6fc; }
 :root[data-theme="light"] .message-evidence-gap { border-color: #b88d48; color: #806329; background: #fff8e8; }
 
 /* Compose actions and agent modes */
@@ -1965,6 +1991,11 @@ select:focus-visible {
 :root[data-theme="light"] .settings-field > select,
 :root[data-theme="light"] .secret-input { border-color: #cfd8e1; color: #263643; background: #f8fafb; }
 :root[data-theme="light"] .secret-input input { color: #263643; }
+:root[data-theme="light"] .workspace-browse { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }
+:root[data-theme="light"] .workspace-browse:hover { color: #1d2934; border-color: #b9c6d2; background: #edf2f6; }
+:root[data-theme="light"] .workspace-select { color: #ffffff; background: #3479bf; }
+:root[data-theme="light"] .workspace-select:hover { background: #4a8cd4; }
+:root[data-theme="light"] .workspace-card > small { color: #687482; }
 
 /* Settings card title and description text colors */
 :root[data-theme="light"] .settings-card-title h3,
@@ -2094,3 +2125,154 @@ select:focus-visible {
   color: #c0392b;
   font-size: 12px;
 }
+
+/* Obsidian 式工作区文件浏览器（树 + 查看器） */
+.workspace-tree { padding: 2px 5px 14px; }
+.workspace-browser-section { padding-top: 2px; }
+
+.workspace-file-preview { display: flex; flex-direction: column; min-height: 100%; }
+.workspace-file-preview-bar { display: flex; align-items: center; padding: 8px 18px 0; }
+.workspace-file-preview-bar button { display: inline-flex; align-items: center; gap: 5px; border: 0; color: #7d8794; background: transparent; font-size: 11px; cursor: pointer; }
+.workspace-file-preview-bar button:hover { color: #d9dde3; }
+
+.workspace-viewer { padding: 10px 22px 40px; color: #d9dde3; }
+.workspace-viewer-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #242a33; }
+.workspace-viewer-toolbar strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-viewer-type { flex: 0 0 auto; color: #626a76; font-size: 9px; font-weight: 650; letter-spacing: 0.08em; }
+.workspace-viewer-toolbar button { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; padding: 5px 10px; border: 1px solid #333a45; border-radius: 4px; color: #aeb5bf; background: #161a20; font-size: 11px; }
+.workspace-viewer-toolbar button:hover { color: #d9dde3; border-color: #3b4552; }
+.workspace-notice { margin: 8px 0 12px; padding: 8px 10px; border-left: 3px solid #5277ae; color: #b8c4d4; background: rgba(82, 119, 174, 0.12); font-size: 11px; }
+.workspace-text { margin: 0; white-space: pre-wrap; word-break: break-word; color: #c9cdd4; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.6; }
+.workspace-pdf-wrap { width: 100%; }
+.workspace-pdf-object { width: 100%; height: calc(100vh - 240px); border: 1px solid #292f38; border-radius: 6px; background: #f2f2f2; }
+.workspace-pdf-object p { padding: 20px; color: #555f6b; }
+.workspace-binary { padding: 16px; border: 1px dashed #333a45; border-radius: 6px; color: #8f969f; font-size: 12px; }
+.workspace-binary a { color: #8fb4f5; text-decoration: none; }
+.workspace-editor { width: 100%; min-height: 320px; padding: 10px 12px; border: 1px solid #333a45; border-radius: 6px; outline: 0; color: #d9dde3; background: #12161c; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.55; box-sizing: border-box; }
+.workspace-editor:focus { border-color: #5277ae; }
+.workspace-editor-actions { display: flex; gap: 8px; margin-top: 10px; }
+.workspace-editor-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border: 0; border-radius: 4px; color: #11161c; background: #8fb4f5; font-size: 11px; font-weight: 600; }
+.workspace-editor-actions button:last-child { color: #aeb5bf; background: #1d2128; }
+.workspace-editor-actions button:disabled { opacity: 0.5; }
+
+/* Light theme */
+:root[data-theme="light"] .workspace-viewer-toolbar { border-bottom-color: #d7dfe6; }
+:root[data-theme="light"] .workspace-viewer-toolbar button { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }
+:root[data-theme="light"] .workspace-viewer-toolbar button:hover { color: #1d2934; border-color: #b9c6d2; background: #edf2f6; }
+:root[data-theme="light"] .workspace-notice { color: #2c3e50; background: rgba(52, 121, 191, 0.1); }
+:root[data-theme="light"] .workspace-text { color: #263643; }
+:root[data-theme="light"] .workspace-editor { border-color: #cfd8e1; color: #263643; background: #f8fafb; }
+:root[data-theme="light"] .workspace-binary { border-color: #cfd8e1; color: #687482; }
+:root[data-theme="light"] .workspace-file-preview-bar button { color: #687482; }
+:root[data-theme="light"] .workspace-file-preview-bar button:hover { color: #1d2934; }
+
+/* Obsidian 式工作区文件浏览器（树 + 查看器） */
+.workspace-tree { padding: 2px 5px 14px; }
+.workspace-browser-section { padding-top: 2px; }
+
+.workspace-file-preview { display: flex; flex-direction: column; min-height: 100%; }
+.workspace-file-preview-bar { display: flex; align-items: center; padding: 8px 18px 0; }
+.workspace-file-preview-bar button { display: inline-flex; align-items: center; gap: 5px; border: 0; color: #7d8794; background: transparent; font-size: 11px; cursor: pointer; }
+.workspace-file-preview-bar button:hover { color: #d9dde3; }
+
+.workspace-viewer { padding: 10px 22px 40px; color: #d9dde3; }
+.workspace-viewer-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; padding-bottom: 10px; border-bottom: 1px solid #242a33; }
+.workspace-viewer-toolbar strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-viewer-type { flex: 0 0 auto; color: #626a76; font-size: 9px; font-weight: 650; letter-spacing: 0.08em; }
+.workspace-viewer-toolbar button { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; padding: 5px 10px; border: 1px solid #333a45; border-radius: 4px; color: #aeb5bf; background: #161a20; font-size: 11px; }
+.workspace-viewer-toolbar button:hover { color: #d9dde3; border-color: #3b4552; }
+.workspace-notice { margin: 8px 0 12px; padding: 8px 10px; border-left: 3px solid #5277ae; color: #b8c4d4; background: rgba(82, 119, 174, 0.12); font-size: 11px; }
+.workspace-text { margin: 0; white-space: pre-wrap; word-break: break-word; color: #c9cdd4; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.6; }
+.workspace-pdf-wrap { width: 100%; }
+.workspace-pdf-object { width: 100%; height: calc(100vh - 240px); border: 1px solid #292f38; border-radius: 6px; background: #f2f2f2; }
+.workspace-pdf-object p { padding: 20px; color: #555f6b; }
+.workspace-binary { padding: 16px; border: 1px dashed #333a45; border-radius: 6px; color: #8f969f; font-size: 12px; }
+.workspace-binary a { color: #8fb4f5; text-decoration: none; }
+.workspace-editor { width: 100%; min-height: 320px; padding: 10px 12px; border: 1px solid #333a45; border-radius: 6px; outline: 0; color: #d9dde3; background: #12161c; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 12px; line-height: 1.55; box-sizing: border-box; }
+.workspace-editor:focus { border-color: #5277ae; }
+.workspace-editor-actions { display: flex; gap: 8px; margin-top: 10px; }
+.workspace-editor-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border: 0; border-radius: 4px; color: #11161c; background: #8fb4f5; font-size: 11px; font-weight: 600; }
+.workspace-editor-actions button:last-child { color: #aeb5bf; background: #1d2128; }
+.workspace-editor-actions button:disabled { opacity: 0.5; }
+
+/* Light theme */
+:root[data-theme="light"] .workspace-viewer-toolbar { border-bottom-color: #d7dfe6; }
+:root[data-theme="light"] .workspace-viewer-toolbar button { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }
+:root[data-theme="light"] .workspace-viewer-toolbar button:hover { color: #1d2934; border-color: #b9c6d2; background: #edf2f6; }
+:root[data-theme="light"] .workspace-notice { color: #2c3e50; background: rgba(52, 121, 191, 0.1); }
+:root[data-theme="light"] .workspace-text { color: #263643; }
+:root[data-theme="light"] .workspace-editor { border-color: #cfd8e1; color: #263643; background: #f8fafb; }
+:root[data-theme="light"] .workspace-binary { border-color: #cfd8e1; color: #687482; }
+:root[data-theme="light"] .workspace-file-preview-bar button { color: #687482; }
+:root[data-theme="light"] .workspace-file-preview-bar button:hover { color: #1d2934; }
+
+/* 待确认 Diff 查看面板（侧边栏入口） */
+.file-panel-footer { gap: 8px; }
+.diff-entry { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; min-height: 24px; padding: 0 8px; border: 1px solid #333a45; border-radius: 4px; color: #aeb5bf; background: #161a20; font-size: 10px; cursor: pointer; }
+.diff-entry:hover { color: #d9dde3; border-color: #3b4552; }
+.diff-entry.active { color: #e9effa; border-color: rgba(90, 130, 190, 0.6); background: rgba(90, 130, 190, 0.16); }
+.diff-entry b { display: inline-grid; min-width: 15px; height: 15px; place-items: center; border-radius: 8px; color: #11161c; background: #8fb4f5; font-size: 9px; }
+
+.diff-browser { display: flex; flex-direction: column; height: 100%; padding: 12px 18px 24px; color: #d9dde3; gap: 10px; overflow: hidden; }
+.diff-browser-toolbar { display: flex; align-items: center; gap: 10px; padding-bottom: 10px; border-bottom: 1px solid #242a33; }
+.diff-browser-toolbar strong { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; }
+.diff-pending-count { color: #626a76; font-size: 10px; }
+.diff-browser-toolbar button { display: inline-flex; align-items: center; gap: 5px; margin-left: auto; padding: 5px 10px; border: 1px solid #333a45; border-radius: 4px; color: #aeb5bf; background: #161a20; font-size: 11px; cursor: pointer; }
+.diff-browser-toolbar button:hover { color: #d9dde3; border-color: #3b4552; }
+.diff-browser-toolbar .diff-toolbar-close { margin-left: 0; }
+.diff-empty { padding-left: 0; }
+.diff-list { display: flex; flex-direction: column; gap: 6px; max-height: 45%; overflow-y: auto; }
+.diff-card { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: center; padding: 8px 10px; border: 1px solid #262c35; border-radius: 6px; color: #aeb5bf; background: #14181e; text-align: left; cursor: pointer; }
+.diff-card:hover { border-color: #3b4552; }
+.diff-card.selected { border-color: rgba(90, 130, 190, 0.6); background: rgba(90, 130, 190, 0.1); }
+.diff-card strong { color: #d9dde3; font-size: 11px; }
+.diff-card small { grid-column: 2; color: #7d8794; font-size: 10px; }
+.diff-status { padding: 1px 7px; border-radius: 8px; font-size: 9px; font-weight: 650; text-transform: uppercase; }
+.diff-status.pending { color: #e7c07a; background: rgba(184, 136, 62, 0.18); }
+.diff-status.accepted { color: #7fc59a; background: rgba(76, 164, 110, 0.16); }
+.diff-status.rejected { color: #d88a8a; background: rgba(184, 82, 82, 0.16); }
+.diff-detail { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.diff-detail-toolbar { display: flex; align-items: center; gap: 10px; }
+.diff-detail-toolbar strong { font-size: 12px; }
+.diff-actions { display: flex; gap: 8px; margin-left: auto; }
+.diff-actions button { display: inline-flex; align-items: center; gap: 5px; padding: 6px 12px; border: 0; border-radius: 4px; font-size: 11px; font-weight: 600; cursor: pointer; }
+.diff-actions button:first-child { color: #d88a8a; background: rgba(184, 82, 82, 0.16); }
+.diff-actions button:last-child { color: #11161c; background: #8fb4f5; }
+.diff-actions button:disabled { opacity: 0.5; cursor: default; }
+.diff-patch { flex: 1; min-height: 0; overflow-y: auto; border: 1px solid #262c35; border-radius: 6px; background: #10141a; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: 11px; line-height: 1.5; }
+.diff-file + .diff-file { border-top: 1px solid #242a33; }
+.diff-file-header {
+  position: sticky; top: 0; display: flex; align-items: center; gap: 6px;
+  width: 100%; padding: 6px 10px; border: 0; color: #c8d2e0; background: #1c222b;
+  font: inherit; font-weight: 650; text-align: left; cursor: pointer;
+}
+.diff-file-header:hover { background: #232a35; }
+.diff-hunk-header { padding: 2px 10px; color: #7f9cd2; background: rgba(90, 130, 190, 0.1); }
+.diff-line { display: grid; grid-template-columns: 3.5ch 3.5ch 2ch 1fr; padding-right: 10px; white-space: pre-wrap; word-break: break-word; }
+.diff-line.add { color: #9fd0ae; background: rgba(76, 164, 110, 0.13); }
+.diff-line.del { color: #e0a3a3; background: rgba(184, 82, 82, 0.13); }
+.diff-line.hdr, .diff-line.binary { grid-column: 1 / -1; padding: 0 10px; color: #8f969f; font-style: italic; }
+.diff-line-num { color: #5c6673; text-align: right; padding: 0 8px 0 10px; user-select: none; }
+.diff-line-marker { color: #5c6673; text-align: center; user-select: none; }
+.diff-line-content { white-space: pre-wrap; word-break: break-word; }
+.diff-line-note { color: #8f969f; font-style: italic; }
+
+:root[data-theme="light"] .diff-entry { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }
+:root[data-theme="light"] .diff-entry:hover { color: #1d2934; border-color: #b9c6d2; background: #edf2f6; }
+:root[data-theme="light"] .diff-entry.active { color: #245f9c; border-color: rgba(52, 121, 191, 0.5); background: #e5eff8; }
+:root[data-theme="light"] .diff-browser { color: #263643; }
+:root[data-theme="light"] .diff-browser-toolbar { border-bottom-color: #d7dfe6; }
+:root[data-theme="light"] .diff-browser-toolbar button { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }
+:root[data-theme="light"] .diff-browser-toolbar button:hover { color: #1d2934; border-color: #b9c6d2; background: #edf2f6; }
+:root[data-theme="light"] .diff-card { border-color: #d7dfe6; color: #35424e; background: #ffffff; }
+:root[data-theme="light"] .diff-card.selected { border-color: rgba(52, 121, 191, 0.5); background: #eef4fb; }
+:root[data-theme="light"] .diff-card strong { color: #263643; }
+:root[data-theme="light"] .diff-card small { color: #687482; }
+:root[data-theme="light"] .diff-patch { border-color: #d7dfe6; background: #fbfcfd; }
+:root[data-theme="light"] .diff-file-header { color: #263643; background: #eef2f6; }
+:root[data-theme="light"] .diff-file-header:hover { background: #e2e9f0; }
+:root[data-theme="light"] .diff-line.add { color: #1c6b3d; background: rgba(76, 164, 110, 0.12); }
+:root[data-theme="light"] .diff-line.del { color: #a13b3b; background: rgba(184, 82, 82, 0.1); }
+:root[data-theme="light"] .diff-line.hdr, :root[data-theme="light"] .diff-line.binary, :root[data-theme="light"] .diff-line-note { color: #687482; }
+:root[data-theme="light"] .diff-line-num, :root[data-theme="light"] .diff-line-marker { color: #9aa5b0; }
+

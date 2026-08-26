@@ -22,7 +22,13 @@ function statusOf(error: unknown): number {
   return 0;
 }
 
-export function QuestionCard({ runId }: { runId: string }) {
+export function QuestionCard({
+  runId,
+  onAnswered,
+}: {
+  runId: string;
+  onAnswered?: (runId: string) => void;
+}) {
   const [question, setQuestion] = useState<PendingQuestion | null>(null);
   const [freeText, setFreeText] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -66,6 +72,7 @@ export function QuestionCard({ runId }: { runId: string }) {
         timedOut ? { timed_out: true } : { answers: answer });
       setQuestion(null);
       setFreeText("");
+      onAnswered?.(runId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {

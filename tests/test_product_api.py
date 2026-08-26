@@ -81,6 +81,28 @@ def test_project_tree_and_page_reading(tmp_path: Path):
     assert "FOXP3" in page.json().get("markdown", "")
 
 
+def test_project_tree_scans_nested_wiki_pages(tmp_path: Path):
+    # wiki/ 子目录中的页面也应进入目录树、可被 page_id 读取、可被搜索命中
+    _write_workspace(tmp_path)
+    nested = tmp_path / "wiki" / "diseases" / "pancreatic_cancer"
+    nested.mkdir(parents=True, exist_ok=True)
+    (nested / "beta.md").write_text(
+        "---\ndisplay_name: Beta Page\n---\n# Beta\n\nFOXP3 is a marker.\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app(tmp_path))
+    tree = client.get("/api/projects/cellwiki/tree").json()
+    ids = {item["page_id"]: item for item in tree}
+    assert "alpha" in ids
+    assert "beta" in ids
+    assert ids["beta"]["path"] == "wiki/diseases/pancreatic_cancer/beta.md"
+    page = client.get("/api/pages/beta")
+    assert page.status_code == 200
+    assert "FOXP3 is a marker" in page.json()["markdown"]
+    hits = client.get("/api/search", params={"q": "FOXP3"}).json()
+    assert any(hit["page_id"] == "beta" for hit in hits)
+
+
 def test_settings_roundtrip_and_test(tmp_path: Path):
     client = TestClient(create_app(tmp_path))
     current = client.get("/api/settings")

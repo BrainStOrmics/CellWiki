@@ -96,6 +96,8 @@ class RunUsage(ContractModel):
     tool_calls_cancelled: int = Field(default=0, ge=0)
     ttft_ms: float | None = Field(default=None, ge=0)
     elapsed_seconds: float = Field(default=0, ge=0)          # 已用时间（秒）
+    read_chars: int = Field(default=0, ge=0)                 # 附件读取字符数（run 级累计）
+    read_tokens: int = Field(default=0, ge=0)                # 附件读取估算 token
 
 
 # ---- 智能体运行记录 ----

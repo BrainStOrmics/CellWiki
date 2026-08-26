@@ -37,7 +37,8 @@ from cellwiki.agent.executor import (
 from cellwiki.agent.question_tool import build_question_tool
 from cellwiki.services.prompt_layers import LAYER_A_TEXT
 from cellwiki.services.subagents import SubagentRegistry, build_delegation_tools
-from cellwiki.agent.tools import build_final_answer_tool, build_lint_tools
+from cellwiki.agent.ingest_tools import build_ingest_tools
+from cellwiki.agent.tools import build_lint_tools
 
 
 # ---------------------------------------------------------------------------
@@ -78,7 +79,7 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
         "CellWiki tool boundary: only the whitelisted CellWiki tools are "
         "available (ls, read_file, write_file, edit_file, glob, grep, git, "
         "run_powershell, delete_file, rename_file, lint_knowledge_base, "
-        "ask_user_question, read_attachment, submit_agent_answer). Generic "
+        "ask_user_question, read_attachment). Generic "
         "deep-agent tools such as execute, bash, task, write_todos, and "
         "move_folder are unavailable. Emit calls only for tool schemas "
         "visible in this request."
@@ -202,19 +203,19 @@ def build_wiki_agent(
     registry: SubagentRegistry | None = None,
 ):
     # 解析项目根目录
-    root = Path(project_root or settings.project_root).resolve()
+    root = Path(project_root or settings.workspace_root).resolve()
     _register_cellwiki_harness_profile(settings.openai_model)
     # 如果未指定模型，使用默认构建
     coordinator_model = model or build_model()
-    # 构建工具集：白名单七工具 + 确定性 lint 报告 + 最终回答
+    # 构建工具集：工作区工具 + 确定性 lint 报告 + 交互工具
     coordinator_tools: list[Any] = [
         *build_workspace_tools(root),
         *build_lint_tools(root),
         *build_attachment_tools(),
+        *build_ingest_tools(root),
         *build_question_tool(),
         *build_delegation_tools(registry or SubagentRegistry()),
     ]
-    final_answer_tool = build_final_answer_tool(root)
     # 检查点器：默认使用 InMemorySaver，除非传入了外部检查点器
     active_checkpointer = (
         InMemorySaver() if checkpointer is _DEFAULT_CHECKPOINTER else checkpointer
@@ -224,7 +225,7 @@ def build_wiki_agent(
         name="cellwiki-agent",
         model=coordinator_model,
         system_prompt=SYSTEM_PROMPT,
-        tools=[*coordinator_tools, final_answer_tool],
+        tools=coordinator_tools,
         middleware=[_CellWikiToolBoundaryMiddleware(append_reminder=True)],
         backend=StateBackend(),
         checkpointer=active_checkpointer,

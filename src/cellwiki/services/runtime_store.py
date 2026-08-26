@@ -293,6 +293,63 @@ class RuntimeStore:
             )
         return question.to_payload()
 
+    def save_pending_question_and_transition(
+        self,
+        question: Any,
+        *,
+        message: str,
+        data: dict | None = None,
+    ) -> dict:
+        """Atomically expose a question and move its run to WAITING_CONFIRMATION."""
+        from cellwiki.domain.questions import PendingQuestion
+
+        if not isinstance(question, PendingQuestion):
+            question = PendingQuestion.model_validate(question)
+        payload = question.model_dump_json()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", (question.run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(question.run_id)
+            current = AgentRun.model_validate_json(row[0])
+            target = AgentRunStatus.WAITING_CONFIRMATION
+            if target != current.status and target not in _TRANSITIONS[current.status]:
+                raise InvalidRunTransitionError(
+                    f"invalid run transition: {current.status.value} -> {target.value}"
+                )
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO agent_questions(
+                    question_id, run_id, thread_id, payload, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    question.question_id,
+                    question.run_id,
+                    question.thread_id,
+                    payload,
+                    question.status,
+                    question.created_at.isoformat(),
+                ),
+            )
+            now = datetime.now(UTC)
+            updated = current.model_copy(update={"status": target, "updated_at": now})
+            connection.execute(
+                "UPDATE agent_runs SET status = ?, payload = ?, updated_at = ? WHERE run_id = ?",
+                (target.value, updated.model_dump_json(), now.isoformat(), question.run_id),
+            )
+            if target != current.status:
+                self._insert_event(
+                    connection,
+                    updated,
+                    AgentEventType.RUN_STATUS,
+                    message=message,
+                    data={"status": target.value, **(data or {})},
+                )
+        return question.to_payload()
+
     def get_open_question(self, run_id: str) -> dict | None:
         """Return the newest pending question for a run, if any."""
         with self._connect() as connection:
@@ -417,6 +474,23 @@ class RuntimeStore:
         if row is None:
             return None
         return json.loads(row[0])
+
+    def mark_attachment_promoted(
+        self,
+        thread_id: str,
+        attachment_id: str,
+        source_id: str,
+    ) -> dict | None:
+        """Record that an attachment was promoted into raw/<source_id>/."""
+        record = self.get_attachment(thread_id, attachment_id)
+        if record is None:
+            return None
+        from cellwiki.domain.attachments import ThreadAttachment
+
+        record["promoted_source_id"] = source_id
+        attachment = ThreadAttachment.model_validate(record)
+        self.save_attachment(attachment)
+        return attachment.to_payload()
 
     def delete_attachments_for_thread(self, thread_id: str) -> int:
         """Delete every attachment record for a thread; returns the count removed."""

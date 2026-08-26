@@ -29,8 +29,14 @@ _PAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
 class WikiReader:
     def __init__(self, project_root: Path):
         self.project_root = Path(project_root).resolve()
-        # Wiki 页面存储在 wiki/cell_types/ 目录下
-        self.pages_dir = self.project_root / "wiki" / "cell_types"
+        # Wiki 页面分布在 wiki/ 下的任意子目录（cell_types/、diseases/、marker_genes/ 等）
+        self.wiki_dir = self.project_root / "wiki"
+
+    # 返回 wiki/ 下全部 Markdown 页面的稳定排序路径（递归扫描子目录）
+    def _iter_pages(self) -> list[Path]:
+        if not self.wiki_dir.is_dir():
+            return []
+        return sorted(self.wiki_dir.rglob("*.md"))
 
     # 读取单个页面，返回前端元数据和 Markdown 内容
     def read_page(self, page_id: str) -> dict:
@@ -46,17 +52,20 @@ class WikiReader:
             "markdown": markdown,
         }
 
-    # 返回页面目录树（页面 ID、标题、路径）
+    # 返回页面目录树（页面 ID、标题、路径）；page_id 同名时按稳定排序保留第一个
     def tree(self) -> list[dict]:
-        if not self.pages_dir.exists():
-            return []
         result = []
-        for path in sorted(self.pages_dir.glob("*.md")):
-            page = self.read_page(path.stem)
+        seen: set[str] = set()
+        for path in self._iter_pages():
+            page_id = path.stem
+            if page_id in seen:
+                continue
+            seen.add(page_id)
+            page = self.read_page(page_id)
             result.append(
                 {
-                    "page_id": path.stem,
-                    "title": page["frontmatter"].get("display_name") or path.stem,
+                    "page_id": page_id,
+                    "title": page["frontmatter"].get("display_name") or page_id,
                     "path": page["path"],
                 }
             )
@@ -66,10 +75,10 @@ class WikiReader:
     # 返回匹配页面列表，按匹配次数排序，包含上下文摘要
     def search(self, query: str, limit: int = 20) -> list[dict]:
         query = query.strip().lower()
-        if not query or not self.pages_dir.exists():
+        if not query:
             return []
         matches: list[dict[str, str | int]] = []
-        for path in sorted(self.pages_dir.glob("*.md")):
+        for path in self._iter_pages():
             raw = path.read_text(encoding="utf-8")
             haystack = raw.lower()
             if query not in haystack:
@@ -92,15 +101,19 @@ class WikiReader:
         )[:limit]
 
     # 验证页面 ID 并返回安全的文件路径
-    # 防止路径遍历攻击：验证 ID 格式并检查路径是否在 pages_dir 下
+    # 防止路径遍历攻击：验证 ID 格式并检查路径是否在 wiki/ 下
     def _page_path(self, page_id: str) -> Path:
         if not _PAGE_ID.fullmatch(page_id):
             raise FileNotFoundError(page_id)
-        path = (self.pages_dir / f"{page_id}.md").resolve()
-        # 安全检查：确保解析后的路径仍在 pages_dir 下
-        if self.pages_dir.resolve() not in path.parents:
-            raise FileNotFoundError(page_id)
-        return path
+        for path in self._iter_pages():
+            if path.stem != page_id:
+                continue
+            resolved = path.resolve()
+            # 安全检查：确保解析后的路径仍在 wiki/ 下
+            if self.wiki_dir.resolve() not in resolved.parents:
+                continue
+            return resolved
+        raise FileNotFoundError(page_id)
 
     # 解析 YAML 前端元数据
     @staticmethod

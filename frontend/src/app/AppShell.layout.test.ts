@@ -67,6 +67,14 @@ describe("Agent sidebar layout", () => {
     expect(eventSource).toContain("event.thread_id !== agentThreadIdRef.current");
   });
 
+  it("restores paused-run answers and guards malformed stream events", () => {
+    expect(appShellSource).toContain("pausedAgentStatuses.has(run.status)");
+    expect(appShellSource).toContain("[cellwiki] ignoring malformed agent event");
+    expect(appShellSource).toContain("chat.waitingForConfirmation");
+    expect(appShellSource).toContain("waitingOnQuestion");
+    expect(appShellSource).toContain("legacyTerminalEvent(run, agentEventSequenceRef.current + 1)");
+  });
+
   it("no longer keeps removed registry/review/graph workspace code paths", () => {
     expect(appShellSource).not.toContain("/api/sources");
     expect(appShellSource).not.toContain("/api/changesets");

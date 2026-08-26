@@ -25,6 +25,19 @@ export async function getJson<T>(path: string): Promise<T> {
   return parseResponse<T>(await productFetch(path));
 }
 
+export async function getText(path: string): Promise<string> {
+  const response = await productFetch(path);
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+    throw new ProductApiError(
+      body && typeof body.detail === "string" ? body.detail : `${response.status} ${response.statusText}`,
+      response.status,
+      body,
+    );
+  }
+  return response.text();
+}
+
 export async function postJson<T>(path: string, body: unknown): Promise<T> {
   return parseResponse<T>(await productFetch(path, {
     method: "POST",

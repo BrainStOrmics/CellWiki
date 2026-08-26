@@ -9,6 +9,7 @@ import uvicorn
 
 from cellwiki.api.app import create_app
 from cellwiki.domain.runs import AgentEventType, AgentRun, AgentRunStatus
+from cellwiki.services.agent_runtime import AgentRuntimeManager, RuntimeSignal
 from cellwiki.services.runtime_store import RuntimeStore
 
 
@@ -16,6 +17,46 @@ ROOT = Path(__file__).resolve().parents[1]
 PROJECT = ROOT / "build" / "e2e-project"
 FIXTURE_THREAD_ID = "thread_e2e_history"
 FIXTURE_RUN_ID = "run_e2e_history"
+
+
+class E2ELiveAgentAdapter:
+    """Deterministic runtime adapter for the browser-to-SSE Agent smoke test."""
+
+    def execute(self, *, thread_id: str, message: str, context):
+        yield RuntimeSignal(
+            type=AgentEventType.TOOL_STARTED,
+            message="read_file started.",
+            data={
+                "tool_name": "read_file",
+                "tool_call_id": "e2e_read_treg",
+                "path": "wiki/cell_types/regulatory_t_cell.md",
+            },
+            model_call_id="e2e_model_1",
+        )
+        yield RuntimeSignal(
+            type=AgentEventType.TOOL_COMPLETED,
+            message="Read wiki/cell_types/regulatory_t_cell.md",
+            data={
+                "tool_name": "read_file",
+                "tool_call_id": "e2e_read_treg",
+                "path": "wiki/cell_types/regulatory_t_cell.md",
+            },
+        )
+        # Do not emit FINAL_RESPONSE: the runtime must turn regular streamed
+        # assistant text into the durable final response itself.
+        yield RuntimeSignal(
+            type=AgentEventType.MESSAGE_DELTA,
+            message="FOXP3 是 Regulatory T cell 的证据标记。",
+            model_call_id="e2e_model_1",
+        )
+        yield RuntimeSignal(
+            type=AgentEventType.MESSAGE_DELTA,
+            message="实际读取：wiki/cell_types/regulatory_t_cell.md",
+            model_call_id="e2e_model_1",
+        )
+
+    def close(self) -> None:
+        return None
 
 
 def seed_project() -> None:
@@ -134,4 +175,10 @@ if __name__ == "__main__":
     # security is covered separately by Product API and sidecar smoke tests.
     os.environ.setdefault("APP_LANGUAGE", "zh-CN")
     port = int(os.environ.get("CELLWIKI_E2E_API_PORT", "18000"))
-    uvicorn.run(create_app(PROJECT), host="127.0.0.1", port=port, log_level="warning")
+    runtime = AgentRuntimeManager(PROJECT, adapter=E2ELiveAgentAdapter())
+    uvicorn.run(
+        create_app(PROJECT, agent_runtime=runtime),
+        host="127.0.0.1",
+        port=port,
+        log_level="warning",
+    )
