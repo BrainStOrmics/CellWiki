@@ -36,6 +36,7 @@
 - **schema.md**：工作区根目录可插拔的提取契约；ingest 前 Agent 读取，缺失时回退内置默认。
 - **工作区编辑（workspace edit）**：APP 对 md/txt 的受控修改，走合成 run 提交与
   pending diff 审批，不绕过“Run -> 待确认 diff -> 用户接受”。
+- **系统维护 commit**：accept diff 后，系统把 overview/statistics 重建、index 统计注入与 log/audit 追加合并为一个确定性 commit（`chore(system): maintenance after run <id> (<verdict>)`），不在拒绝 revert 范围。
 - **子 Agent 扩展点**：spec 注册表 + 独立工具白名单；v1 注册表为空。
 - **应用根 / 工作区根**：应用根是代码仓库（含 .venv 与 frontend 工具链），固定由代码位置推断；工作区根是用户选择的知识库目录，持久化在 .env 的 PROJECT_ROOT，未选择时回退应用根。wiki/ data/ raw/ 与 Agent 工作区都基于工作区根。
 - **保留术语（品牌与兼容）**：CewiPilot、`WikiAgentContext`、
@@ -57,3 +58,4 @@
    checkpoint 恢复 + `parent_run_id`；崩溃恢复继承剩余预算。
 8. 内容归 Agent、派生与门禁归系统、人工负责接受/拒绝 diff。
 9. 品牌与兼容术语不随重构改名。
+10. 系统维护文件（`overview.md`/`statistics.md` 系统重建，`log.md`/`audit_report.md` append-only）只在 run 判定事件由系统维护；accept 后合并为系统维护 commit 提交；Agent 工具对系统维护文件的写操作一律拒绝。
