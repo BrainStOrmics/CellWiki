@@ -580,6 +580,7 @@ class RuntimeStore:
         *,
         status: PendingDiffStatus,
         resolution: str | None = None,
+        data: dict[str, Any] | None = None,
     ) -> PendingDiff:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -594,13 +595,14 @@ class RuntimeStore:
                 if status in (PendingDiffStatus.ACCEPTED, PendingDiffStatus.REJECTED)
                 else None
             )
-            updated = current.model_copy(
-                update={
-                    "status": status,
-                    "resolution": resolution,
-                    "resolved_at": resolved_at,
-                }
-            )
+            updates: dict[str, Any] = {
+                "status": status,
+                "resolution": resolution,
+                "resolved_at": resolved_at,
+            }
+            if data is not None:
+                updates["data"] = {**(current.data or {}), **data}
+            updated = current.model_copy(update=updates)
             connection.execute(
                 "UPDATE pending_diffs SET status = ?, payload = ?, updated_at = ? WHERE diff_id = ?",
                 (status.value, updated.model_dump_json(), datetime.now(UTC).isoformat(), diff_id),
@@ -1022,6 +1024,7 @@ class RuntimeStore:
         message: str = "",
         progress: int | None = None,
         data: dict | None = None,
+        allow_terminal: bool = False,
     ) -> AgentEvent:
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1031,7 +1034,7 @@ class RuntimeStore:
             if row is None:
                 raise KeyError(run_id)
             run = AgentRun.model_validate_json(row[0])
-            if run.finished_at is not None:
+            if run.finished_at is not None and not allow_terminal:
                 raise TerminalRunError(
                     f"cannot append {event_type.value} after run finalized as {run.status.value}"
                 )

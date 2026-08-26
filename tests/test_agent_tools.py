@@ -191,3 +191,32 @@ def test_ls_with_empty_folder_defaults_to_root(tmp_path: Path):
     payload = json.loads(tools["ls"].invoke({"folder": ""}))
     assert "error" not in payload, payload
     assert payload["results"], "根目录应能列出条目"
+
+
+# ---------------------------------------------------------------------------
+# ADR-0009：根级系统维护文件对 Agent 写操作不可达（读不受限）
+# ---------------------------------------------------------------------------
+
+
+def test_system_owned_files_reject_write_edit_delete_rename(tmp_path: Path):
+    root = _workspace(tmp_path)
+    names = ("overview.md", "statistics.md", "log.md", "audit_report.md")
+    for name in names:
+        (root / name).write_bytes(b"# heading\n")
+    tools = _tools(root)
+    for name in names:
+        for tool, args in (
+            ("write_file", {"path": name, "content": "hijack"}),
+            ("edit_file", {"path": name, "old_string": "# heading", "new_string": "# hijack"}),
+            ("delete_file", {"path": name}),
+            ("rename_file", {"path": name, "new_path": "renamed.md"}),
+        ):
+            payload = json.loads(tools[tool].invoke(args))
+            assert "system-owned file is not writable" in payload.get("error", ""), (tool, name)
+        read = json.loads(tools["read_file"].invoke({"path": name}))
+        assert read.get("content") == "# heading\n", name
+    # 非根级同名文件与 index.md（Agent 维护）不受系统文件约束
+    payload = json.loads(tools["write_file"].invoke({"path": "wiki/log.md", "content": "ok"}))
+    assert payload["ok"] is True
+    payload = json.loads(tools["write_file"].invoke({"path": "index.md", "content": "nav"}))
+    assert payload["ok"] is True

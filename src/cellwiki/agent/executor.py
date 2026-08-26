@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 
 from cellwiki.services.git_executor import GitCommandError, GitExecutor
 from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
+from cellwiki.services.workspace import SYSTEM_OWNED_FILES
 
 MAX_READ_BYTES = 20 * 1024 * 1024  # read_file/edit_file 单文件字节上限（范围读取取代 200KB 硬失败）
 MAX_WRITE_BYTES = 400_000         # write_file 单次写入上限
@@ -227,6 +228,15 @@ def _is_blocked_runtime_file(target: Path) -> bool:
     return False
 
 
+def _is_system_owned_file(target: Path, root: Path) -> bool:
+    """True when target is one of the root-level system-owned workspace files."""
+    try:
+        rel = target.relative_to(root)
+    except ValueError:
+        return False
+    return len(rel.parts) == 1 and rel.parts[0] in SYSTEM_OWNED_FILES
+
+
 def _remaining_budget() -> int | None:
     """Remaining attachment read budget; None when unlimited (budget 0)."""
     if _ATTACHMENT_BUDGET_TOTAL <= 0:
@@ -384,6 +394,8 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             target = validate_workspace_path(root, path, allow_missing=True)
         except PathGuardError as error:
             return _tool_json({"error": str(error)})
+        if _is_system_owned_file(target, root):
+            return _tool_json({"error": "system-owned file is not writable", "path": _rel_or_name(root, target)})
         if "\x00" in content:
             return _tool_json({"error": "binary content is not allowed"})
         data = content.encode("utf-8")
@@ -403,6 +415,8 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             target = validate_workspace_path(root, path)
         except PathGuardError as error:
             return _tool_json({"error": str(error)})
+        if _is_system_owned_file(target, root):
+            return _tool_json({"error": "system-owned file is not writable", "path": _rel_or_name(root, target)})
         if not target.is_file():
             return _tool_json({"error": "file_not_found", "path": target.relative_to(root).as_posix()})
         content = _read_text_safely(target, MAX_READ_BYTES)
@@ -458,6 +472,8 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             target = validate_workspace_path(root, path)
         except PathGuardError as error:
             return _tool_json({"error": str(error)})
+        if _is_system_owned_file(target, root):
+            return _tool_json({"error": "system-owned file is not writable", "path": _rel_or_name(root, target)})
         if not target.is_file():
             return _tool_json({"error": "file_not_found", "path": path})
         try:
@@ -474,6 +490,8 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             target = validate_workspace_path(root, new_path, allow_missing=True)
         except PathGuardError as error:
             return _tool_json({"error": str(error)})
+        if _is_system_owned_file(source, root) or _is_system_owned_file(target, root):
+            return _tool_json({"error": "system-owned file is not writable", "path": _rel_or_name(root, source)})
         if not source.is_file():
             return _tool_json({"error": "file_not_found", "path": path})
         if target == source:

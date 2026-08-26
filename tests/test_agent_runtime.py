@@ -484,7 +484,8 @@ def test_recover_stale_runs_on_start_marks_orphans_unfinished(tmp_path: Path):
     assert final.status == AgentRunStatus.UNFINISHED, final.status
     first.close()
 
-def test_pending_diff_patch_not_truncated_for_large_diff(tmp_path: Path):
+
+def test_pending_diff_patch_not_truncated_for_large_diff(tmp_path: Path):
     """审查 UI 的 patch 使用独立 executor，不被 Agent 默认 200KB 输出上限截断。"""
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -927,5 +928,212 @@ def test_pending_diff_blocks_new_run_until_resolved(tmp_path: Path):
             thread_id="t_gate_diff3", message="只读", context=_context("t_gate_diff3")
         )
         assert read_only.status in (AgentRunStatus.QUEUED, AgentRunStatus.RUNNING)
+    finally:
+        manager.close()
+
+
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# ADR-0009：判定时维护 + 系统维护 commit
+# ---------------------------------------------------------------------------
+
+
+def _wait_for_diff(manager: AgentRuntimeManager, run_id: str):
+    diffs = manager.store.list_pending_diffs(run_id=run_id)
+    for _ in range(100):
+        if diffs:
+            return diffs
+        time.sleep(0.02)
+        diffs = manager.store.list_pending_diffs(run_id=run_id)
+    return diffs
+
+
+def _wait_for_file_text(path: Path, fragment: str) -> str:
+    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    for _ in range(100):
+        if fragment in text:
+            return text
+        time.sleep(0.02)
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+    return text
+
+
+def _wait_for_maintenance_subject(repo: Path, fragment: str) -> list[str]:
+    subjects: list[str] = []
+    for _ in range(100):
+        subjects = [
+            line.split(" ", 1)[-1]
+            for line in GitExecutor(repo).run("log", "--oneline").splitlines()
+            if line.split(" ", 1)[-1].startswith("chore(system): maintenance")
+        ]
+        if any(fragment in line for line in subjects):
+            return subjects
+        time.sleep(0.02)
+    return subjects
+
+
+class _MaintenanceWritingAdapter:
+    """Write one wiki page with distinct content per call, commit, then finish."""
+
+    def __init__(self, repo: Path):
+        self.repo = repo
+        self.calls = 0
+
+    def execute(self, *, thread_id, message, context) -> Any:
+        self.calls += 1
+        wiki = self.repo / "wiki" / "cell_types"
+        wiki.mkdir(parents=True, exist_ok=True)
+        (wiki / "alpha-cell.md").write_text(
+            f"# Alpha Cell\n\nbody-{self.calls}\n", encoding="utf-8"
+        )
+        git = GitExecutor(self.repo)
+        git.run("add", "wiki/cell_types/alpha-cell.md")
+        git.run("commit", "-m", f"agent change {self.calls}")
+        yield RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="done", data={})
+
+
+def test_accept_publishes_pending_diff_without_system_files_and_runs_maintenance(
+    tmp_path: Path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    manager = AgentRuntimeManager(repo, adapter=_MaintenanceWritingAdapter(repo))
+    try:
+        started = manager.start(
+            thread_id="t_maint", message="写条目", context=_context("t_maint")
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diffs = _wait_for_diff(manager, started.run_id)
+        assert len(diffs) == 1, diffs
+        diff = diffs[0]
+        # 待审补丁不含任何系统维护文件
+        patch = manager.pending_diff_patch(diff.diff_id)
+        for name in ("overview.md", "statistics.md", "log.md", "audit_report.md"):
+            assert name not in patch, name
+        assert "alpha-cell.md" in patch
+        # 强制 lint 快照已追加到 audit_report.md（run 收尾线程异步，轮询等待）
+        audit = _wait_for_file_text(
+            repo / "audit_report.md", started.run_id
+        )
+        assert "Audit snapshot" in audit
+        # 接受 -> 派生重建 + log 记录 + 系统维护 commit
+        accepted = manager.accept_pending_diff(diff.diff_id)
+        assert accepted.status == PendingDiffStatus.ACCEPTED
+        assert "知识条目总数" in (repo / "overview.md").read_text(encoding="utf-8")
+        assert "| **总计** |" in (repo / "statistics.md").read_text(encoding="utf-8")
+        assert f"accepted | run {started.run_id}" in (repo / "log.md").read_text(encoding="utf-8")
+        subjects = _wait_for_maintenance_subject(repo, "(accepted)")
+        assert any("run " + started.run_id in line for line in subjects)
+        events = manager.store.list_events(started.run_id)
+        assert any(ev.data.get("kind") == "maintenance" for ev in events)
+    finally:
+        manager.close()
+
+
+def test_reject_reverts_agent_commits_and_keeps_audit_record(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    manager = AgentRuntimeManager(repo, adapter=_MaintenanceWritingAdapter(repo))
+    try:
+        started = manager.start(
+            thread_id="t_rej", message="写条目", context=_context("t_rej")
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diffs = _wait_for_diff(manager, started.run_id)
+        assert len(diffs) == 1, diffs
+        diff = diffs[0]
+        # 等审计快照落盘后再读基线
+        _wait_for_file_text(repo / "audit_report.md", started.run_id)
+        audit_before = (repo / "audit_report.md").read_text(encoding="utf-8")
+        rejected = manager.reject_pending_diff(diff.diff_id)
+        assert rejected.status == PendingDiffStatus.REJECTED
+        # Agent 内容被回滚，审计记录与 log 拒绝记录保留
+        assert not (repo / "wiki" / "cell_types" / "alpha-cell.md").exists()
+        assert (repo / "audit_report.md").read_text(encoding="utf-8") == audit_before
+        assert f"rejected | run {started.run_id}" in (repo / "log.md").read_text(encoding="utf-8")
+    finally:
+        manager.close()
+
+
+def test_unfinished_run_appends_pause_log(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    signals = [
+        RuntimeSignal(
+            type=AgentEventType.MESSAGE_DELTA,
+            message="token",
+            data={},
+            model_call_id=f"model_call_{index}",
+            input_tokens=10,
+            output_tokens=10,
+        )
+        for index in range(6)
+    ]
+    adapter = ScriptedAdapter([signals])
+    manager = AgentRuntimeManager(repo, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id="t_uf",
+            message="超预算",
+            context=_context("t_uf"),
+            budget=RunBudget(max_model_calls=3),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+        log = _wait_for_file_text(repo / "log.md", f"unfinished | run {started.run_id}")
+        assert "unfinished" in log
+    finally:
+        manager.close()
+
+
+def test_maintenance_failure_does_not_block_verdict_and_retries_at_next_start(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from cellwiki.services import agent_runtime as runtime_mod
+
+    original = runtime_mod.maintain_after_accept
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    manager = AgentRuntimeManager(repo, adapter=_MaintenanceWritingAdapter(repo))
+    try:
+        started = manager.start(
+            thread_id="t_fail", message="写条目", context=_context("t_fail")
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diffs = _wait_for_diff(manager, started.run_id)
+        assert len(diffs) == 1, diffs
+        diff = diffs[0]
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("simulated maintenance failure")
+
+        monkeypatch.setattr(runtime_mod, "maintain_after_accept", boom)
+        accepted = manager.accept_pending_diff(diff.diff_id)
+        # 判定不被维护失败阻塞
+        assert accepted.status == PendingDiffStatus.ACCEPTED
+        marked = manager.store.get_pending_diff(diff.diff_id)
+        assert marked.data["maintenance"]["status"] == "failed"
+        events = manager.store.list_events(started.run_id)
+        assert any(ev.data.get("kind") == "maintenance_failed" for ev in events)
+        # 六根文件存在但仅模板：维护重建标记未写入
+        overview = (repo / "overview.md").read_text(encoding="utf-8")
+        assert "知识条目总数" not in overview
+
+        # 恢复维护函数，下一次 run 启动自动重试成功
+        monkeypatch.setattr(runtime_mod, "maintain_after_accept", original)
+        resumed = manager.start(
+            thread_id="t_retry", message="触发重试", context=_context("t_retry")
+        )
+        _wait_for_file_text(repo / "overview.md", "知识条目总数")
+        assert f"accepted | run {started.run_id}" in (repo / "log.md").read_text(encoding="utf-8")
+        marked = manager.store.get_pending_diff(diff.diff_id)
+        assert marked.data["maintenance"]["status"] == "ok"
+        _wait_for_status(manager, resumed.run_id, {AgentRunStatus.SUCCEEDED})
     finally:
         manager.close()

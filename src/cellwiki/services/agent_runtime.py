@@ -57,7 +57,15 @@ from cellwiki.agent.executor import (
 from cellwiki.services.attachment_store import AttachmentFileStore
 from cellwiki.services.git_executor import GitCommandError, GitExecutor
 from cellwiki.services.logging_context import log_context
+from cellwiki.services.quality import inspect_projection
 from cellwiki.services.runtime_store import InvalidRunTransitionError, RuntimeStore
+from cellwiki.services.workspace_maintenance import (
+    MAINTENANCE_COMMIT_PREFIX,
+    maintain_after_accept,
+    maintain_after_lint,
+    maintain_after_reject,
+    maintain_after_unfinished,
+)
 
 # 墙钟超时下限（秒）：避免测试中预算/超时语义被极小值绕过
 MAX_RUN_SECONDS_FLOOR = 10
@@ -362,6 +370,9 @@ class AgentRuntimeManager:
         self._cancellations: dict[str, _CancellationGate] = {}
         self._running_run_id: str | None = None
         self._git: GitExecutor | None = None
+        # 系统维护（audit 快照与 accept/reject/unfinished 写入）串行化：
+        # run 收尾线程的 lint 快照与 API 线程的判定维护互不交错提交。
+        self._maintenance_lock = RLock()
         warn_if_narrow_window(
             settings.openai_model.casefold(), settings.agent_context_max_tokens
         )
@@ -391,6 +402,8 @@ class AgentRuntimeManager:
             raise AgentRunInProgressError(
                 f"a pending diff requires review before a new run: {pending[0].diff_id}"
             )
+        # 重试上次失败的维护（best-effort，失败不阻塞新 run）
+        self._retry_failed_maintenance()
         run_id = _new_run_id()
         snapshot = self._git_snapshot()
         budget = budget or RunBudget(
@@ -506,10 +519,14 @@ class AgentRuntimeManager:
         ).patch
 
     def accept_pending_diff(self, diff_id: str) -> PendingDiff:
-        """Accept a run's diff: commits stay, decision is recorded."""
-        return self.store.update_pending_diff(
-            diff_id, status=PendingDiffStatus.ACCEPTED, resolution="accepted"
-        )
+        """Accept a run's diff: commits stay, decision is recorded, then run
+        the system maintenance (rebuild derived files + verdict log)."""
+        with self._maintenance_lock:
+            diff = self.store.update_pending_diff(
+                diff_id, status=PendingDiffStatus.ACCEPTED, resolution="accepted"
+            )
+            self._run_maintenance_locked("accept", diff)
+        return diff
 
     def reject_pending_diff(self, diff_id: str) -> PendingDiff:
         """Reject a run's diff: revert every run commit, newest-first."""
@@ -518,12 +535,15 @@ class AgentRuntimeManager:
             raise InvalidRunTransitionError(
                 f"diff {diff_id} is already {diff.status.value}"
             )
-        git = self._git_executor()
-        if git is not None and diff.commits:
-            git.revert_commits(diff.commits)
-        return self.store.update_pending_diff(
-            diff_id, status=PendingDiffStatus.REJECTED, resolution="rejected"
-        )
+        with self._maintenance_lock:
+            git = self._git_executor()
+            if git is not None and diff.commits:
+                git.revert_commits(diff.commits)
+            diff = self.store.update_pending_diff(
+                diff_id, status=PendingDiffStatus.REJECTED, resolution="rejected"
+            )
+            self._run_maintenance_locked("reject", diff)
+        return diff
 
     def reopen_pending_diff(self, diff_id: str) -> PendingDiff:
         """Reopen a resolved diff (commits remain in the repo either way)."""
@@ -681,9 +701,12 @@ class AgentRuntimeManager:
             self._finalize_stream_outcome(run_id, thread_id, outcome)
             # 尽早发布 pending diff（幂等：git 异常不影响运行结果）
             try:
-                self._maybe_publish_pending_diff(run_id)
+                published = self._maybe_publish_pending_diff(run_id)
             except (GitCommandError, OSError):
-                pass
+                published = False
+            if published:
+                # 内容型 run：强制 lint 快照写入 audit_report.md（仅记录，不改门禁语义）
+                self._forced_lint_audit(run_id)
         except _RunTimeoutError as error:
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, str(error))
         except AgentBudgetExceeded as error:
@@ -1053,7 +1076,7 @@ class AgentRuntimeManager:
         # transition 一次写入状态 + 错误字段 + finished_at：任何时刻读到
         # UNFINISHED 的行都带完整信息；没有后续覆盖写，resume（claim）不会被
         # 迟到的写回退。
-        return self.store.transition(
+        run = self.store.transition(
             run_id,
             AgentRunStatus.UNFINISHED,
             error_type=error_type,
@@ -1062,6 +1085,8 @@ class AgentRuntimeManager:
             data={"reason": "budget_or_timeout"},
             finished_at=datetime.now(UTC),
         )
+        self._maintain_unfinished(run)
+        return run
 
     def _finish_failed(self, run_id: str, error: Exception) -> AgentRun:
         # 僵尸 worker 防改写：运行已被恢复/终结时不再落盘 FAILED
@@ -1083,33 +1108,50 @@ class AgentRuntimeManager:
         )
 
     # ---- pending diff 发布 ----
-    def _maybe_publish_pending_diff(self, run_id: str) -> None:
-        """Collect the run's git commits into a pending diff, if any exist."""
+    def _maybe_publish_pending_diff(self, run_id: str) -> bool:
+        """Collect the run's git commits into a pending diff, if any exist.
+
+        Returns True when a pending diff was published. System maintenance
+        commits are excluded from both the commit list and the review patch.
+        """
         run = self.store.get_run(run_id)
         if run is None:
-            return
+            return False
         git = self._git_executor()
         if git is None:
-            return
+            return False
         try:
             # snapshot 为 None = run 前工作区尚无提交：取该 run 产出的首个 commit(s)
             commits = git.commits_since(run.snapshot_commit)
         except GitCommandError:
-            return
+            return False
         if not commits:
-            return
-        refs = frozenset({"HEAD"})
+            return False
+        # 系统维护 commit（chore(system): maintenance ...）不属于任何 Agent
+        # run：commit 列表与审查补丁都要排除，避免接受/拒绝时误伤审计记录。
+        agent_commits = [
+            sha for sha in commits if not self._is_system_maintenance_commit(git, sha)
+        ]
+        if not agent_commits:
+            return False
+        head = agent_commits[0]
+        refs = frozenset({head})
         if run.snapshot_commit is not None:
-            refs = frozenset({run.snapshot_commit, "HEAD"})
-        diff = git.diff_between(run.snapshot_commit, enabled_refs=refs)
+            refs = frozenset({run.snapshot_commit, head})
+        diff = git.diff_between(
+            run.snapshot_commit,
+            right=head,
+            enabled_refs=refs,
+            exclude_paths=("overview.md", "statistics.md", "log.md", "audit_report.md"),
+        )
         pending = PendingDiff(
             diff_id=f"diff_{run.run_id}",
             run_id=run.run_id,
             thread_id=run.thread_id,
             project_id=run.project_id,
             snapshot_commit=run.snapshot_commit,
-            head_commit=git.current_head(),
-            commits=commits,
+            head_commit=head,
+            commits=agent_commits,
             files=diff.files,
             insertions=diff.insertions,
             deletions=diff.deletions,
@@ -1118,6 +1160,193 @@ class AgentRuntimeManager:
         self.store.update_run(
             run.model_copy(update={"pending_diff_id": pending.diff_id})
         )
+        return True
+
+    # ---- 系统维护（ADR-0009：判定时维护 + 系统维护 commit）----
+    def _run_maintenance(self, verdict: str, diff: PendingDiff) -> None:
+        """Post-verdict maintenance for accept/reject; failures never block it."""
+        if self._git_executor() is None:
+            return
+        with self._maintenance_lock:
+            self._run_maintenance_locked(verdict, diff)
+
+    def _run_maintenance_locked(self, verdict: str, diff: PendingDiff) -> None:
+        parent_run_id = None
+        try:
+            run = self.store.get_run(diff.run_id)
+            parent_run_id = run.parent_run_id
+        except KeyError:
+            pass
+        try:
+            if verdict == "accept":
+                outcome = maintain_after_accept(
+                    self.project_root,
+                    run_id=diff.run_id,
+                    parent_run_id=parent_run_id,
+                    diff=diff,
+                )
+            else:
+                outcome = maintain_after_reject(
+                    self.project_root,
+                    run_id=diff.run_id,
+                    parent_run_id=parent_run_id,
+                    diff=diff,
+                )
+        except Exception as error:  # noqa: BLE001 - 维护失败必须记录并留待重试
+            self._mark_maintenance_failure(diff, verdict, error)
+            return
+        try:
+            self.store.update_pending_diff(
+                diff.diff_id,
+                status=diff.status,
+                resolution=diff.resolution,
+                data={
+                    "maintenance": {
+                        "status": "ok",
+                        "verdict": verdict,
+                        "commit": outcome.commit_sha,
+                    }
+                },
+            )
+        except Exception:
+            pass
+        self._record_maintenance_event(
+            diff.run_id, verdict, diff_id=diff.diff_id, commit=outcome.commit_sha
+        )
+
+    def _mark_maintenance_failure(
+        self, diff: PendingDiff, verdict: str, error: Exception
+    ) -> None:
+        try:
+            self.store.update_pending_diff(
+                diff.diff_id,
+                status=diff.status,
+                resolution=diff.resolution,
+                data={
+                    "maintenance": {
+                        "status": "failed",
+                        "verdict": verdict,
+                        "error": str(error)[:500],
+                    }
+                },
+            )
+        except Exception:
+            pass
+        self._record_maintenance_event(
+            diff.run_id, verdict, diff_id=diff.diff_id, error=error
+        )
+
+    def _maintain_unfinished(self, run: AgentRun) -> None:
+        if self._git_executor() is None:
+            return
+        with self._maintenance_lock:
+            self._maintain_unfinished_locked(run)
+
+    def _maintain_unfinished_locked(self, run: AgentRun) -> None:
+        try:
+            outcome = maintain_after_unfinished(
+                self.project_root,
+                run_id=run.run_id,
+                parent_run_id=run.parent_run_id,
+                reason=str(run.error_message or run.error_type or "unfinished")[:200],
+            )
+        except Exception as error:  # noqa: BLE001
+            self._record_maintenance_event(run.run_id, "unfinished", error=error)
+            return
+        self._record_maintenance_event(
+            run.run_id, "unfinished", commit=outcome.commit_sha
+        )
+
+    def _forced_lint_audit(self, run_id: str) -> None:
+        """Run-end forced lint snapshot appended to audit_report.md (record only)."""
+        if self._git_executor() is None:
+            return
+        with self._maintenance_lock:
+            self._forced_lint_audit_locked(run_id)
+
+    def _forced_lint_audit_locked(self, run_id: str) -> None:
+        try:
+            run = self.store.get_run(run_id)
+        except KeyError:
+            return
+        try:
+            report = inspect_projection(self.project_root)
+            outcome = maintain_after_lint(
+                self.project_root,
+                run_id=run_id,
+                parent_run_id=run.parent_run_id,
+                report=report,
+            )
+        except Exception as error:  # noqa: BLE001
+            self._record_maintenance_event(run_id, "lint", error=error)
+            return
+        self._record_maintenance_event(run_id, "lint", commit=outcome.commit_sha)
+
+    def _record_maintenance_event(
+        self,
+        run_id: str,
+        verdict: str,
+        *,
+        diff_id: str | None = None,
+        commit: str | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        """Append a maintenance outcome event even after the run is terminal."""
+        try:
+            if error is not None:
+                self.store.append_event(
+                    run_id,
+                    AgentEventType.PROGRESS,
+                    message="Workspace maintenance failed; will retry on next run start.",
+                    data={
+                        "kind": "maintenance_failed",
+                        "verdict": verdict,
+                        "diff_id": diff_id,
+                        "error": str(error)[:500],
+                    },
+                    allow_terminal=True,
+                )
+            else:
+                self.store.append_event(
+                    run_id,
+                    AgentEventType.PROGRESS,
+                    message="Workspace maintenance applied.",
+                    data={
+                        "kind": "maintenance",
+                        "verdict": verdict,
+                        "diff_id": diff_id,
+                        "commit": commit,
+                    },
+                    allow_terminal=True,
+                )
+        except Exception:
+            pass
+
+    def _is_system_maintenance_commit(self, git: GitExecutor, sha: str) -> bool:
+        """True when a commit subject matches the system maintenance prefix."""
+        try:
+            line = git.run("log", "--oneline", "-1", sha).strip()
+        except GitCommandError:
+            return False
+        if " " not in line:
+            return False
+        return line.split(" ", 1)[1].startswith(MAINTENANCE_COMMIT_PREFIX)
+
+    def _retry_failed_maintenance(self) -> None:
+        """Best-effort retry of failed accept/reject maintenance at run start."""
+        if self._git_executor() is None:
+            return
+        for diff in self.store.list_pending_diffs(limit=50):
+            marker = diff.data.get("maintenance") if isinstance(diff.data, dict) else None
+            if not isinstance(marker, dict) or marker.get("status") != "failed":
+                continue
+            verdict = marker.get("verdict")
+            if verdict not in {"accept", "reject"}:
+                continue
+            try:
+                self._run_maintenance(verdict, diff)
+            except Exception:
+                continue
 
     # ---- 内部工具 ----
     def _ensure_single_active_run(self) -> AgentRun | None:
@@ -1230,7 +1459,8 @@ class AgentRuntimeManager:
                 raise ValueError("workspace is not a git repository")
             git.run("add", target.relative_to(self.project_root).as_posix())
             git.run("commit", "-m", f"workspace edit: {path}")
-            self._maybe_publish_pending_diff(run.run_id)
+            if self._maybe_publish_pending_diff(run.run_id):
+                self._forced_lint_audit(run.run_id)
         except Exception as error:
             self.store.finalize_run(
                 run.run_id,
