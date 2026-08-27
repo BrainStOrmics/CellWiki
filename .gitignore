@@ -5,6 +5,8 @@
 local_tests/
 local_refine/
 .local/
+.dsh-vision-toolkit/
+.workbuddy/
 
 # pytest
 .pytest_cache

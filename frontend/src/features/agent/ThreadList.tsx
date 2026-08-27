@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, History, MessageSquareText, Trash2 } from "lucide-react";
 import { getJson } from "../../lib/product-api";
@@ -27,6 +27,11 @@ export function ThreadList({
     queryFn: () => getJson<AgentRun[]>("/api/agent/runs?limit=200"),
     refetchInterval: expanded ? 3000 : false,
   });
+  useEffect(() => {
+    // 展开下拉时立即刷新一次，避免新会话要等 3s 轮询才出现
+    if (expanded) void runs.refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded]);
   const threads = useMemo(() => {
     const grouped = new Map<string, ThreadSummary>();
     for (const run of runs.data ?? []) {

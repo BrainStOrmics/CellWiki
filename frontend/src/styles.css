@@ -970,6 +970,45 @@ button.message-citation:hover { border-color: #587caf; color: #c4d8fa; backgroun
 .agent-run-diagnostics ul { margin: 7px 0 0; padding: 0; list-style: none; }
 .agent-run-diagnostics li { display: flex; justify-content: space-between; gap: 8px; padding-top: 3px; }
 .agent-run-diagnostics li small { color: #687485; white-space: nowrap; }
+.agent-run-thread-summary { margin: 7px 0 0; color: #8b97a6; line-height: 1.5; }
+.agent-run-spans { width: 100%; margin-top: 7px; border-collapse: collapse; font-size: 8px; }
+.agent-run-spans th,
+.agent-run-spans td { padding: 3px 6px; border: 1px solid #273449; text-align: left; white-space: nowrap; }
+.agent-run-spans th { color: #657183; background: rgba(255, 255, 255, 0.03); font-weight: 600; }
+.agent-run-spans td { color: #a7b1bf; }
+.agent-run-spans td:first-child { color: #657183; }
+.agent-timeline { display: flex; flex-direction: column; gap: 7px; padding: 2px 0; }
+.agent-timeline-node { display: flex; align-items: flex-start; gap: 6px; color: #aeb9c8; font-size: 9px; line-height: 1.5; }
+.agent-timeline-node > svg { flex: 0 0 auto; margin-top: 2px; color: #7fa5dd; }
+.agent-timeline-node .at-kind { flex: 0 0 auto; color: #657993; font-size: 8px; font-weight: 650; letter-spacing: 0.03em; text-transform: uppercase; }
+.agent-timeline-node .at-kind::after { content: " ·"; color: #4d5c70; }
+.agent-timeline-node .at-label { min-width: 0; overflow-wrap: anywhere; }
+.agent-timeline-node .at-dot { flex: 0 0 auto; width: 6px; height: 6px; margin-top: 4px; border-radius: 50%; background: #657993; }
+.agent-timeline-node.tone-success { color: #8fb9a0; }
+.agent-timeline-node.tone-success .at-dot { background: #75bf95; }
+.agent-timeline-node.tone-warning { color: #c9a46a; }
+.agent-timeline-node.tone-warning .at-dot { background: #c9a46a; }
+.agent-timeline-node.tone-danger { color: #d4898f; }
+.agent-timeline-node.tone-danger .at-dot { background: #d37f86; }
+.agent-timeline-node.tone-danger > svg { color: #d37f86; }
+.agent-timeline-node .at-line { display: flex; min-width: 0; flex: 1; align-items: baseline; gap: 6px; padding: 0; border: 0; color: inherit; background: none; font: inherit; text-align: left; cursor: pointer; }
+.agent-timeline-node .at-line small { flex: 0 0 auto; color: #64788f; font-size: 8px; text-transform: uppercase; }
+.agent-timeline-node.tool.failed > svg { color: #d37f86; }
+.agent-timeline-node.tool.completed > svg { color: #75bf95; }
+.agent-timeline-node .spin { animation: agent-spin 1s linear infinite; }
+@keyframes agent-spin { to { transform: rotate(360deg); } }
+.agent-timeline-node .at-detail { margin: 2px 0 2px 20px; padding: 6px 8px; border-left: 2px solid #2c3c52; color: #93a3b4; font: 8px "Geist Mono", Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.agent-timeline-think summary { display: flex; align-items: center; gap: 6px; cursor: pointer; color: #93a3b4; font-size: 9px; list-style: none; user-select: none; }
+.agent-timeline-think summary::-webkit-details-marker { display: none; }
+.agent-timeline-think summary > svg { color: #7099d8; }
+.agent-timeline-think summary span { font-size: 9px; font-weight: 650; letter-spacing: 0.03em; text-transform: uppercase; }
+.agent-timeline-think summary small { color: #657993; font-size: 8px; text-transform: uppercase; }
+.agent-timeline-think-body { margin: 2px 0 0 18px; color: #8b98a8; font-size: 9px; line-height: 1.6; white-space: pre-wrap; }
+.agent-timeline-text { color: inherit; }
+.agent-timeline-text .markdown-content { color: inherit; }
+.agent-timeline-text + .agent-timeline-node,
+.agent-timeline-node + .agent-timeline-text { margin-top: 3px; }
+
 .agent-review-card { margin: 8px; padding: 9px; border: 1px solid #6c573a; border-radius: 6px; background: rgba(120, 86, 39, 0.12); }
 .agent-review-card > span { color: #d5a85f; font-size: 8px; text-transform: uppercase; }
 .agent-review-card strong,
@@ -1543,6 +1582,31 @@ button.message-citation:hover { border-color: #587caf; color: #c4d8fa; backgroun
 :root[data-theme="light"] .agent-run-diagnostics dd,
 :root[data-theme="light"] .agent-run-diagnostics li { color: var(--text-2); }
 :root[data-theme="light"] .agent-run-diagnostics li small { color: var(--muted); }
+:root[data-theme="light"] .agent-run-thread-summary { color: var(--muted); }
+:root[data-theme="light"] .agent-run-spans th { color: var(--subtle); background: rgba(15, 23, 42, 0.05); }
+:root[data-theme="light"] .agent-run-spans th,
+:root[data-theme="light"] .agent-run-spans td { border-color: var(--border-soft); }
+:root[data-theme="light"] .agent-run-spans td { color: var(--text-2); }
+:root[data-theme="light"] .agent-run-spans td:first-child { color: var(--subtle); }
+:root[data-theme="light"] .agent-timeline-node { color: var(--text-2); }
+:root[data-theme="light"] .agent-timeline-node .at-kind { color: var(--subtle); }
+:root[data-theme="light"] .agent-timeline-node .at-kind::after { color: var(--border-soft); }
+:root[data-theme="light"] .agent-timeline-node .at-dot { background: var(--subtle); }
+:root[data-theme="light"] .agent-timeline-node.tone-success { color: var(--success); }
+:root[data-theme="light"] .agent-timeline-node.tone-success .at-dot { background: var(--success); }
+:root[data-theme="light"] .agent-timeline-node.tone-warning { color: var(--warning); }
+:root[data-theme="light"] .agent-timeline-node.tone-warning .at-dot { background: var(--warning); }
+:root[data-theme="light"] .agent-timeline-node.tone-danger { color: var(--danger); }
+:root[data-theme="light"] .agent-timeline-node.tone-danger .at-dot,
+:root[data-theme="light"] .agent-timeline-node.tool.failed > svg { color: var(--danger); }
+:root[data-theme="light"] .agent-timeline-node .at-line small { color: var(--subtle); }
+:root[data-theme="light"] .agent-timeline-node .at-detail { border-color: var(--border-soft); color: var(--text-2); }
+:root[data-theme="light"] .agent-timeline-think summary { color: var(--text-2); }
+:root[data-theme="light"] .agent-timeline-think summary > svg { color: var(--accent); }
+:root[data-theme="light"] .agent-timeline-think summary small { color: var(--muted); }
+:root[data-theme="light"] .agent-timeline-think-body { color: var(--muted); }
+:root[data-theme="light"] .agent-timeline-text { color: inherit; }
+
 :root[data-theme="light"] .agent-review-card { border-color: rgba(154, 116, 38, 0.45); background: var(--warning-soft); }
 :root[data-theme="light"] .agent-review-card > span { color: var(--warning); }
 :root[data-theme="light"] .agent-review-card p.agent-review-summary { color: var(--text-2); }

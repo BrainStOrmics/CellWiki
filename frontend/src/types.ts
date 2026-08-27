@@ -91,10 +91,21 @@ export type ChatMessage = {
   validationIssues?: ValidationIssue[];
   missingEvidence?: string[];
   process?: AgentProcessStep[];
+  reasoning?: string;
+  timeline?: AgentTimelineNode[];
   runId?: string;
   runStatus?: AgentRunStatus;
   streaming?: boolean;
 };
+
+export type AgentTimelineStatusTone = "info" | "success" | "warning" | "danger";
+
+export type AgentTimelineNode =
+  | { kind: "context"; label: string; detail?: string }
+  | { kind: "thinking"; text: string }
+  | { kind: "tool"; phase: AgentProcessPhase; toolName: string; summary: string; step: AgentProcessStep }
+  | { kind: "status"; tone: AgentTimelineStatusTone; label: string; step?: AgentProcessStep }
+  | { kind: "text"; text: string };
 
 export type AgentRunStatus =
   | "queued"
@@ -135,6 +146,8 @@ export type AgentRun = {
     model_calls: number;
     input_tokens: number;
     output_tokens: number;
+    cached_input_tokens?: number;
+    cache_creation_input_tokens?: number;
     estimated_cost_usd: number;
     tool_calls: number;
     tool_calls_started?: number;
@@ -161,6 +174,7 @@ export type AttachmentRecord = {
 export type AgentEventType =
   | "run_status"
   | "message_delta"
+  | "reasoning_delta"
   | "final_response"
   | "tool_started"
   | "tool_completed"
@@ -197,6 +211,8 @@ export type AgentSpan = {
   ttft_ms?: number | null;
   input_tokens: number;
   output_tokens: number;
+  cached_input_tokens?: number;
+  cache_creation_input_tokens?: number;
   data: Record<string, unknown>;
 };
 
@@ -211,6 +227,15 @@ export type AgentDiagnostics = {
   error_message?: string | null;
   usage: AgentRun["usage"];
   spans: AgentSpan[];
+  thread_summary?: AgentThreadSummary;
+};
+
+export type AgentThreadSummary = {
+  run_count: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  total_cached_input_tokens: number;
+  avg_cache_hit_rate: number;
 };
 
 export type AppSettings = {

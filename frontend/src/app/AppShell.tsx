@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bot,
   ChevronRight,
@@ -31,7 +31,7 @@ import { appendAsyncTask, attachmentReferencesForIds } from "./attachment-upload
 import { CommandPalette } from "../features/search/CommandPalette";
 import { ThreadList } from "../features/agent/ThreadList";
 import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
-import { reduceAgentRunMessages } from "../features/agent/agent-run-reducer";
+import { reduceAgentRunMessages, type AgentRunReducerLabels } from "../features/agent/agent-run-reducer";
 import { QuestionCard } from "../features/agent/QuestionCard";
 import { SearchWorkspace } from "../features/discovery/FeatureWorkspaces";
 import { WorkspaceFileBrowser, type WorkspaceTreeEntry } from "../features/workspace/WorkspaceFileBrowser";
@@ -51,7 +51,6 @@ import type {
   AgentRun,
   AgentRunStatus,
   AttachmentRecord,
-  Citation,
   ChatMessage,
   Page,
   PageDetail,
@@ -63,6 +62,7 @@ type ResizeSide = "left" | "right";
 const agentEventTypes: AgentEventType[] = [
   "run_status",
   "message_delta",
+  "reasoning_delta",
   "final_response",
   "tool_started",
   "tool_completed",
@@ -148,6 +148,12 @@ async function loadWorkspaceData(): Promise<WorkspaceData> {
   return { pages };
 }
 
+type CachedThreadState = {
+  messages: ChatMessage[];
+  draft: string;
+  attachments: AttachmentRecord[];
+  runId: string | null;
+};
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
 }
@@ -232,6 +238,12 @@ export function AppShell() {
   const attachmentUploadRef = useRef<Promise<void> | null>(null);
   const attachmentUploadErrorRef = useRef<Error | null>(null);
   const threadCreationRef = useRef<Promise<string> | null>(null);
+  const queryClient = useQueryClient();
+  // 每个会话保留一份本地聊天视图，离开会话时不丢正在流式输出的部分回答与草稿
+  const threadStateCacheRef = useRef(new Map<string, CachedThreadState>());
+  const threadRestorePrefRef = useRef<string | null>(null);
+  const threadRestoreTokenRef = useRef(0);
+  const renderedThreadIdRef = useRef<string | null>(null);
 
   function replaceAttachmentRecords(records: AttachmentRecord[]) {
     attachmentRecordsRef.current = records;
@@ -337,11 +349,25 @@ export function AppShell() {
   }, []);
 
   useEffect(() => {
-    agentThreadIdRef.current = activeThreadId;
-    if (!activeThreadId) return;
-    const savedRunId = window.localStorage.getItem(agentRunStorageKey(activeThreadId));
-    if (savedRunId) void restoreAgentThread(activeThreadId, savedRunId);
-
+    if (!activeThreadId) {
+      agentThreadIdRef.current = null;
+      return () => {
+        streamGenerationRef.current += 1;
+        agentEventSourceRef.current?.close();
+        agentEventSourceRef.current = null;
+      };
+    }
+    // 会话切换统一走 restoreAgentThread：先缓存离开会话的本地视图，
+    // 再结合历史与事件日志恢复目标会话（含仍在后台运行的 Agent）。
+    const preferredRunId = threadRestorePrefRef.current
+      ?? window.localStorage.getItem(agentRunStorageKey(activeThreadId))
+      ?? undefined;
+    threadRestorePrefRef.current = null;
+    if (preferredRunId) {
+      void restoreAgentThread(activeThreadId, preferredRunId);
+    } else {
+      agentThreadIdRef.current = activeThreadId;
+    }
     return () => {
       streamGenerationRef.current += 1;
       agentEventSourceRef.current?.close();
@@ -470,6 +496,7 @@ export function AppShell() {
       attachment_ids: currentAttachmentIds,
       selected_text: selectedText || null,
     });
+    queryClient.invalidateQueries({ queryKey: ["agent-threads"] });
     // The backend persists the user message while accepting the run. Only then
     // may the composer move its draft into the visible conversation history.
     options.onAccepted?.();
@@ -497,13 +524,7 @@ export function AppShell() {
     processedAgentEventsRef.current.add(event.event_id);
     agentEventSequenceRef.current = Math.max(agentEventSequenceRef.current, event.sequence);
     if (renderChat) {
-      setMessages((current) => reduceAgentRunMessages(current, event, {
-        evidenceMeta: t("chat.evidenceMeta"),
-        failed: t("chat.runFailed"),
-        cancelled: t("chat.runCancelled"),
-        unfinished: t("chat.runUnfinished"),
-        formatConfidence: (confidence) => localizedConfidence(confidence, language),
-      }));
+      setMessages((current) => reduceAgentRunMessages(current, event, agentRunLabels()));
     }
     if (event.type === "error" && event.data.retryable === true) {
       setRetryableAgentRunId(event.run_id);
@@ -609,63 +630,137 @@ export function AppShell() {
     });
   }
 
+  function buildTimelineContext(): { label: string; detail?: string } {
+    const parts: string[] = [];
+    parts.push(composerPageRef?.title ?? t("reader.workspace"));
+    if (activeAttachments.length > 0) {
+      parts.push(t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length)));
+    }
+    return { label: t("chat.contextInjection"), detail: parts.join(" · ") };
+  }
+
+  function agentRunLabels(): AgentRunReducerLabels {
+    return {
+      evidenceMeta: t("chat.evidenceMeta"),
+      failed: t("chat.runFailed"),
+      cancelled: t("chat.runCancelled"),
+      unfinished: t("chat.runUnfinished"),
+      formatConfidence: (confidence) => localizedConfidence(confidence, language),
+      timelineContext: buildTimelineContext(),
+    };
+  }
+
+  function cacheCurrentThreadState(threadId: string | null) {
+    if (!threadId || renderedThreadIdRef.current !== threadId) return;
+    threadStateCacheRef.current.set(threadId, {
+      messages: messagesRef.current,
+      draft,
+      attachments: attachmentRecordsRef.current,
+      runId: activeAgentRunId,
+    });
+  }
+
   async function restoreAgentThread(threadId: string, preferredRunId?: string) {
+    const token = ++threadRestoreTokenRef.current;
+    // 离开当前会话前缓存其本地视图（含正在流式输出的部分回答与草稿）
+    cacheCurrentThreadState(agentThreadIdRef.current);
+    agentThreadIdRef.current = threadId;
+    setActiveThreadId(threadId);
     // A thread switch must not carry review cards, streams, or attachment chips across conversations.
     agentEventSourceRef.current?.close();
     agentEventSourceRef.current = null;
     streamGenerationRef.current += 1;
     setActiveAgentRunId(null);
     setRetryableAgentRunId(null);
+    setResumableAgentRunId(null);
     setAgentActivity("");
     setAgentBusy(false);
     setWorkflow({ phase: "idle", message: t("workflow.ready") });
-    replaceAttachmentRecords([]);
+    const cached = threadStateCacheRef.current.get(threadId);
+    // 仅当缓存是“真实会话内容”（非欢迎语/空聊天）时使用，避免占位内容覆盖历史
+    const cacheUsable = cached != null && (
+      cached.messages.length > 1
+      || (cached.messages.length === 1 && cached.messages[0]?.role === "user")
+      || cached.messages.some((message) => message.runId)
+    );
+    const baseMessages = cacheUsable && cached ? cached.messages : [initialAgentMessage];
+    messagesRef.current = baseMessages;
+    renderedThreadIdRef.current = threadId;
+    if (cacheUsable && cached) {
+      setMessages(cached.messages);
+    } else {
+      setMessages([initialAgentMessage]);
+    }
+    setDraft(cached?.draft ?? "");
+    replaceAttachmentRecords(cacheUsable && cached ? cached.attachments : []);
     clearActiveAttachments();
-    setMessages([initialAgentMessage]);
     try {
       const [history, runs] = await Promise.all([
         getJson<AgentMessage[]>(`/api/agent/threads/${encodeURIComponent(threadId)}/messages`),
         getJson<AgentRun[]>(`/api/agent/runs?thread_id=${encodeURIComponent(threadId)}&limit=1`),
       ]);
-      if (history.length > 0) {
-        setMessages(history.map(historyMessageToChatMessage));
+      if (token !== threadRestoreTokenRef.current) return;
+      // 本地缓存仍是该会话的最新视图；仅在没有可用缓存时才用历史接口铺底
+      if (!cacheUsable && history.length > 0) {
+        const historyMessages = history.map(historyMessageToChatMessage);
+        messagesRef.current = historyMessages;
+        setMessages(historyMessages);
       }
       const threadAttachments = await getJson<AttachmentRecord[]>(
         `/api/agent/threads/${encodeURIComponent(threadId)}/attachments`,
       );
-      replaceAttachmentRecords(threadAttachments);
+      if (token !== threadRestoreTokenRef.current) return;
+      if (!cacheUsable) replaceAttachmentRecords(threadAttachments);
       const latestRun = runs[0];
       const runId = preferredRunId ?? latestRun?.run_id;
-      if (runId) await restoreAgentRun(runId, { replayChat: false });
+      if (runId) await restoreAgentRun(runId, { base: messagesRef.current, token });
     } catch {
       // A missing or deleted session must not prevent the user from starting a new one.
+      if (token !== threadRestoreTokenRef.current) return;
       setMessages((current) => current.length > 0 ? current : [initialAgentMessage]);
     }
   }
 
-  async function restoreAgentRun(runId: string, options: { replayChat?: boolean } = {}) {
+  async function restoreAgentRun(
+    runId: string,
+    options: { base?: ChatMessage[]; token?: number } = {},
+  ) {
     try {
       const [run, events] = await Promise.all([
         getJson<AgentRun>(`/api/agent/runs/${encodeURIComponent(runId)}`),
         getJson<AgentEvent[]>(`/api/agent/runs/${encodeURIComponent(runId)}/events`),
       ]);
+      if (options.token !== undefined && options.token !== threadRestoreTokenRef.current) return;
       agentThreadIdRef.current = run.thread_id;
       setActiveThreadId(run.thread_id);
-      // 暂停态 run 的回答只存在于事件流：恢复会话时必须渲染回聊天。
-      const replayChat = options.replayChat === true || pausedAgentStatuses.has(run.status);
-      events.forEach((event) => applyAgentEvent(event, { replayChat }));
+      // 活跃/暂停态的回答只存在于事件日志；已终态的 run 也从事件重建，
+      // 避免“先取到的历史缺少回答、事件里才有完整回答”的竞态导致丢消息。
+      // 重建前剔除本地/历史里同 run 的旧 agent 消息，防止文本被重复追加。
+      let transcript = rebuildAgentTranscript(
+        options.base ?? messagesRef.current,
+        runId,
+        events,
+        agentRunLabels(),
+      );
       if (
         terminalAgentStatuses.has(run.status)
         && !events.some(
           (event) => event.type === "run_status" && event.data.terminal === true,
         )
       ) {
-        applyAgentEvent(
+        transcript = reduceAgentRunMessages(
+          transcript,
           legacyTerminalEvent(run, (events.at(-1)?.sequence ?? 0) + 1),
-          { replayChat },
+          agentRunLabels(),
         );
       }
-      if (run.status === "waiting_confirmation" || run.status === "waiting_approval") {
+      messagesRef.current = transcript;
+      setMessages(transcript);
+      agentEventSequenceRef.current = events.at(-1)?.sequence ?? 0;
+      renderedThreadIdRef.current = run.thread_id;
+      const paused = pausedAgentStatuses.has(run.status);
+      if (paused && run.status !== "unfinished") {
+        // 等待用户确认/审批：停在问题卡，由用户操作后再续跑
         setActiveAgentRunId(runId);
         setAgentBusy(false);
       } else if (run.status === "unfinished") {
@@ -674,6 +769,7 @@ export function AppShell() {
         setActiveAgentRunId(runId);
         setAgentBusy(false);
       } else if (!terminalAgentStatuses.has(run.status)) {
+        // 仍在后台运行：恢复流式订阅，切回后进度继续
         setActiveAgentRunId(runId);
         setAgentBusy(true);
         setAgentActivity(t("chat.reconnected"));
@@ -681,6 +777,8 @@ export function AppShell() {
       } else {
         if (run.status === "failed" && run.retryable) setRetryableAgentRunId(runId);
         window.localStorage.removeItem(agentRunStorageKey(run.thread_id));
+        // 运行在离开期间结束：恢复时同步一次工作区/待审徽标
+        void refreshWorkspaceState();
       }
     } catch {
       if (agentThreadIdRef.current) window.localStorage.removeItem(agentRunStorageKey(agentThreadIdRef.current));
@@ -694,6 +792,7 @@ export function AppShell() {
         `/api/agent/threads/${encodeURIComponent(threadId)}`,
       );
       window.localStorage.removeItem(agentRunStorageKey(threadId));
+      threadStateCacheRef.current.delete(threadId);
       if (agentThreadIdRef.current === threadId) {
         agentEventSourceRef.current?.close();
         agentEventSourceRef.current = null;
@@ -893,7 +992,9 @@ export function AppShell() {
   }
 
   async function startNewChat() {
-    if (agentBusy || attachmentUploadBusy || attachmentUploadRef.current) return;
+    if (attachmentUploadBusy || attachmentUploadRef.current) return;
+    cacheCurrentThreadState(agentThreadIdRef.current);
+    renderedThreadIdRef.current = null;
     agentEventSourceRef.current?.close();
     streamGenerationRef.current += 1;
     agentThreadIdRef.current = null;
@@ -910,6 +1011,7 @@ export function AppShell() {
       const thread = await postJson<{ thread_id: string }>("/api/agent/threads", {});
       agentThreadIdRef.current = thread.thread_id;
       setActiveThreadId(thread.thread_id);
+      queryClient.invalidateQueries({ queryKey: ["agent-threads"] });
       setMessages([{
         ...initialAgentMessage,
         text: t("workflow.newConversation").replace(
@@ -917,16 +1019,10 @@ export function AppShell() {
           composerPageRef?.title ?? t("reader.workspace"),
         ),
       }]);
+      renderedThreadIdRef.current = thread.thread_id;
     } catch {
       setMessages([{ ...initialAgentMessage, text: t("workflow.newConversation").replace("{context}", contextTitle) }]);
     }
-  }
-
-  function openCitation(citation: Citation) {
-    if (!citation.page_id) return;
-    // A citation changes only the reader context; the conversation remains intact.
-    setSelectedId(citation.page_id);
-    setActiveView("wiki");
   }
 
   function openSearchResult(result: SearchResult) {
@@ -1166,16 +1262,15 @@ export function AppShell() {
                 {activeAgentRunId && (
                   <button className="icon-button stop-run" onClick={() => void cancelActiveAgentRun()} title={t("chat.cancel")} aria-label={t("chat.cancel")}><Square size={13} /></button>
                 )}
-                <button className="icon-button" disabled={agentBusy || attachmentUploadBusy} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
+                <button className="icon-button" disabled={attachmentUploadBusy} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
               </div>
             </div>
             <ThreadList
               currentThreadId={activeThreadId}
               onDelete={deleteAgentThread}
               onSelect={(thread) => {
-                agentThreadIdRef.current = thread.threadId;
+                threadRestorePrefRef.current = thread.latestRun.run_id;
                 setActiveThreadId(thread.threadId);
-                void restoreAgentThread(thread.threadId, thread.latestRun.run_id);
               }}
             />
             <div className="agent-context">
@@ -1200,15 +1295,9 @@ export function AppShell() {
                   message={message}
                   agentLabel="CewiPilot"
                   userLabel={t("agent.you")}
-                  missingEvidenceLabel={t("chat.missingEvidence")}
-                  processTitle={t("chat.process")}
-                  processLiveLabel={t("chat.processLive")}
-                  processCompletedLabel={t("chat.processCompleted")}
-                  processFailedLabel={t("chat.runFailed")}
-                  processCancelledLabel={t("chat.runCancelled")}
-                  processEmptyLabel={t("chat.processEmpty")}
                   diagnosticsLabel={t("chat.runDetails")}
-                  onCitationOpen={openCitation}
+                  reasoningTitle={t("chat.reasoning")}
+                  reasoningLiveLabel={t("chat.reasoningLive")}
                   onQuestionAnswered={(runId) => { void restoreAgentRun(runId); }}
                 />
               ))}
@@ -1311,6 +1400,18 @@ export function AppShell() {
   );
 }
 
+/** 从完整事件日志重建单个 run 的聊天内容（剔除同 run 的旧 agent 消息，避免重复追加）。 */
+export function rebuildAgentTranscript(
+  base: ChatMessage[],
+  runId: string,
+  events: AgentEvent[],
+  labels: AgentRunReducerLabels,
+): ChatMessage[] {
+  return events.reduce(
+    (next, event) => reduceAgentRunMessages(next, event, labels),
+    base.filter((message) => !(message.role === "agent" && message.runId === runId)),
+  );
+}
 function findNestedString(value: unknown, key: string): string | null {
   if (Array.isArray(value)) {
     for (const item of value) {
