@@ -14,11 +14,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from typing import Any, Iterable, cast
@@ -36,6 +37,7 @@ from cellwiki.domain.runs import (
     AgentRun,
     AgentRunOutcome,
     AgentRunStatus,
+    AgentSpan,
     RunBudget,
     RunUsage,
 )
@@ -194,6 +196,7 @@ class RuntimeSignal:
     model_call_id: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0
+    cached_input_tokens: int = 0
     tool_calls: int = 0
 
 
@@ -215,6 +218,181 @@ def _message_text(content: Any) -> str:
                         break
         return "".join(parts)
     return str(content or "")
+
+
+def _usage_from_message(message: Any) -> tuple[int, int, int]:
+    """Read input/output/cached token counts from AIMessage usage metadata.
+
+    LangChain normalizes provider usage into `usage_metadata` and renames cache
+    fields (`cached_tokens` -> `input_token_details.cache_read`; responses
+    `cache_read_input_tokens` -> `cache_read`). DeepSeek/Aliyun gateways expose
+    `prompt_cache_hit_tokens` that LangChain drops, so fall back to the raw
+    `response_metadata` / `additional_kwargs` usage before reporting zero.
+    """
+    metadata = _as_dict(getattr(message, "usage_metadata", None))
+    response_metadata = _as_dict(getattr(message, "response_metadata", None))
+    extra = _as_dict(getattr(message, "additional_kwargs", None))
+    input_tokens = _first_int(metadata, "input_tokens", "prompt_tokens")
+    output_tokens = _first_int(metadata, "output_tokens", "completion_tokens")
+    cached = _read_cached_tokens(metadata)
+    if not cached:
+        for ignored_key in ("token_usage", "usage"):
+            nested = _dig(response_metadata, ignored_key)
+            if isinstance(nested, dict):
+                cached = _read_cached_tokens(nested)
+                if cached:
+                    break
+    if not cached:
+        cached = _read_cached_tokens(response_metadata)
+    if not cached:
+        cached = _read_cached_tokens(extra)
+    return input_tokens, output_tokens, cached
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    """Normalize pydantic/dict metadata to a plain dict."""
+    if isinstance(value, dict):
+        return value
+    if hasattr(value, "model_dump"):
+        dumped = value.model_dump()
+        return dumped if isinstance(dumped, dict) else {}
+    return {}
+
+
+def _dig(source: dict[str, Any], *keys: str) -> Any:
+    current: Any = source
+    for key in keys:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _first_int(source: dict[str, Any], *keys: str) -> int:
+    for key in keys:
+        value = source.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _read_cached_tokens(usage: dict[str, Any]) -> int:
+    """Best-effort cache token lookup across chat/responses/DeepSeek shapes."""
+    candidates = (
+        _dig(usage, "input_token_details", "cache_read"),
+        _dig(usage, "input_token_details", "cached_tokens"),
+        _dig(usage, "prompt_tokens_details", "cached_tokens"),
+        _dig(usage, "prompt_tokens_details", "cache_read"),
+        usage.get("cache_read_input_tokens"),
+        usage.get("prompt_cache_hit_tokens"),
+        usage.get("cached_tokens"),
+        usage.get("cache_read"),
+    )
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return 0
+
+
+def _reasoning_text(message: Any) -> str | None:
+    """Extract visible reasoning text from provider-specific channels, or None."""
+    try:
+        extra = getattr(message, "additional_kwargs", None) or {}
+    except Exception:
+        extra = {}
+    if isinstance(extra, dict):
+        for key in ("reasoning_content", "reasoning"):
+            value = extra.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "reasoning":
+                continue
+            summary = block.get("summary")
+            if isinstance(summary, list):
+                parts.extend(
+                    str(item.get("text", "")) for item in summary if isinstance(item, dict)
+                )
+            elif isinstance(summary, str):
+                parts.append(summary)
+            raw = block.get("text")
+            if isinstance(raw, str):
+                parts.append(raw)
+        joined = "".join(parts).strip()
+        if joined:
+            return joined
+    return None
+
+
+def _tool_args_summary(tool_name: str, args: Any) -> str | None:
+    """Compact one-line argument summary for a tool call (P4-safe, no raw dump)."""
+    parsed: Any = args
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args)
+        except (TypeError, ValueError):
+            parsed = None
+        if parsed is None:
+            one_line = " ".join(args.split())
+            return one_line[:120] or None
+    if not isinstance(parsed, dict):
+        return None if parsed is None else str(parsed)[:120]
+    picks: dict[str, Any] = {}
+    for key in ("attachment_id", "command", "file", "name", "path", "pattern", "query", "url"):
+        if key in parsed:
+            value = parsed[key]
+            picks[key] = value[:200] if isinstance(value, str) else value
+    if "args" in parsed and isinstance(parsed["args"], list):
+        picks["args"] = [str(item)[:120] for item in parsed["args"]][:8]
+    if "content" in parsed and isinstance(parsed["content"], str):
+        picks["content_chars"] = len(parsed["content"])
+    return None if not picks else json.dumps(picks, ensure_ascii=False)[:160]
+
+
+def _tool_result_summary(tool_name: str, content: str) -> str:
+    """Short human summary of a tool result; the raw output is never persisted."""
+    text = (content or "").strip()
+    if not text:
+        return f"{tool_name} completed."
+    parsed: Any = None
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict):
+        if parsed.get("error"):
+            return f"{tool_name} → error: {str(parsed['error'])[:120]}"
+        if "results" in parsed and isinstance(parsed["results"], list):
+            return f"{tool_name} → {len(parsed['results'])} results"
+        if "matches" in parsed and isinstance(parsed["matches"], list):
+            return f"{tool_name} → {len(parsed['matches'])} matches"
+        if "chars" in parsed:
+            return f"{tool_name} → {parsed['chars']} chars"
+        if isinstance(parsed.get("stdout"), str):
+            head = parsed["stdout"].strip().splitlines()
+            first = (head[0] if head else "").strip()
+            return f"{tool_name} → {first[:120]}" if first else f"{tool_name} → ok"
+        if parsed.get("ok") is True:
+            return f"{tool_name} → ok"
+        path = str(parsed.get("path") or parsed.get("file") or "")
+        if path:
+            return f"{tool_name} → {path[:120]}"
+        return f"{tool_name} → {json.dumps(parsed, ensure_ascii=False)[:140]}"
+    one_line = " ".join(text.split())
+    return f"{tool_name} → {one_line[:140]}"
 
 
 def _signal_key(segment: str, signal: RuntimeSignal) -> tuple[str, AgentEventType]:
@@ -279,21 +457,41 @@ def _signals_from_stream_item(
         metadata = payload[1] if len(payload) > 1 and isinstance(payload[1], dict) else {}
         if isinstance(message, (AIMessage, AIMessageChunk)):
             model_call_id = str(getattr(message, "id", "") or "") or None
+            input_tokens, output_tokens, cached_tokens = _usage_from_message(message)
+            reasoning = _reasoning_text(message)
+            if reasoning:
+                responses.append(
+                    RuntimeSignal(
+                        type=AgentEventType.REASONING_DELTA,
+                        message=reasoning,
+                        data={"source": "reasoning"},
+                        model_call_id=model_call_id,
+                    )
+                )
             tool_calls = getattr(message, "tool_calls", []) or []
             if not tool_calls:
                 tool_calls = getattr(message, "tool_call_chunks", []) or []
-            for tool_call in tool_calls[:1]:
+            for tool_call in tool_calls:
                 tool_name = str(tool_call.get("name") or "").strip()
                 if tool_name:
+                    args_summary = _tool_args_summary(tool_name, tool_call.get("args"))
+                    display = (
+                        f"{tool_name} · {args_summary}"
+                        if args_summary
+                        else f"{tool_name} started."
+                    )
                     responses.append(
                         RuntimeSignal(
                             type=AgentEventType.TOOL_STARTED,
-                            message=f"{tool_name} started.",
+                            message=display,
                             data={
                                 "tool_name": tool_name,
                                 "tool_call_id": str(tool_call.get("id") or ""),
                             },
                             model_call_id=model_call_id,
+                            input_tokens=input_tokens,
+                            output_tokens=output_tokens,
+                            cached_input_tokens=cached_tokens,
                         )
                     )
             text = _message_text(getattr(message, "content", ""))
@@ -304,6 +502,9 @@ def _signals_from_stream_item(
                         message=text,
                         data={"source": "model", **metadata},
                         model_call_id=model_call_id,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cached_input_tokens=cached_tokens,
                     )
                 )
         elif isinstance(message, ToolMessage):
@@ -312,7 +513,7 @@ def _signals_from_stream_item(
             responses.append(
                 RuntimeSignal(
                     type=AgentEventType.TOOL_COMPLETED,
-                    message=_message_text(message.content),
+                    message=_tool_result_summary(tool_name, _message_text(message.content)),
                     data={"tool_name": tool_name, "tool_call_id": tool_call_id},
                 )
             )
@@ -769,8 +970,12 @@ class AgentRuntimeManager:
         final_answer: str | None = None
         assistant_text_parts: list[str] = []
         last_model_call_id: str | None = None
+        call_usage: dict[str, list[int]] = {}
+        call_started: dict[str, float] = {}
+        call_seen_last: dict[str, float] = {}
         input_tokens = 0
         output_tokens = 0
+        cached_input_tokens = 0
         tool_calls_started = 0
         tool_calls_completed = 0
         steps_at_end = 0
@@ -784,8 +989,18 @@ class AgentRuntimeManager:
                     break
             for signal in signals:
                 steps_at_end = steps
-                input_tokens += signal.input_tokens
-                output_tokens += signal.output_tokens
+                if signal.model_call_id:
+                    now = time.monotonic()
+                    call_started.setdefault(signal.model_call_id, now)
+                    call_seen_last[signal.model_call_id] = now
+                    usage = call_usage.setdefault(signal.model_call_id, [0, 0, 0])
+                    usage[0] = max(usage[0], signal.input_tokens)
+                    usage[1] = max(usage[1], signal.output_tokens)
+                    usage[2] = max(usage[2], signal.cached_input_tokens)
+                else:
+                    input_tokens += signal.input_tokens
+                    output_tokens += signal.output_tokens
+                    cached_input_tokens += signal.cached_input_tokens
                 if signal.type == AgentEventType.TOOL_STARTED:
                     tool_calls_started += 1
                 if signal.type == AgentEventType.TOOL_COMPLETED:
@@ -831,6 +1046,21 @@ class AgentRuntimeManager:
                             ),
                         )
                     continue
+                if signal.type == AgentEventType.REASONING_DELTA:
+                    if signal.message:
+                        self.store.append_event(
+                            run_id,
+                            signal.type,
+                            message=signal.message,
+                            progress=signal.progress,
+                            data=_signal_payload(
+                                segment,
+                                signal.message,
+                                {"source": "reasoning", **signal.data},
+                                model_call_id=signal.model_call_id,
+                            ),
+                        )
+                    continue
                 key = _signal_key(segment, signal)
                 if key in seen:
                     continue
@@ -865,12 +1095,17 @@ class AgentRuntimeManager:
                     model_call_id=last_model_call_id,
                 ),
             )
+        input_tokens += sum(value[0] for value in call_usage.values())
+        output_tokens += sum(value[1] for value in call_usage.values())
+        cached_input_tokens += sum(value[2] for value in call_usage.values())
+        self._record_model_spans(run_id, call_usage, call_started, call_seen_last)
         self.store.update_usage(
             run_id,
             RunUsage(
                 model_calls=steps_at_end,
                 input_tokens=input_tokens,
                 output_tokens=output_tokens,
+                cached_input_tokens=cached_input_tokens,
                 tool_calls=tool_calls_started,
                 tool_calls_started=tool_calls_started,
                 tool_calls_completed=tool_calls_completed,
@@ -888,6 +1123,46 @@ class AgentRuntimeManager:
             cancelled=cancelled,
             question_pending=question_pending,
         )
+
+    def _record_model_spans(
+        self,
+        run_id: str,
+        call_usage: dict[str, list[int]],
+        call_started: dict[str, float],
+        call_seen_last: dict[str, float],
+    ) -> None:
+        """Write one redacted span per model call so diagnostics has per-round rows."""
+        if not call_usage:
+            return
+        finished_at = datetime.now(UTC)
+        model_name = settings.openai_model or "model"
+        for call_id, tokens in call_usage.items():
+            started = call_started.get(call_id, 0.0)
+            last = call_seen_last.get(call_id, started)
+            duration_ms = max(0.0, (last - started) * 1000.0)
+            started_at = (
+                finished_at - timedelta(seconds=duration_ms / 1000.0)
+                if duration_ms > 0
+                else finished_at
+            )
+            self.store.upsert_span(
+                AgentSpan(
+                    span_id=f"span_{uuid.uuid4().hex}",
+                    run_id=run_id,
+                    kind="model",
+                    name=model_name,
+                    status="completed",
+                    started_at=started_at,
+                    finished_at=finished_at,
+                    duration_ms=duration_ms,
+                    ttft_ms=None,
+                    input_tokens=tokens[0],
+                    output_tokens=tokens[1],
+                    cached_input_tokens=tokens[2],
+                    cache_creation_input_tokens=0,
+                    data={"model_call_id": call_id},
+                )
+            )
 
 
     def _persist_question(
@@ -1044,6 +1319,7 @@ class AgentRuntimeManager:
                 if signal.model_call_id
                 and signal.type in {
                     AgentEventType.MESSAGE_DELTA,
+                    AgentEventType.REASONING_DELTA,
                     AgentEventType.TOOL_STARTED,
                     AgentEventType.FINAL_RESPONSE,
                 }

@@ -58,6 +58,7 @@ class AgentErrorType(str, Enum):
 class AgentEventType(str, Enum):
     RUN_STATUS = "run_status"               # 运行状态变更
     MESSAGE_DELTA = "message_delta"         # 消息增量（流式）
+    REASONING_DELTA = "reasoning_delta"     # 模型推理增量（流式）
     FINAL_RESPONSE = "final_response"       # 最终回答
     TOOL_STARTED = "tool_started"           # 工具调用开始
     TOOL_COMPLETED = "tool_completed"       # 工具调用完成
@@ -88,6 +89,8 @@ class RunUsage(ContractModel):
     model_calls: int = Field(default=0, ge=0)               # 模型调用次数
     input_tokens: int = Field(default=0, ge=0)               # 输入 token 数
     output_tokens: int = Field(default=0, ge=0)              # 输出 token 数
+    cached_input_tokens: int = Field(default=0, ge=0)         # 缓存命中输入 token 数
+    cache_creation_input_tokens: int = Field(default=0, ge=0) # 缓存写入输入 token 数
     estimated_cost_usd: float = Field(default=0, ge=0)       # 估算成本（美元）
     tool_calls: int = Field(default=0, ge=0)                 # 工具调用次数
     tool_calls_started: int = Field(default=0, ge=0)
@@ -172,4 +175,6 @@ class AgentSpan(ContractModel):
     ttft_ms: float | None = Field(default=None, ge=0)
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
+    cached_input_tokens: int = Field(default=0, ge=0)
+    cache_creation_input_tokens: int = Field(default=0, ge=0)
     data: dict[str, Any] = Field(default_factory=dict)

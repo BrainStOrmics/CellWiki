@@ -700,6 +700,7 @@ def create_app(
             "error_message": _redact_diagnostic_error(run.error_message),
             "usage": run.usage.model_dump(mode="json"),
             "spans": [span.model_dump(mode="json") for span in spans],
+            "thread_summary": runtime.store.thread_usage_summary(run.thread_id),
         }
 
     # 关闭时清理智能体运行时

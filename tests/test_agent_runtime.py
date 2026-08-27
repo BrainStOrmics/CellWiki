@@ -284,7 +284,9 @@ def test_signals_from_stream_item_emits_tool_lifecycle_and_text_chunks():
     assert AgentEventType.TOOL_STARTED in types
     assert AgentEventType.TOOL_COMPLETED in types
     completed = next(signal for signal in signals if signal.type == AgentEventType.TOOL_COMPLETED)
-    assert "wiki/a.md" in completed.message
+    # 工具结果按设计只保留一行人类可读摘要，原始输出不落事件
+    assert "1 results" in completed.message
+    assert "wiki/a.md" not in completed.message
 
     text_signals = list(_signals_from_stream_item((
         "messages",

@@ -675,6 +675,20 @@ class RuntimeStore:
             rows = connection.execute(query, parameters).fetchall()
         return [AgentRun.model_validate_json(row[0]) for row in rows]
 
+    def thread_usage_summary(self, thread_id: str) -> dict[str, int | float]:
+        """Aggregate durable run usage for one thread (read-only account book)."""
+        runs = self.list_runs(thread_id=thread_id, limit=1000)
+        total_input = sum(run.usage.input_tokens for run in runs)
+        total_output = sum(run.usage.output_tokens for run in runs)
+        total_cached = sum(run.usage.cached_input_tokens for run in runs)
+        return {
+            "run_count": len(runs),
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+            "total_cached_input_tokens": total_cached,
+            "avg_cache_hit_rate": round(total_cached / total_input, 4) if total_input > 0 else 0.0,
+        }
+
     def recover_stale_runs(self) -> list[AgentRun]:
         """服务启动时收敛"孤儿"运行：RUNNING/RETRYING -> UNFINISHED(TIMEOUT)、
         CANCELLING -> CANCELLED、QUEUED -> UNFINISHED。worker 随进程消亡，
