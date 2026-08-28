@@ -6,6 +6,8 @@ import type {
   AgentRunStatus,
   AgentTimelineNode,
   AgentTimelineStatusTone,
+  AgentToolArgsDisplay,
+  AgentToolResultPreview,
   ChatMessage,
 } from "../../types";
 
@@ -285,7 +287,14 @@ function appendProcessEventNode(
   if (event.type === "tool_started" || event.type === "tool_completed" || event.type === "tool_failed") {
     const toolName = String((event.data as Record<string, unknown>).tool_name ?? "tool");
     if (event.type === "tool_started") {
-      return [...base, { kind: "tool", phase: "running", toolName, summary: event.message, step }];
+      return [...base, {
+        kind: "tool",
+        phase: "running",
+        toolName,
+        summary: event.message,
+        step,
+        argsDisplay: readArgsDisplay(event.data),
+      }];
     }
     const callId = String((event.data as Record<string, unknown>).tool_call_id ?? "");
     const index = base.findIndex(
@@ -293,6 +302,7 @@ function appendProcessEventNode(
         && String((node.step.data as Record<string, unknown>).tool_call_id ?? "") === callId,
     );
     const phase: AgentProcessPhase = event.type === "tool_failed" ? "failed" : "completed";
+    const resultPreview = readResultPreview(event.data);
     if (index >= 0) {
       const updated = [...base];
       const previous = updated[index];
@@ -302,14 +312,27 @@ function appendProcessEventNode(
         toolName: previous.kind === "tool" ? previous.toolName : toolName,
         summary: event.message || (previous.kind === "tool" ? previous.summary : ""),
         step,
+        argsDisplay: previous.kind === "tool" ? previous.argsDisplay : undefined,
+        resultPreview,
       };
       return updated;
     }
-    return [...base, { kind: "tool", phase, toolName, summary: event.message, step }];
+    return [...base, { kind: "tool", phase, toolName, summary: event.message, step, resultPreview }];
   }
   const tone: AgentTimelineStatusTone = event.type === "error" ? "danger" : (statusTones[event.type] ?? "info");
   const label = event.message || event.type.replaceAll("_", " ");
   return [...base, { kind: "status", tone, label, step }];
+}
+
+/** Bounded projections ride the durable event payload; tolerate their absence. */
+function readArgsDisplay(data: Record<string, unknown>): AgentToolArgsDisplay | undefined {
+  const value = (data as { args_display?: unknown }).args_display;
+  return value && typeof value === "object" ? value as AgentToolArgsDisplay : undefined;
+}
+
+function readResultPreview(data: Record<string, unknown>): AgentToolResultPreview | undefined {
+  const value = (data as { result_preview?: unknown }).result_preview;
+  return value && typeof value === "object" ? value as AgentToolResultPreview : undefined;
 }
 
 function updateRunMessage(

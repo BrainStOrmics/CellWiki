@@ -121,6 +121,32 @@ describe("reduceAgentRunMessages timeline", () => {
     }
   });
 
+  it("passes bounded card projections through and preserves them on completion", () => {
+    const argsDisplay = { command: "Get-ChildItem -Force", title: "Get-ChildItem -Force" };
+    const resultPreview = { head: "Path\n----", tail: "wiki", total_chars: 20, total_lines: 3, truncated: true, kind: "text" };
+    const started = reduceAgentRunMessages(
+      [],
+      event(1, "tool_started", { tool_name: "run_powershell", tool_call_id: "p1", args_display: argsDisplay }, "run_powershell started."),
+      labels,
+    );
+    const startNode = (started[0].timeline ?? [])[0];
+    if (startNode.kind === "tool") {
+      expect(startNode.argsDisplay).toEqual(argsDisplay);
+      expect(startNode.resultPreview).toBeUndefined();
+    }
+    const completed = reduceAgentRunMessages(
+      started,
+      event(2, "tool_completed", { tool_name: "run_powershell", tool_call_id: "p1", result_preview: resultPreview }, "run_powershell → Path"),
+      labels,
+    );
+    const doneNode = (completed[0].timeline ?? [])[0];
+    if (doneNode.kind === "tool") {
+      expect(doneNode.phase).toBe("completed");
+      expect(doneNode.argsDisplay).toEqual(argsDisplay);
+      expect(doneNode.resultPreview).toEqual(resultPreview);
+    }
+  });
+
   it("merges adjacent text deltas and adjacent thinking deltas", () => {
     const one = reduceAgentRunMessages([], event(1, "message_delta", {}, "第一段 "), labels);
     const two = reduceAgentRunMessages(one, event(2, "message_delta", {}, "第二段"), labels);

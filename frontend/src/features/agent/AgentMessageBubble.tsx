@@ -1,18 +1,30 @@
 import {
   Brain,
+  Check,
+  ChevronRight,
   CircleAlert,
   CircleCheck,
+  Copy,
+  FileCode2,
   FileText,
+  GitBranch,
   LoaderCircle,
+  Search,
+  Terminal,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import { Highlight, Prism, type PrismTheme } from "prism-react-renderer";
 import { MarkdownContent } from "../../components/MarkdownContent";
+import { useI18n } from "../../i18n";
+import { getText } from "../../lib/product-api";
 import { AgentRunDiagnostics } from "./AgentRunDiagnostics";
 import { QuestionCard } from "./QuestionCard";
 import type {
   AgentProcessStep,
   AgentRunStatus,
   AgentTimelineNode,
+  AgentToolArgsDisplay,
+  AgentToolResultPreview,
   ChatMessage,
 } from "../../types";
 
@@ -99,7 +111,8 @@ function isAwaitingUserAnswer(status: AgentRunStatus | undefined): boolean {
 
 function timelineNodes(message: ChatMessage): AgentTimelineNode[] {
   if (message.timeline && message.timeline.length > 0) return message.timeline;
-  // Legacy fallback: rebuild lightweight nodes from persisted process steps.
+  // Legacy fallback: rebuild nodes from persisted process steps, reusing the
+  // bounded display projections when the durable events carry them.
   const nodes: AgentTimelineNode[] = [];
   for (const step of message.process ?? []) {
     if (step.type === "tool_started" || step.type === "tool_completed" || step.type === "tool_failed") {
@@ -109,6 +122,8 @@ function timelineNodes(message: ChatMessage): AgentTimelineNode[] {
         toolName: String((step.data as Record<string, unknown>).tool_name ?? "tool"),
         summary: step.message,
         step,
+        argsDisplay: readArgsDisplay(step.data),
+        resultPreview: readResultPreview(step.data),
       });
     } else {
       nodes.push({
@@ -135,9 +150,8 @@ function TimelineNode({ node, streaming, reasoningTitle, reasoningLiveLabel }: T
   switch (node.kind) {
     case "context":
       return (
-        <div className="agent-timeline-node">
+        <div className="agent-timeline-node context">
           <FileText size={12} />
-          <span className="at-kind">context</span>
           <span className="at-label">{node.label}{node.detail ? ` · ${node.detail}` : ""}</span>
         </div>
       );
@@ -151,7 +165,7 @@ function TimelineNode({ node, streaming, reasoningTitle, reasoningLiveLabel }: T
         />
       );
     case "tool":
-      return <ToolNode node={node} />;
+      return <ToolCard node={node} />;
     case "status":
       return (
         <div className={`agent-timeline-node tone-${node.tone}`}>
@@ -168,6 +182,10 @@ function TimelineNode({ node, streaming, reasoningTitle, reasoningLiveLabel }: T
   }
 }
 
+/**
+ * Reasoning renders as one quiet, truncated line so streaming thoughts never
+ * flood the transcript; the full text opens on demand.
+ */
 function ThinkingNode({
   text,
   streaming,
@@ -179,24 +197,13 @@ function ThinkingNode({
   title: string;
   live: string;
 }) {
-  const [open, setOpen] = useState(streaming);
-  const wasLive = useRef(streaming);
-
-  useEffect(() => {
-    if (streaming) setOpen(true);
-    else if (wasLive.current) setOpen(false);
-    wasLive.current = streaming;
-  }, [streaming]);
-
+  const preview = thinkingPreview(text, streaming);
   return (
-    <details
-      className={`agent-timeline-think ${streaming ? "is-live" : ""}`}
-      open={open}
-      onToggle={(event) => setOpen((event.currentTarget as HTMLDetailsElement).open)}
-    >
+    <details className={`agent-timeline-think ${streaming ? "is-live" : ""}`}>
       <summary>
         <Brain size={12} />
         <span>{title}</span>
+        {preview && <span className="at-think-preview">{preview}</span>}
         {streaming && <small>{live}</small>}
       </summary>
       <div className="agent-timeline-think-body">{text}</div>
@@ -204,24 +211,345 @@ function ThinkingNode({
   );
 }
 
-function ToolNode({ node }: { node: Extract<AgentTimelineNode, { kind: "tool" }> }) {
+function thinkingPreview(text: string, streaming: boolean): string {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return "";
+  // While streaming, the newest line is the useful signal; after the run the
+  // first line summarizes the thought.
+  const source = streaming ? lines[lines.length - 1] : lines[0];
+  return source.length > 100 ? `${source.slice(0, 100)}…` : source;
+}
+
+type ToolKind = "pwsh" | "read" | "search" | "git" | "generic";
+
+const TOOL_LABELS: Record<string, string> = {
+  run_powershell: "Pwsh",
+  read_file: "Read",
+  read_wiki_page: "Read",
+  write_file: "Write",
+  edit_file: "Edit",
+  delete_file: "Delete",
+  rename_file: "Rename",
+  ls: "LS",
+  glob: "Glob",
+  grep: "Grep",
+  search_wiki: "Search",
+  git: "Git",
+  lint_knowledge_base: "Lint",
+  read_attachment: "Attachment",
+  promote_attachment: "Promote",
+  ingest_sources: "Ingest",
+  ask_user_question: "Ask",
+  get_project_status: "Status",
+};
+
+function toolKind(toolName: string): ToolKind {
+  if (toolName === "run_powershell") return "pwsh";
+  if (toolName === "read_file" || toolName === "read_wiki_page") return "read";
+  if (toolName === "grep" || toolName === "glob" || toolName === "ls" || toolName === "search_wiki") return "search";
+  if (toolName === "git") return "git";
+  return "generic";
+}
+
+function ToolIcon({ toolName }: { toolName: string }) {
+  const kind = toolKind(toolName);
+  if (kind === "pwsh") return <Terminal size={12} />;
+  if (kind === "read") return <FileCode2 size={12} />;
+  if (kind === "search") return <Search size={12} />;
+  if (kind === "git") return <GitBranch size={12} />;
+  return <FileText size={12} />;
+}
+
+/** Tool node as a collapsible card: header line + type-specific body. */
+function ToolCard({ node }: { node: Extract<AgentTimelineNode, { kind: "tool" }> }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const detail = toolDetail(node.step);
+  const args = node.argsDisplay;
+  const preview = node.resultPreview;
+  const kind = toolKind(node.toolName);
+  const label = TOOL_LABELS[node.toolName] ?? node.toolName;
+  const title = args?.title || toolLabel(node.summary, node.toolName);
+  const legacyDetail = !args && !preview ? toolDetail(node.step) : null;
 
   return (
-    <div className={`agent-timeline-node tool ${node.phase}`}>
-      {node.phase === "failed"
-        ? <CircleAlert size={12} />
-        : node.phase === "completed"
-          ? <CircleCheck size={12} />
-          : <LoaderCircle size={12} className="spin" />}
-      <button className="at-line" type="button" onClick={() => setOpen((value) => !value)}>
-        <span className="at-kind">{node.toolName}</span>
-        <span className="at-label">{toolLabel(node.summary, node.toolName)}</span>
-        {detail && <small>{open ? "hide" : "detail"}</small>}
+    <div className={`agent-timeline-card tool ${node.phase}`}>
+      <button
+        className="at-card-head"
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <ChevronRight size={12} className={`at-chevron ${open ? "is-open" : ""}`} />
+        <ToolIcon toolName={node.toolName} />
+        <span className="at-kind">{label}</span>
+        {title && <span className="at-label">{title}</span>}
+        <span className="at-status">
+          {node.phase === "failed"
+            ? <CircleAlert size={12} />
+            : node.phase === "completed"
+              ? <CircleCheck size={12} />
+              : <LoaderCircle size={12} className="spin" />}
+        </span>
       </button>
-      {open && detail && <pre className="at-detail">{detail}</pre>}
+      {open && (
+        <div className="at-card-body">
+          {kind === "pwsh" && <PwshBody args={args} preview={preview} legacy={legacyDetail} />}
+          {kind === "read" && <ReadBody args={args} preview={preview} legacy={legacyDetail} />}
+          {kind !== "pwsh" && kind !== "read" && (
+            <GenericBody preview={preview} legacy={legacyDetail} summary={node.summary} toolName={node.toolName} />
+          )}
+          {preview && kind === "search" && typeof preview.count === "number" && (
+            <div className="at-preview-meta">{t("chat.toolResultCount").replace("{count}", String(preview.count))}</div>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+function PwshBody({
+  args,
+  preview,
+  legacy,
+}: {
+  args?: AgentToolArgsDisplay;
+  preview?: AgentToolResultPreview;
+  legacy: string | null;
+}) {
+  const command = typeof args?.command === "string" ? args.command : null;
+  return (
+    <>
+      {command && (
+        <div className="at-code-frame">
+          <CodeBlock code={command} language="plaintext" numbered={false} />
+          <CopyButton text={command} />
+        </div>
+      )}
+      {preview && <PreviewBlock preview={preview} language="plaintext" />}
+      {!preview && legacy && <pre className="at-detail">{legacy}</pre>}
+    </>
+  );
+}
+
+const EXT_LANG: Record<string, string> = {
+  md: "markdown",
+  markdown: "markdown",
+  json: "json",
+  yml: "yaml",
+  yaml: "yaml",
+  py: "python",
+  ts: "typescript",
+  tsx: "tsx",
+  js: "javascript",
+  jsx: "jsx",
+  css: "css",
+  html: "markup",
+  xml: "markup",
+  sql: "sql",
+  go: "go",
+  rs: "rust",
+};
+
+function fileLanguage(path: string): string {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return EXT_LANG[ext] ?? "plaintext";
+}
+
+function ReadBody({
+  args,
+  preview,
+  legacy,
+}: {
+  args?: AgentToolArgsDisplay;
+  preview?: AgentToolResultPreview;
+  legacy: string | null;
+}) {
+  const { t } = useI18n();
+  const path = typeof args?.path === "string" ? args.path : null;
+  const language = path ? fileLanguage(path) : "plaintext";
+  const [full, setFull] = useState<{ status: "idle" | "loading" | "ready" | "error"; text: string }>({
+    status: "idle",
+    text: "",
+  });
+
+  async function loadFull() {
+    if (!path) return;
+    setFull({ status: "loading", text: "" });
+    try {
+      const text = await getText(`/api/workspace/file?path=${encodeURIComponent(path)}`);
+      setFull({ status: "ready", text });
+    } catch {
+      setFull({ status: "error", text: "" });
+    }
+  }
+
+  const hiddenLines = preview
+    ? Math.max(0, (preview.total_lines ?? 0) - countPreviewLines(preview))
+    : 0;
+
+  return (
+    <>
+      {preview && full.status !== "ready" && (
+        <div className="at-code-frame">
+          {path && (
+            <div className="at-file-head">
+              <span className="at-file-path">{path}</span>
+              <span className="at-file-lang">{path.split(".").pop() ?? "txt"}</span>
+              <CopyButton text={preview.head + (preview.tail ? `\n…\n${preview.tail}` : "")} />
+            </div>
+          )}
+          <PreviewBlock preview={preview} language={language} numbered />
+          {preview.truncated && hiddenLines > 0 && (
+            <button className="at-more" type="button" onClick={() => void loadFull()} disabled={full.status === "loading"}>
+              {full.status === "loading" ? t("chat.toolLoading") : t("chat.toolRestLines").replace("{count}", String(hiddenLines))}
+            </button>
+          )}
+          {full.status === "error" && <div className="at-preview-meta">{t("chat.toolLoadFailed")}</div>}
+        </div>
+      )}
+      {preview && full.status === "ready" && (
+        <div className="at-code-frame">
+          {path && (
+            <div className="at-file-head">
+              <span className="at-file-path">{path}</span>
+              <span className="at-file-lang">{path.split(".").pop() ?? "txt"}</span>
+              <CopyButton text={full.text} />
+            </div>
+          )}
+          <CodeBlock code={capFullText(full.text)} language={language} numbered />
+        </div>
+      )}
+      {!preview && legacy && <pre className="at-detail">{legacy}</pre>}
+    </>
+  );
+}
+
+function capFullText(text: string): string {
+  const lines = text.split("\n");
+  if (lines.length <= 4_000) return text;
+  return `${lines.slice(0, 4_000).join("\n")}\n…`;
+}
+
+function GenericBody({
+  preview,
+  legacy,
+  summary,
+  toolName,
+}: {
+  preview?: AgentToolResultPreview;
+  legacy: string | null;
+  summary: string;
+  toolName: string;
+}) {
+  return (
+    <>
+      {legacy && <pre className="at-detail">{legacy}</pre>}
+      {preview && <PreviewBlock preview={preview} language="plaintext" />}
+      {!preview && !legacy && <pre className="at-detail">{toolLabel(summary, toolName)}</pre>}
+    </>
+  );
+}
+
+function countPreviewLines(preview: AgentToolResultPreview): number {
+  const head = preview.head ? preview.head.split("\n").length : 0;
+  const tail = preview.tail ? preview.tail.split("\n").length : 0;
+  return head + tail;
+}
+
+function PreviewBlock({
+  preview,
+  language,
+  numbered = false,
+}: {
+  preview: AgentToolResultPreview;
+  language: string;
+  numbered?: boolean;
+}) {
+  const { t } = useI18n();
+  const tailStart = Math.max(1, (preview.total_lines ?? 0) - (preview.tail ? preview.tail.split("\n").length : 0) + 1);
+  return (
+    <div className={`at-preview ${preview.kind === "error" ? "is-error" : ""}`}>
+      {preview.head && <CodeBlock code={preview.head} language={language} numbered={numbered} />}
+      {preview.truncated && (
+        <div className="at-preview-gap">{numbered ? t("chat.toolRestLines").replace("{count}", "…") : "…"}</div>
+      )}
+      {preview.tail && (
+        <CodeBlock code={preview.tail} language={language} numbered={numbered} startLine={tailStart} />
+      )}
+    </div>
+  );
+}
+
+/** CSS-variable prism theme so token colors follow the app theme in styles.css. */
+const CARD_THEME: PrismTheme = {
+  plain: { color: "var(--code-plain)", backgroundColor: "transparent" },
+  styles: [
+    { types: ["comment", "prolog", "doctype", "cdata"], style: { color: "var(--code-comment)" } },
+    { types: ["punctuation"], style: { color: "var(--code-punctuation)" } },
+    { types: ["property", "tag", "boolean", "number", "constant", "symbol"], style: { color: "var(--code-number)" } },
+    { types: ["selector"], style: { color: "var(--code-keyword)" } },
+    { types: ["attr-name"], style: { color: "var(--code-function)" } },
+    { types: ["string", "char", "builtin", "inserted"], style: { color: "var(--code-string)" } },
+    { types: ["operator", "entity", "url"], style: { color: "var(--code-punctuation)" } },
+    { types: ["keyword"], style: { color: "var(--code-keyword)" } },
+    { types: ["atrule", "function", "class-name"], style: { color: "var(--code-function)" } },
+    { types: ["regex", "important"], style: { color: "var(--code-string)" } },
+    { types: ["deleted"], style: { color: "var(--code-keyword)" } },
+  ],
+};
+
+function CodeBlock({
+  code,
+  language,
+  numbered,
+  startLine = 1,
+}: {
+  code: string;
+  language: string;
+  numbered: boolean;
+  startLine?: number;
+}) {
+  const safeLanguage = Prism.languages[language] ? language : "plaintext";
+  return (
+    <Highlight code={code} language={safeLanguage} theme={CARD_THEME}>
+      {({ className, style, tokens, getLineProps, getTokenProps }) => (
+        <pre className={`at-code ${className}`} style={style}>
+          {tokens.map((line, index) => {
+            const lineProps = getLineProps({ line });
+            return (
+              <div key={index} {...lineProps} className={`at-code-line ${lineProps.className ?? ""}`}>
+                {numbered && <span className="at-code-no">{startLine + index}</span>}
+                <span className="at-code-text">
+                  {line.map((token, key) => <span key={key} {...getTokenProps({ token })} />)}
+                </span>
+              </div>
+            );
+          })}
+        </pre>
+      )}
+    </Highlight>
+  );
+}
+
+function CopyButton({ text }: { text: string }) {
+  const { t } = useI18n();
+  const [copied, setCopied] = useState(false);
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      // Clipboard may be unavailable (insecure context / jsdom); stay silent.
+    }
+  }
+
+  return (
+    <button className="at-copy" type="button" onClick={() => void copy()}>
+      {copied ? <Check size={11} /> : <Copy size={11} />}
+      <span>{copied ? t("chat.copied") : t("chat.copy")}</span>
+    </button>
   );
 }
 
@@ -232,6 +560,16 @@ function toolLabel(summary: string, toolName: string): string {
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function readArgsDisplay(data: Record<string, unknown>): AgentToolArgsDisplay | undefined {
+  const value = (data as { args_display?: unknown }).args_display;
+  return value && typeof value === "object" ? value as AgentToolArgsDisplay : undefined;
+}
+
+function readResultPreview(data: Record<string, unknown>): AgentToolResultPreview | undefined {
+  const value = (data as { result_preview?: unknown }).result_preview;
+  return value && typeof value === "object" ? value as AgentToolResultPreview : undefined;
 }
 
 function toolDetail(step: AgentProcessStep): string | null {

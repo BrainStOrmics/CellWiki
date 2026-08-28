@@ -8,7 +8,8 @@
 #   待确认 diff 持久化；accept / reject（逐个 revert run 内 commit，保留后续
 #   commit）/ reopen 由运行时执行。
 # - P4 审计：工具输入（label_args 白名单键）与输出（payload sha256）由运行时
-#   Seam 记录，完整参数不离开本边界。
+#   Seam 记录。时间线卡片可携带有界展示投影（args_display 命令 ≤2000 字符、
+#   result_preview head/tail ≤8KB），完整参数与原始大输出仍不离开本边界。
 # =============================================================================
 
 from __future__ import annotations
@@ -168,12 +169,25 @@ def _signal_payload(
     payload = hashlib.sha256(
         f"{segment}\x00{message}\x00{raw_data}".encode("utf-8")
     ).hexdigest()
-    return {
+    event_payload = {
         "payload": payload,
         "label_args": label_args,
         "model_call_id": model_call_id,
         "token_usage": {"input_tokens": input_tokens, "output_tokens": output_tokens},
     }
+    # Timeline card fields pass through at top level so the durable event
+    # stream can rebuild tool cards after reload: tool identity for matching
+    # started -> completed, plus the bounded projections from
+    # _tool_args_display / _tool_result_preview.
+    for key in ("tool_name", "tool_call_id"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            event_payload[key] = value
+    for key in ("args_display", "result_preview"):
+        value = metadata.get(key)
+        if isinstance(value, dict) and value:
+            event_payload[key] = value
+    return event_payload
 
 
 @dataclass
@@ -395,6 +409,144 @@ def _tool_result_summary(tool_name: str, content: str) -> str:
     return f"{tool_name} → {one_line[:140]}"
 
 
+# Bounded display projections for timeline tool cards (proposal
+# design/active/2026-08-28-agent-timeline-tool-cards.md). These extend the P4
+# audit payload with whitelisted, size-capped views of tool input/output; they
+# never dump raw arguments or full results beyond the documented bounds.
+_ARGS_COMMAND_MAX = 2_000
+_RESULT_PREVIEW_LINE_MAX = 40
+_RESULT_PREVIEW_BYTES = 8_000
+_RESULT_TITLE_MAX = 120
+
+
+def _tool_display_title(tool_name: str, picks: dict[str, Any]) -> str:
+    """Derive a one-line human title for a tool card from projected args."""
+    command = picks.get("command")
+    if isinstance(command, str) and command:
+        head = command.strip().splitlines()[0] if command.strip() else ""
+        return head[:_RESULT_TITLE_MAX]
+    for key in ("path", "file", "pattern", "query", "folder"):
+        value = picks.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip().replace("\\", "/").rsplit("/", 1)[-1] or value.strip()[:_RESULT_TITLE_MAX]
+    args = picks.get("args")
+    if isinstance(args, list) and args:
+        return " ".join(str(item) for item in args)[:_RESULT_TITLE_MAX]
+    return ""
+
+
+def _tool_args_display(tool_name: str, args: Any) -> dict[str, Any] | None:
+    """Whitelisted bounded projection of tool arguments for the timeline card.
+
+    Returns None when nothing displayable survives the whitelist; the payload
+    keeps only per-key caps (command <= 2000 chars, other strings <= 200).
+    """
+    parsed: Any = args
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args)
+        except (TypeError, ValueError):
+            parsed = None
+    if not isinstance(parsed, dict):
+        return None
+    picks: dict[str, Any] = {}
+    for key in ("command", "path", "file", "pattern", "query", "folder", "page_id"):
+        value = parsed.get(key)
+        if isinstance(value, str) and value.strip():
+            cap = _ARGS_COMMAND_MAX if key == "command" else 200
+            picks[key] = value[:cap]
+    raw_args = parsed.get("args")
+    if isinstance(raw_args, list):
+        picks["args"] = [str(item)[:120] for item in raw_args][:8]
+    # read_file range reads need the char offset so the card can number lines.
+    for key in ("offset", "length"):
+        value = parsed.get(key)
+        if isinstance(value, int) and value > 0:
+            picks[key] = value
+    if not picks:
+        return None
+    display: dict[str, Any] = dict(picks)
+    title = _tool_display_title(tool_name, picks)
+    if title:
+        display["title"] = title
+    return display
+
+
+def _bounded_preview(text: str) -> dict[str, Any]:
+    """Head+tail line-bounded preview capped at _RESULT_PREVIEW_BYTES chars."""
+    lines = text.splitlines()
+    total_chars = len(text)
+    total_lines = len(lines)
+    if total_lines <= _RESULT_PREVIEW_LINE_MAX * 2 and total_chars <= _RESULT_PREVIEW_BYTES:
+        return {
+            "head": text,
+            "tail": "",
+            "total_chars": total_chars,
+            "total_lines": total_lines,
+            "truncated": False,
+        }
+    head_lines = lines[:_RESULT_PREVIEW_LINE_MAX]
+    tail_lines = lines[-_RESULT_PREVIEW_LINE_MAX:]
+    head = "\n".join(head_lines)
+    tail = "\n".join(tail_lines)
+    budget = _RESULT_PREVIEW_BYTES - len(head)
+    if budget <= 0:
+        head, tail = head[:_RESULT_PREVIEW_BYTES], ""
+    else:
+        tail = tail[:budget]
+    return {
+        "head": head,
+        "tail": tail,
+        "total_chars": total_chars,
+        "total_lines": total_lines,
+        "truncated": True,
+    }
+
+
+def _tool_result_preview(tool_name: str, content: str) -> dict[str, Any] | None:
+    """Bounded output preview attached to tool_completed events (P4-capped).
+
+    For structured tool results the preview uses the meaningful text field
+    (stdout / content / markdown) instead of the JSON envelope; errors keep
+    their message so the failed card can show why.
+    """
+    text = (content or "").strip()
+    if not text:
+        return None
+    parsed: Any = None
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        parsed = None
+    if isinstance(parsed, dict):
+        if parsed.get("error"):
+            preview = _bounded_preview(str(parsed["error"])[:_RESULT_PREVIEW_BYTES])
+            preview["kind"] = "error"
+            return preview
+        for key in ("stdout", "content", "markdown", "diff"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value.strip():
+                preview = _bounded_preview(value)
+                preview["kind"] = "text"
+                return preview
+        results = parsed.get("results")
+        if isinstance(results, list):
+            rendered = "\n".join(
+                json.dumps(item, ensure_ascii=False) if not isinstance(item, str) else item
+                for item in results
+            )
+            preview = _bounded_preview(rendered)
+            preview["kind"] = "results"
+            preview["count"] = len(results)
+            return preview
+        preview = _bounded_preview(text)
+        preview["kind"] = "text"
+        return preview
+    preview = _bounded_preview(text)
+    preview["kind"] = "text"
+    return preview
+
+
 def _signal_key(segment: str, signal: RuntimeSignal) -> tuple[str, AgentEventType]:
     """Build a stable deduplication key for non-streaming lifecycle signals."""
     tool_call_id = str((signal.data or {}).get("tool_call_id") or "")
@@ -474,20 +626,29 @@ def _signals_from_stream_item(
             for tool_call in tool_calls:
                 tool_name = str(tool_call.get("name") or "").strip()
                 if tool_name:
+                    args_display = _tool_args_display(tool_name, tool_call.get("args"))
+                    # Streamed chunks carry partial args; the updates branch
+                    # emits the assembled tool call with a complete projection
+                    # instead, so skip the incomplete chunk here.
+                    if isinstance(message, AIMessageChunk) and args_display is None:
+                        continue
                     args_summary = _tool_args_summary(tool_name, tool_call.get("args"))
                     display = (
                         f"{tool_name} · {args_summary}"
                         if args_summary
                         else f"{tool_name} started."
                     )
+                    signal_data: dict[str, Any] = {
+                        "tool_name": tool_name,
+                        "tool_call_id": str(tool_call.get("id") or ""),
+                    }
+                    if args_display:
+                        signal_data["args_display"] = args_display
                     responses.append(
                         RuntimeSignal(
                             type=AgentEventType.TOOL_STARTED,
                             message=display,
-                            data={
-                                "tool_name": tool_name,
-                                "tool_call_id": str(tool_call.get("id") or ""),
-                            },
+                            data=signal_data,
                             model_call_id=model_call_id,
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
@@ -513,11 +674,19 @@ def _signals_from_stream_item(
         elif isinstance(message, ToolMessage):
             tool_name = message.name or "tool"
             tool_call_id = message.tool_call_id or ""
+            result_text = _message_text(message.content)
+            completed_data: dict[str, Any] = {
+                "tool_name": tool_name,
+                "tool_call_id": tool_call_id,
+            }
+            result_preview = _tool_result_preview(tool_name, result_text)
+            if result_preview:
+                completed_data["result_preview"] = result_preview
             responses.append(
                 RuntimeSignal(
                     type=AgentEventType.TOOL_COMPLETED,
-                    message=_tool_result_summary(tool_name, _message_text(message.content)),
-                    data={"tool_name": tool_name, "tool_call_id": tool_call_id},
+                    message=_tool_result_summary(tool_name, result_text),
+                    data=completed_data,
                 )
             )
     elif name == "updates" and isinstance(payload, dict):
@@ -525,7 +694,42 @@ def _signals_from_stream_item(
             if node_name != "__interrupt__":
                 # The messages stream already carries AIMessageChunk/ToolMessage
                 # values. Do not parse the full update message again or text is
-                # duplicated in the desktop transcript.
+                # duplicated in the desktop transcript. Exception: streamed
+                # tool-call chunks arrive with empty/partial args, so the model
+                # node's assembled AIMessage is the only place a complete
+                # args_display projection exists. TOOL_STARTED dedupes by
+                # tool_call_id downstream, so re-emitting it is safe.
+                if node_name == "model" and isinstance(update, dict):
+                    node_messages = update.get("messages")
+                    if isinstance(node_messages, (list, tuple)):
+                        for node_message in node_messages:
+                            if not isinstance(node_message, AIMessage):
+                                continue
+                            for tool_call in getattr(node_message, "tool_calls", []) or []:
+                                tool_name = str(tool_call.get("name") or "").strip()
+                                if not tool_name:
+                                    continue
+                                args_summary = _tool_args_summary(tool_name, tool_call.get("args"))
+                                display = (
+                                    f"{tool_name} · {args_summary}"
+                                    if args_summary
+                                    else f"{tool_name} started."
+                                )
+                                assembled_data: dict[str, Any] = {
+                                    "tool_name": tool_name,
+                                    "tool_call_id": str(tool_call.get("id") or ""),
+                                }
+                                args_display = _tool_args_display(tool_name, tool_call.get("args"))
+                                if args_display:
+                                    assembled_data["args_display"] = args_display
+                                responses.append(
+                                    RuntimeSignal(
+                                        type=AgentEventType.TOOL_STARTED,
+                                        message=display,
+                                        data=assembled_data,
+                                        model_call_id=str(getattr(node_message, "id", "") or "") or None,
+                                    )
+                                )
                 continue
             value = update
             if isinstance(value, (list, tuple)):

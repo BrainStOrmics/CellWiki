@@ -100,10 +100,39 @@ export type ChatMessage = {
 
 export type AgentTimelineStatusTone = "info" | "success" | "warning" | "danger";
 
+/** Bounded whitelisted tool-argument projection carried on tool_started events. */
+export type AgentToolArgsDisplay = {
+  title?: string;
+  command?: string;
+  path?: string;
+  pattern?: string;
+  args?: string[];
+  [key: string]: unknown;
+};
+
+/** Head+tail bounded tool-output preview carried on tool_completed events. */
+export type AgentToolResultPreview = {
+  head: string;
+  tail: string;
+  total_chars: number;
+  total_lines?: number;
+  truncated: boolean;
+  kind: "text" | "error" | "results";
+  count?: number;
+};
+
 export type AgentTimelineNode =
   | { kind: "context"; label: string; detail?: string }
   | { kind: "thinking"; text: string }
-  | { kind: "tool"; phase: AgentProcessPhase; toolName: string; summary: string; step: AgentProcessStep }
+  | {
+      kind: "tool";
+      phase: AgentProcessPhase;
+      toolName: string;
+      summary: string;
+      step: AgentProcessStep;
+      argsDisplay?: AgentToolArgsDisplay;
+      resultPreview?: AgentToolResultPreview;
+    }
   | { kind: "status"; tone: AgentTimelineStatusTone; label: string; step?: AgentProcessStep }
   | { kind: "text"; text: string };
 

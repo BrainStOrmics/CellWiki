@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from typing import Any, Iterable
@@ -19,6 +20,8 @@ from cellwiki.services.agent_runtime import (
     AgentRuntimeManager,
     RuntimeSignal,
     _signals_from_stream_item,
+    _tool_args_display,
+    _tool_result_preview,
 )
 
 
@@ -284,3 +287,126 @@ def test_stream_item_emits_reasoning_delta_from_responses_content_blocks():
     assert not any(
         signal.type == AgentEventType.MESSAGE_DELTA for signal in signals
     )
+
+
+def test_stream_item_projects_tool_args_display():
+    """tool_started carries a bounded whitelisted args_display projection."""
+    call = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "name": "run_powershell",
+                "args": {"command": "Get-Location; Get-ChildItem -Force"},
+                "id": "call_pwsh",
+                "type": "tool_call",
+            },
+            {
+                "name": "read_file",
+                "args": {"path": "wiki/cell-a.md"},
+                "id": "call_read",
+                "type": "tool_call",
+            },
+        ],
+    )
+    started = [
+        signal
+        for signal in _signals_from_stream_item(("messages", (call, {})))
+        if signal.type == AgentEventType.TOOL_STARTED
+    ]
+    pwsh = started[0].data["args_display"]
+    assert pwsh["command"] == "Get-Location; Get-ChildItem -Force"
+    assert pwsh["title"] == "Get-Location; Get-ChildItem -Force"
+    read = started[1].data["args_display"]
+    assert read["path"] == "wiki/cell-a.md"
+    assert read["title"] == "cell-a.md"
+
+
+def test_stream_item_projects_bounded_result_preview():
+    """tool_completed carries a head/tail bounded result_preview projection."""
+    stdout = "\n".join(f"line {index}" for index in range(120))
+    result = list(
+        _signals_from_stream_item(
+            (
+                "messages",
+                (
+                    ToolMessage(
+                        content=json.dumps({"stdout": stdout, "returncode": 0}),
+                        tool_call_id="call_pwsh",
+                        name="run_powershell",
+                    ),
+                    {},
+                ),
+            )
+        )
+    )
+    preview = result[0].data["result_preview"]
+    assert preview["kind"] == "text"
+    assert preview["truncated"] is True
+    assert preview["total_chars"] == len(stdout)
+    assert preview["head"].startswith("line 0")
+    assert preview["tail"].endswith("line 119")
+    assert len(preview["head"]) + len(preview["tail"]) <= 8_000
+
+
+def test_result_preview_keeps_error_and_results_kinds():
+    error_preview = _tool_result_preview(
+        "grep", json.dumps({"error": "path_outside_workspace"})
+    )
+    assert error_preview["kind"] == "error"
+    assert "path_outside_workspace" in error_preview["head"]
+    results_preview = _tool_result_preview(
+        "grep",
+        json.dumps({"results": [{"file": "a.md", "line": 1}, {"file": "b.md", "line": 2}]}),
+    )
+    assert results_preview["kind"] == "results"
+    assert results_preview["count"] == 2
+    assert "a.md" in results_preview["head"]
+
+
+def test_args_display_caps_command_length():
+    long_command = "Get-ChildItem " + ("x" * 3_000)
+    display = _tool_args_display("run_powershell", {"command": long_command})
+    assert len(display["command"]) <= 2_000
+    assert display["title"] == long_command[:120]
+
+
+def test_timeline_card_projections_persist_through_events(tmp_path: Path):
+    """args_display / result_preview survive the durable event payload seam."""
+    signals = [
+        RuntimeSignal(
+            type=AgentEventType.TOOL_STARTED,
+            message="read_file · {\"path\": \"wiki/a.md\"}",
+            data={
+                "tool_name": "read_file",
+                "tool_call_id": "call_x",
+                "args_display": {"path": "wiki/a.md", "title": "a.md"},
+            },
+            model_call_id="m1",
+        ),
+        RuntimeSignal(
+            type=AgentEventType.TOOL_COMPLETED,
+            message="read_file → wiki/a.md",
+            data={
+                "tool_name": "read_file",
+                "tool_call_id": "call_x",
+                "result_preview": {
+                    "head": "# Cell A",
+                    "tail": "",
+                    "total_chars": 7,
+                    "truncated": False,
+                    "kind": "text",
+                },
+            },
+        ),
+        RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="完成", model_call_id="m1"),
+    ]
+    manager = AgentRuntimeManager(tmp_path, adapter=_ScriptedAdapter([signals]))
+    try:
+        started = manager.start(thread_id="t_card", message="hi", context=_context("t_card"))
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        events = manager.store.list_events(started.run_id)
+        by_type = {event.type: event for event in events}
+        assert by_type[AgentEventType.TOOL_STARTED].data["args_display"]["title"] == "a.md"
+        assert by_type[AgentEventType.TOOL_COMPLETED].data["result_preview"]["head"] == "# Cell A"
+    finally:
+        manager.close()
