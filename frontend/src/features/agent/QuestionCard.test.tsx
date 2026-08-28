@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QuestionCard } from "./QuestionCard";
 import type { PendingQuestion } from "./QuestionCard";
@@ -72,9 +72,22 @@ describe("QuestionCard", () => {
     await waitFor(() => expect(onAnswered).toHaveBeenCalledWith("run_1"));
   });
 
-  it("stops polling when no open question exists (404)", async () => {
-    mockedGet.mockRejectedValue(Object.assign(new Error("no"), { status: 404 }));
-    render(<QuestionCard runId="run_1" />);
-    expect(screen.queryAllByTestId("question-card")).toHaveLength(0);
+  it("keeps polling and reveals a question that arrives after an empty first poll", async () => {
+    // 运行中挂起询问时，卡片会先于问题持久化挂载：第一次 404 之后必须继续轮询。
+    vi.useFakeTimers();
+    try {
+      mockedGet
+        .mockRejectedValueOnce(Object.assign(new Error("no open question"), { status: 404 }))
+        .mockResolvedValue(question());
+      render(<QuestionCard runId="run_1" />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_600);
+      });
+      expect(screen.getByText("是否将结果写入 wiki？")).toBeInTheDocument();
+      expect(screen.getByText("写入")).toBeInTheDocument();
+      expect(mockedGet.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

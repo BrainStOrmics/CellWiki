@@ -3,6 +3,29 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentMessageBubble } from "./AgentMessageBubble";
 import type { AgentProcessStep, AgentTimelineNode, ChatMessage } from "../../types";
 
+vi.mock("../../lib/product-api", () => ({
+  getJson: vi.fn((path: string) => Promise.resolve(
+    String(path).endsWith("/question") ? pendingQuestion() : { spans: [] },
+  )),
+  postJson: vi.fn(),
+}));
+
+function pendingQuestion() {
+  return {
+    question_id: "q_1",
+    run_id: "run_1",
+    thread_id: "thread_1",
+    tool_call_id: null,
+    question: "确认收录这篇论文吗？",
+    options: ["确认，开始 ingest", "先不处理"],
+    required: false,
+    status: "pending",
+    answers: null,
+    created_at: "2026-08-27T00:00:00Z",
+    answered_at: null,
+  };
+}
+
 afterEach(cleanup);
 
 const labels = {
@@ -123,5 +146,29 @@ describe("AgentMessageBubble", () => {
     const detail = container.querySelector(".at-detail");
     expect(detail).not.toBeNull();
     expect(detail?.textContent).toContain("pattern");
+  });
+
+  it("mounts the question card only while its run awaits the user's answer", async () => {
+    render(
+      <AgentMessageBubble
+        {...labels}
+        message={{ role: "agent", text: "answer", runId: "run_1", runStatus: "waiting_confirmation" }}
+        onQuestionAnswered={vi.fn()}
+      />,
+    );
+    expect(await screen.findByTestId("question-card")).toBeInTheDocument();
+    expect(screen.getByText("确认，开始 ingest")).toBeInTheDocument();
+  });
+
+  it("does not mount a question card for a settled run", async () => {
+    render(
+      <AgentMessageBubble
+        {...labels}
+        message={{ role: "agent", text: "answer", runId: "run_1", runStatus: "succeeded" }}
+        onQuestionAnswered={vi.fn()}
+      />,
+    );
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(screen.queryByTestId("question-card")).toBeNull();
   });
 });

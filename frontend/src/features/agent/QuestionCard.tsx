@@ -45,13 +45,13 @@ export function QuestionCard({
           setError(null);
         }
       } catch (err) {
-        // 404/409/422 表示没有挂起问题，停止轮询避免后台请求风暴
+        // 404/409/422 = 该 run 当前没有待答问题（还没问到，或已经答完）。
+        // 这里必须继续轮询：卡片会在 ask_user_question 持久化问题之前就先挂载一次。
         const status = statusOf(err);
         if (status === 404 || status === 409 || status === 422) {
           if (!cancelled) setQuestion(null);
-          return;
         }
-        void err; // 网络抖动时继续轮询
+        void err; // 其它错误（网络抖动）同样继续轮询
       }
       if (!cancelled) timer = window.setTimeout(poll, 1500);
     }

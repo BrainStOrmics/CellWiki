@@ -9,7 +9,12 @@ import { useEffect, useRef, useState } from "react";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { AgentRunDiagnostics } from "./AgentRunDiagnostics";
 import { QuestionCard } from "./QuestionCard";
-import type { AgentProcessStep, AgentTimelineNode, ChatMessage } from "../../types";
+import type {
+  AgentProcessStep,
+  AgentRunStatus,
+  AgentTimelineNode,
+  ChatMessage,
+} from "../../types";
 
 type AgentMessageBubbleProps = {
   message: ChatMessage;
@@ -78,11 +83,18 @@ export function AgentMessageBubble({
           {!message.streaming && (
             <AgentRunDiagnostics runId={message.runId} label={diagnosticsLabel} />
           )}
-          <QuestionCard runId={message.runId} onAnswered={onQuestionAnswered} />
+          {isAwaitingUserAnswer(message.runStatus) && (
+            <QuestionCard runId={message.runId} onAnswered={onQuestionAnswered} />
+          )}
         </>
       )}
     </div>
   );
+}
+
+/** 只有等待用户回应的 run 才需要问题卡；历史消息不挂载，避免每个气泡都轮询 /question。 */
+function isAwaitingUserAnswer(status: AgentRunStatus | undefined): boolean {
+  return status === "waiting_confirmation" || status === "waiting_approval";
 }
 
 function timelineNodes(message: ChatMessage): AgentTimelineNode[] {
