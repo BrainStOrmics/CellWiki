@@ -267,6 +267,16 @@ export type AgentThreadSummary = {
   avg_cache_hit_rate: number;
 };
 
+export type AgentThreadEntry = {
+  thread_id: string;
+  title: string | null;
+  created_at: string;
+  updated_at: string;
+  run_count: number;
+  latest_run_id: string | null;
+  latest_status: AgentRunStatus | null;
+};
+
 export type AppSettings = {
   openai_base_url: string;
   openai_model: string;

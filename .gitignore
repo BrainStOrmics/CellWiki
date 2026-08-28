@@ -72,5 +72,8 @@ docs/
 design/
 HANDOFF.md
 
+# ZCode session runtime artifacts
+.zcode/
+
 # Ingest test data (large, local-only)
 data/ingest/

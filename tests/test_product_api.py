@@ -252,6 +252,42 @@ def test_agent_run_retry_via_api(tmp_path: Path):
         manager.close()
 
 
+def test_agent_thread_registry_lists_zero_run_sessions(tmp_path: Path):
+    # 会话登记表是历史下拉的唯一真相：`+` 新建、尚未产生 run 的会话必须可见可回访
+    manager = AgentRuntimeManager(tmp_path, adapter=_ApiAgentAdapter())
+    try:
+        client = TestClient(create_app(tmp_path, agent_runtime=manager))
+        placeholder = client.post("/api/agent/threads").json()["thread_id"]
+        active = client.post("/api/agent/threads").json()["thread_id"]
+        started = client.post(
+            "/api/agent/runs",
+            json={"message": "总结细胞类型", "thread_id": active},
+        )
+        assert started.status_code == 202
+        run_id = started.json()["run_id"]
+        _wait_for_run(client, run_id, {AgentRunStatus.SUCCEEDED})
+
+        by_id = {item["thread_id"]: item for item in client.get("/api/agent/threads").json()}
+        assert by_id[placeholder]["run_count"] == 0
+        assert by_id[placeholder]["latest_run_id"] is None
+        assert by_id[placeholder]["latest_status"] is None
+        assert by_id[placeholder]["title"] is None
+        assert by_id[active]["run_count"] == 1
+        assert by_id[active]["latest_run_id"] == run_id
+        assert by_id[active]["latest_status"] == "succeeded"
+        # 最近活动排前：有 run 的会话活动时刻晚于占位会话的登记时刻
+        assert [item["thread_id"] for item in client.get("/api/agent/threads").json()] == [
+            active,
+            placeholder,
+        ]
+
+        assert client.delete(f"/api/agent/threads/{placeholder}").status_code == 200
+        remaining = {item["thread_id"] for item in client.get("/api/agent/threads").json()}
+        assert placeholder not in remaining
+    finally:
+        manager.close()
+
+
 def test_consumer_endpoints_restored_or_removed(tmp_path: Path):
     # 残留 stub 端点（来源/质量/变更集）已彻底移除；真实工作区/搜索端点保留
     _write_workspace(tmp_path)

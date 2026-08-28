@@ -50,6 +50,7 @@ import type {
   AgentProcessStep,
   AgentRun,
   AgentRunStatus,
+  AgentThreadEntry,
   AttachmentRecord,
   ChatMessage,
   Page,
@@ -148,12 +149,51 @@ async function loadWorkspaceData(): Promise<WorkspaceData> {
   return { pages };
 }
 
-type CachedThreadState = {
+export type CachedThreadState = {
   messages: ChatMessage[];
   draft: string;
   attachments: AttachmentRecord[];
   runId: string | null;
 };
+
+/**
+ * 新建会话的乐观占位条目：服务端登记成功后会被同 `thread_id` 的真实条目替换，
+ * 因此这里只保证"同一 tick 内可见且只有一条"。
+ */
+export function seedAgentThreadList(
+  current: AgentThreadEntry[] | undefined,
+  threadId: string,
+  now: string,
+): AgentThreadEntry[] {
+  return [
+    {
+      thread_id: threadId,
+      title: null,
+      created_at: now,
+      updated_at: now,
+      run_count: 0,
+      latest_run_id: null,
+      latest_status: null,
+    },
+    ...(current ?? []).filter((thread) => thread.thread_id !== threadId),
+  ];
+}
+
+/**
+ * 空槽位回收判据。宁可少删不可多删：未知状态（没有本地缓存或注册表条目）一律保留，
+ * 有草稿、附件或除欢迎语以外的消息也保留，尤其是首条消息因串行门禁 409 失败的会话。
+ */
+export function isDisposableEmptyThread(
+  cached: CachedThreadState | undefined,
+  entry: AgentThreadEntry | undefined,
+): boolean {
+  if (!cached || !entry) return false;
+  if (entry.run_count > 0 || entry.latest_run_id) return false;
+  return cached.draft.trim().length === 0
+    && cached.attachments.length === 0
+    && cached.messages.length <= 1;
+}
+
 function clamp(value: number, minimum: number, maximum: number) {
   return Math.min(Math.max(value, minimum), maximum);
 }
@@ -335,7 +375,11 @@ export function AppShell() {
   async function refreshWorkspaceState() {
     setRefreshing(true);
     try {
-      await Promise.allSettled([workspaceQuery.refetch(), loadPendingDiffCount()]);
+      await Promise.allSettled([
+        workspaceQuery.refetch(),
+        loadPendingDiffCount(),
+        queryClient.invalidateQueries({ queryKey: ["agent-threads"] }),
+      ]);
     } finally {
       setRefreshing(false);
     }
@@ -555,6 +599,7 @@ export function AppShell() {
         setAgentBusy(false);
         // Agent 运行结束（含 ingest 完成）后刷新文件树/页面/待审徽标
         void refreshWorkspaceState();
+        queryClient.invalidateQueries({ queryKey: ["agent-threads"] });
         if (status !== "waiting_approval") {
           setPendingInterrupt((current) => (
             current?.runId === event.run_id ? null : current
@@ -660,11 +705,41 @@ export function AppShell() {
     });
   }
 
+  function seedThreadPlaceholder(threadId: string) {
+    // 点 `+` 的那一刻就把占位条目写进会话列表缓存，用户不需要等 refetch
+    // 就能在下拉里看到这个新会话，也不会被后续刷新挤出可回访位置。
+    queryClient.setQueryData<AgentThreadEntry[]>(["agent-threads"], (current) => (
+      seedAgentThreadList(current, threadId, new Date().toISOString())
+    ));
+  }
+
+  async function disposeEmptyThread(threadId: string | null) {
+    // 空槽位回收：从未产生 run、也没有草稿/附件/可见消息的新会话在离开后删除，
+    // 避免会话登记表堆积无法解释的占位条目。任何本地内容都会保留会话，
+    // 例如首条消息因串行门禁 409 失败的会话仍然可回访。
+    if (!threadId || threadId === agentThreadIdRef.current) return;
+    const listed = queryClient.getQueryData<AgentThreadEntry[]>(["agent-threads"]);
+    const entry = listed?.find((thread) => thread.thread_id === threadId);
+    if (!isDisposableEmptyThread(threadStateCacheRef.current.get(threadId), entry)) return;
+    try {
+      await deleteJson<{ thread_id: string; deleted_runs: number }>(
+        `/api/agent/threads/${encodeURIComponent(threadId)}`,
+      );
+      threadStateCacheRef.current.delete(threadId);
+      window.localStorage.removeItem(agentRunStorageKey(threadId));
+      queryClient.invalidateQueries({ queryKey: ["agent-threads"] });
+    } catch {
+      // 回收失败不打断切换：占位条目留在列表里由用户手删。
+    }
+  }
+
   async function restoreAgentThread(threadId: string, preferredRunId?: string) {
     const token = ++threadRestoreTokenRef.current;
     // 离开当前会话前缓存其本地视图（含正在流式输出的部分回答与草稿）
-    cacheCurrentThreadState(agentThreadIdRef.current);
+    const leavingThreadId = agentThreadIdRef.current;
+    cacheCurrentThreadState(leavingThreadId);
     agentThreadIdRef.current = threadId;
+    void disposeEmptyThread(leavingThreadId);
     setActiveThreadId(threadId);
     // A thread switch must not carry review cards, streams, or attachment chips across conversations.
     agentEventSourceRef.current?.close();
@@ -993,7 +1068,8 @@ export function AppShell() {
 
   async function startNewChat() {
     if (attachmentUploadBusy || attachmentUploadRef.current) return;
-    cacheCurrentThreadState(agentThreadIdRef.current);
+    const leavingThreadId = agentThreadIdRef.current;
+    cacheCurrentThreadState(leavingThreadId);
     renderedThreadIdRef.current = null;
     agentEventSourceRef.current?.close();
     streamGenerationRef.current += 1;
@@ -1011,7 +1087,9 @@ export function AppShell() {
       const thread = await postJson<{ thread_id: string }>("/api/agent/threads", {});
       agentThreadIdRef.current = thread.thread_id;
       setActiveThreadId(thread.thread_id);
+      seedThreadPlaceholder(thread.thread_id);
       queryClient.invalidateQueries({ queryKey: ["agent-threads"] });
+      void disposeEmptyThread(leavingThreadId);
       setMessages([{
         ...initialAgentMessage,
         text: t("workflow.newConversation").replace(
@@ -1269,7 +1347,8 @@ export function AppShell() {
               currentThreadId={activeThreadId}
               onDelete={deleteAgentThread}
               onSelect={(thread) => {
-                threadRestorePrefRef.current = thread.latestRun.run_id;
+                // 零 run 会话没有 latest_run_id；恢复线索回落到该线程的 localStorage 键
+                threadRestorePrefRef.current = thread.latestRunId;
                 setActiveThreadId(thread.threadId);
               }}
             />

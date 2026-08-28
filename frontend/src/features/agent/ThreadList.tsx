@@ -1,14 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, History, MessageSquareText, Trash2 } from "lucide-react";
 import { getJson } from "../../lib/product-api";
-import type { AgentRun } from "../../types";
+import type { AgentThreadEntry } from "../../types";
 import { useI18n } from "../../i18n";
 
-type ThreadSummary = {
+export type ThreadSelection = {
   threadId: string;
-  latestRun: AgentRun;
-  runCount: number;
+  latestRunId: string | null;
 };
 
 export function ThreadList({
@@ -17,62 +16,63 @@ export function ThreadList({
   onDelete,
 }: {
   currentThreadId: string | null;
-  onSelect: (thread: ThreadSummary) => void;
+  onSelect: (thread: ThreadSelection) => void;
   onDelete: (threadId: string) => Promise<void>;
 }) {
   const { t } = useI18n();
   const [expanded, setExpanded] = useState(false);
-  const runs = useQuery({
+  const threads = useQuery({
     queryKey: ["agent-threads"],
-    queryFn: () => getJson<AgentRun[]>("/api/agent/runs?limit=200"),
+    queryFn: () => getJson<AgentThreadEntry[]>("/api/agent/threads?limit=200"),
     refetchInterval: expanded ? 3000 : false,
   });
   useEffect(() => {
     // 展开下拉时立即刷新一次，避免新会话要等 3s 轮询才出现
-    if (expanded) void runs.refetch();
+    if (expanded) void threads.refetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded]);
-  const threads = useMemo(() => {
-    const grouped = new Map<string, ThreadSummary>();
-    for (const run of runs.data ?? []) {
-      const current = grouped.get(run.thread_id);
-      if (!current) grouped.set(run.thread_id, { threadId: run.thread_id, latestRun: run, runCount: 1 });
-      else current.runCount += 1;
-    }
-    return [...grouped.values()].slice(0, 20);
-  }, [runs.data]);
+  const items = (threads.data ?? []).slice(0, 20);
 
   return (
     <div className="thread-list">
       <button className="thread-list-toggle" onClick={() => setExpanded((value) => !value)}>
-        <History size={13} /><span>{t("threads.title")}</span><small>{threads.length}</small><ChevronDown size={12} className={expanded ? "open" : ""} />
+        <History size={13} /><span>{t("threads.title")}</span><small>{items.length}</small><ChevronDown size={12} className={expanded ? "open" : ""} />
       </button>
       {expanded && (
         <div className="thread-list-items">
-          {runs.isLoading && <span>{t("threads.loading")}</span>}
-          {threads.length === 0 && !runs.isLoading && <span>{t("threads.empty")}</span>}
-          {threads.map((thread) => (
-            <div
-              key={thread.threadId}
-              className={`thread-list-item ${thread.threadId === currentThreadId ? "active" : ""}`}
-            >
-              <button
-                className="thread-list-select"
-                onClick={() => { onSelect(thread); setExpanded(false); }}
+          {threads.isLoading && <span>{t("threads.loading")}</span>}
+          {items.length === 0 && !threads.isLoading && <span>{t("threads.empty")}</span>}
+          {items.map((thread) => {
+            // 标题优先级：会话标题（LLM 命名阶段的落点）> 会话 ID > 未开始占位
+            const started = thread.run_count > 0;
+            const label = thread.title?.trim()
+              || (started ? thread.thread_id.slice(-10) : t("threads.untitled"));
+            return (
+              <div
+                key={thread.thread_id}
+                className={`thread-list-item ${thread.thread_id === currentThreadId ? "active" : ""}`}
               >
-                <MessageSquareText size={13} />
-                <span><strong>{thread.threadId.slice(-10)}</strong><small>{thread.latestRun.status} · {thread.runCount} {t("threads.runs")}</small></span>
-              </button>
-              <button
-                className="thread-list-delete"
-                title={t("threads.delete")}
-                aria-label={t("threads.delete")}
-                onClick={() => void onDelete(thread.threadId).then(() => runs.refetch())}
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-          ))}
+                <button
+                  className="thread-list-select"
+                  onClick={() => {
+                    onSelect({ threadId: thread.thread_id, latestRunId: thread.latest_run_id });
+                    setExpanded(false);
+                  }}
+                >
+                  <MessageSquareText size={13} />
+                  <span><strong>{label}</strong><small>{started ? `${thread.latest_status} · ${thread.run_count} ${t("threads.runs")}` : t("threads.notStarted")}</small></span>
+                </button>
+                <button
+                  className="thread-list-delete"
+                  title={t("threads.delete")}
+                  aria-label={t("threads.delete")}
+                  onClick={() => void onDelete(thread.thread_id).then(() => threads.refetch())}
+                >
+                  <Trash2 size={12} />
+                </button>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

@@ -118,6 +118,13 @@ class RuntimeStore:
             }
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            # Keep the registry complete at the storage boundary: the history list
+            # reads agent_threads, so a run whose thread was never registered would
+            # make that conversation invisible and unreachable again.
+            connection.execute(
+                "INSERT OR IGNORE INTO agent_threads(thread_id, created_at) VALUES (?, ?)",
+                (run.thread_id, run.created_at.isoformat()),
+            )
             connection.execute(
                 """
                 INSERT INTO agent_runs(run_id, thread_id, status, payload, updated_at)
@@ -429,6 +436,83 @@ class RuntimeStore:
                 "SELECT 1 FROM agent_threads WHERE thread_id = ?", (thread_id,)
             ).fetchone()
         return row is not None
+
+    def list_threads(self, *, limit: int = 50) -> list[dict]:
+        """Return registry entries, most recently active first.
+
+        Zero-run threads are included on purpose: a conversation allocated by the
+        desktop "+" button must stay selectable before its first run exists, which
+        is exactly the case the run-derived history list could not represent.
+        Recency is derived from the newest run instead of a registry counter, so no
+        run write path has to maintain session bookkeeping.
+        """
+
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    t.thread_id,
+                    t.title,
+                    t.created_at,
+                    (SELECT COUNT(*) FROM agent_runs r
+                      WHERE r.thread_id = t.thread_id) AS run_count,
+                    (SELECT r.run_id FROM agent_runs r
+                      WHERE r.thread_id = t.thread_id
+                      ORDER BY r.updated_at DESC, r.run_id LIMIT 1) AS latest_run_id,
+                    (SELECT r.status FROM agent_runs r
+                      WHERE r.thread_id = t.thread_id
+                      ORDER BY r.updated_at DESC, r.run_id LIMIT 1) AS latest_status,
+                    MAX(t.created_at, COALESCE(
+                        (SELECT MAX(r.updated_at) FROM agent_runs r
+                          WHERE r.thread_id = t.thread_id),
+                        t.created_at
+                    )) AS updated_at
+                FROM agent_threads t
+                ORDER BY updated_at DESC, t.thread_id
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [
+            {
+                "thread_id": row[0],
+                "title": row[1],
+                "created_at": row[2],
+                "updated_at": row[6],
+                "run_count": int(row[3]),
+                "latest_run_id": row[4],
+                "latest_status": row[5],
+            }
+            for row in rows
+        ]
+
+    def _ensure_thread_registry(self, connection: sqlite3.Connection) -> None:
+        """Upgrade the two-column ``agent_threads`` table into a real registry.
+
+        SQLite has no ``ADD COLUMN IF NOT EXISTS``, so the live column list decides.
+        Databases created before the registry existed can hold runs without an
+        identity row; re-registering them keeps the history list complete. The
+        backfilled ``created_at`` uses the earliest known run activity because
+        ``agent_runs`` stores its creation time inside the payload, and ordering
+        already prefers the newest run. Both steps run on every start and must
+        stay idempotent.
+        """
+
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(agent_threads)")
+        }
+        if "title" not in columns:
+            connection.execute("ALTER TABLE agent_threads ADD COLUMN title TEXT")
+        connection.execute(
+            """
+            INSERT OR IGNORE INTO agent_threads(thread_id, created_at)
+            SELECT r.thread_id, MIN(r.updated_at) FROM agent_runs r
+            WHERE NOT EXISTS (
+                SELECT 1 FROM agent_threads t WHERE t.thread_id = r.thread_id
+            )
+            GROUP BY r.thread_id
+            """
+        )
 
     # ---- 线程附件记录 ----
     def save_attachment(self, attachment: Any) -> dict:
@@ -1171,7 +1255,8 @@ class RuntimeStore:
         ON agent_attachments(thread_id, created_at);
     CREATE TABLE IF NOT EXISTS agent_threads (
         thread_id TEXT PRIMARY KEY,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        title TEXT
     );
     CREATE TABLE IF NOT EXISTS agent_questions (
         question_id TEXT PRIMARY KEY,
@@ -1183,9 +1268,10 @@ class RuntimeStore:
     );
     CREATE INDEX IF NOT EXISTS ix_agent_questions_run
         ON agent_questions(run_id, status, created_at);
-    PRAGMA user_version=6;
+    PRAGMA user_version=7;
                 """
             )
+            self._ensure_thread_registry(connection)
 
     def _backfill_messages(self) -> None:
         """Backfill transcripts created before the durable message table existed.

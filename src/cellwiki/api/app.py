@@ -404,6 +404,11 @@ def create_app(
         get_agent_runtime().store.create_thread(thread_id)
         return {"thread_id": thread_id}
 
+    @app.get("/api/agent/threads")
+    def list_agent_threads(limit: int = Query(default=50, ge=1, le=500)) -> list[dict]:
+        """列出会话登记条目（含尚未产生 run 的新会话），按最近活动排序。"""
+        return get_agent_runtime().store.list_threads(limit=limit)
+
     @app.post("/api/agent/threads/{thread_id}/attachments", status_code=status.HTTP_201_CREATED)
     def upload_thread_attachments(thread_id: str, files: list[UploadFile] = File(...)) -> list[dict]:
         """将上传文件作为该线程的临时 Agent 上下文保存（不登记 Source、不 ingest）。"""
