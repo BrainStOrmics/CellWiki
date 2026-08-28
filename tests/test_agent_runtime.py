@@ -1139,3 +1139,60 @@ def test_maintenance_failure_does_not_block_verdict_and_retries_at_next_start(
         _wait_for_status(manager, resumed.run_id, {AgentRunStatus.SUCCEEDED})
     finally:
         manager.close()
+
+class _TypewriterFakeModel(BaseChatModel):
+    """逐 token 流式回归样板：每次调用按多个 chunk 吐出正文。
+
+    模拟流式打开后的真实行为：chunk 共享同一消息 id（聚合与去重依赖它），
+    运行时必须把每个 chunk 落成独立的 message_delta 事件。
+    """
+
+    @property
+    def _llm_type(self) -> str:
+        return "typewriter-fake"
+
+    def bind_tools(self, tools, **kwargs):
+        return self
+
+    def _bind_tools(self, tools, **kwargs):
+        return self
+
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(
+            generations=[
+                ChatGeneration(
+                    message=AIMessage(content="第一句第二句第三句", id="call_typewriter")
+                )
+            ]
+        )
+
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        for token in ("第一句", "第二句", "第三句"):
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(content=token, id="call_typewriter")
+            )
+
+
+def test_real_graph_streams_multiple_message_deltas(tmp_path: Path):
+    """逐 token 流式契约（design/active/2026-08-27-agent-token-streaming.md）：
+    模型按多 chunk 流式输出时，事件表必须出现多条 message_delta，
+    而不是旧行为里每次调用一条聚合块。"""
+    from cellwiki.agent.app import build_wiki_agent
+
+    (tmp_path / "wiki").mkdir(parents=True, exist_ok=True)
+    graph = build_wiki_agent(tmp_path, model=_TypewriterFakeModel())
+    runtime = AgentRuntimeManager(tmp_path, adapter=graph)
+    try:
+        thread_id = "thread_typewriter"
+        run = runtime.start(
+            thread_id=thread_id,
+            message="流式说一句",
+            context=_context(thread_id),
+        )
+        _wait_for_status(runtime, run.run_id, {AgentRunStatus.SUCCEEDED})
+        events = runtime.store.list_events(run.run_id)
+        deltas = [event for event in events if event.type == AgentEventType.MESSAGE_DELTA]
+        assert len(deltas) >= 3, [event.message for event in deltas]
+        assert "".join(event.message for event in deltas) == "第一句第二句第三句"
+    finally:
+        runtime.close()

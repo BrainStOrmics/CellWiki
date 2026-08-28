@@ -259,3 +259,28 @@ def test_stream_item_emits_started_for_every_tool_call_in_batch():
     assert [signal.data["tool_call_id"] for signal in started] == ["call_a", "call_b"]
     assert started[0].message == 'ls · {"path": "/"}'
     assert started[1].message == 'glob · {"pattern": "**/*.md"}'
+
+
+def test_stream_item_emits_reasoning_delta_from_responses_content_blocks():
+    """Responses/v1 streaming surfaces reasoning as content blocks with a
+    summary list; the runtime must translate them incrementally too."""
+    chunk = AIMessageChunk(
+        content=[
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "index": 0,
+                "summary": [{"index": 0, "type": "summary_text", "text": "一步步推理"}],
+            }
+        ],
+        id="call_block",
+    )
+    signals = list(_signals_from_stream_item(("messages", (chunk, {}))))
+    reasoning = next(
+        signal for signal in signals if signal.type == AgentEventType.REASONING_DELTA
+    )
+    assert reasoning.message == "一步步推理"
+    assert reasoning.model_call_id == "call_block"
+    assert not any(
+        signal.type == AgentEventType.MESSAGE_DELTA for signal in signals
+    )

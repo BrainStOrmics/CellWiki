@@ -68,6 +68,7 @@ def build_openai_chat_model(
     timeout_seconds: float | None = None,
     max_retries: int = 1,
     disable_streaming: bool | Literal["tool_calling"] = "tool_calling",
+    stream_usage: bool | None = None,
     purpose: Literal[
         "agent",
         "structured",
@@ -107,6 +108,7 @@ def build_openai_chat_model(
         timeout=request_timeout,
         max_retries=max_retries,
         disable_streaming=disable_streaming,
+        stream_usage=stream_usage,
         extra_body=extra_body,
         # Explicit booleans prevent model-name heuristics from silently switching
         # a third-party compatible endpoint to the Responses API.

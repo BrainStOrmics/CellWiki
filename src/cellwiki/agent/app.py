@@ -27,7 +27,12 @@ from langchain_core.messages import SystemMessage, ToolMessage
 from langgraph.checkpoint.memory import InMemorySaver
 
 from cellwiki.adapters.openai_model import build_openai_chat_model
+from cellwiki.adapters.openai_reasoning_bridge import attach_reasoning_stream_bridge
 from cellwiki.config import Settings, settings
+from cellwiki.domain.model_provider import (
+    OPENAI_PROTOCOL_RESPONSES,
+    normalize_openai_protocol,
+)
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.agent.executor import (
     WHITELISTED_TOOL_NAMES,
@@ -183,12 +188,31 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
 # ---------------------------------------------------------------------------
 # 构建 LLM 模型实例
 # 使用 ChatOpenAI 以兼容 OpenAI 及第三方提供商（Ollama、vLLM 等）。
-# temperature=0 保证确定性；禁用 tool_calling 流式传输，因为自定义
-# 提供商经常发送格式错误的部分工具调用流。
+# temperature=0 保证确定性。Responses 协议下默认开启逐 token 流式
+# （AGENT_STREAMING=0 一键回退）：coordinator 请求永远携带工具，此前
+# disable_streaming="tool_calling" 会在 HTTP 层直接退化为阻塞式单响应，
+# 正文与思考整块到达（design/active/2026-08-27-agent-token-streaming.md）。
+# 流式同时挂上 reasoning bridge，把该网关非标准的
+# response.reasoning_text.delta 事件翻译成 langchain 可识别的标准摘要事件。
+# Chat Completions 协议保持阻塞现状：langchain-core 不提取流式
+# reasoning_content，放开即思考回退，需 provider 子类另行提案。
 # ---------------------------------------------------------------------------
 def build_model(configuration: Settings = settings) -> BaseChatModel:
     _register_cellwiki_harness_profile(configuration.openai_model)
-    return build_openai_chat_model(configuration, purpose="coordinator")
+    streaming = bool(
+        configuration.agent_streaming
+        and normalize_openai_protocol(configuration.openai_api_protocol)
+        == OPENAI_PROTOCOL_RESPONSES
+    )
+    model = build_openai_chat_model(
+        configuration,
+        purpose="coordinator",
+        disable_streaming=False if streaming else "tool_calling",
+        stream_usage=True if streaming else None,
+    )
+    if streaming:
+        attach_reasoning_stream_bridge(model)
+    return model
 
 
 # ---------------------------------------------------------------------------

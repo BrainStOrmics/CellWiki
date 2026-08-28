@@ -495,7 +495,10 @@ def _signals_from_stream_item(
                         )
                     )
             text = _message_text(getattr(message, "content", ""))
-            if text:
+            # Streaming responses attach usage only to a final, text-empty
+            # chunk; emit a delta signal for it anyway so run usage keeps
+            # accumulating (the runtime persists message only when non-empty).
+            if text or input_tokens or output_tokens or cached_tokens:
                 responses.append(
                     RuntimeSignal(
                         type=AgentEventType.MESSAGE_DELTA,
