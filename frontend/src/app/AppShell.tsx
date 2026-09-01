@@ -202,6 +202,34 @@ function fileNameForPage(page: Page) {
   return page.path?.split("/").at(-1) ?? `${page.page_id}.md`;
 }
 
+/**
+ * "What was injected" detail for the timeline context node: the referenced
+ * page (or the bare workspace), attachment names, and the selected-text size.
+ * Pure so both the live composer state and a historical run record can feed it.
+ */
+export function buildRunContextDetail(input: {
+  page: { title: string; path?: string | null } | null;
+  workspaceLabel: string;
+  attachments: string[];
+  attachmentsLabel: (count: number) => string;
+  selectedText: string | null;
+  selectedTextLabel: (chars: number) => string;
+}): string {
+  const parts: string[] = [];
+  if (input.page) {
+    parts.push(input.page.path ? `${input.page.title} (${input.page.path})` : input.page.title);
+  } else {
+    parts.push(input.workspaceLabel);
+  }
+  if (input.attachments.length > 0) {
+    parts.push(`${input.attachmentsLabel(input.attachments.length)}: ${input.attachments.join("、")}`);
+  }
+  if (input.selectedText) {
+    parts.push(input.selectedTextLabel(input.selectedText.length));
+  }
+  return parts.join(" · ");
+}
+
 export function resolveInitialPageId(
   pages: Page[],
   pageRef: { page_id: string } | null,
@@ -675,21 +703,58 @@ export function AppShell() {
     });
   }
 
-  function buildTimelineContext(): { label: string; detail?: string } {
-    const parts: string[] = [];
-    parts.push(composerPageRef?.title ?? t("reader.workspace"));
-    if (activeAttachments.length > 0) {
-      parts.push(t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length)));
-    }
-    return { label: t("chat.contextInjection"), detail: parts.join(" · ") };
+  function contextDetailParts() {
+    return {
+      workspaceLabel: t("reader.workspace"),
+      attachmentsLabel: (count: number) => t("chat.attachmentsAttached").replace("{count}", String(count)),
+      selectedTextLabel: (chars: number) => t("chat.selectedTextInjected").replace("{n}", String(chars)),
+    };
   }
 
-  function agentRunLabels(): AgentRunReducerLabels {
+  function buildTimelineContext(): { label: string; detail?: string } {
+    const detail = buildRunContextDetail({
+      page: composerPageRef ?? null,
+      ...contextDetailParts(),
+      attachments: activeAttachments.map((attachment) => attachment.original_name ?? attachment.attachment_id),
+      selectedText: selectedText || null,
+    });
+    return { label: t("chat.contextInjection"), detail };
+  }
+
+  /**
+   * Context node for a replayed run: describe what THAT run injected (its own
+   * page_id / attachment_ids / selected_text), not today's composer state.
+   */
+  function runRecordContext(run: AgentRun): { label: string; detail?: string } {
+    const page: Page | null = run.page_id
+      ? pages.find((candidate) => candidate.page_id === run.page_id) ?? { page_id: run.page_id }
+      : null;
+    const attachmentNames = (run.attachment_ids ?? []).map(
+      (attachmentId) =>
+        attachments.find((attachment) => attachment.attachment_id === attachmentId)?.original_name
+        ?? attachmentId,
+    );
+    return {
+      label: t("chat.contextInjection"),
+      detail: buildRunContextDetail({
+        page: page
+          ? { title: page.title ?? fileNameForPage(page), path: page.path ?? null }
+          : null,
+        ...contextDetailParts(),
+        attachments: attachmentNames,
+        selectedText: run.selected_text ?? null,
+      }),
+    };
+  }
+
+  function agentRunLabels(
+    context?: { label: string; detail?: string },
+  ): AgentRunReducerLabels {
     return {
       failed: t("chat.runFailed"),
       cancelled: t("chat.runCancelled"),
       unfinished: t("chat.runUnfinished"),
-      timelineContext: buildTimelineContext(),
+      timelineContext: context ?? buildTimelineContext(),
     };
   }
 
@@ -809,11 +874,13 @@ export function AppShell() {
       // 活跃/暂停态的回答只存在于事件日志；已终态的 run 也从事件重建，
       // 避免“先取到的历史缺少回答、事件里才有完整回答”的竞态导致丢消息。
       // 重建前剔除本地/历史里同 run 的旧 agent 消息，防止文本被重复追加。
+      // 上下文节点按该 run 自身的注入记录重建，而不是当前 composer 状态。
+      const runLabels = agentRunLabels(runRecordContext(run));
       let transcript = rebuildAgentTranscript(
         options.base ?? messagesRef.current,
         runId,
         events,
-        agentRunLabels(),
+        runLabels,
       );
       if (
         terminalAgentStatuses.has(run.status)
@@ -824,7 +891,7 @@ export function AppShell() {
         transcript = reduceAgentRunMessages(
           transcript,
           legacyTerminalEvent(run, (events.at(-1)?.sequence ?? 0) + 1),
-          agentRunLabels(),
+          runLabels,
         );
       }
       messagesRef.current = transcript;
@@ -1104,6 +1171,7 @@ export function AppShell() {
   function openSearchResult(result: SearchResult) {
     if (result.page_id) {
       setSelectedId(result.page_id);
+      setComposerPageRef({ page_id: result.page_id, title: result.title });
       setActiveView("wiki");
     }
   }
@@ -1130,8 +1198,16 @@ export function AppShell() {
   async function openWikiTarget(pageId: string) {
     // 优先按页面注册表跳转 Wiki 阅读器；找不到时在工作区树里按文件名解析并打开
     if (pages.some((page) => page.page_id === pageId)) {
+      const page = pages.find((candidate) => candidate.page_id === pageId);
       setWorkspaceFile(null);
       setSelectedId(pageId);
+      // Navigating the reader must keep the composer reference in sync; the
+      // tree and workspace-file paths already do this via openWorkspaceFile.
+      setComposerPageRef({
+        page_id: pageId,
+        title: page?.title ?? fileNameForPage({ page_id: pageId }),
+        path: page?.path,
+      });
       return;
     }
     try {

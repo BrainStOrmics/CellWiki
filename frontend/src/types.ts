@@ -158,6 +158,7 @@ export type AgentRun = {
   attachment_ids?: string[];
   source_id?: string | null;
   page_id?: string | null;
+  selected_text?: string | null;
   task_kind?: string;
   task_payload?: Record<string, unknown>;
   model_role?: string;

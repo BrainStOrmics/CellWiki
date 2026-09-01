@@ -22,4 +22,17 @@ describe("Wiki link navigation", () => {
     expect(viewerSource).toContain("onWikiLink?: (pageId: string) => void");
     expect(viewerSource).toContain("<MarkdownReader markdown={content} onWikiLink={onWikiLink} />");
   });
+
+  it("keeps the composer reference in sync when links or search results navigate", () => {
+    const start = appShellSource.indexOf("async function openWikiTarget(");
+    const end = appShellSource.indexOf("function openDiffPanel()", start);
+    const source = appShellSource.slice(start, end);
+    expect(source).toContain("setComposerPageRef({");
+    expect(source).toContain("title: page?.title ?? fileNameForPage({ page_id: pageId })");
+
+    const searchStart = appShellSource.indexOf("function openSearchResult(");
+    const searchEnd = appShellSource.indexOf("\n  }", searchStart);
+    const searchSource = appShellSource.slice(searchStart, searchEnd);
+    expect(searchSource).toContain("setComposerPageRef({ page_id: result.page_id, title: result.title })");
+  });
 });
