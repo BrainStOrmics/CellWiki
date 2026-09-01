@@ -201,7 +201,7 @@ function ThinkingNode({
   return (
     <details className={`agent-timeline-think ${streaming ? "is-live" : ""}`}>
       <summary>
-        <Brain size={12} />
+        <ChevronRight size={12} className="at-chevron" />
         <span>{title}</span>
         {preview && <span className="at-think-preview">{preview}</span>}
         {streaming && <small>{live}</small>}

@@ -1038,7 +1038,8 @@ button.message-citation:hover { border-color: #587caf; color: #c4d8fa; backgroun
 
 .agent-timeline-think summary { display: flex; align-items: baseline; gap: 6px; cursor: pointer; color: #93a3b4; font-size: 12px; list-style: none; user-select: none; }
 .agent-timeline-think summary::-webkit-details-marker { display: none; }
-.agent-timeline-think summary > svg { color: #7099d8; align-self: center; }
+.agent-timeline-think summary > svg { align-self: center; color: #657993; transition: transform 0.12s ease; }
+.agent-timeline-think[open] summary > svg { transform: rotate(90deg); }
 .agent-timeline-think summary span { font-size: 12px; font-weight: 650; }
 .agent-timeline-think summary .at-think-preview { min-width: 0; overflow: hidden; color: #657993; font-weight: 400; text-overflow: ellipsis; white-space: nowrap; }
 .agent-timeline-think summary small { flex: 0 0 auto; color: #657993; font-size: 10px; }
@@ -1660,7 +1661,7 @@ button.message-citation:hover { border-color: #587caf; color: #c4d8fa; backgroun
 :root[data-theme="light"] .at-preview-gap { color: var(--subtle); }
 :root[data-theme="light"] .at-more { border-top-color: var(--border-soft); color: var(--accent); }
 :root[data-theme="light"] .agent-timeline-think summary { color: var(--text-2); }
-:root[data-theme="light"] .agent-timeline-think summary > svg { color: var(--accent); }
+:root[data-theme="light"] .agent-timeline-think summary > svg { color: var(--subtle); }
 :root[data-theme="light"] .agent-timeline-think summary .at-think-preview { color: var(--subtle); }
 :root[data-theme="light"] .agent-timeline-think summary small { color: var(--muted); }
 :root[data-theme="light"] .agent-timeline-think-body { color: var(--muted); }
