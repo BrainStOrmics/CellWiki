@@ -4,11 +4,9 @@ import type { AgentRunReducerLabels } from "../features/agent/agent-run-reducer"
 import type { AgentEvent, ChatMessage } from "../types";
 
 const labels: AgentRunReducerLabels = {
-  evidenceMeta: "EVIDENCE",
   failed: "FAILED",
   cancelled: "CANCELLED",
   unfinished: "UNFINISHED",
-  formatConfidence: (confidence) => confidence,
 };
 
 function event(

@@ -686,11 +686,9 @@ export function AppShell() {
 
   function agentRunLabels(): AgentRunReducerLabels {
     return {
-      evidenceMeta: t("chat.evidenceMeta"),
       failed: t("chat.runFailed"),
       cancelled: t("chat.runCancelled"),
       unfinished: t("chat.runUnfinished"),
-      formatConfidence: (confidence) => localizedConfidence(confidence, language),
       timelineContext: buildTimelineContext(),
     };
   }
@@ -1545,11 +1543,6 @@ function formatReference(reference: unknown) {
     return value.paper_id ?? value.title ?? value.locator ?? "Evidence reference";
   }
   return String(reference);
-}
-
-function localizedConfidence(value: string, language: "zh-CN" | "en") {
-  if (language === "en") return `${value.toUpperCase()} CONFIDENCE`;
-  return `${({ high: "高", medium: "中", low: "低" }[value.toLowerCase()] ?? value)}置信度`;
 }
 
 

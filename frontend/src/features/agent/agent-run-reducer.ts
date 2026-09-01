@@ -12,11 +12,9 @@ import type {
 } from "../../types";
 
 export type AgentRunReducerLabels = {
-  evidenceMeta: string;
   failed: string;
   cancelled: string;
   unfinished: string;
-  formatConfidence: (confidence: "low" | "medium" | "high") => string;
   timelineContext?: { label: string; detail?: string } | null;
 };
 
@@ -71,7 +69,6 @@ export function reduceAgentRunMessages(
     }), {
       role: "agent",
       text: event.message,
-      meta: labels.evidenceMeta,
       runId: event.run_id,
       timeline: appendTextNode(undefined, event.message, labels),
       streaming: true,
@@ -116,9 +113,6 @@ export function reduceAgentRunMessages(
       validationIssues: structured.validation_issues ?? [],
       missingEvidence: structured.missing_evidence ?? [],
       timeline: ensureTextNodeAnswer(message.timeline, answer, labels),
-      meta: effectiveConfidence
-        ? `${labels.evidenceMeta} · ${labels.formatConfidence(effectiveConfidence)}`
-        : labels.evidenceMeta,
       streaming: false,
     }), {
       role: "agent",
@@ -131,9 +125,6 @@ export function reduceAgentRunMessages(
       validationIssues: structured.validation_issues ?? [],
       missingEvidence: structured.missing_evidence ?? [],
       timeline: ensureTextNodeAnswer(undefined, answer, labels),
-      meta: effectiveConfidence
-        ? `${labels.evidenceMeta} · ${labels.formatConfidence(effectiveConfidence)}`
-        : labels.evidenceMeta,
       runId: event.run_id,
       streaming: false,
     });
