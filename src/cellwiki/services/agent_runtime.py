@@ -727,7 +727,11 @@ def _signals_from_stream_item(
                                         type=AgentEventType.TOOL_STARTED,
                                         message=display,
                                         data=assembled_data,
-                                        model_call_id=str(getattr(node_message, "id", "") or "") or None,
+                                        # No model_call_id here: the assembled
+                                        # message id (resp_*) differs from the
+                                        # streamed chunk id (lc_run_*), and
+                                        # registering it would inflate model
+                                        # spans and the per-round call count.
                                     )
                                 )
                 continue
@@ -828,6 +832,9 @@ class AgentRuntimeManager:
             created_at=datetime.now(UTC),
             snapshot_commit=snapshot,
             attachment_ids=list(dict.fromkeys(attachment_ids or [])),
+            # Diagnostics read run.model_name; without this write the field stays
+            # empty even though model spans carry the name.
+            model_name=settings.openai_model or "",
         )
         self.store.create_run(run)
         with self._thread_lock:
@@ -1180,6 +1187,11 @@ class AgentRuntimeManager:
         call_usage: dict[str, list[int]] = {}
         call_started: dict[str, float] = {}
         call_seen_last: dict[str, float] = {}
+        # First visible-content delta per model call -> TTFT for that round.
+        call_first_token: dict[str, float] = {}
+        # Open tool calls keyed by tool_call_id -> (name, started_monotonic).
+        tool_open: dict[str, tuple[str, float]] = {}
+        counted_tool_starts: set[str] = set()
         input_tokens = 0
         output_tokens = 0
         cached_input_tokens = 0
@@ -1209,9 +1221,19 @@ class AgentRuntimeManager:
                     output_tokens += signal.output_tokens
                     cached_input_tokens += signal.cached_input_tokens
                 if signal.type == AgentEventType.TOOL_STARTED:
-                    tool_calls_started += 1
+                    # Streaming and non-streaming paths can both surface the same
+                    # call id (messages chunk + assembled updates AIMessage); the
+                    # durable event dedup hides it, so count and open spans once.
+                    start_id = str((signal.data or {}).get("tool_call_id") or "")
+                    if not start_id or start_id not in counted_tool_starts:
+                        counted_tool_starts.add(start_id)
+                        tool_calls_started += 1
+                        self._open_tool_span(tool_open, signal)
                 if signal.type == AgentEventType.TOOL_COMPLETED:
                     tool_calls_completed += 1
+                    self._close_tool_span(run_id, tool_open, signal, "completed")
+                if signal.type == AgentEventType.TOOL_FAILED:
+                    self._close_tool_span(run_id, tool_open, signal, "failed")
                 if signal.model_call_id:
                     last_model_call_id = signal.model_call_id
                 if signal.type == AgentEventType.FINAL_RESPONSE and signal.message.strip() and final_answer is None:
@@ -1237,6 +1259,8 @@ class AgentRuntimeManager:
                     break
                 if signal.type == AgentEventType.MESSAGE_DELTA:
                     if signal.message:
+                        if signal.model_call_id:
+                            call_first_token.setdefault(signal.model_call_id, time.monotonic())
                         assistant_text_parts.append(signal.message)
                         self.store.append_event(
                             run_id,
@@ -1255,6 +1279,8 @@ class AgentRuntimeManager:
                     continue
                 if signal.type == AgentEventType.REASONING_DELTA:
                     if signal.message:
+                        if signal.model_call_id:
+                            call_first_token.setdefault(signal.model_call_id, time.monotonic())
                         self.store.append_event(
                             run_id,
                             signal.type,
@@ -1305,7 +1331,12 @@ class AgentRuntimeManager:
         input_tokens += sum(value[0] for value in call_usage.values())
         output_tokens += sum(value[1] for value in call_usage.values())
         cached_input_tokens += sum(value[2] for value in call_usage.values())
-        self._record_model_spans(run_id, call_usage, call_started, call_seen_last)
+        self._record_model_spans(
+            run_id, call_usage, call_started, call_seen_last, call_first_token
+        )
+        # Any tool call that never reported completion (cancelled/failed run)
+        # still gets a span so the timeline totals reflect the time it consumed.
+        self._flush_open_tool_spans(run_id, tool_open)
         self.store.update_usage(
             run_id,
             RunUsage(
@@ -1331,12 +1362,66 @@ class AgentRuntimeManager:
             question_pending=question_pending,
         )
 
+    def _open_tool_span(
+        self, tool_open: dict[str, tuple[str, float]], signal: RuntimeSignal
+    ) -> None:
+        """Remember when a tool call started, keyed by tool_call_id (idempotent)."""
+        data = signal.data or {}
+        call_id = str(data.get("tool_call_id") or "")
+        if not call_id:
+            return
+        tool_name = str(data.get("tool_name") or "tool")
+        tool_open.setdefault(call_id, (tool_name, time.monotonic()))
+
+    def _close_tool_span(
+        self,
+        run_id: str,
+        tool_open: dict[str, tuple[str, float]],
+        signal: RuntimeSignal,
+        status: str,
+    ) -> None:
+        """Emit one redacted timing span for a finished tool call."""
+        call_id = str((signal.data or {}).get("tool_call_id") or "")
+        opened = tool_open.pop(call_id, None) if call_id else None
+        if opened is None:
+            return
+        tool_name, started = opened
+        self._write_tool_span(run_id, tool_name, started, status)
+
+    def _flush_open_tool_spans(
+        self, run_id: str, tool_open: dict[str, tuple[str, float]]
+    ) -> None:
+        """Record spans for tool calls that never completed (cancel/failure)."""
+        for tool_name, started in tool_open.values():
+            self._write_tool_span(run_id, tool_name, started, "cancelled")
+        tool_open.clear()
+
+    def _write_tool_span(
+        self, run_id: str, tool_name: str, started: float, status: str
+    ) -> None:
+        finished_at = datetime.now(UTC)
+        duration_ms = max(0.0, (time.monotonic() - started) * 1000.0)
+        self.store.upsert_span(
+            AgentSpan(
+                span_id=f"span_{uuid.uuid4().hex}",
+                run_id=run_id,
+                kind="tool",
+                name=tool_name,
+                status=status,
+                started_at=finished_at - timedelta(seconds=duration_ms / 1000.0),
+                finished_at=finished_at,
+                duration_ms=duration_ms,
+                data={"tool": True},
+            )
+        )
+
     def _record_model_spans(
         self,
         run_id: str,
         call_usage: dict[str, list[int]],
         call_started: dict[str, float],
         call_seen_last: dict[str, float],
+        call_first_token: dict[str, float],
     ) -> None:
         """Write one redacted span per model call so diagnostics has per-round rows."""
         if not call_usage:
@@ -1347,6 +1432,8 @@ class AgentRuntimeManager:
             started = call_started.get(call_id, 0.0)
             last = call_seen_last.get(call_id, started)
             duration_ms = max(0.0, (last - started) * 1000.0)
+            first = call_first_token.get(call_id)
+            ttft_ms = max(0.0, (first - started) * 1000.0) if first else None
             started_at = (
                 finished_at - timedelta(seconds=duration_ms / 1000.0)
                 if duration_ms > 0
@@ -1362,7 +1449,7 @@ class AgentRuntimeManager:
                     started_at=started_at,
                     finished_at=finished_at,
                     duration_ms=duration_ms,
-                    ttft_ms=None,
+                    ttft_ms=ttft_ms,
                     input_tokens=tokens[0],
                     output_tokens=tokens[1],
                     cached_input_tokens=tokens[2],

@@ -1372,7 +1372,6 @@ export function AppShell() {
                   message={message}
                   agentLabel="CewiPilot"
                   userLabel={t("agent.you")}
-                  diagnosticsLabel={t("chat.runDetails")}
                   reasoningTitle={t("chat.reasoning")}
                   reasoningLiveLabel={t("chat.reasoningLive")}
                   onQuestionAnswered={(runId) => { void restoreAgentRun(runId); }}

@@ -33,9 +33,8 @@ afterEach(cleanup);
 const labels = {
   agentLabel: "CewiPilot",
   userLabel: "You",
-  reasoningTitle: "思考过程",
+  reasoningTitle: "think",
   reasoningLiveLabel: "思考中…",
-  diagnosticsLabel: "Run details",
 };
 
 function renderBubble(message: ChatMessage) {

@@ -1,96 +1,186 @@
-import { Activity, ChevronDown } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getJson } from "../../lib/product-api";
-import type { AgentDiagnostics } from "../../types";
+import { useI18n, type MessageKey } from "../../i18n";
+import type { AgentDiagnostics, AgentSpan } from "../../types";
 
 type AgentRunDiagnosticsProps = {
   runId: string;
-  label: string;
 };
 
-/** Lazily show redacted operational telemetry for one durable run. */
-export function AgentRunDiagnostics({ runId, label }: AgentRunDiagnosticsProps) {
+/**
+ * One compact stats line per settled run (model · rounds · steps | LLM and
+ * tool time | first-token average · throughput | cache hit | token totals).
+ * The line wraps freely with the sidebar width; clicking it expands the
+ * per-round detail table.
+ */
+export function AgentRunDiagnostics({ runId }: AgentRunDiagnosticsProps) {
+  const { t } = useI18n();
   const [diagnostics, setDiagnostics] = useState<AgentDiagnostics | null>(null);
-  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void getJson<AgentDiagnostics>(
+      `/api/agent/runs/${encodeURIComponent(runId)}/diagnostics`,
+    )
+      .then((value) => {
+        if (active) setDiagnostics(value);
+      })
+      .catch(() => {
+        // A run without diagnostics simply shows no stats line.
+      });
+    return () => {
+      active = false;
+    };
+  }, [runId]);
+
   const usage = diagnostics?.usage;
-  const spans = diagnostics?.spans ?? [];
-  const hasTtft = spans.some((span) => span.ttft_ms != null);
-  const thread = diagnostics?.thread_summary;
+  if (!diagnostics || !usage) return null;
+
+  const modelSpans = diagnostics.spans.filter((span) => span.kind === "model");
+  const toolSpans = diagnostics.spans.filter((span) => span.kind === "tool");
+  const segments = summarySegments(diagnostics, modelSpans, toolSpans, usage, t);
+  if (segments.length === 0) return null;
+
+  const hasTtft = modelSpans.some((span) => span.ttft_ms != null);
+  const thread = diagnostics.thread_summary;
 
   return (
-    <details
-      className="agent-run-diagnostics"
-      onToggle={(event) => {
-        if (!event.currentTarget.open || diagnostics || failed) return;
-        void getJson<AgentDiagnostics>(
-          `/api/agent/runs/${encodeURIComponent(runId)}/diagnostics`,
-        )
-          .then(setDiagnostics)
-          .catch(() => setFailed(true));
-      }}
-    >
-      <summary><ChevronDown size={12} /><Activity size={12} />{label}</summary>
-      {failed && <p>Diagnostics unavailable.</p>}
-      {diagnostics && usage && (
-        <div>
-          <dl>
-            <dt>Route</dt><dd>{diagnostics.task_kind} · {diagnostics.model_role}</dd>
-            <dt>Model</dt><dd>{diagnostics.model || "No model call"}</dd>
-            <dt>Latency</dt><dd>{Math.round(usage.elapsed_seconds * 1000)} ms</dd>
-            {usage.ttft_ms != null && (
-              <>
-                <dt>TTFT</dt><dd>{Math.round(usage.ttft_ms)} ms</dd>
-              </>
-            )}
-            <dt>Tokens</dt>
-            <dd>
-              {usage.input_tokens} in · {usage.output_tokens} out
-              {usage.cached_input_tokens
-                ? ` · ${usage.cached_input_tokens} cached (${hitRate(usage.cached_input_tokens, usage.input_tokens)})`
-                : ""}
-            </dd>
-            <dt>Tools</dt>
-            <dd>
-              {usage.tool_calls_started ?? usage.tool_calls} started ·{" "}
-              {usage.tool_calls_completed ?? usage.tool_calls} completed ·{" "}
-              {usage.tool_calls_failed ?? 0} failed ·{" "}
-              {usage.tool_calls_cancelled ?? 0} cancelled
-            </dd>
-          </dl>
-          {thread && (
-            <p className="agent-run-thread-summary">
-              {thread.run_count} runs · {thread.total_input_tokens} in ·{" "}
-              {thread.total_output_tokens} out · {thread.total_cached_input_tokens} cached ·{" "}
-              avg hit {Math.round(thread.avg_cache_hit_rate * 100)}%
-            </p>
-          )}
-          {spans.length > 0 && (
-            <table className="agent-run-spans">
-              <thead>
-                <tr>
-                  <th>Round</th><th>In</th><th>Out</th><th>Cached</th><th>Hit</th><th>Duration</th>
-                  {hasTtft && <th>TTFT</th>}
+    <details className="agent-run-diagnostics">
+      <summary className="agent-run-summary">
+        {segments.map((segment, index) => (
+          <span className="agent-run-segment" key={`${segment}-${index}`}>
+            {index > 0 && <span className="agent-run-sep">|</span>}
+            {segment}
+          </span>
+        ))}
+      </summary>
+      <div className="agent-run-detail">
+        <dl>
+          <dt>Model</dt><dd>{diagnostics.model || "No model call"}</dd>
+          <dt>Latency</dt><dd>{Math.round(usage.elapsed_seconds * 1000)} ms</dd>
+          <dt>Tokens</dt>
+          <dd>
+            {usage.input_tokens} in · {usage.output_tokens} out
+            {usage.cached_input_tokens
+              ? ` · ${usage.cached_input_tokens} cached (${hitRate(usage.cached_input_tokens, usage.input_tokens)})`
+              : ""}
+          </dd>
+          <dt>Tools</dt>
+          <dd>
+            {usage.tool_calls_started ?? usage.tool_calls} started ·{" "}
+            {usage.tool_calls_completed ?? usage.tool_calls} completed ·{" "}
+            {usage.tool_calls_failed ?? 0} failed ·{" "}
+            {usage.tool_calls_cancelled ?? 0} cancelled
+          </dd>
+        </dl>
+        {thread && (
+          <p className="agent-run-thread-summary">
+            {thread.run_count} runs · {thread.total_input_tokens} in ·{" "}
+            {thread.total_output_tokens} out · {thread.total_cached_input_tokens} cached ·{" "}
+            avg hit {Math.round(thread.avg_cache_hit_rate * 100)}%
+          </p>
+        )}
+        {modelSpans.length > 0 && (
+          <table className="agent-run-spans">
+            <thead>
+              <tr>
+                <th>Round</th><th>In</th><th>Out</th><th>Cached</th><th>Hit</th><th>Duration</th>
+                {hasTtft && <th>TTFT</th>}
+              </tr>
+            </thead>
+            <tbody>
+              {modelSpans.map((span, index) => (
+                <tr key={span.span_id}>
+                  <td>{index + 1}</td>
+                  <td>{span.input_tokens}</td>
+                  <td>{span.output_tokens}</td>
+                  <td>{span.cached_input_tokens ?? 0}</td>
+                  <td>{hitRate(span.cached_input_tokens ?? 0, span.input_tokens)}</td>
+                  <td>{Math.round(span.duration_ms ?? 0)} ms</td>
+                  {hasTtft && <td>{span.ttft_ms == null ? "—" : `${Math.round(span.ttft_ms)} ms`}</td>}
                 </tr>
-              </thead>
-              <tbody>
-                {spans.map((span, index) => (
-                  <tr key={span.span_id}>
-                    <td>{index + 1}</td>
-                    <td>{span.input_tokens}</td>
-                    <td>{span.output_tokens}</td>
-                    <td>{span.cached_input_tokens ?? 0}</td>
-                    <td>{hitRate(span.cached_input_tokens ?? 0, span.input_tokens)}</td>
-                    <td>{Math.round(span.duration_ms ?? 0)} ms</td>
-                    {hasTtft && <td>{span.ttft_ms == null ? "—" : `${Math.round(span.ttft_ms)} ms`}</td>}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
     </details>
   );
+}
+
+type Translate = (key: MessageKey) => string;
+
+function summarySegments(
+  diagnostics: AgentDiagnostics,
+  modelSpans: AgentSpan[],
+  toolSpans: AgentSpan[],
+  usage: AgentDiagnostics["usage"],
+  t: Translate,
+): string[] {
+  const segments: string[] = [];
+  // Conversation semantics: one run is one round; "steps" counts how often
+  // the model was called inside this run (usage.model_calls mixes LangGraph
+  // supersteps, so model spans are the reliable count).
+  const rounds = diagnostics.thread_summary?.run_count ?? 0;
+  const steps = modelSpans.length;
+  const head = [
+    diagnostics.model,
+    rounds > 0 ? fill(t("chat.diagRounds"), rounds) : "",
+    steps > 0 ? fill(t("chat.diagSteps"), steps) : "",
+  ].filter(Boolean).join(" · ");
+  if (head) segments.push(head);
+
+  const llmMs = sumDuration(modelSpans);
+  const toolMs = sumDuration(toolSpans);
+  const timing = [
+    llmMs > 0 ? fill(t("chat.diagLlm"), formatSeconds(llmMs)) : "",
+    toolMs > 0 ? fill(t("chat.diagToolTime"), formatSeconds(toolMs)) : "",
+  ].filter(Boolean).join(" · ");
+  if (timing) segments.push(timing);
+
+  const ttfts = modelSpans
+    .map((span) => span.ttft_ms)
+    .filter((value): value is number => value != null);
+  const throughput = llmMs > 0 && usage.output_tokens > 0
+    ? `${Math.round(usage.output_tokens / (llmMs / 1000))} tok/s`
+    : "";
+  const speed = [
+    ttfts.length > 0 ? fill(t("chat.diagTtft"), formatSeconds(ttfts.reduce((a, b) => a + b, 0) / ttfts.length)) : "",
+    throughput,
+  ].filter(Boolean).join(" · ");
+  if (speed) segments.push(speed);
+
+  if (usage.cached_input_tokens && usage.input_tokens > 0) {
+    segments.push(fill(t("chat.diagCache"), hitRate(usage.cached_input_tokens, usage.input_tokens).replace("%", "")));
+  }
+  const totals = [
+    usage.input_tokens > 0 ? fill(t("chat.diagInput"), formatTokens(usage.input_tokens)) : "",
+    usage.output_tokens > 0 ? fill(t("chat.diagOutput"), formatTokens(usage.output_tokens)) : "",
+  ].filter(Boolean).join(" · ");
+  if (totals) segments.push(totals);
+  return segments;
+}
+
+function fill(template: string, value: string | number): string {
+  return template.replace("{n}", String(value)).replace("{t}", String(value)).replace("{p}", String(value));
+}
+
+function sumDuration(spans: AgentSpan[]): number {
+  return spans.reduce((total, span) => total + (span.duration_ms ?? 0), 0);
+}
+
+/** 50s / 45.6s / 2.5s — one decimal, trailing .0 dropped. */
+function formatSeconds(ms: number): string {
+  const rounded = Math.round((ms / 1000) * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}s`;
+}
+
+/** 108K / 2.2K / 340 — K units above 1000, one decimal below 100K. */
+function formatTokens(value: number): string {
+  if (value < 1000) return String(value);
+  const k = value / 1000;
+  const rounded = k >= 100 ? Math.round(k) : Math.round(k * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}K`;
 }
 
 function hitRate(part: number, whole: number): string {

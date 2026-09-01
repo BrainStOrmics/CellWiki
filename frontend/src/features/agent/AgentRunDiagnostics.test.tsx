@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunDiagnostics } from "./AgentRunDiagnostics";
+import { LanguageProvider } from "../../i18n";
 import type { AgentDiagnostics } from "../../types";
 
 afterEach(cleanup);
@@ -42,6 +43,11 @@ const base: AgentDiagnostics = {
       started_at: "2026-08-27T00:00:01Z", duration_ms: 6500, ttft_ms: null,
       input_tokens: 500, output_tokens: 140, cached_input_tokens: 300, data: {},
     },
+    {
+      span_id: "t1", run_id: "run_1", kind: "tool", name: "grep", status: "completed",
+      started_at: "2026-08-27T00:00:00Z", duration_ms: 1200, ttft_ms: null,
+      input_tokens: 0, output_tokens: 0, data: {},
+    },
   ],
   thread_summary: {
     run_count: 3,
@@ -52,56 +58,74 @@ const base: AgentDiagnostics = {
   },
 };
 
-function openDetails(): void {
-  fireEvent.click(screen.getByText("Run details"));
+function renderDiagnostics() {
+  return render(
+    <LanguageProvider>
+      <AgentRunDiagnostics runId="run_1" />
+    </LanguageProvider>,
+  );
 }
 
 describe("AgentRunDiagnostics", () => {
-  it("renders totals, per-round table, thread summary and a TTFT column", async () => {
+  it("renders the compact stats summary without expanding", async () => {
     vi.mocked(getJson).mockResolvedValue(base);
+    renderDiagnostics();
 
-    render(<AgentRunDiagnostics runId="run_1" label="Run details" />);
-    openDetails();
+    // model · rounds(run count in thread) · steps(model calls in this run) | LLM time · tool time | ttft · tok/s | cache | tokens
+    expect(await screen.findByText("gpt-x · 3轮 · 2步")).toBeInTheDocument();
+    expect(screen.getByText("LLM 12.5s · 工具调用 1.2s")).toBeInTheDocument();
+    expect(screen.getByText("首token平均 0.8s · 27 tok/s")).toBeInTheDocument();
+    expect(screen.getByText("缓存命中 67%")).toBeInTheDocument();
+    expect(screen.getByText("输入 1.2K tok · 输出 340 tok")).toBeInTheDocument();
+  });
 
-    expect(await screen.findByText("1200 in · 340 out · 800 cached (67%)")).toBeInTheDocument();
-    expect(
-      screen.getByText("3 runs · 3600 in · 800 out · 1900 cached · avg hit 53%"),
-    ).toBeInTheDocument();
+  it("expands to the per-round detail table with a TTFT column", async () => {
+    vi.mocked(getJson).mockResolvedValue(base);
+    const { container } = renderDiagnostics();
+    await screen.findByText("gpt-x · 3轮 · 2步");
+    const details = container.querySelector(".agent-run-diagnostics") as HTMLDetailsElement;
+    expect(details.open).toBe(false);
+
+    fireEvent.click(container.querySelector(".agent-run-summary") as HTMLElement);
+    expect((container.querySelector(".agent-run-diagnostics") as HTMLDetailsElement).open).toBe(true);
     expect(screen.getByRole("columnheader", { name: "TTFT" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Round" })).toBeInTheDocument();
     expect(screen.getByText("800 ms")).toBeInTheDocument();
+    expect(
+      screen.getByText("3 runs · 3600 in · 800 out · 1900 cached · avg hit 53%"),
+    ).toBeInTheDocument();
   });
 
-  it("hides the TTFT column entirely when no span captures it", async () => {
-    const payload: AgentDiagnostics = {
+  it("omits speed and tool segments when no span captures them", async () => {
+    // The single tool span is folded into a model span, so rounds become 3 and
+    // the tool-time segment disappears.
+    vi.mocked(getJson).mockResolvedValue({
       ...base,
-      spans: base.spans.map((span) => ({ ...span, ttft_ms: null })),
-      usage: { ...base.usage, ttft_ms: null },
-    };
-    vi.mocked(getJson).mockResolvedValue(payload);
+      spans: base.spans.map((span) => ({ ...span, kind: span.kind === "tool" ? "model" : span.kind, ttft_ms: null })),
+    });
+    renderDiagnostics();
 
-    render(<AgentRunDiagnostics runId="run_1" label="Run details" />);
-    openDetails();
-
-    expect(await screen.findByText("1200 in · 340 out · 800 cached (67%)")).toBeInTheDocument();
-    expect(screen.queryByRole("columnheader", { name: "TTFT" })).not.toBeInTheDocument();
-    expect(screen.queryByText("TTFT")).not.toBeInTheDocument();
+    expect(await screen.findByText("gpt-x · 3轮 · 3步")).toBeInTheDocument();
+    expect(screen.queryByText(/工具调用/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/首token/)).not.toBeInTheDocument();
+    // Throughput still derives from model span durations (12.5s + 1.2s).
+    expect(screen.getByText("25 tok/s")).toBeInTheDocument();
   });
 
-  it("renders totals without cached tokens and without thread stats when absent", async () => {
-    const payload: AgentDiagnostics = {
+  it("renders nothing when diagnostics fail to load", async () => {
+    vi.mocked(getJson).mockRejectedValue(new Error("offline"));
+    const { container } = renderDiagnostics();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(container.querySelector(".agent-run-diagnostics")).toBeNull();
+  });
+
+  it("formats large token totals in K units", async () => {
+    vi.mocked(getJson).mockResolvedValue({
       ...base,
-      usage: { ...base.usage, cached_input_tokens: 0 },
-      spans: [],
-      thread_summary: undefined,
-    };
-    vi.mocked(getJson).mockResolvedValue(payload);
-
-    render(<AgentRunDiagnostics runId="run_1" label="Run details" />);
-    openDetails();
-
-    expect(await screen.findByText("1200 in · 340 out")).toBeInTheDocument();
-    expect(screen.queryByText("cached")).not.toBeInTheDocument();
-    expect(screen.queryByRole("columnheader", { name: "Round" })).not.toBeInTheDocument();
+      usage: { ...base.usage, input_tokens: 108_400, output_tokens: 2_200, cached_input_tokens: 82_000 },
+    });
+    renderDiagnostics();
+    expect(await screen.findByText("输入 108K tok · 输出 2.2K tok")).toBeInTheDocument();
+    expect(screen.getByText("缓存命中 76%")).toBeInTheDocument();
   });
 });

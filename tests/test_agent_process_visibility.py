@@ -14,6 +14,7 @@ from typing import Any, Iterable
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
+from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.runs import AgentEventType, AgentRunStatus
 from cellwiki.services.agent_runtime import (
@@ -186,7 +187,8 @@ def test_model_spans_and_usage_are_recorded(tmp_path: Path):
         assert span.input_tokens == 100
         assert span.output_tokens == 20
         assert span.cached_input_tokens == 60
-        assert span.ttft_ms is None
+        # TTFT is now collected: the first content delta of a call is timed.
+        assert span.ttft_ms is not None and span.ttft_ms >= 0
 
         summary = manager.store.thread_usage_summary("t1")
         assert summary["run_count"] == 1
@@ -408,5 +410,59 @@ def test_timeline_card_projections_persist_through_events(tmp_path: Path):
         by_type = {event.type: event for event in events}
         assert by_type[AgentEventType.TOOL_STARTED].data["args_display"]["title"] == "a.md"
         assert by_type[AgentEventType.TOOL_COMPLETED].data["result_preview"]["head"] == "# Cell A"
+    finally:
+        manager.close()
+
+
+def test_tool_spans_record_call_timing(tmp_path: Path):
+    """Each completed tool call writes one kind="tool" span with duration."""
+    signals = [
+        RuntimeSignal(
+            type=AgentEventType.TOOL_STARTED,
+            message="grep started.",
+            data={"tool_name": "grep", "tool_call_id": "call_1"},
+            model_call_id="m1",
+        ),
+        RuntimeSignal(
+            type=AgentEventType.TOOL_COMPLETED,
+            message="grep → 2 matches",
+            data={"tool_name": "grep", "tool_call_id": "call_1"},
+        ),
+        RuntimeSignal(
+            type=AgentEventType.TOOL_STARTED,
+            message="glob started.",
+            data={"tool_name": "glob", "tool_call_id": "call_2"},
+            model_call_id="m1",
+        ),
+        RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="完成", model_call_id="m1"),
+    ]
+    manager = AgentRuntimeManager(tmp_path, adapter=_ScriptedAdapter([signals]))
+    try:
+        started = manager.start(thread_id="t_span", message="hi", context=_context("t_span"))
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        tool_spans = [s for s in manager.store.list_spans(started.run_id) if s.kind == "tool"]
+        by_name = {span.name: span for span in tool_spans}
+        assert set(by_name) == {"grep", "glob"}
+        assert by_name["grep"].status == "completed"
+        assert by_name["grep"].duration_ms is not None
+        # The never-completed call is flushed as cancelled so totals stay honest.
+        assert by_name["glob"].status == "cancelled"
+        assert by_name["glob"].duration_ms is not None
+        run = manager.store.get_run(started.run_id)
+        assert run.usage.tool_calls_started == 2
+        assert run.usage.tool_calls_completed == 1
+    finally:
+        manager.close()
+
+
+def test_run_records_model_name(tmp_path: Path):
+    """Diagnostics reads run.model_name; create must persist the configured model."""
+    signals = [RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="完成", model_call_id="m1")]
+    manager = AgentRuntimeManager(tmp_path, adapter=_ScriptedAdapter([signals]))
+    try:
+        started = manager.start(thread_id="t_model", message="hi", context=_context("t_model"))
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        run = manager.store.get_run(started.run_id)
+        assert run.model_name == settings.openai_model
     finally:
         manager.close()

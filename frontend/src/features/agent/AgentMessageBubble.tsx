@@ -34,7 +34,6 @@ type AgentMessageBubbleProps = {
   userLabel: string;
   reasoningTitle: string;
   reasoningLiveLabel: string;
-  diagnosticsLabel: string;
   onQuestionAnswered?: (runId: string) => void;
 };
 
@@ -45,7 +44,6 @@ export function AgentMessageBubble({
   userLabel,
   reasoningTitle,
   reasoningLiveLabel,
-  diagnosticsLabel,
   onQuestionAnswered,
 }: AgentMessageBubbleProps) {
   const isAgent = message.role === "agent";
@@ -93,7 +91,7 @@ export function AgentMessageBubble({
       {isAgent && message.runId && (
         <>
           {!message.streaming && (
-            <AgentRunDiagnostics runId={message.runId} label={diagnosticsLabel} />
+            <AgentRunDiagnostics runId={message.runId} />
           )}
           {isAwaitingUserAnswer(message.runStatus) && (
             <QuestionCard runId={message.runId} onAnswered={onQuestionAnswered} />

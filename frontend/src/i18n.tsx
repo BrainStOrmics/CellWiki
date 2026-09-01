@@ -149,9 +149,16 @@ const zh = {
   "chat.contextInjection": "上下文注入",
   "chat.processCompleted": "已完成",
   "chat.processEmpty": "暂无可展示的过程",
-  "chat.runDetails": "运行详情",
   "chat.copy": "复制",
   "chat.copied": "已复制",
+  "chat.diagRounds": "{n}轮",
+  "chat.diagSteps": "{n}步",
+  "chat.diagLlm": "LLM {t}",
+  "chat.diagToolTime": "工具调用 {t}",
+  "chat.diagTtft": "首token平均 {t}",
+  "chat.diagCache": "缓存命中 {p}%",
+  "chat.diagInput": "输入 {t} tok",
+  "chat.diagOutput": "输出 {t} tok",
   "chat.toolRestLines": "其余 {count} 行",
   "chat.toolResultCount": "{count} 条结果",
   "chat.toolLoading": "加载中…",
@@ -352,7 +359,7 @@ const zh = {
   "runtime.offline": "离线",
 } as const;
 
-type MessageKey = keyof typeof zh;
+export type MessageKey = keyof typeof zh;
 
 const en: Record<MessageKey, string> = {
   "app.initialMessage": "CellWiki is ready. Ask about this page or inspect the evidence behind a claim.",
@@ -500,9 +507,16 @@ const en: Record<MessageKey, string> = {
   "chat.contextInjection": "CONTEXT",
   "chat.processCompleted": "COMPLETED",
   "chat.processEmpty": "No observable process yet",
-  "chat.runDetails": "Run details",
   "chat.copy": "Copy",
   "chat.copied": "Copied",
+  "chat.diagRounds": "{n} rounds",
+  "chat.diagSteps": "{n} steps",
+  "chat.diagLlm": "LLM {t}",
+  "chat.diagToolTime": "tools {t}",
+  "chat.diagTtft": "first token {t} avg",
+  "chat.diagCache": "cache hit {p}%",
+  "chat.diagInput": "{t} tok in",
+  "chat.diagOutput": "{t} tok out",
   "chat.toolRestLines": "{count} more lines",
   "chat.toolResultCount": "{count} results",
   "chat.toolLoading": "Loading…",
