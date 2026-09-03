@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, ChevronRight, File, FileCode, FileText, Folder, FolderOpen } from "lucide-react";
-import { getJson } from "../../lib/product-api";
+import { ChevronDown, ChevronRight, File, FileCode, FileText, Folder, FolderOpen, ScanSearch } from "lucide-react";
+import { getJson, postJson } from "../../lib/product-api";
 
 export type WorkspaceTreeEntry = {
   name: string;
@@ -86,6 +86,21 @@ export function filterTree(nodes: WorkspaceTreeNode[], needle: string): Workspac
   return kept;
 }
 
+type RawScanResult = {
+  added: number;
+  updated: number;
+  skipped: number;
+  needs_extraction: number;
+  sources: string[];
+  issues: { source_id: string; reason: string }[];
+};
+
+export function rawScanSummary(result: RawScanResult): string {
+  const parts = [`新增 ${result.added}`, `更新 ${result.updated}`, `跳过 ${result.skipped}`];
+  if (result.needs_extraction > 0) parts.push(`待提取 ${result.needs_extraction}`);
+  return parts.join(" · ");
+}
+
 type Props = {
   filter?: string;
   selectedPath?: string | null;
@@ -97,6 +112,23 @@ export function WorkspaceFileBrowser({ filter = "", selectedPath = null, onOpenF
   const [entries, setEntries] = useState<WorkspaceTreeEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ wiki: true });
+  const [scanning, setScanning] = useState(false);
+  const [scanNotice, setScanNotice] = useState<string | null>(null);
+
+  async function scanRaw() {
+    setScanning(true);
+    setScanNotice(null);
+    try {
+      const result = await postJson<RawScanResult>("/api/workspace/raw/scan", {});
+      setScanNotice(rawScanSummary(result));
+      // 刷新树（预置登记不改 raw/ 内容，但结果条需保持与最新状态一致）
+      getJson<WorkspaceTreeEntry[]>("/api/workspace/tree").then(setEntries).catch(() => undefined);
+    } catch (cause) {
+      setScanNotice(`登记失败：${String(cause)}`);
+    } finally {
+      setScanning(false);
+    }
+  }
 
   useEffect(() => {
     getJson<WorkspaceTreeEntry[]>("/api/workspace/tree")
@@ -158,7 +190,36 @@ export function WorkspaceFileBrowser({ filter = "", selectedPath = null, onOpenF
 
   if (error) return <div className="tree-empty">工作区文件加载失败: {error}</div>;
   if (!entries) return <div className="tree-empty">加载中…</div>;
-  if (tree.length === 0) return <div className="tree-empty">{filterActive ? "无匹配文件" : "工作区为空"}</div>;
 
-  return <div className="workspace-tree">{tree.map((node) => renderNode(node, 0))}</div>;
+  const scanRow = (
+    <div className="workspace-scan-row">
+      <button
+        type="button"
+        className="workspace-scan-raw"
+        onClick={() => void scanRaw()}
+        disabled={scanning}
+        title="登记用户直接放进 raw/ 的预置源（幂等，不产生 git 变更）"
+      >
+        <ScanSearch size={12} /> {scanning ? "登记中…" : "扫描并登记 raw/"}
+      </button>
+    </div>
+  );
+
+  if (tree.length === 0) {
+    return (
+      <>
+        {scanRow}
+        {scanNotice && <div className="workspace-notice">{scanNotice}</div>}
+        <div className="tree-empty">{filterActive ? "无匹配文件" : "工作区为空"}</div>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {scanRow}
+      {scanNotice && <div className="workspace-notice">{scanNotice}</div>}
+      <div className="workspace-tree">{tree.map((node) => renderNode(node, 0))}</div>
+    </>
+  );
 }

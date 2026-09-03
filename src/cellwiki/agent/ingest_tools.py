@@ -124,13 +124,46 @@ def _extract_source_draft(
         "schema_used": schema_used,
     }
     if not record_path.is_file():
-        return {**base, "status": "error", "uncertainties": [f"source record not found: {source_id}"]}
+        hint = f"source record not found: {source_id}"
+        # 目录在 raw/ 里但没登记 = 预置源还没走"扫描并登记"（产品侧入口）。
+        # 给出可执行提示而不是只报缺记录。
+        if (root / "raw" / source_id).is_dir():
+            hint += (
+                " — the raw/ folder exists but is not registered; ask the user to "
+                "run the raw/ scan (Register preplaced sources) in the workspace"
+                " browser, or promote an attachment instead"
+            )
+        return {**base, "status": "error", "uncertainties": [hint]}
     try:
         record = json.loads(record_path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as error:
         return {**base, "status": "error", "uncertainties": [f"invalid source record: {error}"]}
+    if record.get("status") == "needs_extraction":
+        return {
+            **base,
+            "status": "error",
+            "uncertainties": [
+                f"source {source_id} is a PDF without extracted text yet "
+                "(needs_extraction); ask the user to provide its .extracted.txt "
+                "sidecar in the same raw/ folder and rescan"
+            ],
+        }
     stored = Path(str(record.get("stored_path") or "")).resolve()
-    text = _read_source_text(stored) if stored else None
+    # 预置登记把提取文本名记在 metadata.extracted_file（附件通路沿用
+    # <stored>.extracted.txt 命名约定）。优先读登记的 sidecar，否则回退。
+    sidecar_name = str((record.get("metadata") or {}).get("extracted_file") or "")
+    text: str | None = None
+    if sidecar_name and stored.is_file():
+        sidecar = stored.parent / sidecar_name
+        if sidecar.is_file():
+            try:
+                data = sidecar.read_bytes()
+            except OSError:
+                data = b""
+            if data and b"\x00" not in data[:4096]:
+                text = data.decode("utf-8", errors="replace")[:MAX_SOURCE_TEXT_CHARS]
+    if text is None and stored.is_file():
+        text = _read_source_text(stored)
     if not text or not text.strip():
         return {**base, "status": "error", "uncertainties": ["no readable extracted text (scan-only PDF?)"]}
     try:

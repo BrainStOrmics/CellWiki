@@ -226,3 +226,153 @@ def test_ingest_sources_missing_record_reports_error_not_crash(tmp_path: Path):
     tools = {t.name: t for t in build_ingest_tools(root)}
     result = json.loads(tools["ingest_sources"].invoke({"source_ids": ["src_nonexistent"]}))
     assert result["sources"][0]["status"] == "error"
+    assert "source record not found" in result["sources"][0]["uncertainties"][0]
+
+
+# ---------------------------------------------------------------------------
+# 预置 raw/ 源扫描登记（方案 B）：产品侧登记，Agent 白名单不变
+# ---------------------------------------------------------------------------
+
+
+def test_scan_registers_preplaced_markdown_dir(tmp_path: Path, monkeypatch):
+    import cellwiki.agent.ingest_tools as ingest_tools
+    from cellwiki.services.promotion import scan_raw_sources
+
+    root = tmp_path
+    source_dir = root / "raw" / "Fu_2025_NatMethods"
+    source_dir.mkdir(parents=True)
+    (source_dir / "paper.md").write_text("# Paper\n\nCD8 T cells.", encoding="utf-8")
+
+    counts = scan_raw_sources(root)
+    assert counts["added"] == 1
+    assert counts["sources"] == ["Fu_2025_NatMethods"]
+    record = json.loads(
+        (root / "data" / "runtime" / "sources" / "Fu_2025_NatMethods.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert record["status"] == "registered"
+    assert record["metadata"]["registration"] == "preplaced_scan"
+    assert "promoted_from" not in record["metadata"]
+    assert record["stored_path"].endswith("paper.md")
+    # 登记不复制文件、不新增 raw/ 内容
+    assert sorted(p.name for p in source_dir.iterdir()) == ["paper.md"]
+
+    # 登记之后 ingest_sources 直接可用（不再 source record not found）。
+    monkeypatch.setattr(ingest_tools, "_run_extraction", lambda text, path: _fake_result())
+    tools = {t.name: t for t in build_ingest_tools(root)}
+    result = json.loads(
+        tools["ingest_sources"].invoke({"source_ids": ["Fu_2025_NatMethods"]})
+    )
+    src = result["sources"][0]
+    assert src["status"] == "ok"
+    assert src["drafts"][0]["path"] == "wiki/cell_types/cd8_t_cell.md"
+
+
+def test_scan_is_idempotent_and_no_git_changes(tmp_path: Path):
+    from cellwiki.services.promotion import scan_raw_sources
+
+    root = tmp_path
+    _git_init(root)
+    source_dir = root / "raw" / "paper_one"
+    source_dir.mkdir(parents=True)
+    (source_dir / "body.txt").write_text("text body", encoding="utf-8")
+    subprocess.run(["git", "-C", str(root), "add", "raw"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "baseline"], check=True, capture_output=True
+    )
+    head_before = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+
+    first = scan_raw_sources(root)
+    assert first["added"] == 1
+
+    second = scan_raw_sources(root)
+    assert second["added"] == 0
+    assert second["updated"] == 1
+    assert second["sources"] == ["paper_one"]
+    assert len(list((root / "data" / "runtime" / "sources").glob("*.json"))) == 1
+    # 登记不 commit、不 stage：HEAD 不动，index 干净（不进入 pending diff）。
+    assert subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip() == head_before
+    staged = subprocess.run(
+        ["git", "-C", str(root), "diff", "--cached", "--name-only"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip()
+    assert staged == "", staged
+
+
+def test_scan_registers_pdf_without_sidecar_as_needs_extraction(tmp_path: Path):
+    root = tmp_path
+    source_dir = root / "raw" / "locked_pdf"
+    source_dir.mkdir(parents=True)
+    (source_dir / "paper.pdf").write_bytes(b"%PDF-1.7 not a real pdf")
+
+    from cellwiki.services.promotion import scan_raw_sources
+
+    counts = scan_raw_sources(root)
+    assert counts["needs_extraction"] == 1
+    record = json.loads(
+        (root / "data" / "runtime" / "sources" / "locked_pdf.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert record["status"] == "needs_extraction"
+
+    # ingest 得到可执行提示而不是泛泛的 not found
+    tools = {t.name: t for t in build_ingest_tools(root)}
+    result = json.loads(tools["ingest_sources"].invoke({"source_ids": ["locked_pdf"]}))
+    src = result["sources"][0]
+    assert src["status"] == "error"
+    assert "needs_extraction" in src["uncertainties"][0]
+
+
+def test_scan_skips_existing_attachment_promoted_record(tmp_path: Path):
+    from cellwiki.services.promotion import scan_raw_sources
+
+    root = tmp_path
+    hash_id = "src_" + "c" * 20
+    raw = root / "raw" / hash_id
+    raw.mkdir(parents=True)
+    stored = raw / "paper.md"
+    stored.write_text("attachment body", encoding="utf-8")
+    record = {
+        "source_id": hash_id,
+        "source_type": "paper",
+        "original_name": "paper.md",
+        "stored_path": str(stored),
+        "status": "registered",
+        "metadata": {
+            "file_name": "paper.md",
+            "promoted_from": "att_1234__paper.md",
+        },
+    }
+    registry = root / "data" / "runtime" / "sources"
+    registry.mkdir(parents=True, exist_ok=True)
+    path = registry / f"{hash_id}.json"
+    path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+
+    counts = scan_raw_sources(root)
+    assert counts["skipped"] == 1
+    assert counts["added"] == 0
+    # 附件晋升记录原样保留（由 promote 通路管理）
+    after = json.loads(path.read_text(encoding="utf-8"))
+    assert after["metadata"]["promoted_from"] == "att_1234__paper.md"
+
+
+def test_ingest_missing_record_for_existing_dir_suggests_scan(tmp_path: Path):
+    root = tmp_path
+    (root / "raw" / "unregistered_paper").mkdir(parents=True)
+    (root / "raw" / "unregistered_paper" / "body.md").write_text("x", encoding="utf-8")
+    tools = {t.name: t for t in build_ingest_tools(root)}
+    result = json.loads(
+        tools["ingest_sources"].invoke({"source_ids": ["unregistered_paper"]})
+    )
+    src = result["sources"][0]
+    assert src["status"] == "error"
+    assert "not registered" in src["uncertainties"][0]
+    assert "scan" in src["uncertainties"][0]

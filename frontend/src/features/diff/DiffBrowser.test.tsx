@@ -224,3 +224,63 @@ describe("DiffBrowser rendering", () => {
     expect(screen.getByText("new")).toBeTruthy();
   });
 });
+
+describe("approval units", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("approvalUnitIndex parses suffixed ids and legacy rows", async () => {
+    const { approvalUnitIndex } = await import("./DiffBrowser");
+    expect(approvalUnitIndex("diff_run_x_1", "run_x")).toBe(1);
+    expect(approvalUnitIndex("diff_run_x_2", "run_x")).toBe(2);
+    // 旧库无后缀行 = 单元 1；异常 id 返回 null（不展示徽章）
+    expect(approvalUnitIndex("diff_run_x", "run_x")).toBe(1);
+    expect(approvalUnitIndex("diff_run_x_abc", "run_x")).toBeNull();
+    expect(approvalUnitIndex("diff_other_3", "run_x")).toBeNull();
+  });
+
+  it("lists only pending units up front; resolved units hide in history with badges", async () => {
+    const getJsonMock = vi.mocked(getJson);
+    const record = (diff_id: string, status: string, extra = {}) => ({
+      diff_id,
+      run_id: "run_u",
+      thread_id: "thread_u",
+      commits: ["c1"],
+      files: ["wiki/u.md"],
+      insertions: 1,
+      deletions: 0,
+      status,
+      created_at: "2026-09-03T00:00:00Z",
+      ...extra,
+    });
+    getJsonMock.mockImplementation((url: string) => {
+      if (url.endsWith("/patch")) {
+        return Promise.resolve({ diff_id: "diff_run_u_2", patch: "" });
+      }
+      return Promise.resolve({
+        pending_diffs: [
+          record("diff_run_u_2", "pending"),
+          record("diff_run_u_1", "accepted", { resolution: "accepted" }),
+        ],
+      });
+    });
+
+    render(<DiffBrowser />);
+    await screen.findByText("run_u");
+    // pending 单元 2 是唯一的操作入口，带"单元 2"徽章
+    expect(screen.getByText("单元 2")).toBeTruthy();
+    expect(screen.queryByText("单元 1")).toBeNull();
+    // 选中单元 2：详情栏出现"拒绝本单元"按钮（限定到本单元的提交数）
+    fireEvent.click(screen.getByText("run_u").closest("button")!);
+    const reject = await screen.findByRole("button", { name: /拒绝本单元/ });
+    expect(reject.textContent).toContain("1 提交");
+
+    // 已判定单元 1 在折叠的历史区；展开后可见但只读（无判定按钮）
+    fireEvent.click(screen.getByRole("button", { name: /历史判定单元/ }));
+    const badge1 = await screen.findByText("单元 1");
+    fireEvent.click(badge1.closest("button")!);
+    await screen.findByText("已判定 · 只读");
+    expect(screen.queryByRole("button", { name: /拒绝本单元/ })).toBeNull();
+  });
+});

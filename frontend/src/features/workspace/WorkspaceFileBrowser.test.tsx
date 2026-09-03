@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { WorkspaceFileBrowser, buildTree, filterTree, type WorkspaceTreeEntry, type WorkspaceTreeNode } from "./WorkspaceFileBrowser";
-import { getJson } from "../../lib/product-api";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { WorkspaceFileBrowser, buildTree, filterTree, rawScanSummary, type WorkspaceTreeEntry, type WorkspaceTreeNode } from "./WorkspaceFileBrowser";
+import { getJson, postJson } from "../../lib/product-api";
 
 vi.mock("../../lib/product-api", () => ({
   getJson: vi.fn(),
+  postJson: vi.fn(),
 }));
 
 function entry(path: string, kind: "dir" | "file" = "file", type: WorkspaceTreeEntry["type"] = "md"): WorkspaceTreeEntry {
@@ -67,6 +68,7 @@ describe("filterTree", () => {
 
 describe("WorkspaceFileBrowser refresh", () => {
   afterEach(() => {
+    cleanup();
     vi.clearAllMocks();
   });
 
@@ -94,5 +96,47 @@ describe("WorkspaceFileBrowser refresh", () => {
     rerender(<WorkspaceFileBrowser refreshSignal={1} />);
     await waitFor(() => expect(getJsonMock).toHaveBeenCalledTimes(2));
     expect(screen.getByText("alpha.md")).toBeTruthy();
+  });
+});
+
+describe("raw scan entry", () => {
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("rawScanSummary reports the four counters and hides zero needs_extraction", () => {
+    expect(
+      rawScanSummary({ added: 2, updated: 1, skipped: 0, needs_extraction: 3, sources: [], issues: [] })
+    ).toBe("新增 2 · 更新 1 · 跳过 0 · 待提取 3");
+    expect(
+      rawScanSummary({ added: 0, updated: 4, skipped: 1, needs_extraction: 0, sources: [], issues: [] })
+    ).toBe("新增 0 · 更新 4 · 跳过 1");
+  });
+
+  it("posts the scan and shows the actionable result summary", async () => {
+    const getJsonMock = vi.mocked(getJson);
+    const postJsonMock = vi.mocked(postJson);
+    getJsonMock.mockResolvedValue([entry("raw/paper_one/body.txt")]);
+    postJsonMock.mockResolvedValue({
+      added: 1, updated: 0, skipped: 0, needs_extraction: 1,
+      sources: ["paper_one"], issues: [],
+    });
+
+    render(<WorkspaceFileBrowser />);
+    fireEvent.click(await screen.findByRole("button", { name: /扫描并登记 raw\// }));
+    await waitFor(() => expect(postJsonMock).toHaveBeenCalledWith("/api/workspace/raw/scan", {}));
+    expect(await screen.findByText("新增 1 · 更新 0 · 跳过 0 · 待提取 1")).toBeTruthy();
+  });
+
+  it("surfaces scan failures instead of swallowing them", async () => {
+    const getJsonMock = vi.mocked(getJson);
+    const postJsonMock = vi.mocked(postJson);
+    getJsonMock.mockResolvedValue([entry("index.md")]);
+    postJsonMock.mockRejectedValue(new Error("500 scan failed"));
+
+    render(<WorkspaceFileBrowser />);
+    fireEvent.click(await screen.findByRole("button", { name: /扫描并登记 raw\// }));
+    expect(await screen.findByText(/登记失败：.*500 scan failed/)).toBeTruthy();
   });
 });

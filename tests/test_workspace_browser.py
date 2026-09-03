@@ -84,3 +84,51 @@ def test_workspace_edit_rejects_unsupported_type(tmp_path: Path):
     client = TestClient(create_app(root))
     response = client.post("/api/workspace/edit", json={"path": "raw/src_aaaaaaaaaaaaaaaaaaaa/meta.json", "content": "{}"})
     assert response.status_code == 422
+
+
+def test_raw_scan_endpoint_registers_preplaced_and_is_idempotent(tmp_path: Path):
+    """POST /api/workspace/raw/scan：用户发起的预置源登记，幂等、不产生 git 变更。"""
+    root = tmp_path
+    _workspace(root)
+    preplaced = root / "raw" / "Fu_2025_NatMethods"
+    preplaced.mkdir(parents=True)
+    (preplaced / "paper.md").write_text("# Fu 2025", encoding="utf-8")
+    (root / "raw" / "pdf_only").mkdir(parents=True)
+    (root / "raw" / "pdf_only" / "doc.pdf").write_bytes(b"%PDF-1.7")
+
+    def staged() -> str:
+        # 登记不得 stage 任何东西（pending diff 只来自 commit）。diff --cached
+        # 只看 index：仓库尚未 commit 时 status --porcelain 全是 ?? 未跟踪，无法
+        # 区分，所以用这条更精确。
+        return subprocess.run(
+            ["git", "-C", str(root), "diff", "--cached", "--name-only"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+    client = TestClient(create_app(root))
+    first = client_post_scan(client)
+    # src_aaa...（fixture 里的旧 raw 目录没有登记记录）也按预置源登记
+    assert first["added"] == 3
+    assert first["needs_extraction"] == 1
+    assert sorted(first["sources"]) == [
+        "Fu_2025_NatMethods",
+        "pdf_only",
+        "src_aaaaaaaaaaaaaaaaaaaa",
+    ]
+    registry = root / "data" / "runtime" / "sources"
+    assert (registry / "Fu_2025_NatMethods.json").is_file()
+
+    second = client_post_scan(client)
+    assert second["added"] == 0
+    assert second["updated"] == 3
+    assert len(list(registry.glob("*.json"))) == 3  # 不随扫描次数膨胀
+    # 登记不 stage 任何东西（不进入 pending diff），且第二次不改 raw/ 文件。
+    assert staged() == "", staged()
+    assert (preplaced / "paper.md").read_text(encoding="utf-8") == "# Fu 2025"
+    assert sorted(p.name for p in preplaced.iterdir()) == ["paper.md"]
+
+
+def client_post_scan(client):
+    response = client.post("/api/workspace/raw/scan")
+    assert response.status_code == 200
+    return response.json()

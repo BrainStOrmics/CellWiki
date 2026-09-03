@@ -2379,10 +2379,23 @@ select:focus-visible {
 .diff-line-marker { color: #5c6673; text-align: center; user-select: none; }
 .diff-line-content { white-space: pre-wrap; word-break: break-word; }
 .diff-line-note { color: #8f969f; font-style: italic; }
+.diff-unit-badge { align-self: center; justify-self: start; padding: 1px 7px; border-radius: 8px; font-size: 9px; font-weight: 650; color: #8fb4f5; background: rgba(90, 130, 190, 0.14); border: 1px solid rgba(90, 130, 190, 0.35); white-space: nowrap; }
+.diff-card.readonly { opacity: 0.78; }
+.diff-history { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #242a33; padding-top: 8px; }
+.diff-history-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px; border: 0; border-radius: 4px; color: #8b93a0; background: transparent; font-size: 11px; cursor: pointer; text-align: left; }
+.diff-history-toggle:hover { color: #d9dde3; }
+.diff-history-list { max-height: 30%; }
+.diff-history-notice { color: #7d8794; font-size: 10px; }
+.workspace-scan-row { display: flex; padding: 2px 0 6px; }
+.workspace-scan-raw { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid #333a45; border-radius: 4px; color: #aeb5bf; background: #161a20; font-size: 10.5px; cursor: pointer; }
+.workspace-scan-raw:hover { color: #d9dde3; border-color: #3b4552; }
+.workspace-scan-raw:disabled { opacity: 0.6; cursor: default; }
 
 :root[data-theme="light"] .diff-entry { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }
 :root[data-theme="light"] .diff-entry:hover { color: #1d2934; border-color: #b9c6d2; background: #edf2f6; }
 :root[data-theme="light"] .diff-entry.active { color: #245f9c; border-color: rgba(52, 121, 191, 0.5); background: #e5eff8; }
+:root[data-theme="light"] .workspace-scan-raw { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }
+:root[data-theme="light"] .workspace-scan-raw:hover { color: #1d2934; border-color: #b9c6d2; background: #edf2f6; }
 :root[data-theme="light"] .diff-browser { color: #263643; }
 :root[data-theme="light"] .diff-browser-toolbar { border-bottom-color: #d7dfe6; }
 :root[data-theme="light"] .diff-browser-toolbar button { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }

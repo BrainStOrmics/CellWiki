@@ -18,6 +18,20 @@ export type PendingDiffRecord = {
   resolved_at?: string | null;
 };
 
+/**
+ * 审批单元序号：`diff_<run_id>_<n>`（方案 B）。无后缀的旧行视为单元 1；
+ * 无法识别的 id 返回 null（不展示徽章）。与后端 agent_runtime._unit_index 同步。
+ */
+export function approvalUnitIndex(diffId: string, runId: string): number | null {
+  const prefix = `diff_${runId}_`;
+  if (diffId.startsWith(prefix)) {
+    const suffix = diffId.slice(prefix.length);
+    return /^\d+$/.test(suffix) ? Number(suffix) : null;
+  }
+  if (diffId === `diff_${runId}`) return 1;
+  return null;
+}
+
 // ---- patch 解析（纯函数，可单测）----
 export type PatchLine = { kind: "add" | "del" | "ctx" | "hdr"; text: string; oldLine?: number; newLine?: number };
 export type PatchHunk = { header: string; lines: PatchLine[] };
@@ -150,7 +164,15 @@ export function DiffBrowser({ onExit, onCountChange }: Props) {
   }
 
   const files = patch ? parsePatch(patch) : [];
-  const pendingCount = diffs?.filter((d) => d.status === "pending").length ?? 0;
+  const pending = diffs?.filter((d) => d.status === "pending") ?? [];
+  const pendingCount = pending.length;
+  const resolved = diffs?.filter((d) => d.status !== "pending") ?? [];
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  function unitBadge(d: PendingDiffRecord) {
+    const unit = approvalUnitIndex(d.diff_id, d.run_id);
+    return unit === null ? null : <span className="diff-unit-badge">单元 {unit}</span>;
+  }
 
   return (
     <div className="diff-browser">
@@ -168,21 +190,52 @@ export function DiffBrowser({ onExit, onCountChange }: Props) {
       ) : (
         <>
           <div className="diff-list">
-            {diffs.map((d) => (
+            {pending.length === 0 ? (
+              <div className="tree-empty diff-empty">当前没有待判定单元；已判定单元见下方历史。</div>
+            ) : pending.map((d) => (
               <button key={d.diff_id} className={selected?.diff_id === d.diff_id ? "diff-card selected" : "diff-card"} onClick={() => void open(d)}>
                 <span className={`diff-status ${d.status}`}>{d.status}</span>
+                {unitBadge(d)}
                 <strong>{d.run_id}</strong>
-                <small>+{d.insertions} −{d.deletions} · {d.files.length} 文件</small>
+                <small>+{d.insertions} −{d.deletions} · {d.files.length} 文件 · {d.commits.length} 提交</small>
               </button>
             ))}
           </div>
+          {resolved.length > 0 && (
+            <div className="diff-history">
+              <button type="button" className="diff-history-toggle" onClick={() => setHistoryOpen((open) => !open)}>
+                {historyOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+                历史判定单元（{resolved.length}）
+              </button>
+              {historyOpen && (
+                <div className="diff-list diff-history-list">
+                  {resolved.map((d) => (
+                    <button key={d.diff_id} className={selected?.diff_id === d.diff_id ? "diff-card selected readonly" : "diff-card readonly"} onClick={() => void open(d)}>
+                      <span className={`diff-status ${d.status}`}>{d.status}</span>
+                      {unitBadge(d)}
+                      <strong>{d.run_id}</strong>
+                      <small>+{d.insertions} −{d.deletions} · {d.files.length} 文件</small>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           {selected && (
             <div className="diff-detail">
               <div className="diff-detail-toolbar">
                 <strong>{selected.run_id}</strong>
+                {unitBadge(selected)}
+                {selected.status !== "pending" && (
+                  <span className="diff-history-notice">已判定 · 只读</span>
+                )}
                 {selected.status === "pending" && (
                   <div className="diff-actions">
-                    <button onClick={() => void resolve(selected.diff_id, "reject")} disabled={busy}><ShieldX size={13} /> 拒绝</button>
+                    <button
+                      onClick={() => void resolve(selected.diff_id, "reject")}
+                      disabled={busy}
+                      title={`仅回滚本单元的 ${selected.commits.length} 个提交，不影响此前已判定的内容`}
+                    ><ShieldX size={13} /> 拒绝本单元（{selected.commits.length} 提交）</button>
                     <button onClick={() => void resolve(selected.diff_id, "accept")} disabled={busy}><ShieldCheck size={13} /> 接受</button>
                   </div>
                 )}
