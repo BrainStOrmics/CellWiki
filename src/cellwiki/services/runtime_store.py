@@ -608,11 +608,30 @@ class RuntimeStore:
             connection.execute("DELETE FROM agent_threads WHERE thread_id = ?", (thread_id,))
         return int(run_count)
 
-    # ---- 待确认 diff 持久化（阶段 4）----
-    def save_pending_diff(self, diff: PendingDiff) -> None:
-        """Create or update one pending diff row (idempotent by diff_id)."""
+    # ---- 待确认 diff 持久化（阶段 4；审批单元 = 一行一次判定）----
+    def save_pending_diff(self, diff: PendingDiff) -> PendingDiff:
+        """Insert a new approval unit, or refresh one that is still pending.
+
+        已判定（accepted/rejected）的行是只写一次的历史：任何复用同一 diff_id 的
+        重发布都必须失败，而不是静默把判定结果覆盖回 pending。未判定行的就地刷新
+        保留原 created_at，使单元顺序（按 created_at 排序）稳定。
+        """
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT status, payload FROM pending_diffs WHERE diff_id = ?",
+                (diff.diff_id,),
+            ).fetchone()
+            if row is not None:
+                if row[0] != PendingDiffStatus.PENDING.value:
+                    raise InvalidRunTransitionError(
+                        f"diff {diff.diff_id} is already {row[0]} and cannot be republished"
+                    )
+                diff = diff.model_copy(
+                    update={
+                        "created_at": PendingDiff.model_validate_json(row[1]).created_at
+                    }
+                )
             connection.execute(
                 """
                 INSERT INTO pending_diffs (diff_id, run_id, thread_id, status, payload, created_at, updated_at)
@@ -634,6 +653,7 @@ class RuntimeStore:
                     datetime.now(UTC).isoformat(),
                 ),
             )
+        return diff
 
     def get_pending_diff(self, diff_id: str) -> PendingDiff:
         with self._connect() as connection:
@@ -674,11 +694,20 @@ class RuntimeStore:
             if row is None:
                 raise KeyError(diff_id)
             current = PendingDiff.model_validate_json(row[0])
-            resolved_at = (
-                datetime.now(UTC)
-                if status in (PendingDiffStatus.ACCEPTED, PendingDiffStatus.REJECTED)
-                else None
-            )
+            if (
+                current.status != PendingDiffStatus.PENDING
+                and status == PendingDiffStatus.PENDING
+            ):
+                # 已判定记录只写一次：不存在"重新打开回 pending"的状态回退。
+                raise InvalidRunTransitionError(
+                    f"diff {diff_id} is already {current.status.value} and cannot be reopened"
+                )
+            resolved_at = current.resolved_at
+            if (
+                status in (PendingDiffStatus.ACCEPTED, PendingDiffStatus.REJECTED)
+                and resolved_at is None
+            ):
+                resolved_at = datetime.now(UTC)
             updates: dict[str, Any] = {
                 "status": status,
                 "resolution": resolution,
@@ -866,7 +895,15 @@ class RuntimeStore:
                 )
         return updated
 
-    def update_usage(self, run_id: str, usage: RunUsage) -> AgentRun:
+    def update_usage(
+        self, run_id: str, usage: RunUsage, *, accumulate: bool = False
+    ) -> AgentRun:
+        """Persist run usage; ``accumulate`` sums it into the lifetime totals.
+
+        Every stream segment (initial submit, budget resume, retry) reports only
+        its own counters, so overwriting would drop all but the last segment.
+        """
+
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -875,8 +912,9 @@ class RuntimeStore:
             if row is None:
                 raise KeyError(run_id)
             current = AgentRun.model_validate_json(row[0])
+            merged = _merge_usage(current.usage, usage) if accumulate else usage
             updated = current.model_copy(
-                update={"usage": usage, "updated_at": datetime.now(UTC)}
+                update={"usage": merged, "updated_at": datetime.now(UTC)}
             )
             connection.execute(
                 "UPDATE agent_runs SET payload = ?, updated_at = ? WHERE run_id = ?",
@@ -929,9 +967,14 @@ class RuntimeStore:
             if current.finished_at is not None:
                 if current.status == outcome.status:
                     return current
-                raise InvalidRunTransitionError(
-                    f"run already finalized as {current.status.value}"
-                )
+                # finished_at 非空不等于"真终态"：预算/超时暂停写成 unfinished 的 run
+                # 之后仍可 resume，也必须仍可 cancel（否则松开串行门的唯一入口会 500）。
+                # 真终态（succeeded/rejected/cancelled）的后继集合为空，交给下面的
+                # _TRANSITIONS 合法性检查拦截。
+                if not _TRANSITIONS[current.status]:
+                    raise InvalidRunTransitionError(
+                        f"run already finalized as {current.status.value}"
+                    )
             if outcome.status != current.status and outcome.status not in _TRANSITIONS[current.status]:
                 raise InvalidRunTransitionError(
                     f"invalid run transition: {current.status.value} -> {outcome.status.value}"
@@ -1550,6 +1593,33 @@ _SENSITIVE_SPAN_KEYS = {
     "raw_request",
     "raw_response",
 }
+
+
+def _merge_usage(base: RunUsage, add: RunUsage) -> RunUsage:
+    """Sum one stream segment's usage into the run's lifetime totals.
+
+    ``ttft_ms`` keeps the first observed value (the run's first model call),
+    not a sum; every other field is cumulative work actually performed.
+    """
+
+    return RunUsage(
+        model_calls=base.model_calls + add.model_calls,
+        input_tokens=base.input_tokens + add.input_tokens,
+        output_tokens=base.output_tokens + add.output_tokens,
+        cached_input_tokens=base.cached_input_tokens + add.cached_input_tokens,
+        cache_creation_input_tokens=base.cache_creation_input_tokens
+        + add.cache_creation_input_tokens,
+        estimated_cost_usd=base.estimated_cost_usd + add.estimated_cost_usd,
+        tool_calls=base.tool_calls + add.tool_calls,
+        tool_calls_started=base.tool_calls_started + add.tool_calls_started,
+        tool_calls_completed=base.tool_calls_completed + add.tool_calls_completed,
+        tool_calls_failed=base.tool_calls_failed + add.tool_calls_failed,
+        tool_calls_cancelled=base.tool_calls_cancelled + add.tool_calls_cancelled,
+        ttft_ms=base.ttft_ms if base.ttft_ms is not None else add.ttft_ms,
+        elapsed_seconds=base.elapsed_seconds + add.elapsed_seconds,
+        read_chars=base.read_chars + add.read_chars,
+        read_tokens=base.read_tokens + add.read_tokens,
+    )
 
 
 def _redact_span_data(value):

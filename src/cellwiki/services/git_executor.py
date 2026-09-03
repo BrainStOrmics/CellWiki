@@ -53,7 +53,9 @@ _ALLOWED_FLAGS: dict[str, frozenset[str]] = {
     "diff": frozenset({"--stat", "--name-only", "--name-status", "--numstat"}),
     "log": frozenset({"--oneline", "--max-count"}),
     "add": frozenset(),
-    "commit": frozenset({"-m", "--message"}),
+    # --only：路径限定提交。系统维护 commit 用它只提交自己的派生文件，
+    # 不卷走 index 里的外来暂存改动；必须搭配 `-- <显式路径>`，路径照常过 P1。
+    "commit": frozenset({"-m", "--message", "--only"}),
     "revert": frozenset({"--no-edit"}),
 }
 # 每个动作显式禁止的危险标志（即使不在 is-allowed 集合也给出明确错误）

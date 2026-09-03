@@ -396,6 +396,19 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
 
+    @app.post("/api/workspace/raw/scan")
+    def scan_raw_sources_endpoint() -> dict:
+        """登记用户直接放进 raw/ 的预置源（产品侧动作，不产生 git 变更）。
+
+        返回新增/更新/跳过/待提取四类计数；幂等，可安全重复调用。
+        """
+        from cellwiki.services.promotion import scan_raw_sources
+
+        try:
+            return scan_raw_sources(root)
+        except OSError as error:
+            raise HTTPException(status_code=500, detail=f"raw scan failed: {error}") from None
+
     # ==================== 智能体线程管理 ====================
     @app.post("/api/agent/threads", status_code=status.HTTP_201_CREATED)
     def create_agent_thread() -> dict[str, str]:
@@ -610,6 +623,8 @@ def create_app(
             return _agent_run_payload(_runtime.cancel(run_id), store=_runtime.store)
         except KeyError:
             raise HTTPException(status_code=404, detail="agent run not found") from None
+        except InvalidRunTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
 
@@ -679,11 +694,13 @@ def create_app(
 
     @app.post("/api/pending-diffs/{diff_id}/reopen", status_code=status.HTTP_200_OK)
     def reopen_pending_diff(diff_id: str) -> dict:
-        """重新打开已解决的运行 diff（commit 不变）"""
+        """重新打开当前未判定单元（幂等）；已判定单元不可回退 -> 409。"""
         try:
             return get_agent_runtime().reopen_pending_diff(diff_id).model_dump()
         except KeyError:
             raise HTTPException(status_code=404, detail="pending diff not found") from None
+        except InvalidRunTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
 
     @app.get("/api/agent/runs/{run_id}/diagnostics")
     def get_agent_diagnostics(run_id: str) -> dict:

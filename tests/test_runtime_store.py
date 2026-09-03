@@ -7,6 +7,7 @@ import shutil
 
 import pytest
 
+from cellwiki.domain.pending_diff import PendingDiff, PendingDiffStatus
 from cellwiki.domain.runs import (
     AgentErrorType,
     AgentEventType,
@@ -19,6 +20,53 @@ from cellwiki.services.runtime_store import (
     RuntimeStore,
     TerminalRunError,
 )
+
+
+def _unit(diff_id: str, status: PendingDiffStatus = PendingDiffStatus.PENDING) -> PendingDiff:
+    return PendingDiff(
+        diff_id=diff_id,
+        run_id="run_units",
+        thread_id="thread_units",
+        project_id="cellwiki",
+        snapshot_commit="abc1234",
+        head_commit="def5678",
+        commits=["def5678"],
+        files=["wiki/x.md"],
+        status=status,
+    )
+
+
+def test_pending_diff_units_are_write_once(tmp_path: Path):
+    """审批单元 = 一行一次判定：pending 行可就地刷新，已判定行不可复用/不可回退。"""
+    store = RuntimeStore(tmp_path)
+    run = AgentRun(run_id="run_units", thread_id="thread_units", input_message="x")
+    store.create_run(run)
+
+    # 插入单元 1（pending），question 挂起后续跑就地刷新同一行。
+    store.save_pending_diff(_unit("diff_run_units_1"))
+    refreshed = store.save_pending_diff(
+        _unit("diff_run_units_1").model_copy(update={"head_commit": "9999aaa"})
+    )
+    assert store.get_pending_diff("diff_run_units_1").head_commit == "9999aaa"
+    # 就地刷新保留原 created_at（单元顺序稳定）。
+    assert refreshed.created_at == store.get_pending_diff("diff_run_units_1").created_at
+
+    # 判定后该行只写一次：不得被重发布覆盖回 pending。
+    store.update_pending_diff(
+        "diff_run_units_1", status=PendingDiffStatus.ACCEPTED, resolution="accepted"
+    )
+    with pytest.raises(InvalidRunTransitionError):
+        store.save_pending_diff(_unit("diff_run_units_1"))
+    # 已判定记录不能被重新置为 pending。
+    with pytest.raises(InvalidRunTransitionError):
+        store.update_pending_diff("diff_run_units_1", status=PendingDiffStatus.PENDING)
+    assert store.get_pending_diff("diff_run_units_1").status == PendingDiffStatus.ACCEPTED
+
+    # 下一单元是独立新行，二者并存。
+    store.save_pending_diff(_unit("diff_run_units_2"))
+    ids = {d.diff_id for d in store.list_pending_diffs(run_id="run_units")}
+    assert ids == {"diff_run_units_1", "diff_run_units_2"}
+
 
 
 def test_runtime_store_persists_runs_and_orders_events_across_instances(tmp_path: Path):

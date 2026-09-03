@@ -17,11 +17,15 @@
   - `overview.md`、`statistics.md`：系统重建，Agent 不可手写。
   - `log.md`、`audit_report.md`：系统 append-only，Agent 不可写。
 - **Run**：桌面端一条消息触发的一次 Agent 执行。每个 run 有独立的迭代预算、
-  超时、事件流、checkpoint 与终态；可以 unfinished 收尾并续跑。
-- **待确认 diff**：维护型 run 结束后系统生成的 git 差异。接受 = 审计生效；
-  拒绝 = 系统 revert 该 run 全部 commit。
-- **审批**：用户对待确认 diff 的接受或拒绝；阻断式、一次一个。
-- **待审 diff 面板**：APP 侧边栏入口，展示当前未处理待确认 diff 的 git 补丁，可直接查看并接受/拒绝。
+  超时、事件流、checkpoint 与终态；可以 unfinished 收尾并续跑（"继续" = 同一
+  run 回到 RUNNING，非新 run）。
+- **待确认 diff（审批单元）**：run 发布提交时系统生成的 git 差异审批单元，
+  id 形如 `diff_<run_id>_<n>`；一个 run 可产生一串单元，**一行一次判定、不可
+  回退**。接受 = 审计生效；拒绝 = 系统 revert **本单元**的 commit。单元边界 =
+  判定而非发布：上一单元未判定时同一 run 重发布就地刷新该 pending 行。详见
+  ADR-0007 决策 2（2026-09-03 修订）。
+- **审批**：用户对未判定审批单元的接受或拒绝；阻断式、一次一个。
+- **待审 diff 面板**：APP 侧边栏入口，展示当前未判定审批单元的 git 补丁并接受/拒绝；已判定单元以只读历史折叠区呈现。
 - **查询 run**：只读且不产生 diff 的 run；Agent 直接读 md 回答，引用即文件路径。
 - **会话（thread）**：点 `+` 或发出首条消息时登记的多轮对话身份，是 APP 历史
   列表的主体；一个会话含 0..N 个 run，零 run 会话同样可见、可回访。
@@ -37,6 +41,9 @@
   模型据此决定读取哪些附件。
 - **promote**：用户经 ask_user_question 同意后，把附件提升为 raw/<source_id>/ 正式源
   （原件 + 提取文本 + meta.json），登记 data/runtime/sources/<source_id>.json，并提交 git。
+- **预置源登记（raw scan）**：用户从产品侧发起的"扫描并登记 raw/"动作，按目录名
+  登记用户直接放进 `raw/<目录名>/` 的源（source_id = 目录名，幂等，不复制、不产生
+  git 变更）；无提取文本的 PDF 登记为 needs_extraction。Agent 工具白名单不因此扩大。
 - **schema.md**：工作区根目录可插拔的提取契约；ingest 前 Agent 读取，缺失时回退内置默认。
 - **工作区编辑（workspace edit）**：APP 对 md/txt 的受控修改，走合成 run 提交与
   pending diff 审批，不绕过“Run -> 待确认 diff -> 用户接受”。
@@ -54,12 +61,13 @@
    `rebase` / `amend` / `push` / `fetch` / `checkout --`。
 3. Agent 可读写整个工作目录；`log.md` 与 `audit_report.md` 只读，
    `overview.md` 与 `statistics.md` 系统重建。
-4. run 严格串行：同一时刻最多一个进行中的 run 与一个未处理待确认 diff。
+4. run 严格串行：同一时刻最多一个进行中的 run 与一个未判定审批单元。
 5. 查询 run 只读、不产生 diff。
 6. lint 门禁：run 结束系统强制重跑 `lint_knowledge_base`；失败不进入待确认、
    不撤销 commit。
-7. 预算或时长耗尽终态 = `unfinished`：commit 保留、可续；"继续" = 新 run +
-   checkpoint 恢复 + `parent_run_id`；崩溃恢复继承剩余预算。
+7. 预算或时长耗尽终态 = `unfinished`：commit 保留、可续；"继续" = 同一 run
+   回到 RUNNING 带相同输入重新执行（运行时持久化记录即 checkpoint）；崩溃恢复
+   继承剩余预算。审批单元边界 = 判定而非发布（见术语"待确认 diff"）。
 8. 内容归 Agent、派生与门禁归系统、人工负责接受/拒绝 diff。
 9. 品牌与兼容术语不随重构改名。
 10. 系统维护文件（`overview.md`/`statistics.md` 系统重建，`log.md`/`audit_report.md` append-only）只在 run 判定事件由系统维护；accept 后合并为系统维护 commit 提交；Agent 工具对系统维护文件的写操作一律拒绝。

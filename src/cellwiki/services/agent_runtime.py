@@ -4,9 +4,11 @@
 # 生命周期：QUEUED -> RUNNING -> SUCCEEDED / FAILED / UNFINISHED / CANCELLED；
 # 预算/超时进入 UNFINISHED（记录 checkpoint，可继续/恢复），失败可 retry。
 # - 严格串行门禁：同时只允许 1 个 active run，新 run 请求返回 409。
-# - pending diff：run 开始时记录 git 快照点；结束时该 run 的全部 commit 汇成
-#   待确认 diff 持久化；accept / reject（逐个 revert run 内 commit，保留后续
-#   commit）/ reopen 由运行时执行。
+# - pending diff：一个 run 可产生一串审批单元（diff_<run_id>_<n>）。首单元基线 =
+#   run 开始时记录的 git 快照点，其后单元基线 = 上一已判定单元的 head。单元边界 =
+#   判定而非发布：上一单元仍未判定时重发布就地刷新该行（question 挂起/续跑不产生
+#   第二行）。accept 记录判定，reject 逐个 revert **本单元** commit，二者之后的
+#   判定不可回退（见 domain/pending_diff.py 合同注释）。
 # - P4 审计：工具输入（label_args 白名单键）与输出（payload sha256）由运行时
 #   Seam 记录。时间线卡片可携带有界展示投影（args_display 命令 ≤2000 字符、
 #   result_preview head/tail ≤8KB），完整参数与原始大输出仍不离开本边界。
@@ -19,11 +21,12 @@ import json
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
-from typing import Any, Iterable, cast
+from typing import Any, Callable, Iterable, cast
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
@@ -68,6 +71,7 @@ from cellwiki.services.workspace_maintenance import (
     maintain_after_lint,
     maintain_after_reject,
     maintain_after_unfinished,
+    take_maintenance_warning,
 )
 
 # 墙钟超时下限（秒）：避免测试中预算/超时语义被极小值绕过
@@ -934,9 +938,19 @@ class AgentRuntimeManager:
         ).patch
 
     def accept_pending_diff(self, diff_id: str) -> PendingDiff:
-        """Accept a run's diff: commits stay, decision is recorded, then run
-        the system maintenance (rebuild derived files + verdict log)."""
+        """Accept one approval unit: its commits stay, the verdict is recorded,
+        then system maintenance runs.
+
+        判定不可回退：只有 PENDING 单元可以接受。审批单元边界即 diff 行本身
+        （ADR-0007 修订），预算暂停—"继续"后的新提交落在序号更大的新单元里，
+        因此不存在"重发布把已批准 commit 装回待判范围"的窗口。
+        """
         with self._maintenance_lock:
+            current = self.store.get_pending_diff(diff_id)
+            if current.status != PendingDiffStatus.PENDING:
+                raise InvalidRunTransitionError(
+                    f"diff {diff_id} is already {current.status.value}"
+                )
             diff = self.store.update_pending_diff(
                 diff_id, status=PendingDiffStatus.ACCEPTED, resolution="accepted"
             )
@@ -944,7 +958,11 @@ class AgentRuntimeManager:
         return diff
 
     def reject_pending_diff(self, diff_id: str) -> PendingDiff:
-        """Reject a run's diff: revert every run commit, newest-first."""
+        """Reject one approval unit: revert **this unit's** commits, newest-first.
+
+        revert 生成的提交 sha 记入 ``data.revert_commits``：它们物理上会位于后续
+        单元的基线之后，排除集合让后续单元既不装入也不二次回滚它们。
+        """
         diff = self.store.get_pending_diff(diff_id)
         if diff.status != PendingDiffStatus.PENDING:
             raise InvalidRunTransitionError(
@@ -952,19 +970,30 @@ class AgentRuntimeManager:
             )
         with self._maintenance_lock:
             git = self._git_executor()
+            revert_shas: list[str] = []
             if git is not None and diff.commits:
-                git.revert_commits(diff.commits)
+                revert_shas = git.revert_commits(diff.commits)
             diff = self.store.update_pending_diff(
-                diff_id, status=PendingDiffStatus.REJECTED, resolution="rejected"
+                diff_id,
+                status=PendingDiffStatus.REJECTED,
+                resolution="rejected",
+                data={"revert_commits": revert_shas},
             )
             self._run_maintenance_locked("reject", diff)
         return diff
 
     def reopen_pending_diff(self, diff_id: str) -> PendingDiff:
-        """Reopen a resolved diff (commits remain in the repo either way)."""
-        return self.store.update_pending_diff(
-            diff_id, status=PendingDiffStatus.PENDING, resolution=None
-        )
+        """No-op reopen for a still-pending unit; resolved units are immutable.
+
+        接口保留兼容旧调用方，但"一行一次判定"之后不存在把已判定单元改回
+        pending 的语义（撤销走 reject + 新 run 重做，而不是重开旧判定）。
+        """
+        current = self.store.get_pending_diff(diff_id)
+        if current.status != PendingDiffStatus.PENDING:
+            raise InvalidRunTransitionError(
+                f"diff {diff_id} is already {current.status.value} and cannot be reopened"
+            )
+        return current
 
     # ---- 内部执行 ----
     def _execute(
@@ -1199,8 +1228,63 @@ class AgentRuntimeManager:
         tool_calls_completed = 0
         steps_at_end = 0
         question_pending = False
+        accounting_flushed = False
+
+        def _flush_accounting() -> None:
+            """落盘本段 spans + usage，恰好一次，中止也不例外。
+
+            预算/墙钟中止是从下面的迭代里抛出去的，循环之后的代码永远不执行；
+            没有这个钩子，每次挂起段的模型调用与 token 就从 run 记账里凭空消失
+            （实测：4 段跑完 model_calls=0、model span 一条没有）。记账属于
+            best-effort，绝不能盖掉真正的 run 错误。
+            """
+            nonlocal accounting_flushed
+            if accounting_flushed:
+                return
+            accounting_flushed = True
+            try:
+                self._record_model_spans(
+                    run_id,
+                    call_usage,
+                    call_started,
+                    call_seen_last,
+                    call_first_token,
+                )
+                # Any tool call that never reported completion (cancelled/failed
+                # run) still gets a span so the timeline totals reflect the time
+                # it consumed.
+                self._flush_open_tool_spans(run_id, tool_open)
+                read_chars, read_tokens = attachment_read_stats()
+                self.store.update_usage(
+                    run_id,
+                    RunUsage(
+                        model_calls=steps_at_end,
+                        input_tokens=input_tokens
+                        + sum(value[0] for value in call_usage.values()),
+                        output_tokens=output_tokens
+                        + sum(value[1] for value in call_usage.values()),
+                        cached_input_tokens=cached_input_tokens
+                        + sum(value[2] for value in call_usage.values()),
+                        tool_calls=tool_calls_started,
+                        tool_calls_started=tool_calls_started,
+                        tool_calls_completed=tool_calls_completed,
+                        elapsed_seconds=time.monotonic() - started_at,
+                        read_chars=read_chars,
+                        read_tokens=read_tokens,
+                    ),
+                    # 每段只报自己的计数；跨 resume/retry 累加才是 run 生命周期总量。
+                    accumulate=True,
+                )
+            except Exception as error:  # noqa: BLE001 - 记账失败不得顶替 run 错误
+                with suppress(Exception):
+                    self.store.append_event(
+                        run_id,
+                        AgentEventType.ERROR,
+                        message=f"Run accounting failed: {error}",
+                    )
+
         for segment, signals, steps in self._iterate_safe(
-            stream, budget, started_at
+            stream, budget, started_at, on_finish=_flush_accounting
         ):
             with self._thread_lock:
                 gate = self._cancellations.get(run_id)
@@ -1328,30 +1412,7 @@ class AgentRuntimeManager:
                     model_call_id=last_model_call_id,
                 ),
             )
-        input_tokens += sum(value[0] for value in call_usage.values())
-        output_tokens += sum(value[1] for value in call_usage.values())
-        cached_input_tokens += sum(value[2] for value in call_usage.values())
-        self._record_model_spans(
-            run_id, call_usage, call_started, call_seen_last, call_first_token
-        )
-        # Any tool call that never reported completion (cancelled/failed run)
-        # still gets a span so the timeline totals reflect the time it consumed.
-        self._flush_open_tool_spans(run_id, tool_open)
-        self.store.update_usage(
-            run_id,
-            RunUsage(
-                model_calls=steps_at_end,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cached_input_tokens=cached_input_tokens,
-                tool_calls=tool_calls_started,
-                tool_calls_started=tool_calls_started,
-                tool_calls_completed=tool_calls_completed,
-                elapsed_seconds=time.monotonic() - started_at,
-                read_chars=attachment_read_stats()[0],
-                read_tokens=attachment_read_stats()[1],
-            ),
-        )
+        _flush_accounting()
         cancelled = False
         with self._thread_lock:
             gate = self._cancellations.get(run_id)
@@ -1588,6 +1649,26 @@ class AgentRuntimeManager:
         stream: Iterable[Any],
         budget: RunBudget,
         started_at: float,
+        on_finish: Callable[[], None] | None = None,
+    ) -> Iterable[tuple[str, list[RuntimeSignal], int]]:
+        """Bound the stream, then run ``on_finish`` as iteration unwinds.
+
+        The ``finally`` is the caller's accounting hook for the abort paths: a
+        budget/timeout raise skips everything after the consumer's loop. On a
+        plain ``break`` the generator is only closed at collection time, so the
+        consumer must flush explicitly too -- hence the caller's once-guard.
+        """
+        try:
+            yield from self._iterate_bounded(stream, budget, started_at)
+        finally:
+            if on_finish is not None:
+                on_finish()
+
+    def _iterate_bounded(
+        self,
+        stream: Iterable[Any],
+        budget: RunBudget,
+        started_at: float,
     ) -> Iterable[tuple[str, list[RuntimeSignal], int]]:
         """Bound the stream by model-call budget and wall-clock timeout."""
         model_calls = 0
@@ -1677,12 +1758,67 @@ class AgentRuntimeManager:
             ),
         )
 
-    # ---- pending diff 发布 ----
-    def _maybe_publish_pending_diff(self, run_id: str) -> bool:
-        """Collect the run's git commits into a pending diff, if any exist.
+    # ---- pending diff 发布（审批单元 = 一行一次判定）----
+    def _unit_id(self, run_id: str, index: int) -> str:
+        return f"diff_{run_id}_{index}"
 
-        Returns True when a pending diff was published. System maintenance
-        commits are excluded from both the commit list and the review patch.
+    def _resolve_publish_target(
+        self, run: AgentRun
+    ) -> tuple[str, int, str | None]:
+        """Return (diff_id, unit_index, baseline_commit) for the next publish.
+
+        审批单元边界 = 判定，不是发布：最新单元仍未判定时复用它的行（就地刷新，
+        基线不变）；已判定（或尚无任何单元）时新建序号 +1 的单元，基线取上一单元
+        head。旧库中无序号的 ``diff_<run_id>`` 视为单元 1，不重编号。
+        """
+        units = sorted(
+            self.store.list_pending_diffs(run_id=run.run_id, limit=500),
+            key=lambda d: d.created_at,
+        )
+        if units:
+            latest = units[-1]
+            if latest.status == PendingDiffStatus.PENDING:
+                index = self._unit_index(latest.diff_id, run.run_id, len(units))
+                return latest.diff_id, index, latest.snapshot_commit
+            last_index = self._unit_index(latest.diff_id, run.run_id, len(units))
+            return (
+                self._unit_id(run.run_id, last_index + 1),
+                last_index + 1,
+                latest.head_commit,
+            )
+        return self._unit_id(run.run_id, 1), 1, run.snapshot_commit
+
+    def _unit_index(self, diff_id: str, run_id: str, fallback: int) -> int:
+        """Parse the unit index from a diff id; legacy suffix-less rows are unit 1."""
+        prefix = f"diff_{run_id}_"
+        if diff_id.startswith(prefix) and diff_id[len(prefix):].isdigit():
+            return int(diff_id[len(prefix):])
+        if diff_id == f"diff_{run_id}":
+            return 1
+        return fallback
+
+    def _resolved_revert_commits(self, run_id: str) -> frozenset[str]:
+        """Revert commits produced by rejecting earlier units of this run.
+
+        拒绝单元 N 会生成一串新 commit；它们物理上位于单元 N+1 的基线之后，
+        但既不是 Agent 内容也不是系统维护提交，必须从后续单元的审批范围里排除，
+        否则"拒绝单元 2"会把"拒绝单元 1 的回滚"再次回滚。
+        """
+        shas: set[str] = set()
+        for diff in self.store.list_pending_diffs(run_id=run_id, limit=500):
+            if diff.status == PendingDiffStatus.PENDING:
+                continue
+            recorded = diff.data.get("revert_commits") if isinstance(diff.data, dict) else None
+            if isinstance(recorded, list):
+                shas.update(str(item) for item in recorded)
+        return frozenset(shas)
+
+    def _maybe_publish_pending_diff(self, run_id: str) -> bool:
+        """Collect the run's newest commits into the current pending unit.
+
+        Returns True when a pending diff was published or refreshed. System
+        maintenance commits and earlier units' revert commits are excluded from
+        both the commit list and the review patch.
         """
         run = self.store.get_run(run_id)
         if run is None:
@@ -1690,41 +1826,56 @@ class AgentRuntimeManager:
         git = self._git_executor()
         if git is None:
             return False
+        diff_id, _index, baseline = self._resolve_publish_target(run)
         try:
-            # snapshot 为 None = run 前工作区尚无提交：取该 run 产出的首个 commit(s)
-            commits = git.commits_since(run.snapshot_commit)
+            # baseline 为 None = 工作区当时尚无提交：取该范围内产出的 commit(s)
+            commits = git.commits_since(baseline)
         except GitCommandError:
             return False
         if not commits:
             return False
         # 系统维护 commit（chore(system): maintenance ...）不属于任何 Agent
         # run：commit 列表与审查补丁都要排除，避免接受/拒绝时误伤审计记录。
+        reverted = self._resolved_revert_commits(run.run_id)
         agent_commits = [
-            sha for sha in commits if not self._is_system_maintenance_commit(git, sha)
+            sha
+            for sha in commits
+            if sha not in reverted
+            and not self._is_system_maintenance_commit(git, sha)
         ]
         if not agent_commits:
             return False
         head = agent_commits[0]
         refs = frozenset({head})
-        if run.snapshot_commit is not None:
-            refs = frozenset({run.snapshot_commit, head})
+        if baseline is not None:
+            refs = frozenset({baseline, head})
         diff = git.diff_between(
-            run.snapshot_commit,
+            baseline,
             right=head,
             enabled_refs=refs,
             exclude_paths=("overview.md", "statistics.md", "log.md", "audit_report.md"),
         )
+        existing: PendingDiff | None = None
+        try:
+            candidate = self.store.get_pending_diff(diff_id)
+            if candidate.status == PendingDiffStatus.PENDING:
+                existing = candidate
+        except KeyError:
+            pass
         pending = PendingDiff(
-            diff_id=f"diff_{run.run_id}",
+            diff_id=diff_id,
             run_id=run.run_id,
             thread_id=run.thread_id,
             project_id=run.project_id,
-            snapshot_commit=run.snapshot_commit,
+            snapshot_commit=baseline,
             head_commit=head,
             commits=agent_commits,
             files=diff.files,
             insertions=diff.insertions,
             deletions=diff.deletions,
+            # 同一 pending 单元在 question 挂起与续跑之间会被就地刷新多次；
+            # data 里此前的维护标记（若有）必须活过刷新，否则重试线索丢失。
+            data=existing.data if existing is not None else {},
         )
         self.store.save_pending_diff(pending)
         self.store.update_run(
@@ -1765,23 +1916,31 @@ class AgentRuntimeManager:
         except Exception as error:  # noqa: BLE001 - 维护失败必须记录并留待重试
             self._mark_maintenance_failure(diff, verdict, error)
             return
+        warning = take_maintenance_warning()
         try:
+            marker: dict[str, Any] = {
+                "status": "ok",
+                "verdict": verdict,
+                "commit": outcome.commit_sha,
+            }
+            if warning:
+                # 方案 D：外来暂存不再中止维护，但必须可见——用户需要知道
+                # 自己的 staged 文件没有被系统动过。
+                marker["foreign_staged"] = warning[:20]
             self.store.update_pending_diff(
                 diff.diff_id,
                 status=diff.status,
                 resolution=diff.resolution,
-                data={
-                    "maintenance": {
-                        "status": "ok",
-                        "verdict": verdict,
-                        "commit": outcome.commit_sha,
-                    }
-                },
+                data={"maintenance": marker},
             )
         except Exception:
             pass
         self._record_maintenance_event(
-            diff.run_id, verdict, diff_id=diff.diff_id, commit=outcome.commit_sha
+            diff.run_id,
+            verdict,
+            diff_id=diff.diff_id,
+            commit=outcome.commit_sha,
+            foreign_staged=warning,
         )
 
     def _mark_maintenance_failure(
@@ -1860,6 +2019,7 @@ class AgentRuntimeManager:
         diff_id: str | None = None,
         commit: str | None = None,
         error: Exception | None = None,
+        foreign_staged: list[str] | None = None,
     ) -> None:
         """Append a maintenance outcome event even after the run is terminal."""
         try:
@@ -1877,16 +2037,32 @@ class AgentRuntimeManager:
                     allow_terminal=True,
                 )
             else:
+                message = "Workspace maintenance applied."
+                data: dict[str, Any] = {
+                    "kind": "maintenance",
+                    "verdict": verdict,
+                    "diff_id": diff_id,
+                    "commit": commit,
+                }
+                if foreign_staged:
+                    # 可执行提示：外来暂存文件没有被系统提交，也不会被动过；
+                    # 用户若不希望保留，需自行 unstage（系统不代替用户清 index）。
+                    listing = ", ".join(sorted(foreign_staged)[:10])
+                    suffix = (
+                        ""
+                        if len(foreign_staged) <= 10
+                        else f" (+{len(foreign_staged) - 10} more)"
+                    )
+                    message = (
+                        "Workspace maintenance applied; unrelated staged changes "
+                        f"were left out of the system commit: {listing}{suffix}."
+                    )
+                    data["foreign_staged"] = sorted(foreign_staged)[:20]
                 self.store.append_event(
                     run_id,
                     AgentEventType.PROGRESS,
-                    message="Workspace maintenance applied.",
-                    data={
-                        "kind": "maintenance",
-                        "verdict": verdict,
-                        "diff_id": diff_id,
-                        "commit": commit,
-                    },
+                    message=message,
+                    data=data,
                     allow_terminal=True,
                 )
         except Exception:

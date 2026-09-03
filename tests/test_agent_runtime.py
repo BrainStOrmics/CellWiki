@@ -84,11 +84,17 @@ def _context(thread_id: str = "thread_test") -> WikiAgentContext:
     return WikiAgentContext(project_id="cellwiki", thread_id=thread_id)
 
 
+# 这些等待跨后台线程做真实的 git/SQLite/图执行工作。桌面同时跑 dev server + sidecar
+# 时，WAITING_CONFIRMATION 一类状态转移实测要 5-11s，写死的 5s 墙会误报失败
+# （HEAD 上同样复现），统一放宽到同一个常量。
+WAIT_TIMEOUT = 20.0
+
+
 def _wait_for_status(
     manager: AgentRuntimeManager,
     run_id: str,
     statuses: set[AgentRunStatus],
-    timeout: float = 5.0,
+    timeout: float = WAIT_TIMEOUT,
 ):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -244,6 +250,125 @@ def test_budget_gate_marks_run_as_unfinished_and_resume_advances(tmp_path: Path)
         assert resumed.status == AgentRunStatus.RUNNING
         completed = _wait_for_status(
             manager, started.run_id, {AgentRunStatus.SUCCEEDED}
+        )
+        assert completed.status == AgentRunStatus.SUCCEEDED
+    finally:
+        manager.close()
+
+
+def test_budget_abort_still_records_usage_and_model_spans(tmp_path: Path):
+    """中止段落的记账必须落盘，且跨 resume 累加而不是覆盖。
+
+    回归：预算/墙钟异常从消费循环内部抛出，循环之后的 model spans 与
+    ``update_usage`` 因此被整段跳过 —— 实测一个跑了几百次模型调用的 run 最终
+    ``model_calls=0``、一条 model span 都没有，观测面板与成本统计全盲。
+    """
+    signals = [
+        RuntimeSignal(
+            type=AgentEventType.MESSAGE_DELTA,
+            message="token",
+            data={},
+            model_call_id=f"model_call_{index}",
+            input_tokens=10,
+            output_tokens=10,
+        )
+        for index in range(6)
+    ]
+    adapter = ScriptedAdapter(
+        [
+            signals,
+            [
+                RuntimeSignal(
+                    type=AgentEventType.MESSAGE_DELTA,
+                    message="继续完成",
+                    model_call_id="resume_model",
+                    input_tokens=10,
+                    output_tokens=10,
+                )
+            ],
+        ]
+    )
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id="thread_accounting",
+            message="超预算",
+            context=_context("thread_accounting"),
+            budget=RunBudget(max_model_calls=3),
+        )
+        _wait_for_status(
+            manager, started.run_id, {AgentRunStatus.UNFINISHED}
+        )
+        paused = manager.store.get_run(started.run_id)
+        assert paused is not None
+        # 被中止的 3 次调用全部记账，第 4 次从未开始所以不计。
+        assert paused.usage.model_calls == 3
+        assert paused.usage.input_tokens == 30
+        assert paused.usage.output_tokens == 30
+        assert any(
+            span.kind == "model" for span in manager.store.list_spans(started.run_id)
+        )
+
+        manager.resume(started.run_id)
+        completed = _wait_for_status(
+            manager, started.run_id, {AgentRunStatus.SUCCEEDED}
+        )
+        # 累加而非覆盖：中止段 3 次 + 恢复段 1 次。
+        assert completed.usage.model_calls == 4
+        assert completed.usage.input_tokens == 40
+        assert completed.usage.output_tokens == 40
+    finally:
+        manager.close()
+
+
+def test_cancel_releases_gate_for_budget_parked_run(tmp_path: Path):
+    """预算暂停的 run 必须仍可取消，否则严格串行门永远解不开。
+
+    回归：finalize_run 见 finished_at 非空就抛 InvalidRunTransitionError，而暂停态
+    本身已写过 finished_at，于是取消 parked run 的唯一入口恒失败（实测 POST
+    /cancel 返回 500，工作区被永久卡住，只剩"继续"一条路）。
+    """
+    adapter = ScriptedAdapter(
+        [
+            [
+                RuntimeSignal(
+                    type=AgentEventType.MESSAGE_DELTA,
+                    message="token",
+                    model_call_id=f"model_call_{index}",
+                )
+                for index in range(6)
+            ],
+            [
+                RuntimeSignal(
+                    type=AgentEventType.FINAL_RESPONSE,
+                    message="Done.",
+                    data={"answer": "Done.", "file_paths": []},
+                )
+            ],
+        ]
+    )
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id="thread_parked",
+            message="超预算",
+            context=_context("thread_parked"),
+            budget=RunBudget(max_model_calls=3),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+
+        cancelled = manager.cancel(started.run_id)
+        assert cancelled.status == AgentRunStatus.CANCELLED
+        assert cancelled.finished_at is not None
+
+        # 门确实开了：同一工作区再起一个 run 能跑完，而不是撞 AgentRunInProgressError。
+        follow_up = manager.start(
+            thread_id="thread_after_park",
+            message="暂停之后继续用",
+            context=_context("thread_after_park"),
+        )
+        completed = _wait_for_status(
+            manager, follow_up.run_id, {AgentRunStatus.SUCCEEDED}
         )
         assert completed.status == AgentRunStatus.SUCCEEDED
     finally:
@@ -407,17 +532,21 @@ def _init_git_repo(repo: Path) -> None:
     )
 
 
-def test_pending_diff_lifecycle_accept_reject_reopen(tmp_path: Path):
+def test_pending_diff_lifecycle_accept_reject_are_irreversible(tmp_path: Path):
+    """一个 run 一份判定：接受与拒绝各自终结自己的单元，判定之后不可回退。"""
     repo = tmp_path / "repo"
     repo.mkdir()
     _init_git_repo(repo)
+    counter = {"n": 0}
 
     class WritingAdapter:
         def execute(self, *, thread_id, message, context) -> Any:
-            (repo / "note.md").write_text("agent note", encoding="utf-8")
+            counter["n"] += 1
+            name = f"note_{counter['n']}.md"
+            (repo / name).write_text(f"agent note {counter['n']}", encoding="utf-8")
             git = GitExecutor(repo)
-            git.run("add", "note.md")
-            git.run("commit", "-m", "agent change 1")
+            git.run("add", name)
+            git.run("commit", "-m", f"agent change {counter['n']}")
             yield RuntimeSignal(
                 type=AgentEventType.FINAL_RESPONSE, message="done", data={}
             )
@@ -435,25 +564,161 @@ def test_pending_diff_lifecycle_accept_reject_reopen(tmp_path: Path):
             diffs = manager.store.list_pending_diffs(run_id=started.run_id)
         assert len(diffs) == 1, diffs
         diff = diffs[0]
+        assert diff.diff_id == f"diff_{started.run_id}_1"
         assert diff.status == PendingDiffStatus.PENDING
         assert diff.commits, "运行产出的 commit 应被收集"
         patch = manager.pending_diff_patch(diff.diff_id)
-        assert "note.md" in patch and "agent note" in patch
-        assert (repo / "note.md").exists()
-        # accept：commit 保留，审计生效
+        assert "note_1.md" in patch and "agent note 1" in patch
+        assert (repo / "note_1.md").exists()
+        # accept：commit 保留，审计生效；判定不可回退（reopen / reject 都拒绝）
         accepted = manager.accept_pending_diff(diff.diff_id)
         assert accepted.status == PendingDiffStatus.ACCEPTED
-        assert (repo / "note.md").exists()
-        # reopen：重新打开已解决的 diff
-        reopened = manager.reopen_pending_diff(diff.diff_id)
-        assert reopened.status == PendingDiffStatus.PENDING
-        # reject：逐个 revert run 内 commit（保留后续 commit）
-        rejected = manager.reject_pending_diff(diff.diff_id)
-        assert rejected.status == PendingDiffStatus.REJECTED
-        assert not (repo / "note.md").exists(), "reject 后 note.md 应被回滚删除"
-        # 重复 reject 已解决 diff -> InvalidRunTransitionError
+        assert (repo / "note_1.md").exists()
+        with pytest.raises(InvalidRunTransitionError):
+            manager.reopen_pending_diff(diff.diff_id)
         with pytest.raises(InvalidRunTransitionError):
             manager.reject_pending_diff(diff.diff_id)
+        with pytest.raises(InvalidRunTransitionError):
+            manager.accept_pending_diff(diff.diff_id)
+        assert manager.store.get_pending_diff(diff.diff_id).status == (
+            PendingDiffStatus.ACCEPTED
+        )
+
+        # 第二个 run 产生自己独立的单元；reject 逐个 revert 本单元 commit。
+        second = manager.start(thread_id="t_diff", message="再写一篇", context=_context("t_diff"))
+        _wait_for_status(manager, second.run_id, {AgentRunStatus.SUCCEEDED})
+        second_diff = _wait_for_diff(manager, second.run_id)[0]
+        assert second_diff.diff_id == f"diff_{second.run_id}_1"
+        rejected = manager.reject_pending_diff(second_diff.diff_id)
+        assert rejected.status == PendingDiffStatus.REJECTED
+        assert not (repo / "note_2.md").exists(), "reject 后 note_2.md 应被回滚删除"
+        assert (repo / "note_1.md").exists(), "reject 只撤销本单元，不伤已批准内容"
+        with pytest.raises(InvalidRunTransitionError):
+            manager.reject_pending_diff(second_diff.diff_id)
+        with pytest.raises(InvalidRunTransitionError):
+            manager.reopen_pending_diff(second_diff.diff_id)
+    finally:
+        manager.close()
+
+
+def test_budget_park_publishes_one_approval_unit_per_verdict(tmp_path: Path):
+    """预算暂停的 run 每段一个审批单元：已批准的提交不再出现在后续单元里。
+
+    回归：diff 固定一行、基线停在 run 起点，于是"暂停 -> 接受 -> 继续"的 run
+    第二次发布的 diff 仍包含第一段已批准的 commit（实测 4 段 run 的待判 diff
+    列出 7 个 commit、其中 5 个已批准过），点"拒绝"连带回滚已批准页面。
+    方案 B 下每次判定后的重发布生成 `diff_<run_id>_<n+1>` 新行，基线 = 上一单元
+    head；拒绝严格限定在自己的提交上。
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+
+    class SegmentWriter:
+        """每段写一个新页面，段内超出模型调用预算而被中止（模拟批量 ingest）。"""
+
+        def __init__(self) -> None:
+            self.segment = 0
+
+        def execute(self, *, thread_id, message, context) -> Any:
+            self.segment += 1
+            name = f"note_{self.segment}.md"
+            (repo / name).write_text(f"segment {self.segment}", encoding="utf-8")
+            git = GitExecutor(repo)
+            git.run("add", name)
+            git.run("commit", "-m", f"agent change {self.segment}")
+            # 3 次调用 > 预算 2：第 3 次前中止，保证两段都以 unfinished 结束。
+            for index in range(3):
+                yield RuntimeSignal(
+                    type=AgentEventType.MESSAGE_DELTA,
+                    message="token",
+                    data={},
+                    model_call_id=f"seg{self.segment}_call{index}",
+                    input_tokens=5,
+                    output_tokens=5,
+                )
+
+    manager = AgentRuntimeManager(repo, adapter=SegmentWriter())
+    try:
+        started = manager.start(
+            thread_id="thread_units",
+            message="逐段导入",
+            context=_context("thread_units"),
+            budget=RunBudget(max_model_calls=2),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+        first = _wait_for_diff(manager, started.run_id)[0]
+        assert first.diff_id == f"diff_{started.run_id}_1"
+        assert len(first.commits) == 1, first.commits
+
+        accepted = manager.accept_pending_diff(first.diff_id)
+        assert accepted.status == PendingDiffStatus.ACCEPTED
+        # 接受必须幂等：重复接受不得再产生一次判定与维护记录。
+        with pytest.raises(InvalidRunTransitionError):
+            manager.accept_pending_diff(first.diff_id)
+
+        manager.resume(started.run_id)
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+        # 第二单元是独立新行；等待的是"出现序号 2 的行"，不是旧行内容被换掉。
+        deadline = time.monotonic() + WAIT_TIMEOUT
+        units = manager.store.list_pending_diffs(run_id=started.run_id)
+        while time.monotonic() < deadline and len(units) < 2:
+            time.sleep(0.05)
+            units = manager.store.list_pending_diffs(run_id=started.run_id)
+        assert len(units) == 2, units
+        second = manager.store.get_pending_diff(f"diff_{started.run_id}_2")
+        assert second.status == PendingDiffStatus.PENDING
+        assert second.diff_id != first.diff_id
+        # 上一单元保持 accepted，不被重发布改写。
+        assert manager.store.get_pending_diff(first.diff_id).status == (
+            PendingDiffStatus.ACCEPTED
+        )
+        assert len(second.commits) == 1, second.commits
+        assert second.commits != first.commits
+        assert second.snapshot_commit == first.head_commit
+        # 用结构化 files 断言：补丁文本里维护日志可能提到已批准的文件名。
+        assert any(path.endswith("note_2.md") for path in second.files)
+        assert not any(path.endswith("note_1.md") for path in second.files), (
+            "已批准内容不得重新进入待判 diff"
+        )
+        # 任一时刻最多一个未判定单元（严格串行不变量）。
+        current_units = manager.store.list_pending_diffs(run_id=started.run_id)
+        pending_now = [d for d in current_units if d.status == PendingDiffStatus.PENDING]
+        assert [d.diff_id for d in pending_now] == [second.diff_id]
+
+        # 拒绝单元 2 只撤销单元 2：单元 1（已批准）必须活下来。
+        manager.reject_pending_diff(second.diff_id)
+        assert (repo / "note_1.md").exists(), "拒绝不应回滚已批准内容"
+        assert not (repo / "note_2.md").exists()
+        # 拒绝生成的 revert 提交记入单元行，供后续单元排除。
+        rejected_second = manager.store.get_pending_diff(second.diff_id)
+        revert_shas = rejected_second.data.get("revert_commits")
+        assert revert_shas, rejected_second.data
+
+        # 继续第三段：单元 3 不得装入单元 2 的 revert 提交，否则"拒绝单元 3"
+        # 会把"单元 2 的回滚"再次回滚（note_2.md 复活 = 撤销已判定内容）。
+        manager.resume(started.run_id)
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+        # 发布在状态落库之后的 finally 里（还要跑 git），轮询等单元 3 出现。
+        deadline = time.monotonic() + WAIT_TIMEOUT
+        third_id = f"diff_{started.run_id}_3"
+        while True:
+            try:
+                third = manager.store.get_pending_diff(third_id)
+                break
+            except KeyError:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(0.05)
+        assert third.status == PendingDiffStatus.PENDING
+        assert third.snapshot_commit == second.head_commit
+        assert len(third.commits) == 1, third.commits
+        assert set(third.commits).isdisjoint(revert_shas)
+        assert any(path.endswith("note_3.md") for path in third.files)
+        manager.reject_pending_diff(third.diff_id)
+        assert not (repo / "note_3.md").exists()
+        assert not (repo / "note_2.md").exists(), "拒绝单元 3 不得回滚单元 2 的撤销"
+        assert (repo / "note_1.md").exists()
     finally:
         manager.close()
 
@@ -613,7 +878,7 @@ def test_ask_user_question_pauses_waits_and_resumes(tmp_path: Path):
         context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
     )
 
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + WAIT_TIMEOUT
     while time.monotonic() < deadline:
         current = runtime.store.get_run(started.run_id)
         assert current is not None
@@ -689,7 +954,7 @@ def test_question_timeout_finalizes_unfinished(tmp_path: Path):
         message="开始",
         context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
     )
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + WAIT_TIMEOUT
     while time.monotonic() < deadline:
         current = runtime.store.get_run(run.run_id)
         if current is not None and current.status == AgentRunStatus.WAITING_CONFIRMATION:
@@ -731,7 +996,7 @@ def test_cancel_waiting_confirmation_closes_question_and_releases_gate(tmp_path:
             message="开始",
             context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
         )
-        deadline = time.monotonic() + 5
+        deadline = time.monotonic() + WAIT_TIMEOUT
         while time.monotonic() < deadline:
             current = runtime.store.get_run(started.run_id)
             if current is not None and current.status == AgentRunStatus.WAITING_CONFIRMATION:
@@ -834,7 +1099,7 @@ def test_real_graph_interrupt_pause_and_command_resume(tmp_path: Path):
         message="分析 alpha cell 后问我是否继续",
         context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
     )
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + WAIT_TIMEOUT
     while time.monotonic() < deadline:
         current = runtime.store.get_run(run.run_id)
         if current is not None and current.status == AgentRunStatus.WAITING_CONFIRMATION:
@@ -944,7 +1209,7 @@ def test_pending_diff_blocks_new_run_until_resolved(tmp_path: Path):
 
 def _wait_for_diff(manager: AgentRuntimeManager, run_id: str):
     diffs = manager.store.list_pending_diffs(run_id=run_id)
-    for _ in range(100):
+    for _ in range(int(WAIT_TIMEOUT / 0.02)):
         if diffs:
             return diffs
         time.sleep(0.02)
@@ -954,7 +1219,7 @@ def _wait_for_diff(manager: AgentRuntimeManager, run_id: str):
 
 def _wait_for_file_text(path: Path, fragment: str) -> str:
     text = path.read_text(encoding="utf-8") if path.exists() else ""
-    for _ in range(100):
+    for _ in range(int(WAIT_TIMEOUT / 0.02)):
         if fragment in text:
             return text
         time.sleep(0.02)
@@ -964,7 +1229,8 @@ def _wait_for_file_text(path: Path, fragment: str) -> str:
 
 def _wait_for_maintenance_subject(repo: Path, fragment: str) -> list[str]:
     subjects: list[str] = []
-    for _ in range(100):
+    # 每轮都要跑一次 git log，用 0.1s 间隔凑满同一个等待上限，避免空转打满 CPU。
+    for _ in range(int(WAIT_TIMEOUT / 0.1)):
         subjects = [
             line.split(" ", 1)[-1]
             for line in GitExecutor(repo).run("log", "--oneline").splitlines()
@@ -972,7 +1238,7 @@ def _wait_for_maintenance_subject(repo: Path, fragment: str) -> list[str]:
         ]
         if any(fragment in line for line in subjects):
             return subjects
-        time.sleep(0.02)
+        time.sleep(0.1)
     return subjects
 
 
@@ -1139,6 +1405,56 @@ def test_maintenance_failure_does_not_block_verdict_and_retries_at_next_start(
         _wait_for_status(manager, resumed.run_id, {AgentRunStatus.SUCCEEDED})
     finally:
         manager.close()
+
+def test_foreign_staged_does_not_block_accept_and_warning_is_actionable(
+    tmp_path: Path,
+):
+    """方案 D 现场回归：中止 run 留下的外来暂存不再卡死接受判定与维护。
+
+    实测：批量 ingest 预算中止时 index 里留有 staged 文件，之后每次接受都
+    maintenance_failed（"unexpected staged changes"），派生文件永久过期。
+    现在维护提交路径限定：自己的派生文件照常 commit，stray 原样留在暂存区，
+    事件里带文件清单（可执行提示），而不是笼统的 "will retry"。
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    manager = AgentRuntimeManager(repo, adapter=_MaintenanceWritingAdapter(repo))
+    try:
+        started = manager.start(
+            thread_id="t_foreign", message="写条目", context=_context("t_foreign")
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diff = _wait_for_diff(manager, started.run_id)[0]
+
+        git = GitExecutor(repo)
+        (repo / "stray.md").write_text("user staged", encoding="utf-8")
+        git.run("add", "stray.md")
+
+        accepted = manager.accept_pending_diff(diff.diff_id)
+        assert accepted.status == PendingDiffStatus.ACCEPTED
+        marked = manager.store.get_pending_diff(diff.diff_id)
+        marker = marked.data["maintenance"]
+        assert marker["status"] == "ok", marker
+        assert "stray.md" in marker.get("foreign_staged", []), marker
+        # 派生文件真的被维护重建并提交了。
+        assert "知识条目总数" in (repo / "overview.md").read_text(encoding="utf-8")
+        # stray 没有被系统提交，也仍留在暂存区。
+        status = git.run("status", "--short")
+        assert any(
+            line.startswith("A ") and line[3:] == "stray.md"
+            for line in status.splitlines()
+        ), status
+        events = manager.store.list_events(started.run_id)
+        maintenance_events = [
+            ev for ev in events if ev.data.get("kind") == "maintenance"
+        ]
+        assert any("stray.md" in ev.message for ev in maintenance_events), [
+            ev.message for ev in maintenance_events
+        ]
+    finally:
+        manager.close()
+
 
 class _TypewriterFakeModel(BaseChatModel):
     """逐 token 流式回归样板：每次调用按多个 chunk 吐出正文。

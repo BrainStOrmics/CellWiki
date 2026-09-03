@@ -201,15 +201,44 @@ def _audit_section(
 # ---------------------------------------------------------------------------
 # git：系统维护 commit
 # ---------------------------------------------------------------------------
-def _staged_paths(git: GitExecutor) -> list[str]:
-    """Parse ``git status --short`` for index-staged paths (column 0 in AMD/RC)."""
-    paths: list[str] = []
+# 线程内最近一次维护的外来暂存告警清单（方案 D：从"中止"降为"告警"）。
+# 维护调用本身由 runtime 的 _maintenance_lock 串行化，模块级暂存在此前提下安全。
+_LAST_MAINTENANCE_WARNING: list[str] = []
+
+
+def take_maintenance_warning() -> list[str]:
+    """Pop the foreign-staged warning collected by the last commit attempt."""
+    warning = list(_LAST_MAINTENANCE_WARNING)
+    _LAST_MAINTENANCE_WARNING.clear()
+    return warning
+
+
+def _paths_with_changes(git: GitExecutor, paths: tuple[str, ...]) -> list[str]:
+    """Own paths that differ from HEAD, with **no** dependence on the index.
+
+    ``git status --porcelain -- <paths>`` reports worktree-vs-HEAD state for the
+    given pathspec; staged columns of foreign files are irrelevant because the
+    pathspec already scopes the check to maintenance-owned files.
+    """
+    changed: list[str] = []
+    for line in git.run("status", "--porcelain", "--", *paths).splitlines():
+        if len(line) < 4:
+            continue
+        # porcelain v1: XY<space>path — any non-blank status letter = change.
+        if line[0] != " " or line[1] != " ":
+            changed.append(line[3:])
+    return changed
+
+
+def _foreign_staged_paths(git: GitExecutor, own: set[str]) -> list[str]:
+    """Index-staged paths outside the maintenance-owned set (warning, not abort)."""
+    foreign: list[str] = []
     for line in git.run("status", "--short").splitlines():
         if len(line) < 3:
             continue
-        if line[0] in "AMDRC" and line[1] in " \t":
-            paths.append(line[3:])
-    return paths
+        if line[0] in "AMDRC" and line[1] in " \t" and line[3:] not in own:
+            foreign.append(line[3:])
+    return foreign
 
 
 def _commit_maintenance(
@@ -218,20 +247,27 @@ def _commit_maintenance(
     verdict: str,
     files: tuple[str, ...],
 ) -> str | None:
+    """Path-scoped system maintenance commit (ADR-0009 + 方案 D).
+
+    ``git commit --only -- <paths>`` 只提交维护自己的文件，index 里的外来暂存
+    改动保持原样、不进本提交。旧实现的全局 staged 守卫会把维护永久饿死
+    （外来暂存不清理则每次判定都 maintenance_failed）；现在降级为可观测告警，
+    清单通过 ``last_maintenance_warning`` 暴露给调用方写进维护事件。
+    """
     git = GitExecutor(root)
-    staged = _staged_paths(git)
-    foreign = {path for path in staged if path not in set(files)}
-    if foreign:
-        raise WorkspaceMaintenanceError(
-            "abort maintenance commit: unexpected staged changes: "
-            + ", ".join(sorted(foreign)[:5])
-        )
-    for name in files:
-        git.run("add", name)
-    if not any(path in set(files) for path in _staged_paths(git)):
+    foreign = _foreign_staged_paths(git, set(files))
+    # 告警暂存必须在每次调用开始时刷新：commit 中途失败时上层 take() 读到的
+    # 也必须本次的状态，而不是上一次成功调用的残留。
+    _LAST_MAINTENANCE_WARNING[:] = foreign
+    changed = _paths_with_changes(git, files)
+    if not changed:
         return None  # 文件内容无变化，无需提交
     message = f"{MAINTENANCE_COMMIT_PREFIX} after run {run_id} ({verdict})"
-    git.run("commit", "-m", message)
+    # add 仅限维护自己的路径：首次生成的 statistics.md 等可能尚未被 git 跟踪，
+    # `commit --only` 对未跟踪 pathspec 会直接报错。add 是路径限定的，外来 staged
+    # 不受影响；随后 --only 提交保证 commit 内容严格等于 changed 集合。
+    git.run("add", "--", *changed)
+    git.run("commit", "--only", "-m", message, "--", *changed)
     return git.current_head()
 
 

@@ -3,7 +3,7 @@
 # =============================================================================
 # 覆盖四个判定路径（lint / accept / reject / unfinished）的写入与 git 行为：
 # 派生文件重建、index 统计注入、log/audit 追加、固定 message 的系统 commit、
-# 幂等去重、以及外部暂存变更导致维护中止的失败语义。
+# 幂等去重、以及方案 D 的"外来暂存不中止、不进入系统提交"语义。
 # =============================================================================
 
 from __future__ import annotations
@@ -11,17 +11,15 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import pytest
-
 from cellwiki.domain.pending_diff import PendingDiff
 from cellwiki.services.git_executor import GitExecutor
 from cellwiki.services.workspace_maintenance import (
     MAINTENANCE_COMMIT_PREFIX,
-    WorkspaceMaintenanceError,
     maintain_after_accept,
     maintain_after_lint,
     maintain_after_reject,
     maintain_after_unfinished,
+    take_maintenance_warning,
 )
 
 
@@ -139,14 +137,53 @@ def test_maintain_after_lint_appends_audit_section_and_is_idempotent(tmp_path: P
     assert (root / "audit_report.md").read_text(encoding="utf-8").count("Audit snapshot") == 1
 
 
-def test_maintenance_aborts_on_foreign_staged_changes(tmp_path: Path):
+def test_maintenance_commits_own_files_despite_foreign_staged(tmp_path: Path):
+    """方案 D：外来暂存改动不再中止维护，也绝不进入系统维护 commit。
+
+    旧守卫在 index 有未清理的暂存改动时每次判定都 maintenance_failed（现场：
+    批量 ingest 中止留下的 staged 卡住整个工作区的维护重试）。现在维护用
+    `commit --only -- <own paths>` 路径限定提交：自己的派生文件照常落 commit，
+    stray 保持 staged、原样不动。
+    """
     root = _init_repo(tmp_path / "repo")
     diff, git = _accepted_diff(root)
     (root / "stray.md").write_text("stray", encoding="utf-8")
     git.run("add", "stray.md")
 
-    with pytest.raises(WorkspaceMaintenanceError):
-        maintain_after_accept(root, run_id="run_x", diff=diff)
-    # 中止后不产生系统维护 commit，stray 仍留在暂存区
-    maintenance = [line for line in _oneline_subjects(root) if MAINTENANCE_COMMIT_PREFIX in line]
-    assert maintenance == []
+    outcome = maintain_after_accept(root, run_id="run_x", diff=diff)
+    assert outcome.commit_sha is not None
+    # 系统维护 commit 的文件集合严格属于维护文件，不含 stray。
+    # （白名单执行器不含 show，这里用裸 subprocess 做只读断言。）
+    committed = subprocess.run(
+        ["git", "-C", str(root), "show", "--name-only", "--format=", outcome.commit_sha],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+    assert committed
+    assert "stray.md" not in committed
+    assert set(committed) <= {"overview.md", "statistics.md", "index.md", "log.md"}
+    # stray 仍留在暂存区（系统不代替用户清 index）。
+    status = git.run("status", "--short")
+    assert any(
+        line.startswith("A ") and line[3:] == "stray.md"
+        for line in status.splitlines()
+    ), status
+    # 维护记录已写入工作树与提交。
+    assert "accepted | run run_x" in (root / "log.md").read_text(encoding="utf-8")
+
+
+def test_maintenance_reports_foreign_staged_warning(tmp_path: Path):
+    root = _init_repo(tmp_path / "warn")
+    diff, git = _accepted_diff(root)
+    (root / "stray2.md").write_text("stray", encoding="utf-8")
+    git.run("add", "stray2.md")
+
+    maintain_after_accept(root, run_id="run_y", diff=diff)
+    warning = take_maintenance_warning()
+    assert "stray2.md" in warning
+
+    # 干净仓库的调用不留残上次告警（告警暂存在每次维护开始时刷新）。
+    clean = _init_repo(tmp_path / "clean")
+    maintain_after_unfinished(clean, run_id="run_y2")
+    assert take_maintenance_warning() == []

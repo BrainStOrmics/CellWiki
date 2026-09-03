@@ -102,6 +102,29 @@ def test_commit_requires_exactly_one_message(repo):
         executor.run("commit", "-m", "a", "-m", "b")
 
 
+def test_commit_only_pathspec_commits_only_named_paths(repo):
+    """系统维护的 `commit --only -- <paths>`（方案 D）：只收显式路径。
+
+    前提与实现一致：`--only` 只认 git 已知的路径（未跟踪文件要先 add），
+    且 pathspec 覆盖 index 与 worktree。
+    """
+    root, executor = repo
+    _write(root, "wiki/mine.md", "# mine\n")
+    _write(root, "wiki/theirs.md", "# theirs\n")
+    executor.run("add", "wiki/mine.md", "wiki/theirs.md")
+    executor.run("commit", "--only", "-m", "only mine", "--", "wiki/mine.md")
+    committed = executor.run("diff", "--name-only", "HEAD~1", "HEAD").splitlines()
+    assert committed == ["wiki/mine.md"]
+    # theirs 仍留在暂存区，未被系统提交动过。
+    assert any(
+        line.startswith("A ") and line[3:] == "wiki/theirs.md"
+        for line in executor.run("status", "--short").splitlines()
+    )
+    # --only 的 pathspec 仍走 P1：越界路径拒绝。
+    with pytest.raises(GitPathError):
+        executor.run("commit", "--only", "-m", "x", "--", "../outside.md")
+
+
 def test_path_arguments_after_separator_are_p1_checked(repo):
     _, executor = repo
     with pytest.raises(GitPathError):
