@@ -80,6 +80,35 @@ describe("reduceAgentRunMessages", () => {
     expect(cancelled[0].runStatus).toBe("cancelled");
   });
 
+  it("settles the bubble on unfinished and keeps it closed for late progress events", () => {
+    const started = reduceAgentRunMessages(
+      [],
+      event(1, "tool_started", { tool_name: "write_file", tool_call_id: "w1" }, "write_file started."),
+      labels,
+    );
+    expect(started[0].streaming).toBe(true);
+
+    const paused = reduceAgentRunMessages(
+      started,
+      event(2, "run_status", { status: "unfinished", terminal: true }, "Run paused: budget"),
+      labels,
+    );
+    expect(paused[0].streaming).toBe(false);
+    expect(paused[0].runStatus).toBe("unfinished");
+    expect(paused[0].process?.[0].phase).toBe("completed");
+
+    // 系统维护事件在终态之后才落库：不得把已结算的气泡重新点亮成"还在跑"。
+    const late = reduceAgentRunMessages(
+      paused,
+      event(3, "progress", { kind: "maintenance", verdict: "unfinished" }, "Workspace maintenance applied."),
+      labels,
+    );
+    expect(late[0].streaming).toBe(false);
+    expect(late[0].runStatus).toBe("unfinished");
+    expect(late).toHaveLength(1);
+    expect(late[0].process).toHaveLength(2);
+  });
+
   it("downgrades legacy high-confidence answers without verification fields", () => {
     const result = reduceAgentRunMessages(
       [],

@@ -10,6 +10,9 @@ import type {
   AgentToolResultPreview,
   ChatMessage,
 } from "../../types";
+// 单一终态来源：reducer 之前自带一份 terminalStatuses，缺 unfinished，与 AppShell
+// 的判定各自漂移——同一 run 在两个地方被判成不同生命周期。统一用 run-status 的集合。
+import { terminalAgentStatuses } from "./run-status";
 
 export type AgentRunReducerLabels = {
   failed: string;
@@ -29,15 +32,6 @@ const processEventTypes = new Set([
   "changeset_ready",
   "verification",
   "error",
-]);
-
-const terminalStatuses = new Set<AgentRunStatus>([
-  "waiting_confirmation",
-  "waiting_approval",
-  "succeeded",
-  "rejected",
-  "failed",
-  "cancelled",
 ]);
 
 const statusTones: Record<string, AgentTimelineStatusTone> = {
@@ -149,7 +143,7 @@ export function reduceAgentRunMessages(
 
   if (event.type === "run_status") {
     const status = event.data.status as AgentRunStatus | undefined;
-    if (!status || !terminalStatuses.has(status)) return next;
+    if (!status || !terminalAgentStatuses.has(status)) return next;
     return settleRun(next, event.run_id, status, {
       failed: String(event.data.error_message || event.message || labels.failed),
       cancelled: event.message || labels.cancelled,

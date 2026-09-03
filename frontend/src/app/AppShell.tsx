@@ -33,6 +33,9 @@ import { ThreadList } from "../features/agent/ThreadList";
 import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
 import { reduceAgentRunMessages, type AgentRunReducerLabels } from "../features/agent/agent-run-reducer";
 import { QuestionCard } from "../features/agent/QuestionCard";
+// 终态判定只有一份：unfinished 也是流终态（后端已关 SSE 停在预算上）。漏掉它会让
+// 订阅侧无限重连、agentBusy 永不清零，"继续"按钮因此从不出现——看起来就是卡死。
+import { terminalAgentStatuses } from "../features/agent/run-status";
 import { SearchWorkspace } from "../features/discovery/FeatureWorkspaces";
 import { WorkspaceFileBrowser, type WorkspaceTreeEntry } from "../features/workspace/WorkspaceFileBrowser";
 import { WorkspaceFileViewer } from "../features/workspace/WorkspaceFileViewer";
@@ -77,16 +80,9 @@ const agentEventTypes: AgentEventType[] = [
   "error",
 ];
 
-const terminalAgentStatuses = new Set<AgentRunStatus>([
-  "waiting_confirmation",
-  "waiting_approval",
-  "succeeded",
-  "rejected",
-  "failed",
-  "cancelled",
-]);
-
-/** 暂停态 run：恢复会话时必须把事件流渲染回聊天，否则刷新后回答与问题卡会一起消失。 */
+/** 暂停态 run：恢复会话时必须把事件流渲染回聊天，否则刷新后回答与问题卡会一起消失。
+ *  注意 unfinished 同时属于"暂停"和"终态"：终态指 SSE 已结束（不再自动重连、
+ *  busy 清零），暂停指用户可点"继续"恢复——两者不矛盾。 */
 const pausedAgentStatuses = new Set<AgentRunStatus>([
   "waiting_confirmation",
   "waiting_approval",
@@ -633,7 +629,13 @@ export function AppShell() {
             current?.runId === event.run_id ? null : current
           ));
         }
-        if (status !== "waiting_confirmation" && status !== "waiting_approval") {
+        if (
+          status !== "waiting_confirmation"
+          && status !== "waiting_approval"
+          // 可恢复的暂停仍算"挂在这个 run 上"：保留它，取消按钮才留着——
+          // 那是 UI 里唯一能释放串行门禁（POST /cancel）的出口。
+          && status !== "unfinished"
+        ) {
           setActiveAgentRunId(null);
           window.localStorage.removeItem(agentRunStorageKey(event.thread_id));
         }
