@@ -29,7 +29,8 @@ Copy-Item .env.example .env
 ## 代码变更规则
 
 - 为非直观的意图、数据所有权、错误处理和安全限制写注释或 docstring；不要写逐行复述型注释。
-- 不绕过 `ChangeSet -> Approval -> CentralWriter -> Verification` 修改正式知识。
+- 不绕过 `Run -> 待确认 diff -> 用户接受` 修改正式知识
+  （见 [ADR-0007](docs/adr/0007-git-carries-versioning-and-approval.md)）。
 - 新增或修改领域概念时同步更新 `CONTEXT.md`、合同测试和必要的迁移。
 - 新增 provider 行为时同步更新公开说明、版本记录与回归测试。
 - 不因一次任务顺手重构无关旧 Module；保持 diff 能追溯到明确需求。

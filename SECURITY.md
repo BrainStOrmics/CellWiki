@@ -21,7 +21,8 @@ CellWiki 当前为未签名 Windows Beta。安全修复以当前 `main` 的后�
 - Tauri 在每次启动时生成 bearer token；写请求需要该 token。
 - API Key 优先存放在 Windows Credential Manager，界面只显示是否已配置和脱敏提示。
 - 日志 formatter 会脱敏常见 Authorization 与 API Key 形式。
-- Agent、Research、Memory 和 Lint 不能绕过 ChangeSet 与人工 Approval 直接写入正式知识。
+- Agent 与 `lint_knowledge_base` 不能绕过 `Run -> 待确认 diff -> 用户接受`
+  直接写入正式知识；正式内容变更必须有 git 提交与人工判定记录。
 - 项目数据保存在操作系统应用数据目录，不与安装目录混用。
 
 ## 数据与隐私
