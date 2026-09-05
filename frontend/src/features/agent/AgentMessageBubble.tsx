@@ -12,7 +12,7 @@ import {
   Search,
   Terminal,
 } from "lucide-react";
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 import { Highlight, Prism, type PrismTheme } from "prism-react-renderer";
 import { MarkdownContent } from "../../components/MarkdownContent";
 import { useI18n } from "../../i18n";
@@ -218,54 +218,53 @@ function thinkingPreview(text: string, streaming: boolean): string {
   return source.length > 100 ? `${source.slice(0, 100)}…` : source;
 }
 
-type ToolKind = "pwsh" | "read" | "search" | "git" | "generic";
-
-const TOOL_LABELS: Record<string, string> = {
-  run_powershell: "Pwsh",
-  read_file: "Read",
-  read_wiki_page: "Read",
-  write_file: "Write",
-  edit_file: "Edit",
-  delete_file: "Delete",
-  rename_file: "Rename",
-  ls: "LS",
-  glob: "Glob",
-  grep: "Grep",
-  search_wiki: "Search",
-  git: "Git",
-  lint_knowledge_base: "Lint",
-  read_attachment: "Attachment",
-  promote_attachment: "Promote",
-  ingest_sources: "Ingest",
-  ask_user_question: "Ask",
-  get_project_status: "Status",
+type ToolCardBodyProps = {
+  node: Extract<AgentTimelineNode, { kind: "tool" }>;
+  args?: AgentToolArgsDisplay;
+  preview?: AgentToolResultPreview;
+  legacy: string | null;
 };
 
-function toolKind(toolName: string): ToolKind {
-  if (toolName === "run_powershell") return "pwsh";
-  if (toolName === "read_file" || toolName === "read_wiki_page") return "read";
-  if (toolName === "grep" || toolName === "glob" || toolName === "ls" || toolName === "search_wiki") return "search";
-  if (toolName === "git") return "git";
-  return "generic";
-}
+/** One card = one entry: label, icon and body come from the same place, so
+ *  adding a card type cannot leave the three lookups disagreeing. */
+type ToolCardSpec = {
+  label: string;
+  icon: ComponentType<{ size: number }>;
+  Body: ComponentType<ToolCardBodyProps>;
+};
 
-function ToolIcon({ toolName }: { toolName: string }) {
-  const kind = toolKind(toolName);
-  if (kind === "pwsh") return <Terminal size={12} />;
-  if (kind === "read") return <FileCode2 size={12} />;
-  if (kind === "search") return <Search size={12} />;
-  if (kind === "git") return <GitBranch size={12} />;
-  return <FileText size={12} />;
+const TOOL_CARDS: Record<string, ToolCardSpec> = {
+  run_powershell: { label: "Pwsh", icon: Terminal, Body: PwshCard },
+  read_file: { label: "Read", icon: FileCode2, Body: ReadCard },
+  read_wiki_page: { label: "Read", icon: FileCode2, Body: ReadCard },
+  grep: { label: "Grep", icon: Search, Body: SearchCard },
+  glob: { label: "Glob", icon: Search, Body: SearchCard },
+  ls: { label: "LS", icon: Search, Body: SearchCard },
+  search_wiki: { label: "Search", icon: Search, Body: SearchCard },
+  write_file: { label: "Write", icon: FileText, Body: GenericCard },
+  edit_file: { label: "Edit", icon: FileText, Body: GenericCard },
+  delete_file: { label: "Delete", icon: FileText, Body: GenericCard },
+  rename_file: { label: "Rename", icon: FileText, Body: GenericCard },
+  git: { label: "Git", icon: GitBranch, Body: GenericCard },
+  lint_knowledge_base: { label: "Lint", icon: FileText, Body: GenericCard },
+  read_attachment: { label: "Attachment", icon: FileText, Body: GenericCard },
+  promote_attachment: { label: "Promote", icon: FileText, Body: GenericCard },
+  ingest_sources: { label: "Ingest", icon: FileText, Body: GenericCard },
+  ask_user_question: { label: "Ask", icon: FileText, Body: GenericCard },
+  get_project_status: { label: "Status", icon: FileText, Body: GenericCard },
+};
+
+/** 未登记的工具 fail-open：报出自己的名字，走通用卡身，绝不因为不认识而消失。 */
+function toolCardSpec(toolName: string): ToolCardSpec {
+  return TOOL_CARDS[toolName] ?? { label: toolName, icon: FileText, Body: GenericCard };
 }
 
 /** Tool node as a collapsible card: header line + type-specific body. */
 function ToolCard({ node }: { node: Extract<AgentTimelineNode, { kind: "tool" }> }) {
-  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const args = node.argsDisplay;
   const preview = node.resultPreview;
-  const kind = toolKind(node.toolName);
-  const label = TOOL_LABELS[node.toolName] ?? node.toolName;
+  const { label, icon: Icon, Body } = toolCardSpec(node.toolName);
   const title = args?.title || toolLabel(node.summary, node.toolName);
   const legacyDetail = !args && !preview ? toolDetail(node.step) : null;
 
@@ -278,7 +277,7 @@ function ToolCard({ node }: { node: Extract<AgentTimelineNode, { kind: "tool" }>
         onClick={() => setOpen((value) => !value)}
       >
         <ChevronRight size={12} className={`at-chevron ${open ? "is-open" : ""}`} />
-        <ToolIcon toolName={node.toolName} />
+        <Icon size={12} />
         <span className="at-kind">{label}</span>
         {title && <span className="at-label">{title}</span>}
         <span className="at-status">
@@ -291,17 +290,50 @@ function ToolCard({ node }: { node: Extract<AgentTimelineNode, { kind: "tool" }>
       </button>
       {open && (
         <div className="at-card-body">
-          {kind === "pwsh" && <PwshBody args={args} preview={preview} legacy={legacyDetail} />}
-          {kind === "read" && <ReadBody args={args} preview={preview} legacy={legacyDetail} />}
-          {kind !== "pwsh" && kind !== "read" && (
-            <GenericBody preview={preview} legacy={legacyDetail} summary={node.summary} toolName={node.toolName} />
-          )}
-          {preview && kind === "search" && typeof preview.count === "number" && (
-            <div className="at-preview-meta">{t("chat.toolResultCount").replace("{count}", String(preview.count))}</div>
-          )}
+          <Body node={node} args={args} preview={preview} legacy={legacyDetail} />
         </div>
       )}
     </div>
+  );
+}
+
+function PwshCard({ args, preview, legacy }: ToolCardBodyProps) {
+  return <PwshBody args={args} preview={preview} legacy={legacy} />;
+}
+
+function ReadCard({ args, preview, legacy }: ToolCardBodyProps) {
+  return <ReadBody args={args} preview={preview} legacy={legacy} />;
+}
+
+function GenericCard({ node, preview, legacy }: ToolCardBodyProps) {
+  return (
+    <GenericBody
+      preview={preview}
+      legacy={legacy}
+      summary={node.summary}
+      toolName={node.toolName}
+    />
+  );
+}
+
+/** 搜索类工具在通用卡身之外多一行命中数。 */
+function SearchCard({ node, preview, legacy }: ToolCardBodyProps) {
+  const { t } = useI18n();
+  const count = preview && typeof preview.count === "number" ? preview.count : null;
+  return (
+    <>
+      <GenericBody
+        preview={preview}
+        legacy={legacy}
+        summary={node.summary}
+        toolName={node.toolName}
+      />
+      {count !== null && (
+        <div className="at-preview-meta">
+          {t("chat.toolResultCount").replace("{count}", String(count))}
+        </div>
+      )}
+    </>
   );
 }
 
