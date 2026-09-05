@@ -35,6 +35,7 @@ from cellwiki.domain.runs import (
     RunUsage,
 )
 from cellwiki.domain.pending_diff import PendingDiff, PendingDiffStatus
+from cellwiki.services.checkpoints import delete_thread_checkpoints, has_run_checkpoint
 
 
 _TRANSITIONS: dict[AgentRunStatus, set[AgentRunStatus]] = {
@@ -89,6 +90,14 @@ class InvalidRunTransitionError(RuntimeError):
 
 class TerminalRunError(RuntimeError):
     """Raised when code attempts to append work after a finalized run."""
+
+
+class SerialGateViolationError(RuntimeError):
+    """决策 7：在同一个 BEGIN IMMEDIATE 事务里发现已有活动 run。
+
+    检查与建 run 必须同事务，否则两个并发提交都能通过检查、各建一个 run，
+    严格串行门禁形同虚设。由 agent_runtime 翻译成对外的 AgentRunInProgressError。
+    """
 
 
 class ThreadDeletionBlockedError(RuntimeError):
@@ -156,7 +165,10 @@ class RuntimeStore:
     """Deep persistence module: schema, transitions, sequencing, and atomic event append live here."""
 
     def __init__(self, project_root: Path):
-        self.path = Path(project_root).resolve() / "data" / "runtime" / "cellwiki.db"
+        # ADR-0010 决策 11/12：checkpoint 载体与运行库同在 data/runtime 下，
+        # 删线程时要按 run 作用域键级联删掉它，因此这里记住工作区根。
+        self.project_root = Path(project_root).resolve()
+        self.path = self.project_root / "data" / "runtime" / "cellwiki.db"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._schema_lock = threading.Lock()
         self._ensure_schema()
@@ -179,43 +191,101 @@ class RuntimeStore:
             }
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            # Keep the registry complete at the storage boundary: the history list
-            # reads agent_threads, so a run whose thread was never registered would
-            # make that conversation invisible and unreachable again.
-            connection.execute(
-                "INSERT OR IGNORE INTO agent_threads(thread_id, created_at) VALUES (?, ?)",
-                (run.thread_id, run.created_at.isoformat()),
-            )
-            connection.execute(
-                """
-                INSERT INTO agent_runs(run_id, thread_id, status, payload, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    run.run_id,
-                    run.thread_id,
-                    run.status.value,
-                    run.model_dump_json(),
-                    run.updated_at.isoformat(),
-                ),
-            )
-            self._insert_event(
-                connection,
-                run,
-                AgentEventType.RUN_STATUS,
-                message="Run queued.",
-                progress=0,
-                data={"status": run.status.value},
-            )
-            self._insert_message(
-                connection,
-                thread_id=run.thread_id,
-                run_id=run.run_id,
-                role="user",
-                content=run.input_message,
-                data=message_data,
-            )
+            self._insert_run(connection, run, message_data=message_data)
         return run
+
+    def create_run_if_idle(
+        self,
+        run: AgentRun,
+        *,
+        request_id: str | None = None,
+        active_statuses: frozenset[AgentRunStatus] = ACTIVE_RUN_STATUSES,
+        user_message_data: dict[str, Any] | None = None,
+    ) -> tuple[AgentRun, bool]:
+        """ADR-0010 决策 7：把"查无活动 run + 建 run"合并进同一 ``BEGIN IMMEDIATE``。
+
+        返回 ``(run, replayed)``。检查与写入同事务是关键：分开做的话两个并发提交
+        都能通过检查、各建一个 run，严格串行门禁与幂等门同时失效。命中已有
+        ``request_id`` 时返回既有 run 且 ``replayed=True``，调用方仍应回 202。
+        """
+        message_data = user_message_data if user_message_data is not None else {}
+        if user_message_data is None and run.attachment_ids:
+            message_data = {
+                "attachments": [
+                    {"attachment_id": attachment_id}
+                    for attachment_id in dict.fromkeys(run.attachment_ids)
+                ]
+            }
+        active_values = sorted(status.value for status in active_statuses)
+        placeholders = ", ".join("?" for _ in active_values)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if request_id:
+                existing = connection.execute(
+                    "SELECT payload FROM agent_runs WHERE request_id = ?", (request_id,)
+                ).fetchone()
+                if existing is not None:
+                    return AgentRun.model_validate_json(existing[0]), True
+            blocker = connection.execute(
+                f"SELECT run_id, status FROM agent_runs WHERE status IN ({placeholders}) "
+                "ORDER BY updated_at DESC LIMIT 1",
+                active_values,
+            ).fetchone()
+            if blocker is not None:
+                raise SerialGateViolationError(
+                    f"another agent run is active: {blocker[0]} ({blocker[1]})"
+                )
+            self._insert_run(
+                connection, run, message_data=message_data, request_id=request_id
+            )
+        return run, False
+
+    def _insert_run(
+        self,
+        connection: sqlite3.Connection,
+        run: AgentRun,
+        *,
+        message_data: dict[str, Any],
+        request_id: str | None = None,
+    ) -> None:
+        """Write one run row plus its queued event and user message, in the open transaction."""
+        # Keep the registry complete at the storage boundary: the history list
+        # reads agent_threads, so a run whose thread was never registered would
+        # make that conversation invisible and unreachable again.
+        connection.execute(
+            "INSERT OR IGNORE INTO agent_threads(thread_id, created_at) VALUES (?, ?)",
+            (run.thread_id, run.created_at.isoformat()),
+        )
+        connection.execute(
+            """
+            INSERT INTO agent_runs(run_id, thread_id, status, payload, updated_at, request_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run.run_id,
+                run.thread_id,
+                run.status.value,
+                run.model_dump_json(),
+                run.updated_at.isoformat(),
+                request_id if request_id is not None else run.request_id,
+            ),
+        )
+        self._insert_event(
+            connection,
+            run,
+            AgentEventType.RUN_STATUS,
+            message="Run queued.",
+            progress=0,
+            data={"status": run.status.value},
+        )
+        self._insert_message(
+            connection,
+            thread_id=run.thread_id,
+            run_id=run.run_id,
+            role="user",
+            content=run.input_message,
+            data=message_data,
+        )
 
     def append_message(
         self,
@@ -572,6 +642,25 @@ class RuntimeStore:
             """
         )
 
+    def _ensure_run_idempotency_schema(self, connection: sqlite3.Connection) -> None:
+        """ADR-0010 决策 7 + 裁决 #13：幂等键落在内联守卫 ALTER，不走 Alembic。
+
+        直连建库路径（测试与 ``scripts/serve_e2e.py``）不会跑 Alembic，只补 revision
+        会让这些库静默缺列，幂等门形同虚设。SQLite 的 ``ADD COLUMN`` 不能带 UNIQUE，
+        唯一性由紧随其后的部分唯一索引承担；NULL 不参与唯一性判定，因此升级前的
+        既有 run 可以全部留空。
+        """
+
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(agent_runs)")
+        }
+        if "request_id" not in columns:
+            connection.execute("ALTER TABLE agent_runs ADD COLUMN request_id TEXT")
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_agent_runs_request_id "
+            "ON agent_runs(request_id) WHERE request_id IS NOT NULL"
+        )
+
     # ---- 线程附件记录 ----
     def save_attachment(self, attachment: Any) -> dict:
         """Persist one thread-scoped attachment record (files live in AttachmentFileStore)."""
@@ -717,6 +806,9 @@ class RuntimeStore:
                 "DELETE FROM agent_attachments WHERE thread_id = ?", (thread_id,)
             )
             connection.execute("DELETE FROM agent_threads WHERE thread_id = ?", (thread_id,))
+        # ADR-0010 决策 11：图状态是不可重建的持久数据，删线程必须级联删掉它，
+        # 否则删除承诺只覆盖了运行库。放在闸门之后、事务之外：载体是独立文件。
+        delete_thread_checkpoints(self.project_root, thread_id)
         return int(run_count)
 
     # ---- 待确认 diff 持久化（阶段 4；审批单元 = 一行一次判定）----
@@ -922,10 +1014,14 @@ class RuntimeStore:
             "avg_cache_hit_rate": round(total_cached / total_input, 4) if total_input > 0 else 0.0,
         }
 
-    def recover_stale_runs(self) -> list[AgentRun]:
+    def recover_stale_runs(self, *, graph_state_durable: bool = True) -> list[AgentRun]:
         """服务启动时收敛"孤儿"运行：RUNNING/RETRYING -> UNFINISHED(TIMEOUT)、
         CANCELLING -> CANCELLED、QUEUED -> UNFINISHED。worker 随进程消亡，
-        任何 active 运行在重启后都无法继续推进，必须恢复后再手动继续。"""
+        任何 active 运行在重启后都无法继续推进，必须恢复后再手动继续。
+
+        ``graph_state_durable`` 为假（协议型 adapter，没有图状态）时不动
+        WAITING_CONFIRMATION：它的挂起状态归外部服务，本库无从判断是否还在。
+        """
         recovered: list[AgentRun] = []
         now = datetime.now(UTC)
         for run in self.list_runs(limit=10_000):
@@ -960,6 +1056,29 @@ class RuntimeStore:
                         error_type=AgentErrorType.TIMEOUT,
                         error_message="Interrupted by restart while running.",
                         message="Run paused (restart). Resume to continue.",
+                        finished_at=now,
+                    )
+                )
+            elif run.status == AgentRunStatus.WAITING_CONFIRMATION and graph_state_durable:
+                # 决策 10：挂在提问上的 run 重启后仍停在 WAITING_CONFIRMATION。
+                # checkpoint 还在就原样留着，用户直接作答即可续跑；丢了就关掉未回答
+                # 的问题并落到 UNFINISHED，让"继续"按决策 4 明确拒绝并要求重发，
+                # 而不是在空图上静默 Command(resume=...)。
+                if run.checkpoint_id and has_run_checkpoint(
+                    self.project_root, run.thread_id, run.run_id
+                ):
+                    continue
+                self.answer_question(run.run_id, [], timed_out=True)
+                recovered.append(
+                    self.transition(
+                        run.run_id,
+                        AgentRunStatus.UNFINISHED,
+                        error_type=AgentErrorType.TIMEOUT,
+                        error_message=(
+                            "Question state was lost across a restart; "
+                            "resend the message to start a new run."
+                        ),
+                        message="Question lost on restart. Resend the message to continue.",
                         finished_at=now,
                     )
                 )
@@ -1010,6 +1129,31 @@ class RuntimeStore:
                     progress=progress,
                     data={"status": status.value, **(data or {})},
                 )
+        return updated
+
+    def set_run_checkpoint(self, run_id: str, checkpoint_id: str | None) -> AgentRun:
+        """ADR-0010 决策 4：每段流结束时写回最新 checkpoint 标识。
+
+        这是字段回写而不是生命周期推进，因此不走 ``_assert_run_transition``、
+        也不产生事件。写回后 ``checkpoint_id`` 成为可查询字段：为空的 run
+        在可恢复态下走显式失败，禁止在空图上静默续跑。
+        """
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = AgentRun.model_validate_json(row[0])
+            updated = current.model_copy(
+                update={"checkpoint_id": checkpoint_id, "updated_at": datetime.now(UTC)}
+            )
+            connection.execute(
+                "UPDATE agent_runs SET payload = ?, updated_at = ? WHERE run_id = ?",
+                (updated.model_dump_json(), updated.updated_at.isoformat(), run_id),
+            )
         return updated
 
     def update_usage(
@@ -1438,6 +1582,7 @@ class RuntimeStore:
                 """
             )
             self._ensure_thread_registry(connection)
+            self._ensure_run_idempotency_schema(connection)
 
     def _backfill_messages(self) -> None:
         """Backfill transcripts created before the durable message table existed.

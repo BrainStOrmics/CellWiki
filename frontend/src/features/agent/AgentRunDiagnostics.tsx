@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { getJson } from "../../lib/product-api";
 import { useI18n, type MessageKey } from "../../i18n";
-import type { AgentDiagnostics, AgentSpan } from "../../types";
+import type { AgentDiagnostics, AgentSpan, AgentUsageSegment } from "../../types";
 
 type AgentRunDiagnosticsProps = {
   runId: string;
+  /** ADR-0010 决策 9：每段流的用量，唯一允许的展示位置就是本诊断面板。 */
+  usageSegments?: AgentUsageSegment[];
 };
 
 /**
@@ -13,7 +15,7 @@ type AgentRunDiagnosticsProps = {
  * The line wraps freely with the sidebar width; clicking it expands the
  * per-round detail table.
  */
-export function AgentRunDiagnostics({ runId }: AgentRunDiagnosticsProps) {
+export function AgentRunDiagnostics({ runId, usageSegments }: AgentRunDiagnosticsProps) {
   const { t } = useI18n();
   const [diagnostics, setDiagnostics] = useState<AgentDiagnostics | null>(null);
 
@@ -72,6 +74,31 @@ export function AgentRunDiagnostics({ runId }: AgentRunDiagnosticsProps) {
             {usage.tool_calls_failed ?? 0} failed ·{" "}
             {usage.tool_calls_cancelled ?? 0} cancelled
           </dd>
+          {(usageSegments?.length ?? 0) > 0 && (
+            <>
+              <dt>Segments</dt>
+              <dd>
+                {usageSegments?.map((entry, index) => (
+                  <span key={entry.event_id ?? `segment-${index}`}>
+                    {index > 0 && " · "}
+                    #{index + 1} {entry.segment.input_tokens} in /{" "}
+                    {entry.segment.output_tokens} out (
+                    {formatSeconds(entry.segment.elapsed_seconds * 1000)})
+                  </span>
+                ))}
+              </dd>
+            </>
+          )}
+          {diagnostics.checkpoint && (
+            <>
+              <dt>Checkpoint</dt>
+              <dd>
+                {diagnostics.checkpoint.backend} ·{" "}
+                {diagnostics.checkpoint.id ?? "none"} ·{" "}
+                {formatBytes(diagnostics.checkpoint.file_bytes)}
+              </dd>
+            </>
+          )}
         </dl>
         {thread && (
           <p className="agent-run-thread-summary">
@@ -181,6 +208,14 @@ function formatTokens(value: number): string {
   const k = value / 1000;
   const rounded = k >= 100 ? Math.round(k) : Math.round(k * 10) / 10;
   return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}K`;
+}
+
+/** checkpoints.sqlite 体积：1 KB 以下按字节报，往上 KB/MB 各留一位小数。 */
+function formatBytes(value: number): string {
+  if (value < 1024) return `${value} B`;
+  const kb = value / 1024;
+  if (kb < 1024) return `${Math.round(kb * 10) / 10} KB`;
+  return `${Math.round((kb / 1024) * 10) / 10} MB`;
 }
 
 function hitRate(part: number, whole: number): string {

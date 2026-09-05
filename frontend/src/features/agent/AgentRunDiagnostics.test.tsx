@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentRunDiagnostics } from "./AgentRunDiagnostics";
 import { LanguageProvider } from "../../i18n";
-import type { AgentDiagnostics } from "../../types";
+import type { AgentDiagnostics, AgentUsageSegment } from "../../types";
 
 afterEach(cleanup);
 
@@ -58,10 +58,10 @@ const base: AgentDiagnostics = {
   },
 };
 
-function renderDiagnostics() {
+function renderDiagnostics(usageSegments?: AgentUsageSegment[]) {
   return render(
     <LanguageProvider>
-      <AgentRunDiagnostics runId="run_1" />
+      <AgentRunDiagnostics runId="run_1" usageSegments={usageSegments} />
     </LanguageProvider>,
   );
 }
@@ -127,5 +127,63 @@ describe("AgentRunDiagnostics", () => {
     renderDiagnostics();
     expect(await screen.findByText("输入 108K tok · 输出 2.2K tok")).toBeInTheDocument();
     expect(screen.getByText("缓存命中 76%")).toBeInTheDocument();
+  });
+
+  it("renders each stream segment's own usage (ADR-0010 决策 9)", async () => {
+    vi.mocked(getJson).mockResolvedValue(base);
+    const { container } = renderDiagnostics([
+      {
+        event_id: "u-1",
+        segment: { ...base.usage, input_tokens: 700, output_tokens: 200, elapsed_seconds: 6 },
+        cumulative: base.usage,
+      },
+      {
+        event_id: "u-2",
+        segment: { ...base.usage, input_tokens: 500, output_tokens: 140, elapsed_seconds: 6.5 },
+        cumulative: base.usage,
+      },
+    ]);
+    await screen.findByText("gpt-x · 3轮 · 2步");
+
+    const detail = container.querySelector(".agent-run-detail")?.textContent ?? "";
+    expect(detail).toContain("Segments");
+    expect(detail).toContain("#1 700 in / 200 out (6s)");
+    expect(detail).toContain("#2 500 in / 140 out (6.5s)");
+  });
+
+  it("reports the checkpoint carrier and its on-disk size (决策 4/12)", async () => {
+    vi.mocked(getJson).mockResolvedValue({
+      ...base,
+      checkpoint: { id: "1f1a95b7", backend: "sqlite", file_bytes: 24_576 },
+    });
+    const { container } = renderDiagnostics();
+    await screen.findByText("gpt-x · 3轮 · 2步");
+
+    const detail = container.querySelector(".agent-run-detail")?.textContent ?? "";
+    expect(detail).toContain("Checkpoint");
+    expect(detail).toContain("sqlite · 1f1a95b7 · 24 KB");
+  });
+
+  it("shows none for a run that predates checkpoint persistence", async () => {
+    vi.mocked(getJson).mockResolvedValue({
+      ...base,
+      checkpoint: { id: null, backend: "sqlite", file_bytes: 512 },
+    });
+    const { container } = renderDiagnostics();
+    await screen.findByText("gpt-x · 3轮 · 2步");
+
+    expect(container.querySelector(".agent-run-detail")?.textContent ?? "").toContain(
+      "sqlite · none · 512 B",
+    );
+  });
+
+  it("omits the segment and checkpoint rows when neither is supplied", async () => {
+    vi.mocked(getJson).mockResolvedValue(base);
+    const { container } = renderDiagnostics();
+    await screen.findByText("gpt-x · 3轮 · 2步");
+
+    const detail = container.querySelector(".agent-run-detail")?.textContent ?? "";
+    expect(detail).not.toContain("Segments");
+    expect(detail).not.toContain("Checkpoint");
   });
 });

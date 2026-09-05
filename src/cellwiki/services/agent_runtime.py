@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
-from typing import Any, Callable, Iterable, cast
+from typing import Any, Callable, Generator, Iterable, cast
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
@@ -45,8 +45,16 @@ from cellwiki.domain.runs import (
     RunBudget,
     RunUsage,
 )
+from cellwiki.services.checkpoints import (
+    CheckpointMissingError,
+    checkpoint_state_key,
+    delete_run_checkpoints,
+    has_run_checkpoint,
+    latest_checkpoint_id,
+)
 from cellwiki.services.conversation_context import ConversationContextView
 from cellwiki.services.prompt_layers import (
+    LAYER_A_TEXT,
     build_layer_b_snapshot,
     build_r1_r5_block,
     compact_transcript,
@@ -64,7 +72,11 @@ from cellwiki.services.attachment_store import AttachmentFileStore
 from cellwiki.services.git_executor import GitCommandError, GitExecutor
 from cellwiki.services.logging_context import log_context
 from cellwiki.services.quality import inspect_projection
-from cellwiki.services.runtime_store import InvalidRunTransitionError, RuntimeStore
+from cellwiki.services.runtime_store import (
+    InvalidRunTransitionError,
+    RuntimeStore,
+    SerialGateViolationError,
+)
 from cellwiki.services.workspace_maintenance import (
     MAINTENANCE_COMMIT_PREFIX,
     maintain_after_accept,
@@ -87,6 +99,18 @@ _TOOL_ACTIVITY_CODES = {
     "run_powershell": "running_tool",
     "lint_knowledge_base": "checking_quality",
 }
+
+
+def prompt_configuration_hash(budget: RunBudget) -> str:
+    """ADR-0010 决策 8：Layer A + model + budget 的短哈希，作为执行配置快照。
+
+    历史 run 因此能说明自己是在哪份提示词与预算下跑的，不受之后的 .env 漂移影响。
+    """
+    digest = hashlib.sha256()
+    digest.update(LAYER_A_TEXT.encode("utf-8"))
+    digest.update((settings.openai_model or "").encode("utf-8"))
+    digest.update(budget.model_dump_json().encode("utf-8"))
+    return digest.hexdigest()[:16]
 
 
 class AgentRuntimeError(RuntimeError):
@@ -774,9 +798,12 @@ class AgentRuntimeManager:
         self.max_retries = max_retries
         self.seed = seed
         self.store = RuntimeStore(self.project_root)
-        # 启动时收敛孤儿运行（重启窗口：running -> unfinished 可继续/恢复）
-        self.store.recover_stale_runs()
         self.adapter = adapter
+        # 启动时收敛孤儿运行（重启窗口：running -> unfinished 可继续/恢复）。
+        # 决策 10：协议型 adapter 没有图状态，挂起态归外部服务，不参与 checkpoint 收敛。
+        self.store.recover_stale_runs(
+            graph_state_durable=adapter is None or not hasattr(adapter, "execute")
+        )
         self._executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="cellwiki-agent",
@@ -802,22 +829,54 @@ class AgentRuntimeManager:
         budget: RunBudget | None = None,
         *,
         attachment_ids: list[str] | None = None,
+        request_id: str | None = None,
     ) -> AgentRun:
         """Start exactly one run; reject any second active run (strict serial gate)."""
-        active = self._ensure_single_active_run()
-        if active is not None:
-            raise AgentRunInProgressError(
-                f"another agent run is active: {active.run_id} ({active.status.value})"
-            )
-        pending = [
-            diff
-            for diff in self.store.list_pending_diffs(limit=50)
-            if diff.status == PendingDiffStatus.PENDING
-        ]
-        if pending:
-            raise AgentRunInProgressError(
-                f"a pending diff requires review before a new run: {pending[0].diff_id}"
-            )
+        run, _replayed = self.start_idempotent(
+            thread_id,
+            message,
+            context,
+            budget,
+            attachment_ids=attachment_ids,
+            request_id=request_id,
+        )
+        return run
+
+    def start_idempotent(
+        self,
+        thread_id: str,
+        message: str,
+        context: WikiAgentContext,
+        budget: RunBudget | None = None,
+        *,
+        attachment_ids: list[str] | None = None,
+        request_id: str | None = None,
+    ) -> tuple[AgentRun, bool]:
+        """ADR-0010 决策 7/8：幂等提交 + 执行配置快照，返回 ``(run, replayed)``。
+
+        命中同一 ``request_id`` 时返回既有 run 且 ``replayed=True``，调用方仍回 202。
+        串行门禁的权威判定在 ``create_run_if_idle`` 的同一事务里；事务外的快速检查
+        只为了给出更具体的错误消息，因此仅在**没有** ``request_id`` 时跑——否则重试
+        风暴里原 run 还活动着，幂等命中会被误判成 409。
+        """
+        # 决策 7：带 request_id 时不在事务外做任何预检。重试风暴里原 run 往往还是
+        # 活动的，预检会把"命中既有 run"误判成 409；权威判定（先查 replay、再查
+        # 活动 run、最后插入）全在 create_run_if_idle 的同一 BEGIN IMMEDIATE 里。
+        if request_id is None:
+            active = self._ensure_single_active_run()
+            if active is not None:
+                raise AgentRunInProgressError(
+                    f"another agent run is active: {active.run_id} ({active.status.value})"
+                )
+            pending = [
+                diff
+                for diff in self.store.list_pending_diffs(limit=50)
+                if diff.status == PendingDiffStatus.PENDING
+            ]
+            if pending:
+                raise AgentRunInProgressError(
+                    f"a pending diff requires review before a new run: {pending[0].diff_id}"
+                )
         # 重试上次失败的维护（best-effort，失败不阻塞新 run）
         self._retry_failed_maintenance()
         run_id = _new_run_id()
@@ -844,21 +903,64 @@ class AgentRuntimeManager:
             # Diagnostics read run.model_name; without this write the field stays
             # empty even though model spans carry the name.
             model_name=settings.openai_model or "",
+            # 决策 8：执行配置快照，使历史 run 不受 .env 漂移影响。
+            prompt_hash=prompt_configuration_hash(budget),
+            request_id=request_id,
         )
-        self.store.create_run(run)
+        try:
+            created, replayed = self.store.create_run_if_idle(run, request_id=request_id)
+        except SerialGateViolationError as error:
+            raise AgentRunInProgressError(str(error)) from None
+        if replayed:
+            # 幂等命中：不提交第二个执行者，直接把既有 run 交回调用方。
+            return created, True
         with self._thread_lock:
-            self._cancellations[run_id] = _CancellationGate()
+            self._cancellations[created.run_id] = _CancellationGate()
         self._executor.submit(
-            self._execute, run_id, thread_id, message, context, budget
+            self._execute, created.run_id, thread_id, message, context, budget
         )
-        return run
+        return created, False
 
     def retry(self, run_id: str, *, reason: str = "retry") -> AgentRun:
-        """Retry a failed run with the same input message."""
+        """ADR-0010 决策 5：retry = 先删该 run 的状态键，再从有界 transcript 重放。
+
+        仍是同一 ``run_id``（守 ``CONTEXT.md`` 不变量 7）；累计用量、已产生的 commit
+        与审批单元关联保留。与 resume 分道：resume 不清状态、从 checkpoint 续跑。
+        """
+        run = self.store.get_run(run_id)
+        if run is not None:
+            delete_run_checkpoints(self.project_root, run.thread_id, run_id)
         return self._claim_and_submit(run_id, AgentRunStatus.RETRYING, reason)
 
+    def _run_checkpoint_is_resumable(self, run: AgentRun) -> bool:
+        """决策 4：字段非空只是必要条件，载体里还得真的存着该 run 的图状态。
+
+        两类"不能续跑"都要挡住：升级前产生的 run 一律 ``checkpoint_id = NULL``；
+        清过 ``data/`` 或换了机器的 run 则是"字段在、状态没了"。后者若只看字段，
+        就会在空图上静默 ``Command(resume=...)``。回滚闸（``inmemory``）下没有可查
+        的持久载体，图状态本就只活在本进程里，因此仍按字段判定。
+        """
+        if not run.checkpoint_id:
+            return False
+        if settings.agent_checkpointer != "sqlite":
+            return True
+        return has_run_checkpoint(self.project_root, run.thread_id, run.run_id)
+
     def resume(self, run_id: str, *, reason: str = "resume") -> AgentRun:
-        """Resume an unfinished run from its recorded checkpoint."""
+        """ADR-0010 决策 6：resume = 同一 run 回到 RUNNING、继承剩余预算，从 checkpoint 续跑。"""
+        run = self.store.get_run(run_id)
+        if run is None:
+            raise KeyError(f"unknown run: {run_id}")
+        adapter = self.adapter or self._built_adapter
+        # adapter 为空意味着稍后会构建产品图，因此同样按图路径判定。
+        graph_path = adapter is None or not hasattr(adapter, "execute")
+        # 决策 4：升级前产生的 run 一律 checkpoint_id=NULL；显式失败（API 映射 409
+        # 并提示重发消息），禁止在空图上静默重放。协议型 adapter 没有图状态，
+        # 续跑就是按原输入重放，不受这道闸门约束。
+        if graph_path and not self._run_checkpoint_is_resumable(run):
+            raise CheckpointMissingError(
+                f"run {run_id} has no usable checkpoint; resend the message to start a new run"
+            )
         claimed = self.store.claim_resume_unfinished(run_id)
         with self._thread_lock:
             self._cancellations[claimed.run_id] = _CancellationGate()
@@ -869,6 +971,7 @@ class AgentRuntimeManager:
             claimed.input_message,
             self._context_for_run(claimed),
             claimed.budget,
+            continue_from_checkpoint=graph_path,
         )
         return claimed
 
@@ -1018,6 +1121,28 @@ class AgentRuntimeManager:
         return current
 
     # ---- 内部执行 ----
+    def _persist_run_checkpoint(self, run_id: str, thread_id: str) -> None:
+        """ADR-0010 决策 4：每段结束后把最新 checkpoint 标识写回 run。
+
+        必须等图流真正关闭之后再读：中断段的 checkpoint 是底层流收敛时才落盘的，
+        在记账钩子里读会拿到空值，于是可续跑的 run 反而被决策 4 判成无状态。
+        best-effort——写回失败绝不能顶替真正的 run 错误。协议型 adapter 没有图状态。
+        """
+        adapter = self.adapter or self._built_adapter
+        if adapter is None or hasattr(adapter, "execute"):
+            return
+        try:
+            self.store.set_run_checkpoint(
+                run_id, latest_checkpoint_id(adapter, thread_id, run_id)
+            )
+        except Exception:  # noqa: BLE001 - checkpoint 回写失败不得顶替 run 错误
+            with suppress(Exception):
+                self.store.append_event(
+                    run_id,
+                    AgentEventType.ERROR,
+                    message="Checkpoint write-back failed for this segment.",
+                )
+
     def _execute(
         self,
         run_id: str,
@@ -1025,11 +1150,21 @@ class AgentRuntimeManager:
         message: str,
         context: WikiAgentContext,
         budget: RunBudget,
+        *,
+        continue_from_checkpoint: bool = False,
     ) -> None:
         try:
             with log_context(run_id=run_id, thread_id=thread_id):
-                self._execute_bound(run_id, thread_id, message, context, budget)
+                self._execute_bound(
+                    run_id,
+                    thread_id,
+                    message,
+                    context,
+                    budget,
+                    continue_from_checkpoint=continue_from_checkpoint,
+                )
         finally:
+            self._persist_run_checkpoint(run_id, thread_id)
             clear_attachment_resolver()
             clear_attachment_scope()
             clear_attachment_scope()
@@ -1047,6 +1182,8 @@ class AgentRuntimeManager:
         message: str,
         context: WikiAgentContext,
         budget: RunBudget,
+        *,
+        continue_from_checkpoint: bool = False,
     ) -> None:
         run = self.store.get_run(run_id)
         if run.status == AgentRunStatus.QUEUED:
@@ -1096,58 +1233,71 @@ class AgentRuntimeManager:
         )
         adapter = self.adapter or self._built_adapter or _instantiate_agent(self.project_root)
         self._built_adapter = adapter
-        started_at = time.monotonic()
+        # ADR-0010 决策 8：墙钟预算跨段累计——续跑段继承已消耗的时间而不是重新计时，
+        # "崩溃恢复继承剩余预算"因此可测。
+        started_at = time.monotonic() - (
+            run.usage.elapsed_seconds if continue_from_checkpoint else 0.0
+        )
         seen: set[tuple[str, AgentEventType]] = set()
         try:
-            view = ConversationContextView(self.store)
-            # 会话上下文先持久化当前用户消息，再交给适配器（conversation-first）
-            self.store.append_message(
-                thread_id=thread_id,
-                run_id=run_id,
-                role="user",
-                content=message,
-                data={"source": "agent_runtime"},
-            )
-            messages_in = view.build(
-                thread_id=thread_id,
-                current_run_id=run_id,
-                current_content=message or "",
-            )
-            # 阶段 5：512K/80% 阈值压缩 -> 六类摘要 + 保留窗口 32K，并注入 R1-R5
-            compacted = compact_transcript(
-                messages_in,
-                max_tokens=settings.agent_context_max_tokens,
-                auto_compact_ratio=settings.agent_context_auto_compact_ratio,
-                retained_tokens=settings.agent_context_retained_tokens,
-            )
-            if compacted.compacted:
-                r1_r5 = build_r1_r5_block(
-                    git_status=self._git_status_text(),
-                    pending_question=None,
-                    recent_lint=None,
-                    run_goal=message,
+            if continue_from_checkpoint:
+                # ADR-0010 决策 3/6：续跑段从该 run 自己的 checkpoint 继续，
+                # 不重放 transcript，也不再落一条重复的用户消息。
+                stream = self._open_stream_continue(
+                    adapter, thread_id, message, context, run_id=run_id
                 )
-                messages_in = [
-                    {
-                        "role": "system",
-                        "content": compacted.summary_text + "\n\n" + r1_r5,
-                    },
-                    *compacted.retained,
-                ]
-            # 阶段 5：Layer B run 动态快照（git 状态 + 打开页面元数据/大纲）
-            layer_b = build_layer_b_snapshot(
-                current_message=message,
-                git_status=self._git_status_text(),
-                open_page=self._open_page_snapshot(context.page_id),
-                recent_transcript=self.store.list_context_messages(thread_id)[-4:],
-                attachments=self._attachment_manifest(run),
-            )
-            if layer_b:
-                messages_in = [
-                    {"role": "system", "content": layer_b},
-                    *messages_in,
-                ]
-            stream = self._open_stream(adapter, thread_id, messages_in, context)
+            else:
+                view = ConversationContextView(self.store)
+                # 会话上下文先持久化当前用户消息，再交给适配器（conversation-first）
+                self.store.append_message(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    role="user",
+                    content=message,
+                    data={"source": "agent_runtime"},
+                )
+                messages_in = view.build(
+                    thread_id=thread_id,
+                    current_run_id=run_id,
+                    current_content=message or "",
+                )
+                # 阶段 5：512K/80% 阈值压缩 -> 六类摘要 + 保留窗口 32K，并注入 R1-R5
+                compacted = compact_transcript(
+                    messages_in,
+                    max_tokens=settings.agent_context_max_tokens,
+                    auto_compact_ratio=settings.agent_context_auto_compact_ratio,
+                    retained_tokens=settings.agent_context_retained_tokens,
+                )
+                if compacted.compacted:
+                    r1_r5 = build_r1_r5_block(
+                        git_status=self._git_status_text(),
+                        pending_question=None,
+                        recent_lint=None,
+                        run_goal=message,
+                    )
+                    messages_in = [
+                        {
+                            "role": "system",
+                            "content": compacted.summary_text + "\n\n" + r1_r5,
+                        },
+                        *compacted.retained,
+                    ]
+                # 阶段 5：Layer B run 动态快照（git 状态 + 打开页面元数据/大纲）
+                layer_b = build_layer_b_snapshot(
+                    current_message=message,
+                    git_status=self._git_status_text(),
+                    open_page=self._open_page_snapshot(context.page_id),
+                    recent_transcript=self.store.list_context_messages(thread_id)[-4:],
+                    attachments=self._attachment_manifest(run),
+                )
+                if layer_b:
+                    messages_in = [
+                        {"role": "system", "content": layer_b},
+                        *messages_in,
+                    ]
+                stream = self._open_stream(
+                    adapter, thread_id, messages_in, context, run_id=run_id
+                )
             outcome = self._consume_stream(
                 run_id,
                 thread_id,
@@ -1155,6 +1305,7 @@ class AgentRuntimeManager:
                 budget,
                 started_at=started_at,
                 seen=seen,
+                adapter=adapter,
             )
             if outcome.question_pending:
                 # ask_user_question 挂起：保持 WAITING_CONFIRMATION 直到用户回复；
@@ -1230,6 +1381,7 @@ class AgentRuntimeManager:
         *,
         started_at: float,
         seen: set[tuple[str, AgentEventType]],
+        adapter: Any = None,
     ) -> _ConsumeOutcome:
         """消费一条流：统计用量、收集最终回答、持久化挂起问题，返回结局。"""
         final_answer: str | None = None
@@ -1277,25 +1429,36 @@ class AgentRuntimeManager:
                 # it consumed.
                 self._flush_open_tool_spans(run_id, tool_open)
                 read_chars, read_tokens = attachment_read_stats()
-                self.store.update_usage(
+                segment_usage = RunUsage(
+                    model_calls=steps_at_end,
+                    input_tokens=input_tokens
+                    + sum(value[0] for value in call_usage.values()),
+                    output_tokens=output_tokens
+                    + sum(value[1] for value in call_usage.values()),
+                    cached_input_tokens=cached_input_tokens
+                    + sum(value[2] for value in call_usage.values()),
+                    tool_calls=tool_calls_started,
+                    tool_calls_started=tool_calls_started,
+                    tool_calls_completed=tool_calls_completed,
+                    elapsed_seconds=time.monotonic() - started_at,
+                    read_chars=read_chars,
+                    read_tokens=read_tokens,
+                )
+                updated_run = self.store.update_usage(
                     run_id,
-                    RunUsage(
-                        model_calls=steps_at_end,
-                        input_tokens=input_tokens
-                        + sum(value[0] for value in call_usage.values()),
-                        output_tokens=output_tokens
-                        + sum(value[1] for value in call_usage.values()),
-                        cached_input_tokens=cached_input_tokens
-                        + sum(value[2] for value in call_usage.values()),
-                        tool_calls=tool_calls_started,
-                        tool_calls_started=tool_calls_started,
-                        tool_calls_completed=tool_calls_completed,
-                        elapsed_seconds=time.monotonic() - started_at,
-                        read_chars=read_chars,
-                        read_tokens=read_tokens,
-                    ),
+                    segment_usage,
                     # 每段只报自己的计数；跨 resume/retry 累加才是 run 生命周期总量。
                     accumulate=True,
+                )
+                # 决策 9：每 run 用量进事件流，只在诊断面板展示，不进聊天气泡。
+                self.store.append_event(
+                    run_id,
+                    AgentEventType.USAGE_UPDATED,
+                    message="Run usage updated.",
+                    data={
+                        "segment": segment_usage.model_dump(mode="json"),
+                        "cumulative": updated_run.usage.model_dump(mode="json"),
+                    },
                 )
             except Exception as error:  # noqa: BLE001 - 记账失败不得顶替 run 错误
                 with suppress(Exception):
@@ -1305,121 +1468,138 @@ class AgentRuntimeManager:
                         message=f"Run accounting failed: {error}",
                     )
 
-        for segment, signals, steps in self._iterate_safe(
+        segments = self._iterate_safe(
             stream, budget, started_at, on_finish=_flush_accounting
-        ):
-            with self._thread_lock:
-                gate = self._cancellations.get(run_id)
-                if gate is not None and gate.is_set():
+        )
+        try:
+            for segment, signals, steps in segments:
+                with self._thread_lock:
+                    gate = self._cancellations.get(run_id)
+                    if gate is not None and gate.is_set():
+                        break
+                for signal in signals:
+                    steps_at_end = steps
+                    if signal.model_call_id:
+                        now = time.monotonic()
+                        call_started.setdefault(signal.model_call_id, now)
+                        call_seen_last[signal.model_call_id] = now
+                        usage = call_usage.setdefault(signal.model_call_id, [0, 0, 0])
+                        usage[0] = max(usage[0], signal.input_tokens)
+                        usage[1] = max(usage[1], signal.output_tokens)
+                        usage[2] = max(usage[2], signal.cached_input_tokens)
+                    else:
+                        input_tokens += signal.input_tokens
+                        output_tokens += signal.output_tokens
+                        cached_input_tokens += signal.cached_input_tokens
+                    if signal.type == AgentEventType.TOOL_STARTED:
+                        # Streaming and non-streaming paths can both surface the same
+                        # call id (messages chunk + assembled updates AIMessage); the
+                        # durable event dedup hides it, so count and open spans once.
+                        start_id = str((signal.data or {}).get("tool_call_id") or "")
+                        if not start_id or start_id not in counted_tool_starts:
+                            counted_tool_starts.add(start_id)
+                            tool_calls_started += 1
+                            self._open_tool_span(tool_open, signal)
+                    if signal.type == AgentEventType.TOOL_COMPLETED:
+                        tool_calls_completed += 1
+                        self._close_tool_span(run_id, tool_open, signal, "completed")
+                    if signal.type == AgentEventType.TOOL_FAILED:
+                        self._close_tool_span(run_id, tool_open, signal, "failed")
+                    if signal.model_call_id:
+                        last_model_call_id = signal.model_call_id
+                    if signal.type == AgentEventType.FINAL_RESPONSE and signal.message.strip() and final_answer is None:
+                        final_answer = signal.message
+                    if signal.type == AgentEventType.TASK_CONFIRMATION_REQUIRED:
+                        self._persist_question(run_id, thread_id, signal)
+                        question_key: tuple[str, AgentEventType] = (segment, signal.type)
+                        if question_key not in seen:
+                            self.store.append_event(
+                                run_id,
+                                signal.type,
+                                message=signal.message,
+                                progress=signal.progress,
+                                data=_signal_payload(
+                                    segment,
+                                    signal.message,
+                                    signal.data,
+                                    model_call_id=signal.model_call_id,
+                                ),
+                            )
+                            seen.add(question_key)
+                        question_pending = True
+                        break
+                    if signal.type == AgentEventType.MESSAGE_DELTA:
+                        if signal.message:
+                            if signal.model_call_id:
+                                call_first_token.setdefault(signal.model_call_id, time.monotonic())
+                            assistant_text_parts.append(signal.message)
+                            self.store.append_event(
+                                run_id,
+                                signal.type,
+                                message=signal.message,
+                                progress=signal.progress,
+                                data=_signal_payload(
+                                    segment,
+                                    signal.message,
+                                    signal.data,
+                                    model_call_id=signal.model_call_id,
+                                    input_tokens=signal.input_tokens,
+                                    output_tokens=signal.output_tokens,
+                                ),
+                            )
+                        continue
+                    if signal.type == AgentEventType.REASONING_DELTA:
+                        if signal.message:
+                            if signal.model_call_id:
+                                call_first_token.setdefault(signal.model_call_id, time.monotonic())
+                            self.store.append_event(
+                                run_id,
+                                signal.type,
+                                message=signal.message,
+                                progress=signal.progress,
+                                data=_signal_payload(
+                                    segment,
+                                    signal.message,
+                                    {"source": "reasoning", **signal.data},
+                                    model_call_id=signal.model_call_id,
+                                ),
+                            )
+                        continue
+                    key = _signal_key(segment, signal)
+                    if key in seen:
+                        continue
+                    self.store.append_event(
+                        run_id,
+                        signal.type,
+                        message=signal.message,
+                        progress=signal.progress,
+                        data=_signal_payload(
+                            segment,
+                            signal.message,
+                            signal.data,
+                            model_call_id=signal.model_call_id,
+                            input_tokens=signal.input_tokens,
+                            output_tokens=signal.output_tokens,
+                        ),
+                    )
+                    seen.add(key)
+                if question_pending:
                     break
-            for signal in signals:
-                steps_at_end = steps
-                if signal.model_call_id:
-                    now = time.monotonic()
-                    call_started.setdefault(signal.model_call_id, now)
-                    call_seen_last[signal.model_call_id] = now
-                    usage = call_usage.setdefault(signal.model_call_id, [0, 0, 0])
-                    usage[0] = max(usage[0], signal.input_tokens)
-                    usage[1] = max(usage[1], signal.output_tokens)
-                    usage[2] = max(usage[2], signal.cached_input_tokens)
-                else:
-                    input_tokens += signal.input_tokens
-                    output_tokens += signal.output_tokens
-                    cached_input_tokens += signal.cached_input_tokens
-                if signal.type == AgentEventType.TOOL_STARTED:
-                    # Streaming and non-streaming paths can both surface the same
-                    # call id (messages chunk + assembled updates AIMessage); the
-                    # durable event dedup hides it, so count and open spans once.
-                    start_id = str((signal.data or {}).get("tool_call_id") or "")
-                    if not start_id or start_id not in counted_tool_starts:
-                        counted_tool_starts.add(start_id)
-                        tool_calls_started += 1
-                        self._open_tool_span(tool_open, signal)
-                if signal.type == AgentEventType.TOOL_COMPLETED:
-                    tool_calls_completed += 1
-                    self._close_tool_span(run_id, tool_open, signal, "completed")
-                if signal.type == AgentEventType.TOOL_FAILED:
-                    self._close_tool_span(run_id, tool_open, signal, "failed")
-                if signal.model_call_id:
-                    last_model_call_id = signal.model_call_id
-                if signal.type == AgentEventType.FINAL_RESPONSE and signal.message.strip() and final_answer is None:
-                    final_answer = signal.message
-                if signal.type == AgentEventType.TASK_CONFIRMATION_REQUIRED:
-                    self._persist_question(run_id, thread_id, signal)
-                    question_key: tuple[str, AgentEventType] = (segment, signal.type)
-                    if question_key not in seen:
-                        self.store.append_event(
-                            run_id,
-                            signal.type,
-                            message=signal.message,
-                            progress=signal.progress,
-                            data=_signal_payload(
-                                segment,
-                                signal.message,
-                                signal.data,
-                                model_call_id=signal.model_call_id,
-                            ),
-                        )
-                        seen.add(question_key)
-                    question_pending = True
-                    break
-                if signal.type == AgentEventType.MESSAGE_DELTA:
-                    if signal.message:
-                        if signal.model_call_id:
-                            call_first_token.setdefault(signal.model_call_id, time.monotonic())
-                        assistant_text_parts.append(signal.message)
-                        self.store.append_event(
-                            run_id,
-                            signal.type,
-                            message=signal.message,
-                            progress=signal.progress,
-                            data=_signal_payload(
-                                segment,
-                                signal.message,
-                                signal.data,
-                                model_call_id=signal.model_call_id,
-                                input_tokens=signal.input_tokens,
-                                output_tokens=signal.output_tokens,
-                            ),
-                        )
-                    continue
-                if signal.type == AgentEventType.REASONING_DELTA:
-                    if signal.message:
-                        if signal.model_call_id:
-                            call_first_token.setdefault(signal.model_call_id, time.monotonic())
-                        self.store.append_event(
-                            run_id,
-                            signal.type,
-                            message=signal.message,
-                            progress=signal.progress,
-                            data=_signal_payload(
-                                segment,
-                                signal.message,
-                                {"source": "reasoning", **signal.data},
-                                model_call_id=signal.model_call_id,
-                            ),
-                        )
-                    continue
-                key = _signal_key(segment, signal)
-                if key in seen:
-                    continue
-                self.store.append_event(
-                    run_id,
-                    signal.type,
-                    message=signal.message,
-                    progress=signal.progress,
-                    data=_signal_payload(
-                        segment,
-                        signal.message,
-                        signal.data,
-                        model_call_id=signal.model_call_id,
-                        input_tokens=signal.input_tokens,
-                        output_tokens=signal.output_tokens,
-                    ),
-                )
-                seen.add(key)
-            if question_pending:
-                break
+        finally:
+            # 挂起/取消段是从循环里 break 出去的：底层图流必须显式关闭，
+            # checkpoint 才落盘，决策 4 的回写与其后的续跑才读得到它；
+            # 等 GC 关闭会晚到不可用。
+            segments.close()
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                close_stream()
+            # 决策 4：图流一关就回写，别等到 _execute 的 finally——那时 run 早已
+            # 是 WAITING_CONFIRMATION，快速作答的用户会撞上还没落盘的 checkpoint。
+            if adapter is not None and not hasattr(adapter, "execute"):
+                with suppress(Exception):
+                    self.store.set_run_checkpoint(
+                        run_id, latest_checkpoint_id(adapter, thread_id, run_id)
+                    )
         assistant_text = "".join(assistant_text_parts).strip()
         if final_answer is None and assistant_text and not question_pending:
             final_answer = assistant_text
@@ -1564,9 +1744,21 @@ class AgentRuntimeManager:
 
 
     def _open_stream_resume(
-        self, adapter: Any, thread_id: str, context: WikiAgentContext, *, answers: list[str]
+        self,
+        adapter: Any,
+        thread_id: str,
+        context: WikiAgentContext,
+        *,
+        answers: list[str],
+        run_id: str,
+        checkpoint_id: str | None,
     ) -> Any:
-        """以用户答案续跑：graph adapter 用 Command(resume)，协议 adapter 用 execute(resume=)。"""
+        """以用户答案续跑：graph adapter 用 Command(resume)，协议 adapter 用 execute(resume=)。
+
+        ADR-0010 决策 2/3：续跑段在该 run 自己的作用域键上、从记录的 checkpoint
+        继续，不重放 transcript。决策 4 的显式拒绝在 ``answer_question`` 里、
+        早于任何状态变更，因此到这里 ``checkpoint_id`` 对图 adapter 必定非空。
+        """
         if hasattr(adapter, "execute"):
             return adapter.execute(
                 thread_id=thread_id,
@@ -1578,7 +1770,12 @@ class AgentRuntimeManager:
 
         return adapter.stream(
             Command(resume={"answers": answers}),
-            config={"configurable": {"thread_id": thread_id}},
+            config={
+                "configurable": {
+                    "thread_id": checkpoint_state_key(thread_id, run_id),
+                    "checkpoint_id": checkpoint_id,
+                }
+            },
             stream_mode=["messages", "updates"],
             subgraphs=True,
         )
@@ -1613,29 +1810,52 @@ class AgentRuntimeManager:
             self.store.answer_question(run_id, [], timed_out=True)
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, "question timed out")
             return self.store.get_run(run_id).model_dump(mode="json")  # type: ignore[union-attr]
+        adapter = self.adapter or self._built_adapter or _instantiate_agent(self.project_root)
+        self._built_adapter = adapter
+        # ADR-0010 决策 4：图 adapter 的续跑依赖该 run 自己的 checkpoint。升级前
+        # 产生的 run 一律 checkpoint_id=NULL，必须在登记答案与转 RUNNING 之前显式
+        # 失败，否则 run 会停在 RUNNING 而没有执行者。协议型 adapter 没有图状态。
+        checkpoint_id = run.checkpoint_id
+        if not hasattr(adapter, "execute"):
+            if not checkpoint_id:
+                # run 是在流里转成 WAITING_CONFIRMATION 的，回写发生在流关闭时；
+                # 作答够快就会读到还没落盘的字段，因此拒绝前先向载体复核一次。
+                checkpoint_id = latest_checkpoint_id(adapter, run.thread_id, run_id)
+            if not checkpoint_id:
+                raise CheckpointMissingError(
+                    f"run {run_id} has no checkpoint; resend the message to start a new run"
+                )
         self.store.answer_question(run_id, answers_list)
         self.store.transition(
             run_id, AgentRunStatus.RUNNING, message="Answer received. Resuming the run."
         )
         thread_id = run.thread_id
         context = self._context_for_run(run)
-        adapter = self.adapter or self._built_adapter or _instantiate_agent(self.project_root)
-        self._built_adapter = adapter
         with self._thread_lock:
             self._running_run_id = run_id
         set_attachment_resolver(
             lambda attachment_id: self.resolve_attachment_path(thread_id, attachment_id)
         )
         try:
-            stream = self._open_stream_resume(adapter, thread_id, context, answers=answers_list)
+            stream = self._open_stream_resume(
+                adapter,
+                thread_id,
+                context,
+                answers=answers_list,
+                run_id=run_id,
+                checkpoint_id=checkpoint_id,
+            )
             seen: set[tuple[str, AgentEventType]] = set()
+            # 决策 8：墙钟预算跨段累计——续跑段继承已消耗的时间，而不是重新计时，
+            # "崩溃恢复继承剩余预算"因此可测。
             outcome = self._consume_stream(
                 run_id,
                 thread_id,
                 stream,
                 run.budget,
-                started_at=time.monotonic(),
+                started_at=time.monotonic() - run.usage.elapsed_seconds,
                 seen=seen,
+                adapter=adapter,
             )
             if outcome.question_pending:
                 return self.store.get_run(run_id).model_dump(mode="json")  # type: ignore[union-attr]
@@ -1658,6 +1878,7 @@ class AgentRuntimeManager:
             )
             self._finalize_unfinished(run_id, AgentErrorType.SYSTEM, str(error))
         finally:
+            self._persist_run_checkpoint(run_id, run.thread_id)
             clear_attachment_resolver()
             with self._thread_lock:
                 if self._running_run_id == run_id:
@@ -1672,13 +1893,17 @@ class AgentRuntimeManager:
         budget: RunBudget,
         started_at: float,
         on_finish: Callable[[], None] | None = None,
-    ) -> Iterable[tuple[str, list[RuntimeSignal], int]]:
+    ) -> Generator[tuple[str, list[RuntimeSignal], int], None, None]:
         """Bound the stream, then run ``on_finish`` as iteration unwinds.
 
         The ``finally`` is the caller's accounting hook for the abort paths: a
         budget/timeout raise skips everything after the consumer's loop. On a
         plain ``break`` the generator is only closed at collection time, so the
         consumer must flush explicitly too -- hence the caller's once-guard.
+
+        返回 Generator 而不是 Iterable：调用方必须能 ``close()`` 它。挂起段是从
+        循环里 break 出去的，不显式关闭就要等 GC，那时 checkpoint 还没落盘，
+        决策 4 的回写与其后的续跑都读不到（ADR-0010）。
         """
         try:
             yield from self._iterate_bounded(stream, budget, started_at)
@@ -2161,18 +2386,55 @@ class AgentRuntimeManager:
         thread_id: str,
         messages_in: list[dict[str, Any]],
         context: WikiAgentContext,
+        *,
+        run_id: str,
     ) -> Any:
         """Normalize adapters: protocol objects (execute) or LangGraph graphs (stream)."""
         if hasattr(adapter, "execute"):
+            # 协议型 adapter 没有图状态，继续用会话键。
             return adapter.execute(
                 thread_id=thread_id, message=messages_in, context=context
             )
         # build_wiki_agent 返回的编译图：stream_mode=["messages","updates"]，
-        # 输出交给 _signals_from_stream_item 归一化；输入必须是 dict 形状
+        # 输出交给 _signals_from_stream_item 归一化；输入必须是 dict 形状。
+        # ADR-0010 决策 2：图状态键是 run 作用域的，add_messages 不再跨 run 叠加。
         graph_input: Any = {"messages": messages_in}
         return adapter.stream(
             graph_input,
-            config={"configurable": {"thread_id": thread_id}},
+            config={
+                "configurable": {
+                    "thread_id": checkpoint_state_key(thread_id, run_id)
+                }
+            },
+            stream_mode=["messages", "updates"],
+            subgraphs=True,
+        )
+
+    def _open_stream_continue(
+        self,
+        adapter: Any,
+        thread_id: str,
+        message: str,
+        context: WikiAgentContext,
+        *,
+        run_id: str,
+    ) -> Any:
+        """ADR-0010 决策 3/6：从该 run 的 checkpoint 续跑，不重放 transcript。
+
+        图 adapter 用 ``None`` 输入在自己的作用域键上继续；协议型 adapter 没有图
+        状态，只能按原输入重新执行（调用方已保证不会重复落用户消息）。
+        """
+        if hasattr(adapter, "execute"):
+            return adapter.execute(
+                thread_id=thread_id, message=message, context=context
+            )
+        return adapter.stream(
+            None,
+            config={
+                "configurable": {
+                    "thread_id": checkpoint_state_key(thread_id, run_id)
+                }
+            },
             stream_mode=["messages", "updates"],
             subgraphs=True,
         )

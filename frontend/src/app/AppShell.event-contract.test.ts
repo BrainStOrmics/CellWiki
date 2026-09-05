@@ -29,6 +29,7 @@ const EVENT_TYPE_CONTRACT: Record<AgentEventType, true> = {
   review_required: true,
   changeset_ready: true,
   verification: true,
+  usage_updated: true,
   error: true,
 };
 
@@ -119,5 +120,67 @@ describe("未知事件类型 fail-open", () => {
 
     expect(afterDelta).toHaveLength(2);
     expect(afterDelta[1]).toMatchObject({ role: "agent", text: "still streaming" });
+  });
+});
+
+/** 决策 9 的用量事件：event_id 必须可区分，否则回放去重会被测成假绿。 */
+function usageEvent(eventId: string, inputTokens: number, outputTokens: number): AgentEvent {
+  const usage = { input_tokens: inputTokens, output_tokens: outputTokens, elapsed_seconds: 1.5 };
+  return {
+    ...event("usage_updated", { segment: usage, cumulative: usage }),
+    event_id: eventId,
+  };
+}
+
+describe("usage_updated 只进诊断面板（ADR-0010 决策 9）", () => {
+  it("累积每段用量到 usageSegments，不动气泡的 text 与 timeline", () => {
+    const base: ChatMessage[] = [
+      { role: "user", text: "help" },
+      { role: "agent", text: "answer", runId: "run_1", timeline: [{ kind: "text", text: "answer" }] },
+    ];
+
+    const reduced = reduceAgentRunMessages(base, usageEvent("u-1", 120, 30), labels);
+
+    expect(reduced).toHaveLength(2);
+    expect(reduced[1].text).toBe("answer");
+    expect(reduced[1].timeline).toEqual([{ kind: "text", text: "answer" }]);
+    expect(reduced[1].usageSegments).toHaveLength(1);
+    expect(reduced[1].usageSegments?.[0].segment.input_tokens).toBe(120);
+  });
+
+  it("该 run 还没有气泡时不新建一条空气泡", () => {
+    const base: ChatMessage[] = [{ role: "user", text: "help" }];
+
+    const reduced = reduceAgentRunMessages(base, usageEvent("u-1", 120, 30), labels);
+
+    expect(reduced).toEqual(base);
+  });
+
+  it("同一 event_id 回放两次不重复计数（首段 + 续跑段各记一次）", () => {
+    const base: ChatMessage[] = [
+      { role: "agent", text: "answer", runId: "run_1" },
+    ];
+
+    const once = reduceAgentRunMessages(base, usageEvent("u-1", 120, 30), labels);
+    const replayed = reduceAgentRunMessages(once, usageEvent("u-1", 120, 30), labels);
+    const secondSegment = reduceAgentRunMessages(replayed, usageEvent("u-2", 40, 10), labels);
+
+    expect(replayed[0].usageSegments).toHaveLength(1);
+    expect(secondSegment[0].usageSegments).toHaveLength(2);
+    expect(secondSegment[0].usageSegments?.[1].segment.input_tokens).toBe(40);
+  });
+
+  it("缺 segment/cumulative 的畸形用量事件被忽略，不影响转录", () => {
+    const base: ChatMessage[] = [
+      { role: "agent", text: "answer", runId: "run_1" },
+    ];
+
+    const reduced = reduceAgentRunMessages(
+      base,
+      { ...event("usage_updated", {}), event_id: "u-bad" },
+      labels,
+    );
+
+    expect(reduced).toEqual(base);
   });
 });

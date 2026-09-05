@@ -70,6 +70,7 @@ class AgentEventType(str, Enum):
     REVIEW_REQUIRED = "review_required"     # 需要人工审查
     CHANGESET_READY = "changeset_ready"     # ChangeSet 已就绪
     VERIFICATION = "verification"           # 验证结果
+    USAGE_UPDATED = "usage_updated"         # 每 run 用量（本段 + 累计）；只在诊断面板展示，不进聊天气泡
     ERROR = "error"                         # 错误
 
 
@@ -117,7 +118,13 @@ class AgentRun(ContractModel):
     pending_diff_id: str | None = None      # 运行产出的待确认 diff 标识
     task_kind: str = "conversation"                           # 结构化任务类型
     task_payload: dict[str, Any] = Field(default_factory=dict) # 结构化任务参数
-    checkpoint_id: str | None = None                           # 新运行按 run 隔离；旧记录回退 thread
+    # ADR-0010 决策 4：每段流结束时写回的最新 checkpoint 标识。升级前产生的 run
+    # 一律为 NULL，其"继续/回答问题"走显式失败，不在空图上静默重放。
+    checkpoint_id: str | None = None
+    # 决策 7：幂等提交键。同一 request_id 命中既有 run 时返回它并置 replayed=True。
+    request_id: str | None = None
+    # 决策 8：执行配置快照（Layer A + model + budget 短哈希），使历史 run 不受 .env 漂移影响。
+    prompt_hash: str | None = None
     model_role: str = "coordinator"                           # 模型角色
     model_name: str = ""                                      # 模型名称
     status: AgentRunStatus = AgentRunStatus.QUEUED            # 当前状态

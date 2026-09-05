@@ -24,7 +24,6 @@ from deepagents.backends import StateBackend
 from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import SystemMessage, ToolMessage
-from langgraph.checkpoint.memory import InMemorySaver
 
 from cellwiki.adapters.openai_model import build_openai_chat_model
 from cellwiki.adapters.openai_reasoning_bridge import attach_reasoning_stream_bridge
@@ -40,6 +39,7 @@ from cellwiki.agent.executor import (
     build_workspace_tools,
 )
 from cellwiki.agent.question_tool import build_question_tool
+from cellwiki.services.checkpoints import build_checkpointer
 from cellwiki.services.prompt_layers import LAYER_A_TEXT
 from cellwiki.services.subagents import SubagentRegistry, build_delegation_tools
 from cellwiki.agent.ingest_tools import build_ingest_tools
@@ -240,9 +240,11 @@ def build_wiki_agent(
         *build_question_tool(),
         *build_delegation_tools(registry or SubagentRegistry()),
     ]
-    # 检查点器：默认使用 InMemorySaver，除非传入了外部检查点器
+    # ADR-0010 决策 1/14：产品图默认落 SqliteSaver（data/runtime/checkpoints.sqlite），
+    # 与 cellwiki.db 分文件；AGENT_CHECKPOINTER=inmemory 只是短期回滚闸。
+    # 显式传入的 checkpointer（含 create_server_graph 的 False）原样生效。
     active_checkpointer = (
-        InMemorySaver() if checkpointer is _DEFAULT_CHECKPOINTER else checkpointer
+        build_checkpointer(root) if checkpointer is _DEFAULT_CHECKPOINTER else checkpointer
     )
     # 组装 Deep Agent
     return create_deep_agent(

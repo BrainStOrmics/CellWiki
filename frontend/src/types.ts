@@ -96,6 +96,9 @@ export type ChatMessage = {
   runId?: string;
   runStatus?: AgentRunStatus;
   streaming?: boolean;
+  /** ADR-0010 决策 9：每段流的用量。只喂给 AgentRunDiagnostics，
+   *  绝不进聊天气泡的 text / timeline。 */
+  usageSegments?: AgentUsageSegment[];
 };
 
 export type AgentTimelineStatusTone = "info" | "success" | "warning" | "danger";
@@ -216,6 +219,7 @@ export type AgentEventType =
   | "review_required"
   | "changeset_ready"
   | "verification"
+  | "usage_updated"
   | "error";
 
 export type AgentEvent = {
@@ -247,6 +251,13 @@ export type AgentSpan = {
   data: Record<string, unknown>;
 };
 
+/** ADR-0010 决策 9：一段流结束时投递的用量（本段 + 累计）。 */
+export type AgentUsageSegment = {
+  event_id?: string;
+  segment: AgentRun["usage"];
+  cumulative: AgentRun["usage"];
+};
+
 export type AgentDiagnostics = {
   run_id: string;
   thread_id: string;
@@ -259,6 +270,12 @@ export type AgentDiagnostics = {
   usage: AgentRun["usage"];
   spans: AgentSpan[];
   thread_summary?: AgentThreadSummary;
+  /** 决策 4/12：该 run 的 checkpoint 标识、载体类型与 checkpoints.sqlite 体积。 */
+  checkpoint?: {
+    id: string | null;
+    backend: string;
+    file_bytes: number;
+  };
 };
 
 export type AgentThreadSummary = {

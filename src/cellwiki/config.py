@@ -12,6 +12,7 @@ module-level singleton so all downstream modules share one resolved view of the 
 """
 
 import logging
+from typing import Literal
 
 from cellwiki.services.logging_context import setup_structured_logging
 from pathlib import Path
@@ -109,6 +110,12 @@ class Settings(BaseSettings):
     # 开启后 coordinator 模型以流式请求调用 Responses API，正文/思考按增量
     # 推送；置 0（AGENT_STREAMING=0）一键回退为整块返回。
     agent_streaming: bool = True
+
+    # ---- Run 作用域持久化 checkpoint（ADR-0010 决策 1/14）----
+    # sqlite：图状态落 data/runtime/checkpoints.sqlite，跨重启可续跑（默认）。
+    # inmemory：仅作短期回滚闸，回到进程内图状态；稳定一个版本后删除该开关，
+    # 不构成长期兼容承诺。
+    agent_checkpointer: Literal["sqlite", "inmemory"] = "sqlite"
 
     # ---- 日志级别 ----
     log_level: str = "INFO"

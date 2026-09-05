@@ -91,7 +91,7 @@ export function AgentMessageBubble({
       {isAgent && message.runId && (
         <>
           {!message.streaming && (
-            <AgentRunDiagnostics runId={message.runId} />
+            <AgentRunDiagnostics runId={message.runId} usageSegments={message.usageSegments} />
           )}
           {isAwaitingUserAnswer(message.runStatus) && (
             <QuestionCard runId={message.runId} onAnswered={onQuestionAnswered} />

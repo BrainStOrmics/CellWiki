@@ -8,6 +8,7 @@ import type {
   AgentTimelineStatusTone,
   AgentToolArgsDisplay,
   AgentToolResultPreview,
+  AgentUsageSegment,
   ChatMessage,
 } from "../../types";
 // 单一终态来源：reducer 之前自带一份 terminalStatuses，缺 unfinished，与 AppShell
@@ -157,6 +158,23 @@ export function reduceAgentRunMessages(
       runStatus: "waiting_confirmation",
       streaming: false,
     });
+  }
+
+  if (event.type === "usage_updated") {
+    // 决策 9：用量只累积到诊断专用字段，不碰 text / timeline，也不新建气泡
+    // （fallback 传 null）——聊天气泡里永远看不到"用量"这段文本。
+    const payload = event.data as Partial<AgentUsageSegment>;
+    if (!payload.segment || !payload.cumulative) return next;
+    const segment: AgentUsageSegment = {
+      event_id: event.event_id,
+      segment: payload.segment,
+      cumulative: payload.cumulative,
+    };
+    return updateRunMessage(next, event.run_id, (message) => (
+      message.usageSegments?.some((existing) => existing.event_id === segment.event_id)
+        ? message
+        : { ...message, usageSegments: [...(message.usageSegments ?? []), segment] }
+    ), null);
   }
 
   if (event.type === "run_status") {

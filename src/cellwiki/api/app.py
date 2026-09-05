@@ -51,6 +51,7 @@ from cellwiki.services.agent_runtime import (
     AgentRunInProgressError,
     is_retryable_run,
 )
+from cellwiki.services.checkpoints import CheckpointMissingError, checkpoint_file_bytes
 from cellwiki.services.environment import EnvironmentSettingsService
 from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 from cellwiki.services.runtime_store import RuntimeStore, ThreadDeletionBlockedError
@@ -112,6 +113,9 @@ class AgentRunRequest(BaseModel):
     page_id: str | None = Field(default=None, max_length=256)
     selected_text: str | None = Field(default=None, max_length=4000)  # 用户选中的文本
     attachment_ids: list[str] = Field(default_factory=list)       # 线程附件（临时 Agent 上下文）
+    # ADR-0010 决策 7：幂等提交键。重试同一次提交（网络抖动/重复点击）带上同一个
+    # request_id，服务端命中既有 run 并原样返回；省略则每次提交都新建 run。
+    request_id: str | None = Field(default=None, max_length=128)
     # 省略即 None -> 运行时回退 settings（AGENT_MAX_TOOL_STEPS / AGENT_RUN_MAX_SECONDS）。
     # 曾写成 default_factory=RunBudget，把 100/7200 硬编码进 API 边界，配置覆盖成为死路径。
     budget: RunBudget | None = None                               # 运行预算
@@ -517,14 +521,19 @@ def create_app(
             unknown = [aid for aid in request.attachment_ids if aid not in owned]
             if unknown:
                 raise ValueError(f"attachment(s) do not belong to thread {thread_id}: {unknown[:5]}")
-            run = runtime.start(
+            run, replayed = runtime.start_idempotent(
                 thread_id=thread_id,
                 message=request.message,
                 context=context,
                 budget=request.budget,
                 attachment_ids=request.attachment_ids,
+                request_id=request.request_id,
             )
-            return _agent_run_payload(run, store=runtime.store)
+            payload = _agent_run_payload(run, store=runtime.store)
+            if replayed:
+                # 决策 7：幂等命中不排队第二个 run，仍是 202，只多一个可辨识标记。
+                payload["replayed"] = True
+            return payload
         except AgentRuntimeBusyError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except ValueError as error:
@@ -572,6 +581,9 @@ def create_app(
             raise HTTPException(status_code=404, detail="run not found")
         except InvalidRunTransitionError:
             raise HTTPException(status_code=409, detail="run is not waiting for a question")
+        except CheckpointMissingError as error:
+            # 决策 4：没有 checkpoint 就不能在空图上静默重放，明确失败并让用户重发。
+            raise HTTPException(status_code=409, detail=str(error)) from None
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error))
         return _agent_run_payload(
@@ -679,6 +691,9 @@ def create_app(
             raise HTTPException(status_code=404, detail="agent run not found") from None
         except InvalidRunTransitionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
+        except CheckpointMissingError as error:
+            # 决策 4：升级前产生的 run 没有 checkpoint，明确降级为可重发而不是静默重放。
+            raise HTTPException(status_code=409, detail=str(error)) from None
         except AgentRunInProgressError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except ValueError as error:
@@ -757,6 +772,13 @@ def create_app(
             "usage": run.usage.model_dump(mode="json"),
             "spans": [span.model_dump(mode="json") for span in spans],
             "thread_summary": runtime.store.thread_usage_summary(run.thread_id),
+            # 决策 12：载体不设 TTL/体积上限，膨胀只由删会话治理，所以把体积报出来，
+            # 后续才能按实测数据重新评估要不要加上限。
+            "checkpoint": {
+                "id": run.checkpoint_id,
+                "backend": settings.agent_checkpointer,
+                "file_bytes": checkpoint_file_bytes(runtime.project_root),
+            },
         }
 
     # 关闭时清理智能体运行时
