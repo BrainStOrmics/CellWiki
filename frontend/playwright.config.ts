@@ -4,6 +4,9 @@ export default defineConfig({
   testDir: "./e2e",
   timeout: 30_000,
   fullyParallel: false,
+  // 所有 spec 共用一个 Product API 进程和同一个 build/e2e-project 运行时库；
+  // fullyParallel: false 只串行化单文件内的用例，跨文件仍会并发改同一份会话注册表。
+  workers: 1,
   retries: process.env.CI ? 1 : 0,
   reporter: process.env.CI ? [["html", { open: "never" }], ["list"]] : "list",
   use: {

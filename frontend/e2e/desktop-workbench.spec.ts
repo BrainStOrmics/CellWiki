@@ -13,6 +13,21 @@ async function persistedActiveThreadId(page: Page) {
   });
 }
 
+// 工作区引导会在根目录生成 audit_report.md / overview.md 等系统文件，它们按名称排在
+// wiki 子树之前，所以用路径定位而不是 .first()，避免随工作区骨架漂移。
+const SEEDED_PAGE_PATH = "wiki/cell_types/regulatory_t_cell.md";
+// serve_e2e.py 的种子 run 输入消息；阶段 A 起会话标题由它确定性派生。
+const SEEDED_THREAD_LABEL = "Which markers support this cell type?";
+
+async function clickSeededWikiTreeFile(page: Page) {
+  const file = page.locator(`.tree-file[title="${SEEDED_PAGE_PATH}"]`);
+  if (!(await file.isVisible().catch(() => false))) {
+    await page.locator('.tree-folder-row[title="wiki/cell_types"]').click();
+  }
+  await expect(file).toBeVisible();
+  await file.click();
+}
+
 test("three-pane workspace, grounded search, and language settings remain usable", async ({ page }) => {
   // The first Vite run may optimize the Markdown and graph bundles before the
   // workbench can answer its first DOM request.
@@ -49,13 +64,13 @@ test("three-pane workspace, grounded search, and language settings remain usable
   await page.keyboard.press("Escape");
 
   await page.getByRole("button", { name: /对话 1|Threads 1/ }).click();
-  await page.locator(".thread-list-select").first().click();
+  await page.locator(".thread-list-select", { hasText: SEEDED_THREAD_LABEL }).first().click();
   await expect(page.locator(".markdown-content h2", { hasText: /Evidence summary|证据摘要/ })).toBeVisible();
   await expect(page.locator(".markdown-content table")).toBeVisible();
   await expect(page.locator(".markdown-content pre code")).toContainText("Evidence");
   await expect(page.locator(".message.user .message-bubble")).toBeVisible();
   await expect(page.locator(".message.agent .message-bubble")).toBeVisible();
-  const restoredTrace = page.locator(".agent-process-trace").first();
+  const restoredTrace = page.locator(".agent-run-diagnostics").first();
   await expect(restoredTrace).toBeVisible();
   await expect(restoredTrace).not.toHaveAttribute("open", "");
 
@@ -65,6 +80,13 @@ test("three-pane workspace, grounded search, and language settings remain usable
   await page.getByRole("button", { name: /English/ }).click();
   await page.getByRole("button", { name: "保存设置" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+
+  // 语言会写进 e2e 项目的 .env 并在整个服务进程内生效：不还原就会把英文界面
+  // 泄漏给之后每个 spec，让它们的中文文案断言莫名失败。
+  await page.getByRole("button", { name: /Interface/ }).click();
+  await page.getByRole("button", { name: /简体中文/ }).click();
+  await page.getByRole("button", { name: /Save settings/ }).click();
+  await expect(page.getByRole("heading", { name: "设置" })).toBeVisible();
 });
 
 test("Agent composer references stay separate from threads and temporary attachments", async ({ page }) => {
@@ -73,13 +95,13 @@ test("Agent composer references stay separate from threads and temporary attachm
   await expect(page.getByText("CellWiki", { exact: true }).first()).toBeVisible();
   await expect(page.locator(".chat-compose textarea")).toBeVisible();
   await page.getByRole("button", { name: /Wiki 浏览器|Wiki explorer/ }).click();
-  await expect(page.locator(".tree-file").first()).toBeVisible();
+  await expect(page.locator('.tree-folder-row[title="wiki/cell_types"]')).toBeVisible();
 
   await page.getByRole("button", { name: /新建对话|New conversation/ }).click();
   await expect.poll(() => persistedActiveThreadId(page)).not.toBeNull();
   const firstThreadId = await persistedActiveThreadId(page);
 
-  await page.locator(".tree-file").first().click();
+  await clickSeededWikiTreeFile(page);
   await expect(page.locator(".composer-chip.page-chip")).toBeVisible();
   await expect.poll(() => persistedActiveThreadId(page)).toBe(firstThreadId);
 
@@ -88,12 +110,12 @@ test("Agent composer references stay separate from threads and temporary attachm
   await expect(page.locator(".composer-chip.page-chip")).toHaveCount(0);
   await expect.poll(() => persistedActiveThreadId(page)).toBe(firstThreadId);
 
-  await page.locator(".tree-file").first().click();
+  await clickSeededWikiTreeFile(page);
   await expect(page.locator(".composer-chip.page-chip")).toBeVisible();
   await page
-    .locator('input[type="file"][accept=".pdf,.md,.txt,.csv,.json"]')
-    .setInputFiles(path.join(process.cwd(), "package.json"));
-  await expect(page.locator(".composer-chip.attachment-chip")).toContainText("package.json");
+    .locator('input[type="file"][accept=".pdf,.md,.txt"]')
+    .setInputFiles(path.join(process.cwd(), "..", "build", "e2e-project", "fixture_source.md"));
+  await expect(page.locator(".composer-chip.attachment-chip")).toContainText("fixture_source.md");
 
   await page.getByRole("button", { name: /新建对话|New conversation/ }).click();
   await expect(page.locator(".composer-chip.page-chip")).toBeVisible();

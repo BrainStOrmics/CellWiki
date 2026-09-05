@@ -115,4 +115,38 @@ describe("rebuildAgentTranscript", () => {
       runStatus: "failed",
     });
   });
+
+  it("keeps the durable answer when the event log carries no answer text", () => {
+    const answer = "## Evidence summary\n\nFOXP3 is the fixture marker.";
+    const base: ChatMessage[] = [
+      { role: "user", text: "which markers?", runId: "run_1" },
+      { role: "agent", text: answer, runId: "run_1", runStatus: "succeeded", streaming: false },
+    ];
+    const events = [
+      event(1, "tool_started", "Reading", { tool_name: "read_wiki_page" }),
+      event(2, "tool_completed", "Read", { tool_name: "read_wiki_page" }),
+      event(3, "progress", "Ledger assembled", { stage: "evidence" }),
+      event(4, "run_status", "", { status: "succeeded", terminal: true }),
+    ];
+    const rebuilt = rebuildAgentTranscript(base, "run_1", events, labels);
+
+    const agentMessages = rebuilt.filter((message) => message.role === "agent");
+    expect(agentMessages).toHaveLength(1);
+    expect(agentMessages[0].text).toBe(answer);
+    // The bubble renders the timeline when it has nodes, so the answer must be a
+    // timeline text node too or the markdown never reaches the DOM.
+    expect(agentMessages[0].timeline?.some((node) => node.kind === "text" && node.text === answer)).toBe(true);
+    expect(agentMessages[0].timeline?.some((node) => node.kind === "tool")).toBe(true);
+  });
+
+  it("keeps the durable answer when the run has no events at all", () => {
+    const base: ChatMessage[] = [
+      { role: "user", text: "which markers?", runId: "run_1" },
+      { role: "agent", text: "durable answer", runId: "run_1", runStatus: "succeeded", streaming: false },
+    ];
+    const rebuilt = rebuildAgentTranscript(base, "run_1", [], labels);
+
+    expect(rebuilt).toHaveLength(2);
+    expect(rebuilt[1]).toMatchObject({ role: "agent", runId: "run_1", text: "durable answer" });
+  });
 });

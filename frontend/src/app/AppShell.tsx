@@ -54,6 +54,7 @@ import type {
   AgentRun,
   AgentRunStatus,
   AgentThreadEntry,
+  AgentTimelineNode,
   AttachmentRecord,
   ChatMessage,
   Page,
@@ -63,7 +64,10 @@ import type {
 
 type ResizeSide = "left" | "right";
 
-const agentEventTypes: AgentEventType[] = [
+// SSE 订阅表：EventSource 只把注册过名字的事件派发给监听器，漏一个类型就等于
+// 直播路径静默丢事件（回放路径读 /events 全量，不受这张表影响）。
+// 与 types.ts 的 AgentEventType 联合由 AppShell.event-contract.test.ts 锁定一致。
+export const agentEventTypes: AgentEventType[] = [
   "run_status",
   "message_delta",
   "reasoning_delta",
@@ -74,6 +78,7 @@ const agentEventTypes: AgentEventType[] = [
   "subagent_started",
   "subagent_completed",
   "progress",
+  "task_confirmation_required",
   "review_required",
   "changeset_ready",
   "verification",
@@ -433,6 +438,11 @@ export function AppShell() {
     threadRestorePrefRef.current = null;
     if (preferredRunId) {
       void restoreAgentThread(activeThreadId, preferredRunId);
+    } else if (renderedThreadIdRef.current !== activeThreadId) {
+      // 刷新/重启后持久化的会话身份回来了，但本地视图还是空的欢迎语。已完成的
+      // run 不留 active_run_id 线索，所以这条分支必须自己拉历史，否则旧会话看起来
+      // 被清空了。应用内切换与 `+` 新建都已经渲染过目标会话，不重复恢复。
+      void restoreAgentThread(activeThreadId);
     } else {
       agentThreadIdRef.current = activeThreadId;
     }
@@ -1036,12 +1046,29 @@ export function AppShell() {
     setResumableAgentRunId(null);
     setAgentBusy(true);
     setAgentActivity(t("chat.resuming"));
-    await postJson<AgentRun>(`/api/agent/runs/${encodeURIComponent(resumedRunId)}/resume`, {});
-    setActiveAgentRunId(resumedRunId);
-    if (agentThreadIdRef.current) {
-      window.localStorage.setItem(agentRunStorageKey(agentThreadIdRef.current), resumedRunId);
+    try {
+      await postJson<AgentRun>(`/api/agent/runs/${encodeURIComponent(resumedRunId)}/resume`, {});
+      setActiveAgentRunId(resumedRunId);
+      if (agentThreadIdRef.current) {
+        window.localStorage.setItem(agentRunStorageKey(agentThreadIdRef.current), resumedRunId);
+      }
+      await subscribeToAgentRun(resumedRunId);
+    } catch (error) {
+      // 续跑被拒（典型是门禁冲突 409）必须收敛 busy 并把"继续"还回来：
+      // 否则按钮已清空、思考指示器永远转下去，用户在这个会话里无路可走。
+      setResumableAgentRunId(resumedRunId);
+      const failure = agentRequestFailure(
+        error,
+        isDesktopRuntime ? t("workflow.runtimeDesktop") : t("workflow.runtimeWeb"),
+      );
+      setMessages((current) => [...current, {
+        role: "agent",
+        text: failure.text,
+        meta: failure.meta,
+      }]);
+    } finally {
+      setAgentBusy(false);
     }
-    await subscribeToAgentRun(resumedRunId);
   }
 
   async function retryAgentRun() {
@@ -1076,15 +1103,27 @@ export function AppShell() {
         `/api/agent/threads/${encodeURIComponent(threadId)}/attachments`,
         { method: "POST", body },
       );
-      if (!response.ok) throw new Error("attachment upload failed");
+      if (!response.ok) {
+        // 服务端已应答并给出原因（如类型不支持）时不能报成"运行时没起来"。
+        const reason = await response.json()
+          .then((payload: unknown) => {
+            const detail = (payload as { detail?: unknown } | null)?.detail;
+            return typeof detail === "string" ? detail : "";
+          })
+          .catch(() => "");
+        throw new ProductApiError(reason || "attachment upload failed", response.status);
+      }
       const uploaded = await response.json() as AttachmentRecord[];
       mergeAttachmentRecords(uploaded);
       addActiveAttachmentIds(uploaded.map((item) => item.attachment_id));
-    } catch {
+    } catch (error) {
       attachmentUploadErrorRef.current = new Error("attachment upload failed; retry the upload before sending");
+      const reason = error instanceof ProductApiError ? error.message : "";
       setMessages((current) => [...current, {
         role: "agent",
-        text: t("chat.attachmentUploadFailed"),
+        text: reason
+          ? t("chat.attachmentRejected").replace("{reason}", reason)
+          : t("chat.attachmentUploadFailed"),
         meta: t("chat.sourceErrorMeta"),
       }]);
     }
@@ -1135,6 +1174,8 @@ export function AppShell() {
 
   async function startNewChat() {
     if (attachmentUploadBusy || attachmentUploadRef.current) return;
+    // `+` 不得继承上一次会话选择留下的恢复线索，否则新会话会被旧 run 拉回去。
+    threadRestorePrefRef.current = null;
     const leavingThreadId = agentThreadIdRef.current;
     cacheCurrentThreadState(leavingThreadId);
     renderedThreadIdRef.current = null;
@@ -1423,8 +1464,13 @@ export function AppShell() {
               currentThreadId={activeThreadId}
               onDelete={deleteAgentThread}
               onSelect={(thread) => {
-                // 零 run 会话没有 latest_run_id；恢复线索回落到该线程的 localStorage 键
-                threadRestorePrefRef.current = thread.latestRunId;
+                // 零 run 会话没有 latest_run_id；恢复线索回落到该线程的 localStorage 键。
+                // 点当前会话时 activeThreadId 值不变、effect 不会重跑，滞留的线索会被
+                // 下一次切换（典型是紧接着点 `+`）消费掉，把用户弹回旧会话，因此只在
+                // 真的换会话时武装它。
+                threadRestorePrefRef.current = thread.threadId === activeThreadId
+                  ? null
+                  : thread.latestRunId;
                 setActiveThreadId(thread.threadId);
               }}
             />
@@ -1535,7 +1581,7 @@ export function AppShell() {
                 <input
                   ref={attachmentRef}
                   type="file"
-                  accept=".pdf,.md,.txt,.csv,.json"
+                  accept=".pdf,.md,.txt"
                   multiple
                   hidden
                  onChange={(event) => {
@@ -1561,10 +1607,28 @@ export function rebuildAgentTranscript(
   events: AgentEvent[],
   labels: AgentRunReducerLabels,
 ): ChatMessage[] {
-  return events.reduce(
+  const durable = base.filter((message) => message.role === "agent" && message.runId === runId);
+  const transcript = events.reduce(
     (next, event) => reduceAgentRunMessages(next, event, labels),
     base.filter((message) => !(message.role === "agent" && message.runId === runId)),
   );
+  // 事件日志不承载回答（无 final_response / message_delta）时，回放不能把
+  // /messages 里已持久化的回答抹掉；回放有回答时仍以回放为准，避免重复文本。
+  const answer = durable.map((message) => message.text).find((text) => text.trim().length > 0) ?? "";
+  if (!answer) return transcript;
+  const index = transcript.findIndex((message) => message.role === "agent" && message.runId === runId);
+  if (index < 0) return [...transcript, ...durable];
+  const rebuilt = transcript[index];
+  if (rebuilt.text.trim()) return transcript;
+  // 气泡在有时间线节点时只渲染时间线，回答必须同时成为其中的 text 节点。
+  const timeline = rebuilt.timeline?.some((node) => node.kind === "text")
+    ? rebuilt.timeline
+    : [...(rebuilt.timeline ?? []), { kind: "text", text: answer } as AgentTimelineNode];
+  return [
+    ...transcript.slice(0, index),
+    { ...rebuilt, text: answer, timeline },
+    ...transcript.slice(index + 1),
+  ];
 }
 function findNestedString(value: unknown, key: string): string | null {
   if (Array.isArray(value)) {
