@@ -903,7 +903,7 @@ button.message-citation:hover { border-color: #587caf; color: #c4d8fa; backgroun
 .selection-actions button { display: flex; flex: 1; align-items: center; justify-content: center; gap: 4px; padding: 6px 4px; border: 0; border-radius: 4px; color: #bbc5d2; background: transparent; font-size: 8px; }
 .selection-actions button:hover { color: white; background: var(--panel-hover); }
 
-/* Ctrl/Cmd+K searches the versioned FTS5 projection instead of the file filter. */
+/* Ctrl/Cmd+K scans the git-versioned wiki/ pages instead of filtering the file tree. */
 .command-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; padding-top: 11vh; place-items: start center; background: rgba(5, 7, 10, 0.68); backdrop-filter: blur(4px); }
 .command-palette { width: min(720px, calc(100vw - 80px)); overflow: hidden; border: 1px solid #3a4351; border-radius: 10px; background: #151920; box-shadow: 0 28px 90px rgba(0, 0, 0, 0.58); }
 .command-input { display: flex; height: 50px; align-items: center; gap: 10px; padding: 0 13px; border-bottom: 1px solid var(--line); }
