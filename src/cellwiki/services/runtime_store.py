@@ -91,6 +91,67 @@ class TerminalRunError(RuntimeError):
     """Raised when code attempts to append work after a finalized run."""
 
 
+class ThreadDeletionBlockedError(RuntimeError):
+    """Raised when deleting a thread would destroy live work or an undecided verdict."""
+
+
+# 仍占据严格串行闸门、或仍可被推进的 run 状态。删除线程会把这些行连同其
+# worker 的写入目标一起抽走，因此删除护栏与闸门共用这一份定义。
+# WAITING_APPROVAL 不在 `_ensure_single_active_run` 的集合里（它由"未判定
+# 审批单元阻塞新 run"这条独立门禁覆盖），但对删除而言它同样是活动的。
+ACTIVE_RUN_STATUSES: frozenset[AgentRunStatus] = frozenset(
+    {
+        AgentRunStatus.QUEUED,
+        AgentRunStatus.RUNNING,
+        AgentRunStatus.RETRYING,
+        AgentRunStatus.CANCELLING,
+        AgentRunStatus.UNFINISHED,
+        AgentRunStatus.WAITING_CONFIRMATION,
+        AgentRunStatus.WAITING_APPROVAL,
+    }
+)
+
+# 会话标题的确定性派生参数（不接 LLM）：折叠空白后截 40 字符。
+_THREAD_TITLE_MAX_CHARS = 40
+_THREAD_TITLE_PLACEHOLDER = "新会话"
+
+
+def _assert_run_transition(
+    current: AgentRunStatus,
+    target: AgentRunStatus,
+    *,
+    allowed_sources: frozenset[AgentRunStatus] | None = None,
+    action: str = "run transition",
+) -> None:
+    """Single legality gate for every path that advances a run's status.
+
+    ``allowed_sources`` narrows ``_TRANSITIONS`` for claim-style entry points
+    (resume / retry / approval continuation) whose admission must be stricter
+    than the table permits; omitting it means "whatever the table allows".
+    New code that moves a run forward must call this instead of re-deriving the
+    check, so a tightened gate cannot be bypassed by a second, stale copy.
+    """
+
+    if allowed_sources is not None:
+        if current not in allowed_sources:
+            raise InvalidRunTransitionError(
+                f"invalid {action}: {current.value} -> {target.value}"
+            )
+        return
+    if target != current and target not in _TRANSITIONS[current]:
+        raise InvalidRunTransitionError(
+            f"invalid {action}: {current.value} -> {target.value}"
+        )
+
+
+def _derive_thread_title(message: str) -> str:
+    """Collapse whitespace, truncate to 40 chars, fall back to the placeholder."""
+    collapsed = " ".join(str(message or "").split())
+    if not collapsed:
+        return _THREAD_TITLE_PLACEHOLDER
+    return collapsed[:_THREAD_TITLE_MAX_CHARS]
+
+
 class RuntimeStore:
     """Deep persistence module: schema, transitions, sequencing, and atomic event append live here."""
 
@@ -322,10 +383,7 @@ class RuntimeStore:
                 raise KeyError(question.run_id)
             current = AgentRun.model_validate_json(row[0])
             target = AgentRunStatus.WAITING_CONFIRMATION
-            if target != current.status and target not in _TRANSITIONS[current.status]:
-                raise InvalidRunTransitionError(
-                    f"invalid run transition: {current.status.value} -> {target.value}"
-                )
+            _assert_run_transition(current.status, target)
             connection.execute(
                 """
                 INSERT OR REPLACE INTO agent_questions(
@@ -585,13 +643,66 @@ class RuntimeStore:
             )
         return cursor.rowcount
 
-    def delete_thread(self, thread_id: str) -> int:
-        """Delete all product records for a thread and return its run count."""
+    def delete_attachment(self, thread_id: str, attachment_id: str) -> bool:
+        """Delete one thread-scoped attachment record; False when it is not owned."""
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            run_count = connection.execute(
-                "SELECT COUNT(*) FROM agent_runs WHERE thread_id = ?", (thread_id,)
-            ).fetchone()[0]
+            cursor = connection.execute(
+                "DELETE FROM agent_attachments WHERE thread_id = ? AND attachment_id = ?",
+                (thread_id, attachment_id),
+            )
+        return cursor.rowcount > 0
+
+    def attachment_was_sent(self, thread_id: str, attachment_id: str) -> bool:
+        """Whether a run in this thread already consumed the attachment.
+
+        已随消息发出的附件不可"撤回"：composer 的删除动作必须报冲突，而不是
+        悄悄把 run 记录里的引用变成悬空 ID。
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM agent_runs WHERE thread_id = ?", (thread_id,)
+            ).fetchall()
+        for row in rows:
+            try:
+                run = AgentRun.model_validate_json(row[0])
+            except (TypeError, ValueError):
+                continue
+            if attachment_id in run.attachment_ids:
+                return True
+        return False
+
+    def delete_thread(self, thread_id: str) -> int:
+        """Delete all product records for a thread and return its run count.
+
+        护栏：存在活动 run 或未判定审批单元时拒绝删除。没有它，删线程就是绕过
+        阻断式审批的后门（待确认 diff 直接消失），也会把正在执行的 worker 的
+        写入目标一起抽走。错误里点名每个阻塞者，调用方据此给出可操作提示。
+        """
+        active_values = frozenset(status.value for status in ACTIVE_RUN_STATUSES)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            run_rows = connection.execute(
+                "SELECT run_id, status FROM agent_runs WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchall()
+            blockers = [
+                f"run {row[0]} is {row[1]}"
+                for row in run_rows
+                if str(row[1]) in active_values
+            ]
+            blockers.extend(
+                f"pending diff {row[0]} is undecided"
+                for row in connection.execute(
+                    "SELECT diff_id FROM pending_diffs WHERE thread_id = ? AND status = ?",
+                    (thread_id, PendingDiffStatus.PENDING.value),
+                ).fetchall()
+            )
+            if blockers:
+                raise ThreadDeletionBlockedError(
+                    f"thread {thread_id} cannot be deleted: " + "; ".join(blockers)
+                )
+            run_count = len(run_rows)
             connection.execute("DELETE FROM agent_messages WHERE thread_id = ?", (thread_id,))
             connection.execute(
                 "DELETE FROM agent_events WHERE run_id IN "
@@ -732,7 +843,14 @@ class RuntimeStore:
         return run
 
     def claim_resume_unfinished(self, run_id: str) -> AgentRun:
-        """Transition an unfinished run back to running (resume from checkpoint)."""
+        """Transition an unfinished run back to running (resume from checkpoint).
+
+        准入只接受 ``UNFINISHED``。这里曾按 ``RUNNING in _TRANSITIONS[current]``
+        判定，而 ``QUEUED`` / ``WAITING_CONFIRMATION`` / ``WAITING_APPROVAL`` 三者
+        的后继集合都含 ``RUNNING``，于是"待确认 diff 尚未判定"也能被 resume 拉回
+        RUNNING —— 审批门禁的绕过路径。挂起问题的续跑走 ``answer_question``，
+        审批续跑走 ``claim_resume``，两者都不经过这里。
+        """
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
@@ -741,10 +859,12 @@ class RuntimeStore:
             if row is None:
                 raise KeyError(run_id)
             current = AgentRun.model_validate_json(row[0])
-            if AgentRunStatus.RUNNING not in _TRANSITIONS[current.status]:
-                raise InvalidRunTransitionError(
-                    f"invalid resume: {current.status.value} -> {AgentRunStatus.RUNNING.value}"
-                )
+            _assert_run_transition(
+                current.status,
+                AgentRunStatus.RUNNING,
+                allowed_sources=frozenset({AgentRunStatus.UNFINISHED}),
+                action="resume",
+            )
             updated = current.model_copy(
                 update={
                     "status": AgentRunStatus.RUNNING,
@@ -865,10 +985,7 @@ class RuntimeStore:
             if row is None:
                 raise KeyError(run_id)
             current = AgentRun.model_validate_json(row[0])
-            if status != current.status and status not in _TRANSITIONS[current.status]:
-                raise InvalidRunTransitionError(
-                    f"invalid run transition: {current.status.value} -> {status.value}"
-                )
+            _assert_run_transition(current.status, status)
             update_fields: dict = {
                 "status": status,
                 "error_type": error_type,
@@ -975,10 +1092,8 @@ class RuntimeStore:
                     raise InvalidRunTransitionError(
                         f"run already finalized as {current.status.value}"
                     )
-            if outcome.status != current.status and outcome.status not in _TRANSITIONS[current.status]:
-                raise InvalidRunTransitionError(
-                    f"invalid run transition: {current.status.value} -> {outcome.status.value}"
-                )
+            if outcome.status != current.status:
+                _assert_run_transition(current.status, outcome.status)
 
             updated = current.model_copy(
                 update={
@@ -1041,10 +1156,12 @@ class RuntimeStore:
             if row is None:
                 raise KeyError(run_id)
             current = AgentRun.model_validate_json(row[0])
-            if current.status is not AgentRunStatus.WAITING_APPROVAL:
-                raise InvalidRunTransitionError(
-                    "only a waiting-approval run can be resumed"
-                )
+            _assert_run_transition(
+                current.status,
+                AgentRunStatus.RUNNING,
+                allowed_sources=frozenset({AgentRunStatus.WAITING_APPROVAL}),
+                action="approval continuation",
+            )
             updated = current.model_copy(
                 update={
                     "status": AgentRunStatus.RUNNING,
@@ -1085,10 +1202,12 @@ class RuntimeStore:
             if row is None:
                 raise KeyError(run_id)
             current = AgentRun.model_validate_json(row[0])
-            if current.status is not AgentRunStatus.WAITING_CONFIRMATION:
-                raise InvalidRunTransitionError(
-                    "only a waiting-confirmation run can be confirmed"
-                )
+            _assert_run_transition(
+                current.status,
+                AgentRunStatus.RUNNING,
+                allowed_sources=frozenset({AgentRunStatus.WAITING_CONFIRMATION}),
+                action="task confirmation",
+            )
             updated = current.model_copy(
                 update={
                     "status": AgentRunStatus.RUNNING,
@@ -1127,8 +1246,12 @@ class RuntimeStore:
             if row is None:
                 raise KeyError(run_id)
             current = AgentRun.model_validate_json(row[0])
-            if current.status is not AgentRunStatus.FAILED:
-                raise InvalidRunTransitionError("only a failed run can be retried")
+            _assert_run_transition(
+                current.status,
+                AgentRunStatus.RETRYING,
+                allowed_sources=frozenset({AgentRunStatus.FAILED}),
+                action="retry",
+            )
             updated = current.model_copy(
                 update={
                     "status": AgentRunStatus.RETRYING,
@@ -1457,6 +1580,20 @@ class RuntimeStore:
         return event
 
     @staticmethod
+    def _apply_thread_title(
+        connection: sqlite3.Connection, thread_id: str, content: str
+    ) -> None:
+        """Set the conversation title once, deterministically, from its first user message.
+
+        只在标题为空时写入：历史列表的标签不能随对话漂移，也不能被后续消息改名。
+        """
+        connection.execute(
+            "UPDATE agent_threads SET title = ? "
+            "WHERE thread_id = ? AND (title IS NULL OR title = '')",
+            (_derive_thread_title(content), thread_id),
+        )
+
+    @staticmethod
     def _insert_message(
         connection: sqlite3.Connection,
         *,
@@ -1467,6 +1604,8 @@ class RuntimeStore:
         data: dict,
         update_existing: bool = True,
     ) -> None:
+        if role == "user":
+            RuntimeStore._apply_thread_title(connection, thread_id, content)
         existing = connection.execute(
             "SELECT message_id FROM agent_messages WHERE run_id = ? AND role = ?",
             (run_id, role),

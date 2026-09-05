@@ -206,6 +206,13 @@ def test_runtime_store_persists_thread_messages_and_deletes_the_whole_thread(tmp
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert messages[1]["data"] == {"citations": [{"page_id": "t_cell"}]}
 
+    # 删除护栏只放行已收敛的会话（见 tests/test_thread_deletion_guard.py）：
+    # 新建 run 停在 QUEUED，先落到终态再删。
+    store.transition("run_message", AgentRunStatus.RUNNING, message="Started.")
+    store.finalize_run(
+        "run_message",
+        AgentRunOutcome(status=AgentRunStatus.SUCCEEDED, message="Done."),
+    )
     assert store.delete_thread("thread_delete") == 1
     assert store.list_messages("thread_delete") == []
     assert store.list_runs(thread_id="thread_delete") == []

@@ -70,8 +70,6 @@ class AgentEventType(str, Enum):
     REVIEW_REQUIRED = "review_required"     # 需要人工审查
     CHANGESET_READY = "changeset_ready"     # ChangeSet 已就绪
     VERIFICATION = "verification"           # 验证结果
-    MEMORY_RECALLED = "memory_recalled"     # 记忆已召回
-    MEMORY_CANDIDATE = "memory_candidate"   # 记忆候选提交
     ERROR = "error"                         # 错误
 
 

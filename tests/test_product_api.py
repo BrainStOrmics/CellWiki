@@ -161,64 +161,72 @@ def test_thread_attachments_upload_and_run_scope(tmp_path: Path):
     # 阶段 6：线程附件 = 临时 Agent 上下文；上传、线程归属校验、随线程删除
     from cellwiki.services.attachment_store import AttachmentFileStore
 
-    client = TestClient(create_app(tmp_path))
-    thread = client.post("/api/agent/threads")
-    assert thread.status_code == 201
-    thread_id = thread.json()["thread_id"]
+    # 删除护栏只放行已收敛的会话：注入确定性 adapter 并等 run 落终态，
+    # 而不是让删除与仍在执行的 worker 抢同一批行。
+    manager = AgentRuntimeManager(tmp_path, adapter=_ApiAgentAdapter())
+    client = TestClient(create_app(tmp_path, agent_runtime=manager))
+    try:
+        thread = client.post("/api/agent/threads")
+        assert thread.status_code == 201
+        thread_id = thread.json()["thread_id"]
 
-    uploaded = client.post(
-        f"/api/agent/threads/{thread_id}/attachments",
-        files={"files": ("note.md", b"# Attachment\n\nFOXP3 marker", "text/markdown")},
-    )
-    assert uploaded.status_code == 201, uploaded.text
-    records = uploaded.json()
-    assert len(records) == 1
-    record = records[0]
-    assert record["thread_id"] == thread_id
-    assert record["original_name"] == "note.md"
-    assert record["content_hash"]
+        uploaded = client.post(
+            f"/api/agent/threads/{thread_id}/attachments",
+            files={"files": ("note.md", b"# Attachment\n\nFOXP3 marker", "text/markdown")},
+        )
+        assert uploaded.status_code == 201, uploaded.text
+        records = uploaded.json()
+        assert len(records) == 1
+        record = records[0]
+        assert record["thread_id"] == thread_id
+        assert record["original_name"] == "note.md"
+        assert record["content_hash"]
 
-    listed = client.get(f"/api/agent/threads/{thread_id}/attachments")
-    assert [item["attachment_id"] for item in listed.json()] == [record["attachment_id"]]
+        listed = client.get(f"/api/agent/threads/{thread_id}/attachments")
+        assert [item["attachment_id"] for item in listed.json()] == [record["attachment_id"]]
 
-    # 线程附件可以随 run 传递
-    started = client.post(
-        "/api/agent/runs",
-        json={
-            "message": "读一下附件",
-            "thread_id": thread_id,
-            "attachment_ids": [record["attachment_id"]],
-        },
-    )
-    assert started.status_code == 202, started.text
-    run = client.get(f"/api/agent/runs/{started.json()['run_id']}").json()
-    assert run["attachment_ids"] == [record["attachment_id"]]
+        # 线程附件可以随 run 传递
+        started = client.post(
+            "/api/agent/runs",
+            json={
+                "message": "读一下附件",
+                "thread_id": thread_id,
+                "attachment_ids": [record["attachment_id"]],
+            },
+        )
+        assert started.status_code == 202, started.text
+        run_id = started.json()["run_id"]
+        run = client.get(f"/api/agent/runs/{run_id}").json()
+        assert run["attachment_ids"] == [record["attachment_id"]]
+        _wait_for_run(client, run_id, {AgentRunStatus.SUCCEEDED})
 
-    # 不属于该线程的 attachment_id 必须被拒绝
-    foreign = client.post(
-        "/api/agent/runs",
-        json={
-            "message": "x",
-            "thread_id": thread_id,
-            "attachment_ids": ["att_does_not_exist"],
-        },
-    )
-    assert foreign.status_code == 422
+        # 不属于该线程的 attachment_id 必须被拒绝
+        foreign = client.post(
+            "/api/agent/runs",
+            json={
+                "message": "x",
+                "thread_id": thread_id,
+                "attachment_ids": ["att_does_not_exist"],
+            },
+        )
+        assert foreign.status_code == 422
 
-    # 不存在的线程不能上传
-    missing = client.post(
-        "/api/agent/threads/thread_none/attachments",
-        files={"files": ("a.txt", b"x", "text/plain")},
-    )
-    assert missing.status_code == 404
+        # 不存在的线程不能上传
+        missing = client.post(
+            "/api/agent/threads/thread_none/attachments",
+            files={"files": ("a.txt", b"x", "text/plain")},
+        )
+        assert missing.status_code == 404
 
-    # 删除线程时文件与记录一并清理
-    store = get_runtime_store(tmp_path)
-    assert store.get_attachment(thread_id, record["attachment_id"]) is not None
-    deleted = client.delete(f"/api/agent/threads/{thread_id}")
-    assert deleted.status_code == 200
-    assert store.get_attachment(thread_id, record["attachment_id"]) is None
-    assert AttachmentFileStore(tmp_path).path_for(thread_id, record["attachment_id"]) is None
+        # 删除线程时文件与记录一并清理
+        store = get_runtime_store(tmp_path)
+        assert store.get_attachment(thread_id, record["attachment_id"]) is not None
+        deleted = client.delete(f"/api/agent/threads/{thread_id}")
+        assert deleted.status_code == 200, deleted.text
+        assert store.get_attachment(thread_id, record["attachment_id"]) is None
+        assert AttachmentFileStore(tmp_path).path_for(thread_id, record["attachment_id"]) is None
+    finally:
+        manager.close()
 
 
 def get_runtime_store(project_root: Path):

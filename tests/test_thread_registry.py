@@ -121,6 +121,78 @@ def test_create_run_registers_its_thread_without_explicit_allocation(tmp_path: P
     entries = {item["thread_id"]: item for item in store.list_threads()}
     assert entries["thread_unregistered"]["run_count"] == 1
     assert entries["thread_unregistered"]["latest_run_id"] == "run_unregistered"
+
+
+def test_thread_title_is_derived_from_the_first_user_message(tmp_path: Path):
+    # 会话标题确定性派生（不接 LLM）：历史列表不能一直显示 ID 后缀占位。
+    store = RuntimeStore(tmp_path)
+    store.create_run(
+        AgentRun(
+            run_id="run_titled",
+            thread_id="thread_titled",
+            input_message="总结 CD8 T 细胞的标记基因",
+        )
+    )
+
+    entries = {item["thread_id"]: item for item in store.list_threads()}
+    assert entries["thread_titled"]["title"] == "总结 CD8 T 细胞的标记基因"
+
+
+def test_thread_title_collapses_whitespace_and_truncates_to_40_chars(tmp_path: Path):
+    store = RuntimeStore(tmp_path)
+    long_message = "第一段\n\n  换行与多余空白   应该被折叠 " + "长" * 60
+    store.create_run(
+        AgentRun(run_id="run_long", thread_id="thread_long", input_message=long_message)
+    )
+
+    title = {item["thread_id"]: item for item in store.list_threads()}["thread_long"]["title"]
+    assert title is not None
+    assert len(title) == 40
+    assert "\n" not in title
+    assert "  " not in title
+    assert title.startswith("第一段 换行与多余空白 应该被折叠")
+
+
+def test_thread_title_falls_back_to_the_placeholder_for_a_blank_message(tmp_path: Path):
+    store = RuntimeStore(tmp_path)
+    store.create_run(
+        AgentRun(run_id="run_blank", thread_id="thread_blank", input_message="   \n ")
+    )
+
+    entries = {item["thread_id"]: item for item in store.list_threads()}
+    assert entries["thread_blank"]["title"] == "新会话"
+
+
+def test_thread_title_is_written_once_and_never_renamed(tmp_path: Path):
+    # 标题取首条用户消息；后续消息不得改写它（否则历史列表会随对话漂移）。
+    store = RuntimeStore(tmp_path)
+    store.create_run(
+        AgentRun(run_id="run_first", thread_id="thread_stable", input_message="第一个问题")
+    )
+    store.create_run(
+        AgentRun(run_id="run_second", thread_id="thread_stable", input_message="第二个问题")
+    )
+    store.append_message(
+        thread_id="thread_stable",
+        run_id="run_first",
+        role="user",
+        content="被改写的第一条",
+    )
+
+    entries = {item["thread_id"]: item for item in store.list_threads()}
+    assert entries["thread_stable"]["title"] == "第一个问题"
+
+
+def test_zero_run_thread_keeps_a_null_title(tmp_path: Path):
+    # 尚未开始的会话不派生标题：前端显示"新会话"占位，不是空串。
+    store = RuntimeStore(tmp_path)
+    store.create_thread("thread_empty")
+
+    assert {item["thread_id"]: item for item in store.list_threads()}["thread_empty"][
+        "title"
+    ] is None
+
+
 def test_delete_thread_removes_zero_run_placeholder(tmp_path: Path):
     store = RuntimeStore(tmp_path)
     store.create_thread("thread_disposable")

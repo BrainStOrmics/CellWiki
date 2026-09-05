@@ -18,7 +18,13 @@ from alembic.config import Config
 # 使用 Alembic 对 SQLite 运行时数据库执行迁移。
 # 处理 Phase 3 安装的兼容性：这些版本直接创建了基线模式，
 # 但没有 alembic_version 表，因此需要标记当前版本为 head。
-# Phase 3 之后，所有模式变更都通过 Alembic 迁移管理。
+#
+# 注意：Alembic **不是**全部模式变更的落点。它只保留 0001 基线
+# （agent_runs 与 agent_events）；其余表与后续列变更由
+# `runtime_store._ensure_schema` 的内联守卫 `ALTER TABLE` 承载。
+# 原因：不经 sidecar 的直连建库路径（测试、scripts/serve_e2e.py）不会跑
+# Alembic，只补 revision 会让这些库静默缺列。新增模式变更时先看
+# `_ensure_schema`，再决定是否需要 Alembic。
 # ---------------------------------------------------------------------------
 def upgrade_runtime_database(db_path: Path) -> None:
     db_path = Path(db_path).resolve()

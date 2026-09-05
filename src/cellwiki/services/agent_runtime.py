@@ -830,6 +830,11 @@ class AgentRuntimeManager:
             run_id=run_id,
             thread_id=thread_id,
             project_id=context.project_id,
+            # 直播看到的上下文必须落库：回放与诊断读的是这条记录，不是内存里的
+            # context 对象。此前 API 把它们送进了 WikiAgentContext 却被这里丢掉。
+            source_id=context.source_id,
+            page_id=context.page_id,
+            selected_text=context.selected_text,
             status=AgentRunStatus.QUEUED,
             input_message=message.strip()[:60_000],
             budget=budget,
@@ -862,7 +867,7 @@ class AgentRuntimeManager:
             claimed.run_id,
             claimed.thread_id,
             claimed.input_message,
-            WikiAgentContext(project_id=claimed.project_id, thread_id=claimed.thread_id),
+            self._context_for_run(claimed),
             claimed.budget,
         )
         return claimed
@@ -915,6 +920,23 @@ class AgentRuntimeManager:
     def delete_thread(self, thread_id: str) -> int:
         """Delete runs, events, spans and pending diffs for one thread."""
         return self.store.delete_thread(thread_id)
+
+    @staticmethod
+    def _context_for_run(run: AgentRun) -> WikiAgentContext:
+        """Rebuild one run's context from its durable record.
+
+        续跑段（resume / retry / 答题续跑）此前用空的 WikiAgentContext 起图，
+        于是首段看到的页面与选中文本在续跑段消失。上下文既然已随 run 落库，
+        回放就必须读同一份。
+        """
+        return WikiAgentContext(
+            project_id=run.project_id,
+            source_id=run.source_id,
+            page_id=run.page_id,
+            selected_text=run.selected_text,
+            thread_id=run.thread_id,
+            attachment_ids=list(run.attachment_ids),
+        )
 
     # ---- pending diff 审批 ----
     def pending_diff_patch(self, diff_id: str) -> str:
@@ -1596,7 +1618,7 @@ class AgentRuntimeManager:
             run_id, AgentRunStatus.RUNNING, message="Answer received. Resuming the run."
         )
         thread_id = run.thread_id
-        context = WikiAgentContext(project_id=run.project_id, thread_id=thread_id)
+        context = self._context_for_run(run)
         adapter = self.adapter or self._built_adapter or _instantiate_agent(self.project_root)
         self._built_adapter = adapter
         with self._thread_lock:
@@ -2128,7 +2150,7 @@ class AgentRuntimeManager:
             claimed.run_id,
             claimed.thread_id,
             claimed.input_message,
-            WikiAgentContext(project_id=claimed.project_id, thread_id=claimed.thread_id),
+            self._context_for_run(claimed),
             claimed.budget,
         )
         return claimed

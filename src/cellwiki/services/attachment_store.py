@@ -140,6 +140,19 @@ class AttachmentFileStore:
                 return candidate
         return None
 
+    def delete_attachment(self, thread_id: str, attachment_id: str) -> int:
+        """Remove one attachment's stored files (original plus extracted sidecar)."""
+        directory = self._thread_dir(thread_id)
+        if not directory.is_dir():
+            return 0
+        prefix = attachment_id[:12] + "__"
+        removed = 0
+        for candidate in directory.iterdir():
+            if candidate.is_file() and candidate.name.startswith(prefix):
+                candidate.unlink(missing_ok=True)
+                removed += 1
+        return removed
+
     def delete_thread(self, thread_id: str) -> int:
         """Remove every stored file for a thread; returns the count removed."""
         directory = self._thread_dir(thread_id)

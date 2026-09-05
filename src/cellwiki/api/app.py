@@ -53,7 +53,7 @@ from cellwiki.services.agent_runtime import (
 )
 from cellwiki.services.environment import EnvironmentSettingsService
 from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
-from cellwiki.services.runtime_store import RuntimeStore
+from cellwiki.services.runtime_store import RuntimeStore, ThreadDeletionBlockedError
 
 
 # ===========================================================================
@@ -112,7 +112,9 @@ class AgentRunRequest(BaseModel):
     page_id: str | None = Field(default=None, max_length=256)
     selected_text: str | None = Field(default=None, max_length=4000)  # 用户选中的文本
     attachment_ids: list[str] = Field(default_factory=list)       # 线程附件（临时 Agent 上下文）
-    budget: RunBudget = Field(default_factory=RunBudget)           # 运行预算
+    # 省略即 None -> 运行时回退 settings（AGENT_MAX_TOOL_STEPS / AGENT_RUN_MAX_SECONDS）。
+    # 曾写成 default_factory=RunBudget，把 100/7200 硬编码进 API 边界，配置覆盖成为死路径。
+    budget: RunBudget | None = None                               # 运行预算
 
 
 # ===========================================================================
@@ -455,6 +457,27 @@ def create_app(
         """Return the temporary attachments owned by one thread (newest first)."""
         return get_agent_runtime().store.list_attachments(thread_id)
 
+    @app.delete("/api/agent/threads/{thread_id}/attachments/{attachment_id}")
+    def delete_thread_attachment(thread_id: str, attachment_id: str) -> dict[str, bool]:
+        """Remove one composer attachment before it is sent with a message.
+
+        已随某个 run 发出的附件不可撤回：409 让前端区分"已发送"与通用失败，
+        而不是把 run 记录里的引用变成悬空 ID。
+        """
+        store = get_agent_runtime().store
+        if not store.thread_exists(thread_id):
+            raise HTTPException(status_code=404, detail="thread not found")
+        if store.get_attachment(thread_id, attachment_id) is None:
+            raise HTTPException(status_code=404, detail="attachment not found")
+        if store.attachment_was_sent(thread_id, attachment_id):
+            raise HTTPException(
+                status_code=409,
+                detail=f"attachment {attachment_id} was already sent with a message",
+            )
+        store.delete_attachment(thread_id, attachment_id)
+        attachment_files.delete_attachment(thread_id, attachment_id)
+        return {"deleted": True}
+
     @app.get("/api/agent/threads/{thread_id}/messages")
     def list_agent_thread_messages(thread_id: str) -> list[dict]:
         """Return the complete persisted transcript for one conversation."""
@@ -470,6 +493,8 @@ def create_app(
                 "thread_id": thread_id,
                 "deleted_runs": deleted_runs,
             }
+        except ThreadDeletionBlockedError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
 
@@ -636,6 +661,11 @@ def create_app(
             return _agent_run_payload(_runtime.retry(run_id), store=_runtime.store)
         except KeyError:
             raise HTTPException(status_code=404, detail="agent run not found") from None
+        # 两个异常都继承 RuntimeError（不是 ValueError）：漏掉它们，门禁冲突就是 500。
+        except InvalidRunTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except AgentRunInProgressError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
 
@@ -647,6 +677,10 @@ def create_app(
             return _agent_run_payload(_runtime.resume(run_id), store=_runtime.store)
         except KeyError:
             raise HTTPException(status_code=404, detail="agent run not found") from None
+        except InvalidRunTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except AgentRunInProgressError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
 
