@@ -17,8 +17,12 @@
   - `overview.md`、`statistics.md`：系统重建，Agent 不可手写。
   - `log.md`、`audit_report.md`：系统 append-only，Agent 不可写。
 - **Run**：桌面端一条消息触发的一次 Agent 执行。每个 run 有独立的迭代预算、
-  超时、事件流、checkpoint 与终态；可以 unfinished 收尾并续跑（"继续" = 同一
-  run 回到 RUNNING，非新 run）。
+  超时、事件流、checkpoint 与终态；可以 unfinished 收尾并续跑。图状态键是 **run
+  作用域**的 `{thread_id}::{run_id}`（ADR-0010），所以同一会话里连续两个 run 不会
+  读到对方的状态；checkpoint 无 TTL、无体积上限，只随线程删除级联回收。
+  `resume`（"继续"）= 同一 run 回到 RUNNING、在自己的 checkpoint 上续跑，非新
+  run；`retry` 仍是同一 run，但**先删掉该 run 的状态键**再从有界 transcript 重放
+  ——两者不同义。
 - **待确认 diff（审批单元）**：run 发布提交时系统生成的 git 差异审批单元，
   id 形如 `diff_<run_id>_<n>`；一个 run 可产生一串单元，**一行一次判定、不可
   回退**。接受 = 审计生效；拒绝 = 系统 revert **本单元**的 commit。单元边界 =
