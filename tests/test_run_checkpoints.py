@@ -807,7 +807,10 @@ def test_resumed_segment_continues_from_checkpoint_without_replaying_transcript(
 
     result = manager.answer_question(run.run_id, "是")
 
-    assert result["status"] == AgentRunStatus.SUCCEEDED.value, result
+    # 阶段 E：答题立即返回，续跑段在执行器线程上跑完。
+    assert result["status"] == AgentRunStatus.RUNNING.value, result
+    resumed = _wait_for_status(manager, run.run_id, {AgentRunStatus.SUCCEEDED})
+    assert resumed.status == AgentRunStatus.SUCCEEDED
     assert len(model.seen) == 2
     # 决策 3：续跑段里首段的输入只出现一次——checkpoint 里那一份，没有再注入一遍。
     assert _count_occurrences(model.seen[1], marker) == 1

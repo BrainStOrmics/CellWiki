@@ -609,6 +609,24 @@ export function AppShell() {
     return subscribeToAgentRun(runId);
   }
 
+  /** 答题后的续跑：后端只登记答案与状态迁移就返回，进度必须切回直播订阅。 */
+  async function resumeAfterAnswer(runId: string) {
+    setActiveAgentRunId(runId);
+    setResumableAgentRunId(null);
+    setAgentBusy(true);
+    setAgentActivity(t("chat.resuming"));
+    if (agentThreadIdRef.current) {
+      window.localStorage.setItem(agentRunStorageKey(agentThreadIdRef.current), runId);
+    }
+    try {
+      await subscribeToAgentRun(runId);
+    } catch {
+      // 订阅起不来时不能把界面留在"忙"上：回滚，用户才还能重试或重发消息。
+      setAgentBusy(false);
+      setAgentActivity("");
+    }
+  }
+
   function applyAgentEvent(event: AgentEvent, options: { replayChat?: boolean } = {}) {
     if (event.thread_id !== agentThreadIdRef.current) return;
     const renderChat = options.replayChat ?? true;
@@ -1530,7 +1548,7 @@ export function AppShell() {
                   userLabel={t("agent.you")}
                   reasoningTitle={t("chat.reasoning")}
                   reasoningLiveLabel={t("chat.reasoningLive")}
-                  onQuestionAnswered={(runId) => { void restoreAgentRun(runId); }}
+                  onQuestionAnswered={(runId) => { void resumeAfterAnswer(runId); }}
                 />
               ))}
               {retryableAgentRunId && !agentBusy && (
@@ -1549,7 +1567,7 @@ export function AppShell() {
               )}
               {waitingOnQuestion
                 && !messages.some((message) => message.role === "agent" && message.runId === activeAgentRunId)
-                && <QuestionCard runId={activeAgentRunId} onAnswered={(runId) => { void restoreAgentRun(runId); }} />}
+                && <QuestionCard runId={activeAgentRunId} onAnswered={(runId) => { void resumeAfterAnswer(runId); }} />}
             </div>
 
             <div className="composer-wrap">

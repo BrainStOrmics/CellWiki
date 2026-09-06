@@ -66,7 +66,6 @@ from cellwiki.agent.executor import (
     attachment_read_stats,
     clear_attachment_resolver,
     clear_attachment_scope,
-    set_attachment_resolver,
     set_attachment_scope,
     set_promotion_handler,
 )
@@ -1272,6 +1271,47 @@ class AgentRuntimeManager:
                     message="Checkpoint write-back failed for this segment.",
                 )
 
+    def _equip_run_scope(self, run: AgentRun) -> None:
+        """一次配齐这一段运行的附件作用域（首段与续跑段共用）。
+
+        续跑段此前只装 resolver、不装 scope：``workspace_root`` / ``thread_dir``
+        与读预算都是空的，于是附件读不出来、预算也不生效。
+        """
+        thread_id = run.thread_id
+        files = AttachmentFileStore(self.project_root)
+        set_attachment_scope(
+            lambda attachment_id: self.resolve_attachment_path(thread_id, attachment_id),
+            self.project_root,
+            files._thread_dir(thread_id),
+            settings.agent_attachment_read_budget_chars,
+        )
+        set_promotion_handler(
+            lambda scope_thread_id, attachment_id, source_id: (
+                self.store.mark_attachment_promoted(
+                    scope_thread_id, attachment_id, source_id
+                )
+            )
+        )
+
+    def _finish_run_segment(self, run_id: str, thread_id: str) -> None:
+        """一段运行结束的**唯一**清理点。
+
+        首段与续跑段共用同一份收尾，因此"只清一次"是可验证的：作用域若跨 run
+        泄漏，表现就是下一个 run 读到上一个会话的附件。
+        """
+        self._persist_run_checkpoint(run_id, thread_id)
+        clear_attachment_resolver()
+        clear_attachment_scope()
+        with self._thread_lock:
+            if self._running_run_id == run_id:
+                self._running_run_id = None
+            self._cancellations.pop(run_id, None)
+        try:
+            self._maybe_publish_pending_diff(run_id)
+        except (GitCommandError, OSError):
+            # 发布是幂等收尾；git 异常不得掩盖这一段真正的运行结果。
+            pass
+
     def _execute(
         self,
         run_id: str,
@@ -1293,16 +1333,7 @@ class AgentRuntimeManager:
                     continue_from_checkpoint=continue_from_checkpoint,
                 )
         finally:
-            self._persist_run_checkpoint(run_id, thread_id)
-            clear_attachment_resolver()
-            clear_attachment_scope()
-            clear_attachment_scope()
-            clear_attachment_scope()
-            with self._thread_lock:
-                if self._running_run_id == run_id:
-                    self._running_run_id = None
-                self._cancellations.pop(run_id, None)
-            self._maybe_publish_pending_diff(run_id)
+            self._finish_run_segment(run_id, thread_id)
 
     def _execute_bound(
         self,
@@ -1326,40 +1357,7 @@ class AgentRuntimeManager:
         with self._thread_lock:
             self._running_run_id = run_id
 
-        set_attachment_resolver(
-            lambda attachment_id: self.resolve_attachment_path(run.thread_id, attachment_id)
-        )
-        files = AttachmentFileStore(self.project_root)
-        set_attachment_scope(
-            lambda attachment_id: self.resolve_attachment_path(run.thread_id, attachment_id),
-            self.project_root,
-            files._thread_dir(run.thread_id),
-            settings.agent_attachment_read_budget_chars,
-        )
-        set_promotion_handler(
-            lambda thread_id, attachment_id, source_id: self.store.mark_attachment_promoted(
-                thread_id, attachment_id, source_id
-            )
-        )
-        set_promotion_handler(
-            lambda thread_id, attachment_id, source_id: self.store.mark_attachment_promoted(
-                thread_id, attachment_id, source_id
-            )
-        )
-        files = AttachmentFileStore(self.project_root)
-        set_attachment_scope(
-            lambda attachment_id: self.resolve_attachment_path(run.thread_id, attachment_id),
-            self.project_root,
-            files._thread_dir(run.thread_id),
-            settings.agent_attachment_read_budget_chars,
-        )
-        files = AttachmentFileStore(self.project_root)
-        set_attachment_scope(
-            lambda attachment_id: self.resolve_attachment_path(run.thread_id, attachment_id),
-            self.project_root,
-            files._thread_dir(run.thread_id),
-            settings.agent_attachment_read_budget_chars,
-        )
+        self._equip_run_scope(run)
         adapter = self.adapter or self._built_adapter or _instantiate_agent(self.project_root)
         self._built_adapter = adapter
         # ADR-0010 决策 8：墙钟预算跨段累计——续跑段继承已消耗的时间而不是重新计时，
@@ -1960,19 +1958,44 @@ class AgentRuntimeManager:
         self.store.transition(
             run_id, AgentRunStatus.RUNNING, message="Answer received. Resuming the run."
         )
-        thread_id = run.thread_id
-        context = self._context_for_run(run)
         with self._thread_lock:
             self._running_run_id = run_id
-        set_attachment_resolver(
-            lambda attachment_id: self.resolve_attachment_path(thread_id, attachment_id)
-        )
+            # 与 start_idempotent / _claim_and_submit 一致：提交执行者前先装取消门，
+            # 否则续跑段无法在安全边界上被取消。
+            self._cancellations[run_id] = _CancellationGate()
+        # 续跑交给执行器：HTTP 线程只登记答案与状态迁移。此前整段模型调用都在请求
+        # 线程里跑完，一次答题就能把 API 占住几分钟（工作单阶段 E）。
+        self._executor.submit(self._execute_resume, run_id, answers_list, checkpoint_id)
+        return self.store.get_run(run_id).model_dump(mode="json")  # type: ignore[union-attr]
+
+    def _execute_resume(
+        self, run_id: str, answers: list[str], checkpoint_id: str | None
+    ) -> None:
+        """答题续跑段：与首段同一份作用域、同一份收尾，跑在执行器线程里。"""
+        run = self.store.get_run(run_id)
+        thread_id = run.thread_id
+        try:
+            with log_context(run_id=run_id, thread_id=thread_id):
+                self._execute_resume_bound(run, answers, checkpoint_id)
+        finally:
+            self._finish_run_segment(run_id, thread_id)
+
+    def _execute_resume_bound(
+        self, run: AgentRun, answers: list[str], checkpoint_id: str | None
+    ) -> None:
+        run_id = run.run_id
+        thread_id = run.thread_id
+        adapter = self.adapter or self._built_adapter or _instantiate_agent(self.project_root)
+        self._built_adapter = adapter
+        # 续跑段与首段配齐同一份作用域：附件可读、读预算真实生效、promote 有回调。
+        self._equip_run_scope(run)
+        context = self._context_for_run(run)
         try:
             stream = self._open_stream_resume(
                 adapter,
                 thread_id,
                 context,
-                answers=answers_list,
+                answers=answers,
                 run_id=run_id,
                 checkpoint_id=checkpoint_id,
             )
@@ -1989,33 +2012,28 @@ class AgentRuntimeManager:
                 adapter=adapter,
             )
             if outcome.question_pending:
-                return self.store.get_run(run_id).model_dump(mode="json")  # type: ignore[union-attr]
+                # 又停在新的问题上：保持 WAITING_CONFIRMATION，等下一次作答。
+                try:
+                    self._maybe_publish_pending_diff(run_id)
+                except (GitCommandError, OSError):
+                    pass
+                return
             self._finalize_stream_outcome(run_id, thread_id, outcome)
             try:
-                self._maybe_publish_pending_diff(run_id)
+                published = self._maybe_publish_pending_diff(run_id)
             except (GitCommandError, OSError):
-                pass
+                published = False
+            if published:
+                # 与首段同一条门禁：续跑段发布的单元同样要留强制 lint 快照。
+                self._forced_lint_audit(run_id)
         except _RunTimeoutError as error:
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, str(error))
         except AgentBudgetExceeded as error:
             self._finalize_unfinished(run_id, AgentErrorType.BUDGET, str(error))
-        except InvalidRunTransitionError:
-            raise
-        except Exception as error:
-            self.store.append_event(
-                run_id,
-                AgentEventType.ERROR,
-                message=f"Resume failed: {error}",
-            )
-            self._finalize_unfinished(run_id, AgentErrorType.SYSTEM, str(error))
-        finally:
-            self._persist_run_checkpoint(run_id, run.thread_id)
-            clear_attachment_resolver()
-            with self._thread_lock:
-                if self._running_run_id == run_id:
-                    self._running_run_id = None
-                self._cancellations.pop(run_id, None)
-        return self.store.get_run(run_id).model_dump(mode="json")  # type: ignore[union-attr]
+        except AgentRetryLimitExceeded as error:
+            self._finalize_unfinished(run_id, AgentErrorType.BUDGET, str(error))
+        except Exception as error:  # noqa: BLE001 - 执行器线程里必须收敛所有异常
+            self._finish_failed(run_id, error)
 
 
     def _iterate_safe(

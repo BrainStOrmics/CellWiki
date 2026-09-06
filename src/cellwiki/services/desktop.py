@@ -132,10 +132,17 @@ def backup_before_upgrade(paths: ApplicationPaths, *, version: str) -> Path | No
         return None
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     backup = paths.backups_dir / f"upgrade-{previous}-to-{version}-{stamp}.zip"
+    # 函数内导入：本模块会被 sidecar 在"配置项目环境"之前导入，而 checkpoints
+    # 服务在导入期就读 cellwiki.config，放到模块顶层会把 settings 提前定型。
+    from cellwiki.services.checkpoints import CHECKPOINT_FILE_NAME
+
     candidates = [
         paths.project_root / ".env",
         paths.project_root / "data" / "runtime" / "cellwiki.db",
         paths.project_root / "data" / "runtime" / "memory.sqlite",
+        # ADR-0010 决策 12：图状态载体同进备份承诺。里面是消息与工具输出原文，
+        # 丢了既丢掉续跑能力，也丢掉那段内容的本地副本。
+        paths.project_root / "data" / "runtime" / CHECKPOINT_FILE_NAME,
         paths.config_dir,
     ]
     with zipfile.ZipFile(backup, "w", compression=zipfile.ZIP_DEFLATED) as archive:

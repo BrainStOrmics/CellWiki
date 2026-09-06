@@ -899,7 +899,14 @@ def test_ask_user_question_pauses_waits_and_resumes(tmp_path: Path):
         runtime.answer_question(started.run_id, [])
 
     result = runtime.answer_question(started.run_id, ["是"])
-    assert result["status"] == AgentRunStatus.SUCCEEDED.value
+    # 阶段 E：答题只登记答案并把 run 转回 RUNNING 就返回，续跑在执行器线程上跑完。
+    assert result["status"] == AgentRunStatus.RUNNING.value
+    deadline = time.monotonic() + WAIT_TIMEOUT
+    while time.monotonic() < deadline:
+        if runtime.store.get_run(started.run_id).status == AgentRunStatus.SUCCEEDED:
+            break
+        time.sleep(0.02)
+    assert runtime.store.get_run(started.run_id).status == AgentRunStatus.SUCCEEDED
     assert adapter.calls[-1] == (None, ["是"])
     answered = runtime.store.list_questions(started.run_id)[0]
     assert answered["status"] == "answered"
@@ -1110,7 +1117,14 @@ def test_real_graph_interrupt_pause_and_command_resume(tmp_path: Path):
     assert question is not None and question["question"] == "继续吗？"
 
     result = runtime.answer_question(run.run_id, "是")
-    assert result["status"] == AgentRunStatus.SUCCEEDED.value
+    # 阶段 E：答题立即返回，续跑段在执行器线程上跑完。
+    assert result["status"] == AgentRunStatus.RUNNING.value
+    deadline = time.monotonic() + WAIT_TIMEOUT
+    while time.monotonic() < deadline:
+        if runtime.store.get_run(run.run_id).status == AgentRunStatus.SUCCEEDED:
+            break
+        time.sleep(0.02)
+    assert runtime.store.get_run(run.run_id).status == AgentRunStatus.SUCCEEDED
     messages = runtime.store.list_context_messages(thread_id)
     assert any("已按你的选择完成" in item["content"] for item in messages)
 

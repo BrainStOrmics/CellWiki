@@ -12,11 +12,13 @@ import os
 import sqlite3
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from langchain_core.messages import AIMessage
 
+from cellwiki.services.checkpoints import CHECKPOINT_FILE_NAME
 from cellwiki.services.desktop import (
     ApplicationPaths,
     RedactingFormatter,
@@ -50,6 +52,29 @@ def test_application_layout_and_upgrade_backup_preserve_project_data(tmp_path: P
             paths.config_dir,
         )
     )
+
+
+def test_upgrade_backup_carries_the_checkpoint_carrier(tmp_path: Path):
+    """裁决 #8：``checkpoints.sqlite`` 同进备份承诺。
+
+    它装着消息与工具输出原文，只备份 ``cellwiki.db`` 会既丢续跑能力、也丢那段
+    内容的本地副本。
+    """
+    paths = ApplicationPaths.create(tmp_path / "CellWikiData")
+    runtime = paths.project_root / "data" / "runtime"
+    (runtime / "cellwiki.db").write_bytes(b"database-v1")
+    (runtime / CHECKPOINT_FILE_NAME).write_bytes(b"graph-state-v1")
+
+    assert backup_before_upgrade(paths, version="1.0.0") is None
+    backup = backup_before_upgrade(paths, version="2.0.0")
+
+    assert backup is not None and backup.is_file()
+    with zipfile.ZipFile(backup) as archive:
+        names = archive.namelist()
+        assert any(name.endswith(CHECKPOINT_FILE_NAME) for name in names), names
+        assert any(name.endswith("cellwiki.db") for name in names), names
+        carried = archive.read(next(n for n in names if n.endswith(CHECKPOINT_FILE_NAME)))
+    assert carried == b"graph-state-v1"
 
 
 def test_redacting_formatter_removes_tokens_keys_and_authorization():

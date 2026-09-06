@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import sqlite3
-import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -34,12 +33,6 @@ class CheckpointMissingError(RuntimeError):
     """
 
 
-# ADR-0010 决策 13：SqliteSaver 非线程安全，而阶段 E 之前写方有两个
-# （单 worker 执行器、HTTP 线程上的 answer_question）。这是权宜闸——
-# 阶段 E 把提问续跑移入 executor 后必须删除本锁及其全部调用点。
-_checkpoint_write_lock = threading.RLock()
-
-
 def checkpoint_state_key(thread_id: str, run_id: str) -> str:
     """决策 2：图状态按 run 作用域隔离，而不是按会话。"""
     return f"{thread_id}::{run_id}"
@@ -49,45 +42,22 @@ def checkpoint_path(project_root: Path | str) -> Path:
     return Path(project_root) / "data" / "runtime" / CHECKPOINT_FILE_NAME
 
 
-def checkpoint_write_lock() -> threading.RLock:
-    """阶段 C 的临时进程内写锁；阶段 E 删除本函数与所有调用点。"""
-    return _checkpoint_write_lock
-
-
-class _ThreadSafeSqliteSaver(SqliteSaver):
-    """决策 13 的权宜闸：``SqliteSaver`` 非线程安全，而阶段 E 之前写方有两个
-    （单 worker 执行器、HTTP 线程上的 ``answer_question``）。
-
-    把串行化放在载体里而不是各个调用点，才能覆盖全部写方。阶段 E 把提问续跑
-    移入 executor 后写方唯一，本类与 ``_checkpoint_write_lock`` 一并删除。
-    """
-
-    def put(self, config, checkpoint, metadata, new_versions):  # type: ignore[override]
-        with _checkpoint_write_lock:
-            return super().put(config, checkpoint, metadata, new_versions)
-
-    def put_writes(self, config, writes, task_id, task_path=""):  # type: ignore[override]
-        with _checkpoint_write_lock:
-            return super().put_writes(config, writes, task_id, task_path)
-
-    def get_tuple(self, config):  # type: ignore[override]
-        with _checkpoint_write_lock:
-            return super().get_tuple(config)
-
-    def list(self, config, *, filter=None, before=None, limit=None):  # type: ignore[override]
-        with _checkpoint_write_lock:
-            yield from super().list(config, filter=filter, before=before, limit=limit)
-
-
 def build_checkpointer(project_root: Path | str) -> Any:
-    """决策 1/14：默认 SqliteSaver；``AGENT_CHECKPOINTER=inmemory`` 是短期回滚闸。"""
+    """决策 1/14：默认 SqliteSaver；``AGENT_CHECKPOINTER=inmemory`` 是短期回滚闸。
+
+    决策 13 的权宜写锁已删：**写方唯一由串行门禁保证**，不再靠进程内锁。
+    一段运行的图状态只由执行器线程写（提问续跑也在执行器里，见
+    ``AgentRuntimeManager._execute_resume``）；retry 的 ``delete_run_checkpoints``
+    与删线程的级联删除都要求当时没有活动 run；``answer_question`` 只在
+    WAITING_CONFIRMATION 上读一次最新 checkpoint 标识，那时没有执行者在跑。
+    """
     if settings.agent_checkpointer == "inmemory":
         return InMemorySaver()
     path = checkpoint_path(project_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    # check_same_thread=False：执行器线程写、HTTP 线程读，由载体内的锁串行化。
+    # check_same_thread=False：连接在执行器线程上使用，但载体是在别的线程构造的。
     connection = sqlite3.connect(path, check_same_thread=False)
-    saver = _ThreadSafeSqliteSaver(connection)
+    saver = SqliteSaver(connection)
     saver.setup()
     return saver
 
@@ -110,9 +80,8 @@ def _with_saver(project_root: Path | str, action: Callable[[SqliteSaver], None])
     connection = sqlite3.connect(path, check_same_thread=False)
     try:
         saver = SqliteSaver(connection)
-        with _checkpoint_write_lock:
-            action(saver)
-            connection.commit()
+        action(saver)
+        connection.commit()
     finally:
         connection.close()
 
@@ -151,10 +120,9 @@ def has_run_checkpoint(project_root: Path | str, thread_id: str, run_id: str) ->
     key = checkpoint_state_key(thread_id, run_id)
     connection = sqlite3.connect(path, check_same_thread=False)
     try:
-        with _checkpoint_write_lock:
-            row = connection.execute(
-                "SELECT 1 FROM checkpoints WHERE thread_id = ? LIMIT 1", (key,)
-            ).fetchone()
+        row = connection.execute(
+            "SELECT 1 FROM checkpoints WHERE thread_id = ? LIMIT 1", (key,)
+        ).fetchone()
         return row is not None
     finally:
         connection.close()
@@ -170,8 +138,7 @@ def latest_checkpoint_id(adapter: Any, thread_id: str, run_id: str) -> str | Non
     if checkpointer is None:
         return None
     key = checkpoint_state_key(thread_id, run_id)
-    with _checkpoint_write_lock:
-        found = checkpointer.get_tuple({"configurable": {"thread_id": key}})
+    found = checkpointer.get_tuple({"configurable": {"thread_id": key}})
     if found is None:
         return None
     configurable = found.config.get("configurable") if isinstance(found.config, dict) else None
@@ -186,7 +153,6 @@ __all__ = [
     "checkpoint_file_bytes",
     "checkpoint_path",
     "checkpoint_state_key",
-    "checkpoint_write_lock",
     "delete_run_checkpoints",
     "delete_thread_checkpoints",
     "has_run_checkpoint",

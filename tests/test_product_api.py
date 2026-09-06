@@ -516,7 +516,10 @@ def test_agent_question_flow_via_api(tmp_path: Path):
         json={"answers": "仅回答"},
     )
     assert answered.status_code == 200, answered.text
-    assert answered.json()["status"] == "succeeded"
+    # 阶段 E：接口登记完答案就返回（run 回到 RUNNING），续跑段在执行器线程上完成。
+    assert answered.json()["status"] == "running"
+    finished = _wait_for_run(client, run_id, {AgentRunStatus.SUCCEEDED})
+    assert finished["status"] == "succeeded"
     assert adapter.resumed_with == ["仅回答"]
 
     # 已回复后 GET question -> 404

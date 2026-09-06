@@ -571,7 +571,9 @@ def create_app(
 
     @app.post("/api/agent/runs/{run_id}/question")
     def answer_run_question(run_id: str, body: AnswerQuestionRequest) -> dict:
-        """回复挂起问题并续跑：answers 为 string | array；timed_out=true 按超时收尾。"""
+        """登记答案、把 run 转回 RUNNING 后**立即返回**；续跑段在运行时执行器上跑，
+        进度走该 run 的 ``/stream`` SSE。answers 为 string | array；timed_out=true
+        按超时收尾。"""
         runtime = get_agent_runtime()
         try:
             run_payload = runtime.answer_question(
