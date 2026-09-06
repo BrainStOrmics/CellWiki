@@ -24,6 +24,7 @@ import type {
   AgentRunStatus,
   AgentTimelineNode,
   AgentToolArgsDisplay,
+  AgentToolEditDiff,
   AgentToolResultPreview,
   ChatMessage,
 } from "../../types";
@@ -122,6 +123,7 @@ function timelineNodes(message: ChatMessage): AgentTimelineNode[] {
         step,
         argsDisplay: readArgsDisplay(step.data),
         resultPreview: readResultPreview(step.data),
+        editDiff: readEditDiff(step.data),
       });
     } else {
       nodes.push({
@@ -242,13 +244,13 @@ const TOOL_CARDS: Record<string, ToolCardSpec> = {
   ls: { label: "LS", icon: Search, Body: SearchCard },
   search_wiki: { label: "Search", icon: Search, Body: SearchCard },
   write_file: { label: "Write", icon: FileText, Body: GenericCard },
-  edit_file: { label: "Edit", icon: FileText, Body: GenericCard },
+  edit_file: { label: "Edit", icon: FileCode2, Body: EditCard },
   delete_file: { label: "Delete", icon: FileText, Body: GenericCard },
   rename_file: { label: "Rename", icon: FileText, Body: GenericCard },
-  git: { label: "Git", icon: GitBranch, Body: GenericCard },
-  lint_knowledge_base: { label: "Lint", icon: FileText, Body: GenericCard },
-  read_attachment: { label: "Attachment", icon: FileText, Body: GenericCard },
-  promote_attachment: { label: "Promote", icon: FileText, Body: GenericCard },
+  git: { label: "Git", icon: GitBranch, Body: GitCard },
+  lint_knowledge_base: { label: "Lint", icon: CircleCheck, Body: LintCard },
+  read_attachment: { label: "Attachment", icon: FileText, Body: AttachmentCard },
+  promote_attachment: { label: "Promote", icon: FileText, Body: AttachmentCard },
   ingest_sources: { label: "Ingest", icon: FileText, Body: GenericCard },
   ask_user_question: { label: "Ask", icon: FileText, Body: GenericCard },
   get_project_status: { label: "Status", icon: FileText, Body: GenericCard },
@@ -333,6 +335,116 @@ function SearchCard({ node, preview, legacy }: ToolCardBodyProps) {
           {t("chat.toolResultCount").replace("{count}", String(count))}
         </div>
       )}
+    </>
+  );
+}
+
+/** edit_file：真行级 diff（裁决 #11 的有界投影），旧/新行号 + +/- 标记。 */
+function EditCard({ node, preview, legacy }: ToolCardBodyProps) {
+  const { t } = useI18n();
+  const diff = node.editDiff;
+  if (!diff) {
+    return (
+      <GenericBody
+        preview={preview}
+        legacy={legacy}
+        summary={node.summary}
+        toolName={node.toolName}
+      />
+    );
+  }
+  const path = typeof node.argsDisplay?.path === "string" ? node.argsDisplay.path : null;
+  return (
+    <>
+      <div className="at-code-frame">
+        {path && (
+          <div className="at-file-head">
+            <span className="at-file-path">{path}</span>
+            <span className="at-file-lang">−{diff.removed} / +{diff.added}</span>
+          </div>
+        )}
+        <div className="at-diff">
+          {diff.lines.map((line, index) => (
+            <div className={`at-diff-line ${line.kind}`} key={`${line.kind}-${index}`}>
+              <span className="at-diff-no">{line.old_no ?? ""}</span>
+              <span className="at-diff-no">{line.new_no ?? ""}</span>
+              <span className="at-diff-mark">{DIFF_MARKS[line.kind]}</span>
+              <span className="at-diff-text">
+                {line.kind === "gap"
+                  ? t("chat.toolRestLines").replace("{count}", String(line.count ?? 0))
+                  : line.text}
+              </span>
+            </div>
+          ))}
+        </div>
+        {diff.truncated && (
+          <div className="at-preview-meta">{t("chat.toolDiffTruncated")}</div>
+        )}
+      </div>
+      {preview && <PreviewBlock preview={preview} language="plaintext" />}
+    </>
+  );
+}
+
+const DIFF_MARKS: Record<string, string> = {
+  added: "+",
+  removed: "−",
+  context: " ",
+  gap: "⋯",
+};
+
+/** git：把子命令与路径参数还原成一行可读命令，输出仍走有界预览。 */
+function GitCard({ args, preview, legacy }: ToolCardBodyProps) {
+  const tokens = Array.isArray(args?.args) ? args?.args ?? [] : [];
+  const command = tokens.length > 0 ? `git ${tokens.join(" ")}` : null;
+  return (
+    <>
+      {command && (
+        <div className="at-code-frame">
+          <CodeBlock code={command} language="plaintext" numbered={false} />
+          <CopyButton text={command} />
+        </div>
+      )}
+      {preview && <PreviewBlock preview={preview} language="plaintext" />}
+      {!preview && legacy && <pre className="at-detail">{legacy}</pre>}
+    </>
+  );
+}
+
+/** lint_knowledge_base：报告本体总是被截断，所以结论走后端单独摘出的 summary。 */
+function LintCard({ preview, legacy }: ToolCardBodyProps) {
+  const summary = preview?.summary;
+  return (
+    <>
+      {summary && (
+        <div className="at-lint-summary">
+          <span className={`at-lint-status is-${summary.status}`}>{summary.status}</span>
+          <span className="at-preview-meta">
+            {summary.page_count} pages · {summary.error_count} errors ·{" "}
+            {summary.warning_count} warnings
+          </span>
+        </div>
+      )}
+      {preview && <PreviewBlock preview={preview} language={summary ? "json" : "plaintext"} />}
+      {!preview && legacy && <pre className="at-detail">{legacy}</pre>}
+    </>
+  );
+}
+
+/** 附件读写：报出附件标识与晋升目标，正文走有界预览。 */
+function AttachmentCard({ node, args, preview, legacy }: ToolCardBodyProps) {
+  const attachmentId = typeof args?.attachment_id === "string" ? args.attachment_id : null;
+  const sourceType = typeof args?.source_type === "string" ? args.source_type : null;
+  return (
+    <>
+      {(attachmentId || sourceType) && (
+        <div className="at-file-head">
+          <span className="at-file-path">{attachmentId ?? node.toolName}</span>
+          {sourceType && <span className="at-file-lang">{sourceType}</span>}
+        </div>
+      )}
+      {preview && <PreviewBlock preview={preview} language="plaintext" />}
+      {!preview && legacy && <pre className="at-detail">{legacy}</pre>}
     </>
   );
 }
@@ -600,6 +712,11 @@ function readArgsDisplay(data: Record<string, unknown>): AgentToolArgsDisplay | 
 function readResultPreview(data: Record<string, unknown>): AgentToolResultPreview | undefined {
   const value = (data as { result_preview?: unknown }).result_preview;
   return value && typeof value === "object" ? value as AgentToolResultPreview : undefined;
+}
+
+function readEditDiff(data: Record<string, unknown>): AgentToolEditDiff | undefined {
+  const value = (data as { edit_diff_display?: unknown }).edit_diff_display;
+  return value && typeof value === "object" ? value as AgentToolEditDiff : undefined;
 }
 
 function toolDetail(step: AgentProcessStep): string | null {

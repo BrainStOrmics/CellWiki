@@ -3,7 +3,8 @@
 # =============================================================================
 # Layer A 静态基线：身份/操作域、权力边界、行为约束；每次 run 固定，不进会话历史。
 # Layer B run 动态上下文：git 状态、会话历史、当前消息、挂起问题、用户当前打开
-#   的页面（仅元数据 + 大纲）—— run 启动时快照注入为系统消息。
+#   的页面（仅元数据 + 大纲）与用户在页面上选中的文本（有界引用）—— run 启动时
+#   快照注入为系统消息。
 # Layer C 按需注入：文件内容 / git diff / lint 报告 / run_powershell 输出由工具
 #   返回（不在启动时静态注入）。
 # 会话历史上限 512K，压缩阈值 80%，保留窗口 32K，压缩后注入 R1-R5；六类摘要。
@@ -167,6 +168,24 @@ def _render_attachment_block(attachments: list[dict[str, Any]]) -> str:
     return block[: _ATTACHMENT_BLOCK_BUDGET]
 
 
+# Layer B 快照整体上界（字符）。选中文本另有一份自己的上界，见 _bounded_selection。
+_LAYER_B_SNAPSHOT_MAX = 8_000
+_SELECTED_TEXT_MAX = 2_000
+_SELECTION_TRUNCATED = "…[selected text truncated]"
+
+
+def _bounded_selection(text: str) -> str:
+    """选中文本的有界引用：≤2000 字符，超出部分以显式截断标记收尾。
+
+    ADR-0007 决策 11 修订：选中文本真注入 Layer B。注入量必须有上界，否则一次
+    全选就能把整份快照挤掉；截断要让模型看得见，不能静默少给。
+    """
+    stripped = text.strip()
+    if len(stripped) <= _SELECTED_TEXT_MAX:
+        return stripped
+    return stripped[:_SELECTED_TEXT_MAX].rstrip() + "\n" + _SELECTION_TRUNCATED
+
+
 def build_layer_b_snapshot(
     *,
     current_message: str,
@@ -175,6 +194,7 @@ def build_layer_b_snapshot(
     pending_question: str | None = None,
     recent_transcript: list[dict[str, str]] | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    selected_text: str | None = None,
     limit_transcript: int = 6,
 ) -> str:
     """Layer B：run 启动时快照的 run 动态上下文（纯文本、紧凑、不泄露原始内容）。"""
@@ -187,6 +207,10 @@ def build_layer_b_snapshot(
         outline = _page_outline(str(open_page.get("markdown") or ""))
         if outline:
             parts.append("- page outline:\n" + "\n".join(outline[:16]))
+    if selected_text is not None and selected_text.strip():
+        parts.append(
+            "- user selected this text on the page:\n" + _bounded_selection(selected_text)
+        )
     if pending_question is not None:
         parts.append(f"- pending question: {pending_question[:500]}")
     if recent_transcript:
@@ -199,9 +223,11 @@ def build_layer_b_snapshot(
         block = _render_attachment_block(attachments)
         if block:
             parts.append(block)
-    parts.append(f"- current run goal: {current_message[:800]}")
-    snapshot = "\n".join(parts)
-    return snapshot[:8_000]
+    goal = f"- current run goal: {current_message[:800]}"
+    body = "\n".join(parts)
+    # 快照整体上界不变，但 run 目标是这次运行最不能丢的一行：先给它留位，
+    # 被截掉的只能是上面的上下文段。
+    return f"{body[: max(0, _LAYER_B_SNAPSHOT_MAX - len(goal) - 1)]}\n{goal}"
 
 
 # 归类的优先级：模糊关键词重叠时（如“继续”同时是 unfinished 标记）优先更具体的类别

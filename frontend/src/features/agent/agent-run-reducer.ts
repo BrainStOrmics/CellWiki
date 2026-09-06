@@ -7,6 +7,7 @@ import type {
   AgentTimelineNode,
   AgentTimelineStatusTone,
   AgentToolArgsDisplay,
+  AgentToolEditDiff,
   AgentToolResultPreview,
   AgentUsageSegment,
   ChatMessage,
@@ -315,6 +316,7 @@ function appendProcessEventNode(
         summary: event.message,
         step,
         argsDisplay: readArgsDisplay(event.data),
+        editDiff: readEditDiff(event.data),
       }];
     }
     const callId = String((event.data as Record<string, unknown>).tool_call_id ?? "");
@@ -334,11 +336,20 @@ function appendProcessEventNode(
         summary: event.message || (previous.kind === "tool" ? previous.summary : ""),
         step,
         argsDisplay: previous.kind === "tool" ? previous.argsDisplay : undefined,
+        editDiff: previous.kind === "tool" ? previous.editDiff : undefined,
         resultPreview,
       };
       return updated;
     }
-    return [...base, { kind: "tool", phase, toolName, summary: event.message, step, resultPreview }];
+    return [...base, {
+      kind: "tool",
+      phase,
+      toolName,
+      summary: event.message,
+      step,
+      resultPreview,
+      editDiff: readEditDiff(event.data),
+    }];
   }
   const tone: AgentTimelineStatusTone = event.type === "error" ? "danger" : (statusTones[event.type] ?? "info");
   const label = event.message || event.type.replaceAll("_", " ");
@@ -354,6 +365,11 @@ function readArgsDisplay(data: Record<string, unknown>): AgentToolArgsDisplay | 
 function readResultPreview(data: Record<string, unknown>): AgentToolResultPreview | undefined {
   const value = (data as { result_preview?: unknown }).result_preview;
   return value && typeof value === "object" ? value as AgentToolResultPreview : undefined;
+}
+
+function readEditDiff(data: Record<string, unknown>): AgentToolEditDiff | undefined {
+  const value = (data as { edit_diff_display?: unknown }).edit_diff_display;
+  return value && typeof value === "object" ? value as AgentToolEditDiff : undefined;
 }
 
 function updateRunMessage(

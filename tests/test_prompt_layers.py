@@ -50,6 +50,28 @@ def test_layer_b_snapshot_contains_git_open_page_and_goal():
     assert len(snapshot) <= 8_000
 
 
+def test_layer_b_bounds_an_overlong_selection_with_a_visible_marker():
+    # 注入/未注入两种情形由 tests/test_layer_b_injection.py 走真实图锁；这里只管上界
+    # 本身。片段必须唯一：周期性文本会让"上界之外"的切片也出现在保留的前缀里，
+    # 断言就证明不了截断真的发生过。
+    selection = "".join(f"[{index:05d}]" for index in range(700))   # 4900 字符
+    assert len(selection) > 2_000
+    snapshot = build_layer_b_snapshot(
+        current_message="总结这段",
+        selected_text=selection,
+        git_status=" M wiki/cell_types/a.md",
+        attachments=[
+            {"attachment_id": "att_1", "original_name": "p.pdf", "preview": "x" * 400}
+        ],
+    )
+    assert "…[selected text truncated]" in snapshot
+    assert selection[:2_000] in snapshot
+    assert selection[2_500:2_600] not in snapshot
+    # 截掉的是选中文本，不是这次运行的目标
+    assert "current run goal: 总结这段" in snapshot
+    assert len(snapshot) <= 8_000
+
+
 def test_compaction_keeps_small_transcripts_untouched():
     messages = [
         {"role": "user", "content": "hello"},

@@ -122,6 +122,29 @@ export type AgentToolResultPreview = {
   truncated: boolean;
   kind: "text" | "error" | "results";
   count?: number;
+  /** lint_knowledge_base 的结论摘要：报告本体总被截断，结论单独摘出。 */
+  summary?: {
+    status: string;
+    page_count: number;
+    error_count: number;
+    warning_count: number;
+  };
+};
+
+export type AgentToolEditDiffLine = {
+  kind: "context" | "removed" | "added" | "gap";
+  text: string;
+  old_no?: number | null;
+  new_no?: number | null;
+  count?: number;
+};
+
+/** 裁决 #11：edit_file 的真行级 diff，独立有界字段，带截断标记。 */
+export type AgentToolEditDiff = {
+  lines: AgentToolEditDiffLine[];
+  removed: number;
+  added: number;
+  truncated: boolean;
 };
 
 export type AgentTimelineNode =
@@ -135,6 +158,8 @@ export type AgentTimelineNode =
       step: AgentProcessStep;
       argsDisplay?: AgentToolArgsDisplay;
       resultPreview?: AgentToolResultPreview;
+      /** 裁决 #11：edit_file 的真行级 diff（独立有界字段，带截断标记）。 */
+      editDiff?: AgentToolEditDiff;
     }
   | { kind: "status"; tone: AgentTimelineStatusTone; label: string; step?: AgentProcessStep }
   | { kind: "text"; text: string };

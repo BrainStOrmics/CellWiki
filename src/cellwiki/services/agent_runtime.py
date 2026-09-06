@@ -11,11 +11,13 @@
 #   判定不可回退（见 domain/pending_diff.py 合同注释）。
 # - P4 审计：工具输入（label_args 白名单键）与输出（payload sha256）由运行时
 #   Seam 记录。时间线卡片可携带有界展示投影（args_display 命令 ≤2000 字符、
-#   result_preview head/tail ≤8KB），完整参数与原始大输出仍不离开本边界。
+#   其余键 ≤200 字符；result_preview head/tail ≤8KB；edit_diff_display 行级 diff
+#   ≤80 行 / ≤6000 字符，带截断标记），完整参数与原始大输出仍不离开本边界。
 # =============================================================================
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import time
@@ -211,7 +213,7 @@ def _signal_payload(
         value = metadata.get(key)
         if isinstance(value, str) and value:
             event_payload[key] = value
-    for key in ("args_display", "result_preview"):
+    for key in ("args_display", "result_preview", "edit_diff_display"):
         value = metadata.get(key)
         if isinstance(value, dict) and value:
             event_payload[key] = value
@@ -445,6 +447,12 @@ _ARGS_COMMAND_MAX = 2_000
 _RESULT_PREVIEW_LINE_MAX = 40
 _RESULT_PREVIEW_BYTES = 8_000
 _RESULT_TITLE_MAX = 120
+# 裁决 #11：edit_file 真行级 diff 走**独立新字段** edit_diff_display，自带下面这组
+# 上界与截断标记；上面 args_display 的 200 字符上界一字未动。
+_EDIT_DIFF_CONTEXT = 2          # 每处改动保留的上下文行数
+_EDIT_DIFF_LINE_MAX = 80        # 最多下发行数
+_EDIT_DIFF_LINE_CHARS = 200     # 单行字符上限
+_EDIT_DIFF_CHARS = 6_000        # 整个投影的字符预算
 
 
 def _tool_display_title(tool_name: str, picks: dict[str, Any]) -> str:
@@ -453,7 +461,7 @@ def _tool_display_title(tool_name: str, picks: dict[str, Any]) -> str:
     if isinstance(command, str) and command:
         head = command.strip().splitlines()[0] if command.strip() else ""
         return head[:_RESULT_TITLE_MAX]
-    for key in ("path", "file", "pattern", "query", "folder"):
+    for key in ("path", "file", "pattern", "query", "folder", "attachment_id"):
         value = picks.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip().replace("\\", "/").rsplit("/", 1)[-1] or value.strip()[:_RESULT_TITLE_MAX]
@@ -478,7 +486,18 @@ def _tool_args_display(tool_name: str, args: Any) -> dict[str, Any] | None:
     if not isinstance(parsed, dict):
         return None
     picks: dict[str, Any] = {}
-    for key in ("command", "path", "file", "pattern", "query", "folder", "page_id"):
+    for key in (
+        "command",
+        "path",
+        "file",
+        "pattern",
+        "query",
+        "folder",
+        "page_id",
+        # 附件卡的标识与晋升目标类型；同样吃 200 字符的既有上界，不新增放宽。
+        "attachment_id",
+        "source_type",
+    ):
         value = parsed.get(key)
         if isinstance(value, str) and value.strip():
             cap = _ARGS_COMMAND_MAX if key == "command" else 200
@@ -498,6 +517,86 @@ def _tool_args_display(tool_name: str, args: Any) -> dict[str, Any] | None:
     if title:
         display["title"] = title
     return display
+
+
+def _tool_edit_diff_display(tool_name: str, args: Any) -> dict[str, Any] | None:
+    """裁决 #11 批准的**新增有界投影**：``edit_file`` 的真行级 diff。
+
+    卡片此前只有一个路径，用户看不到 Agent 到底改了什么。这里从工具自己的
+    ``old_string`` / ``new_string`` 参数算 diff（stdlib difflib，不新增依赖），
+    作为独立字段 ``edit_diff_display`` 下发，自带行数/字符上界与截断标记——
+    **不放宽** ``_tool_args_display`` 里 200 字符的既有上界。
+    """
+    if tool_name != "edit_file":
+        return None
+    parsed: Any = args
+    if isinstance(args, str):
+        try:
+            parsed = json.loads(args)
+        except (TypeError, ValueError):
+            parsed = None
+    if not isinstance(parsed, dict):
+        return None
+    old = parsed.get("old_string")
+    new = parsed.get("new_string")
+    if not isinstance(old, str) or not isinstance(new, str):
+        return None
+    old_lines = old.splitlines()
+    new_lines = new.splitlines()
+
+    rows: list[dict[str, Any]] = []
+    removed = added = 0
+    truncated = False
+    old_no = new_no = 0
+    for tag, old_start, old_end, new_start, new_end in difflib.SequenceMatcher(
+        a=old_lines, b=new_lines, autojunk=False
+    ).get_opcodes():
+        if tag == "equal":
+            # 只保留紧邻改动的上下文行，长段未变内容折叠成一个计数行。
+            unchanged = old_lines[old_start:old_end]
+            keep = unchanged[:_EDIT_DIFF_CONTEXT] + unchanged[-_EDIT_DIFF_CONTEXT:]
+            if len(unchanged) > len(keep):
+                rows.append({"kind": "gap", "text": "", "count": len(unchanged) - len(keep)})
+            for line in unchanged if len(unchanged) <= len(keep) else keep:
+                old_no += 1
+                new_no += 1
+                rows.append(
+                    {"kind": "context", "text": line[:_EDIT_DIFF_LINE_CHARS], "old_no": old_no, "new_no": new_no}
+                )
+            continue
+        for line in old_lines[old_start:old_end]:
+            old_no += 1
+            removed += 1
+            rows.append(
+                {"kind": "removed", "text": line[:_EDIT_DIFF_LINE_CHARS], "old_no": old_no, "new_no": None}
+            )
+        for line in new_lines[new_start:new_end]:
+            new_no += 1
+            added += 1
+            rows.append(
+                {"kind": "added", "text": line[:_EDIT_DIFF_LINE_CHARS], "old_no": None, "new_no": new_no}
+            )
+
+    if len(rows) > _EDIT_DIFF_LINE_MAX:
+        rows = rows[:_EDIT_DIFF_LINE_MAX]
+        truncated = True
+    budget = _EDIT_DIFF_CHARS
+    kept: list[dict[str, Any]] = []
+    for row in rows:
+        cost = len(row["text"]) + 1
+        if cost > budget:
+            truncated = True
+            break
+        budget -= cost
+        kept.append(row)
+    if not kept:
+        return None
+    return {
+        "lines": kept,
+        "removed": removed,
+        "added": added,
+        "truncated": truncated,
+    }
 
 
 def _bounded_preview(text: str) -> dict[str, Any]:
@@ -531,6 +630,23 @@ def _bounded_preview(text: str) -> dict[str, Any]:
     }
 
 
+def _lint_report_summary(parsed: dict[str, Any]) -> dict[str, Any] | None:
+    """lint_knowledge_base 报告的结论摘要（只有标量，不带 issue 正文）。
+
+    报告本体几乎必然被预览上界截断，卡片因此读不出"过没过"。这里在截断**之前**
+    摘出结论，且只摘 4 个计数与一个状态串，不放宽任何既有上界。
+    """
+    status = parsed.get("status")
+    if not isinstance(status, str) or "issue_count" not in parsed:
+        return None
+    return {
+        "status": status[:40],
+        "page_count": int(parsed.get("page_count") or 0),
+        "error_count": int(parsed.get("error_count") or 0),
+        "warning_count": int(parsed.get("warning_count") or 0),
+    }
+
+
 def _tool_result_preview(tool_name: str, content: str) -> dict[str, Any] | None:
     """Bounded output preview attached to tool_completed events (P4-capped).
 
@@ -551,6 +667,9 @@ def _tool_result_preview(tool_name: str, content: str) -> dict[str, Any] | None:
             preview = _bounded_preview(str(parsed["error"])[:_RESULT_PREVIEW_BYTES])
             preview["kind"] = "error"
             return preview
+        # lint_knowledge_base 的报告几乎总是超过预览上界；先把结论摘出来，
+        # 卡片才不至于在截断之后只剩一坨读不出结果的 JSON。
+        summary = _lint_report_summary(parsed)
         for key in ("stdout", "content", "markdown", "diff"):
             value = parsed.get(key)
             if isinstance(value, str) and value.strip():
@@ -569,6 +688,8 @@ def _tool_result_preview(tool_name: str, content: str) -> dict[str, Any] | None:
             return preview
         preview = _bounded_preview(text)
         preview["kind"] = "text"
+        if summary:
+            preview["summary"] = summary
         return preview
     preview = _bounded_preview(text)
     preview["kind"] = "text"
@@ -672,6 +793,9 @@ def _signals_from_stream_item(
                     }
                     if args_display:
                         signal_data["args_display"] = args_display
+                    edit_diff = _tool_edit_diff_display(tool_name, tool_call.get("args"))
+                    if edit_diff:
+                        signal_data["edit_diff_display"] = edit_diff
                     responses.append(
                         RuntimeSignal(
                             type=AgentEventType.TOOL_STARTED,
@@ -750,6 +874,11 @@ def _signals_from_stream_item(
                                 args_display = _tool_args_display(tool_name, tool_call.get("args"))
                                 if args_display:
                                     assembled_data["args_display"] = args_display
+                                assembled_diff = _tool_edit_diff_display(
+                                    tool_name, tool_call.get("args")
+                                )
+                                if assembled_diff:
+                                    assembled_data["edit_diff_display"] = assembled_diff
                                 responses.append(
                                     RuntimeSignal(
                                         type=AgentEventType.TOOL_STARTED,
@@ -1282,13 +1411,14 @@ class AgentRuntimeManager:
                         },
                         *compacted.retained,
                     ]
-                # 阶段 5：Layer B run 动态快照（git 状态 + 打开页面元数据/大纲）
+                # 阶段 5：Layer B run 动态快照（git 状态 + 打开页面元数据/大纲 + 选中文本）
                 layer_b = build_layer_b_snapshot(
                     current_message=message,
                     git_status=self._git_status_text(),
                     open_page=self._open_page_snapshot(context.page_id),
                     recent_transcript=self.store.list_context_messages(thread_id)[-4:],
                     attachments=self._attachment_manifest(run),
+                    selected_text=context.selected_text,
                 )
                 if layer_b:
                     messages_in = [
@@ -1776,6 +1906,7 @@ class AgentRuntimeManager:
                     "checkpoint_id": checkpoint_id,
                 }
             },
+            context=context,
             stream_mode=["messages", "updates"],
             subgraphs=True,
         )
@@ -2406,6 +2537,9 @@ class AgentRuntimeManager:
                     "thread_id": checkpoint_state_key(thread_id, run_id)
                 }
             },
+            # build_wiki_agent 声明了 context_schema=WikiAgentContext：图这一侧
+            # 也得拿到同一份 run 上下文，否则只有协议型 adapter 看得见它。
+            context=context,
             stream_mode=["messages", "updates"],
             subgraphs=True,
         )
@@ -2435,6 +2569,7 @@ class AgentRuntimeManager:
                     "thread_id": checkpoint_state_key(thread_id, run_id)
                 }
             },
+            context=context,
             stream_mode=["messages", "updates"],
             subgraphs=True,
         )

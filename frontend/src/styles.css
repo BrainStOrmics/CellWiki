@@ -1032,6 +1032,23 @@ button.message-citation:hover { border-color: #587caf; color: #c4d8fa; backgroun
 .at-more:hover { color: #a9c8f0; }
 .at-more:disabled { color: #657993; cursor: default; }
 
+/* edit_file 的真行级 diff（裁决 #11）：两列行号 + 标记列 + 文本。
+   着色用低透明度 rgba，浅色与深色主题下都成立，不需要各写一份。 */
+.at-diff { display: flex; flex-direction: column; margin-top: 4px; font: 11px/1.6 "Geist Mono", Consolas, monospace; }
+.at-diff-line { display: flex; gap: 6px; padding: 0 10px; white-space: pre-wrap; word-break: break-word; }
+.at-diff-no { flex: 0 0 4ch; color: #4d5c70; text-align: right; user-select: none; }
+.at-diff-mark { flex: 0 0 1ch; user-select: none; }
+.at-diff-text { min-width: 0; flex: 1 1 auto; }
+.at-diff-line.added { background: rgba(80, 200, 120, 0.14); }
+.at-diff-line.removed { background: rgba(230, 100, 100, 0.14); }
+.at-diff-line.gap { color: #4d5c70; font-style: italic; }
+
+/* lint 报告卡：结论一行，明细仍展开原始 JSON。 */
+.at-lint-summary { display: flex; align-items: baseline; gap: 8px; padding: 4px 10px; }
+.at-lint-status { padding: 1px 6px; border-radius: 3px; font-size: 10px; background: rgba(130, 170, 255, 0.18); }
+.at-lint-status.is-failed { background: rgba(230, 100, 100, 0.2); }
+.at-lint-status.is-passed { background: rgba(80, 200, 120, 0.2); }
+
 /* Prism token colors via CSS variables so both themes restyle tokens at once. */
 :root { --code-plain: #c4cad3; --code-comment: #657993; --code-keyword: #c792ea; --code-string: #8fb9a0; --code-number: #d9a06a; --code-function: #82aaff; --code-punctuation: #8b98a8; }
 

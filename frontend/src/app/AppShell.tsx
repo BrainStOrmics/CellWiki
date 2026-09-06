@@ -32,6 +32,7 @@ import { CommandPalette } from "../features/search/CommandPalette";
 import { ThreadList } from "../features/agent/ThreadList";
 import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
 import { reduceAgentRunMessages, type AgentRunReducerLabels } from "../features/agent/agent-run-reducer";
+import { createAgentEventScheduler, flushesChatImmediately } from "../features/agent/agent-event-scheduler";
 import { QuestionCard } from "../features/agent/QuestionCard";
 // 终态判定只有一份：unfinished 也是流终态（后端已关 SSE 停在预算上）。漏掉它会让
 // 订阅侧无限重连、agentBusy 永不清零，"继续"按钮因此从不出现——看起来就是卡死。
@@ -303,6 +304,8 @@ export function AppShell() {
   const agentEventSequenceRef = useRef(0);
   const processedAgentEventsRef = useRef(new Set<string>());
   const streamGenerationRef = useRef(0);
+  // 流式平滑层：delta 的聊天渲染按帧投放，进入稳定态前先 flush（agent-event-scheduler）。
+  const agentChatScheduler = useMemo(() => createAgentEventScheduler(), []);
   const messagesRef = useRef<ChatMessage[]>(messages);
   const attachmentRecordsRef = useRef<AttachmentRecord[]>([]);
   const attachmentUploadRef = useRef<Promise<void> | null>(null);
@@ -421,6 +424,16 @@ export function AppShell() {
     void loadPendingDiffCount();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    // 页面卸载 / 进 bfcache：帧回调不再跑，积压得自己落地，否则回到页面时缺最后一段字。
+    const flushChat = () => agentChatScheduler.flush();
+    window.addEventListener("pagehide", flushChat);
+    return () => {
+      window.removeEventListener("pagehide", flushChat);
+      agentChatScheduler.dispose();
+    };
+  }, [agentChatScheduler]);
 
   useEffect(() => {
     if (!activeThreadId) {
@@ -603,7 +616,19 @@ export function AppShell() {
     processedAgentEventsRef.current.add(event.event_id);
     agentEventSequenceRef.current = Math.max(agentEventSequenceRef.current, event.sequence);
     if (renderChat) {
-      setMessages((current) => reduceAgentRunMessages(current, event, agentRunLabels()));
+      const eventThread = agentThreadIdRef.current;
+      const render = () => {
+        // 会话已切走：这条积压作废，不能被 reduce 进另一个会话的记录里。
+        if (agentThreadIdRef.current !== eventThread) return;
+        setMessages((current) => reduceAgentRunMessages(current, event, agentRunLabels()));
+      };
+      // 稳定态事件先投完积压再落地自己，否则终态画面会缺最后一段 delta。
+      if (flushesChatImmediately(event)) {
+        agentChatScheduler.flush();
+        render();
+      } else {
+        agentChatScheduler.enqueue(render);
+      }
     }
     if (event.type === "error" && event.data.retryable === true) {
       setRetryableAgentRunId(event.run_id);
@@ -772,6 +797,9 @@ export function AppShell() {
   }
 
   function cacheCurrentThreadState(threadId: string | null) {
+    // 切换线程前先投完积压：队列里是**离开的那个会话**的 delta，不能等到目标会话的
+    // 视图装好之后才落地。回来时的文字由 /events 持久日志重建，不依赖这份缓存。
+    agentChatScheduler.flush();
     if (!threadId || renderedThreadIdRef.current !== threadId) return;
     threadStateCacheRef.current.set(threadId, {
       messages: messagesRef.current,
@@ -1268,6 +1296,9 @@ export function AppShell() {
   }
 
   function openDiffPanel() {
+    // 打开前把流式积压投完：DiffBrowser 接管视图后聊天不再重绘，积压留在队列里
+    // 就会让关闭面板时看到的回答缺最后一段。
+    agentChatScheduler.flush();
     // 打开前记录正在查看的页面/文件，关闭时恢复
     diffReturnRef.current = { workspaceFile, selectedId };
     setDiffPanelOpen(true);
