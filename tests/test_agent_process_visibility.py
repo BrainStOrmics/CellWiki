@@ -291,6 +291,43 @@ def test_stream_item_emits_reasoning_delta_from_responses_content_blocks():
     )
 
 
+def test_reasoning_delta_keeps_word_boundaries_across_chunks():
+    """逐 delta 抽取不得 strip：英文的词间空格正好落在 delta 边界上。
+
+    回归桌面端实测问题 J——think 卡片正文出现 "Ineed to run twogloboperationsto"。
+    前端是逐字拼接的，这里被吃掉的空格在下游补不回来；纯空白 delta 若被整条丢弃，
+    边界空格同样消失。中文没有词间空格，所以该缺陷只腐蚀英文思考。
+    """
+
+    def reasoning_chunk(text: str) -> AIMessageChunk:
+        return AIMessageChunk(
+            content=[
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "index": 0,
+                    "summary": [{"index": 0, "type": "summary_text", "text": text}],
+                }
+            ],
+            id="call_block",
+        )
+
+    fragments = ["I need ", "to run", " ", "two glob operations", " "]
+    reconstructed = ""
+    for fragment in fragments:
+        chunk = reasoning_chunk(fragment)
+        messages = [
+            signal.message
+            for signal in _signals_from_stream_item(("messages", (chunk, {})))
+            if signal.type == AgentEventType.REASONING_DELTA
+        ]
+        # 纯空白分片也必须产出一条事件，否则边界空格随事件一起消失。
+        assert messages == [fragment]
+        reconstructed += messages[0]
+
+    assert reconstructed == "I need to run two glob operations "
+
+
 def test_stream_item_projects_tool_args_display():
     """tool_started carries a bounded whitelisted args_display projection."""
     call = AIMessage(

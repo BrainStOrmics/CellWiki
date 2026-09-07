@@ -374,7 +374,9 @@ def _reasoning_text(message: Any) -> str | None:
             raw = block.get("text")
             if isinstance(raw, str):
                 parts.append(raw)
-        joined = "".join(parts).strip()
+        # 逐 delta 调用，因此不能 strip：那会吃掉英文的词间空格（"I need " + "to run"
+        # 拼成 "Ineedto run"），纯空白 delta 还会被整条丢弃。前端是逐字拼接的。
+        joined = "".join(parts)
         if joined:
             return joined
     return None
