@@ -99,6 +99,21 @@ class Settings(BaseSettings):
     agent_max_tool_steps: int = Field(default=100, ge=1, le=500)
     # 单次 run 的墙钟超时（秒），防止模型调用卡死
     agent_run_max_seconds: int = Field(default=7200, ge=60, le=86_400)
+    # ---- 活性看门狗（实测交接问题 C）----
+    # 取消门与上面的墙钟预算都只在**分段边界**检查，而分段边界要等模型调用返回才到
+    # 得了一次；连接挂起时（SSE keepalive 会不断重置 httpx 的 read 超时）两者永远轮
+    # 不到——实测一个 run 在 cancelling 上停了 8.5 小时并一直占着串行门禁。看门狗照
+    # adapters/openai_structured_output._watch_cancellation 的既有做法关掉模型的 HTTP
+    # client，让阻塞读抛错、生成器沿既有的 finally 路径退栈。
+    # 点停止后多久升级为强制断开模型连接。
+    agent_cancel_grace_seconds: int = Field(default=15, ge=1, le=600)
+    # 没有工具在跑时，多久收不到任何流式增量就判定模型连接挂起。必须显著高于 SDK
+    # 自己的 read 超时（openai_request_timeout_seconds × (1 + max_retries)），否则
+    # 会抢在一次正常重试之前误杀。工具执行期间本就没有增量（一次 ingest 可以合法地
+    # 静默好几分钟），所以运行时有工具在飞时会挂起这条界，不受此值影响。
+    # 这两个值是**活性界**而不是预算语义，因此不套 MAX_RUN_SECONDS_FLOOR：测试需要
+    # 亚秒值才能确定性地验证看门狗。
+    agent_stream_idle_seconds: int = Field(default=300, ge=1, le=3600)
     # 会话上下文上限（token）；阶段 5 的分层 prompt 按 512K/80%/32K 压缩
     agent_context_max_tokens: int = Field(default=512_000, ge=8_000, le=2_000_000)
     agent_context_auto_compact_ratio: float = Field(default=0.8, ge=0.5, le=0.95)

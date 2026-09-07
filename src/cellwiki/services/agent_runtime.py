@@ -20,6 +20,7 @@ from __future__ import annotations
 import difflib
 import hashlib
 import json
+import logging
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -27,12 +28,12 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock, Thread
 from typing import Any, Callable, Generator, Iterable, cast
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
-from cellwiki.agent.app import build_wiki_agent
+from cellwiki.agent.app import build_model, build_wiki_agent
 from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.pending_diff import PendingDiff, PendingDiffStatus
@@ -86,6 +87,8 @@ from cellwiki.services.workspace_maintenance import (
     maintain_after_unfinished,
     take_maintenance_warning,
 )
+
+logger = logging.getLogger(__name__)
 
 # 墙钟超时下限（秒）：避免测试中预算/超时语义被极小值绕过
 MAX_RUN_SECONDS_FLOOR = 10
@@ -913,6 +916,96 @@ class _CancellationGate:
         return self._flag
 
 
+class _StreamWatchdog:
+    """一条流式模型调用的活性看门狗（实测交接问题 C）。
+
+    取消门与墙钟预算都只在**分段边界**检查，而边界要等模型调用返回才到得了一次；
+    连接挂起时（SSE keepalive 会不断重置 httpx 的 read 超时）两者永远轮不到——实测
+    一个 run 在 ``cancelling`` 上停了 8.5 小时，一直占着串行门禁，连 sidecar 都无法
+    优雅关闭（``close()`` 是 ``shutdown(wait=True)``）。
+
+    到期动作照 ``adapters/openai_structured_output._watch_cancellation`` 的既有做法：
+    关掉模型的 HTTP client。httpcore 的连接池关闭**包含忙连接**，于是在飞的 socket 被
+    关掉、阻塞读抛错、LangGraph 的任务 future 完成，生成器得以沿既有的
+    ``_iterate_safe`` finally 路径退栈——记账落盘、checkpoint 回写、门禁释放。所以
+    不需要僵尸线程、不需要第二个 checkpoint 写方（ADR-0010 明令禁止的退化），也不需要
+    抛弃工作线程——抛弃会让 Agent 在用户以为已停止之后继续写文件甚至 commit。
+
+    一个 manager 一条线程就够：run 严格串行，同时至多一段流在跑。
+    """
+
+    def __init__(self, on_expire: Callable[[str, bool], None]) -> None:
+        self._on_expire = on_expire
+        self._lock = RLock()
+        self._stop = Event()
+        self._thread: Thread | None = None
+        self._run_id: str | None = None
+        self._deadline: float | None = None
+        # 用户已经点过停止：此后的流式增量不再顺延界，否则挂起的流永远等不到升级。
+        self._escalated = False
+
+    def start(self) -> None:
+        self._thread = Thread(target=self._loop, name="cellwiki-agent-idle", daemon=True)
+        self._thread.start()
+
+    def arm(self, run_id: str, idle_seconds: float) -> None:
+        """一段流开始：装上空闲界。"""
+        with self._lock:
+            self._run_id = run_id
+            self._deadline = time.monotonic() + idle_seconds
+            self._escalated = False
+
+    def touch(self, idle_seconds: float | None) -> None:
+        """收到流式增量：顺延空闲界。
+
+        ``None`` 表示本段正有工具在飞——工具执行期间本来就产出不了任何增量（一次
+        ingest 可以合法地静默好几分钟），此时必须挂起空闲界，否则会误杀健康的 run。
+        已升级（用户点过停止）时既不顺延也不解除：那正是要强制断开的场景。
+        """
+        with self._lock:
+            if self._run_id is None or self._escalated:
+                return
+            self._deadline = (
+                None if idle_seconds is None else time.monotonic() + idle_seconds
+            )
+
+    def escalate(self, run_id: str, grace_seconds: float) -> None:
+        """用户点了停止：把界收紧到宽限期，协作式取消落不定就强制断开。"""
+        with self._lock:
+            if self._run_id != run_id:
+                return
+            self._escalated = True
+            self._deadline = time.monotonic() + grace_seconds
+
+    def disarm(self) -> None:
+        """一段流结束（唯一清理点是 ``_finish_run_segment``）。"""
+        with self._lock:
+            self._run_id = None
+            self._deadline = None
+            self._escalated = False
+
+    def stop(self) -> None:
+        self._stop.set()
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=1.0)
+        self._thread = None
+
+    def _loop(self) -> None:
+        while not self._stop.wait(0.05):
+            with self._lock:
+                run_id = self._run_id
+                deadline = self._deadline
+                if run_id is None or deadline is None or time.monotonic() < deadline:
+                    continue
+                escalated = self._escalated
+                self._run_id = None
+                self._deadline = None
+                self._escalated = False
+            # 回调在锁外跑：它要关 HTTP client，可能阻塞一小会儿。
+            self._on_expire(run_id, escalated)
+
+
 class AgentRuntimeManager:
     """Serialize every agent run and own the lifecycle + approval boundary."""
 
@@ -940,8 +1033,17 @@ class AgentRuntimeManager:
         )
         self._thread_lock = RLock()
         self._built_adapter: Any | None = None
+        # 看门狗要靠它才能关掉模型的 HTTP client。注入 adapter 时为空，看门狗到期
+        # 也就无操作——测试替身没有真实连接可断。
+        self._agent_model: Any | None = None
         self._cancellations: dict[str, _CancellationGate] = {}
+        # run_id -> "cancel" | "idle"：看门狗强制断开过谁的连接。_execute_bound 的兜底
+        # except 据此改写分类——原始异常是"连接已关闭"一类，classify_agent_error 会把它
+        # 归成 SYSTEM，读起来像我们的 bug，而它其实是超时或用户取消。
+        self._forced_closes: dict[str, str] = {}
         self._running_run_id: str | None = None
+        self._watchdog = _StreamWatchdog(self._on_stream_watchdog_expire)
+        self._watchdog.start()
         self._git: GitExecutor | None = None
         # 系统维护（audit 快照与 accept/reject/unfinished 写入）串行化：
         # run 收尾线程的 lint 快照与 API 线程的判定维护互不交错提交。
@@ -1149,6 +1251,11 @@ class AgentRuntimeManager:
                 gate = self._cancellations.get(run_id)
                 if gate is not None:
                     gate.set()
+            # 协作式取消只在分段边界生效，而边界要等模型调用返回才到得了一次。装上
+            # 门的同时把看门狗收紧到宽限期：落不定就强制断开模型连接，让退栈沿既有的
+            # finally 路径走完（实测交接问题 C——一个 run 在 cancelling 上停了 8.5 小时，
+            # 一直占着串行门禁，连 sidecar 都无法优雅关闭）。
+            self._watchdog.escalate(run_id, settings.agent_cancel_grace_seconds)
             return cancelled
         raise InvalidRunTransitionError(
             f"cannot cancel run {run_id}: status {run.status.value}"
@@ -1305,6 +1412,8 @@ class AgentRuntimeManager:
         首段与续跑段共用同一份收尾，因此"只清一次"是可验证的：作用域若跨 run
         泄漏，表现就是下一个 run 读到上一个会话的附件。
         """
+        # 先解除看门狗：它不该在 checkpoint 回写或发布收尾期间到期。
+        self._watchdog.disarm()
         self._persist_run_checkpoint(run_id, thread_id)
         clear_attachment_resolver()
         clear_attachment_scope()
@@ -1312,11 +1421,101 @@ class AgentRuntimeManager:
             if self._running_run_id == run_id:
                 self._running_run_id = None
             self._cancellations.pop(run_id, None)
+            self._forced_closes.pop(run_id, None)
         try:
             self._maybe_publish_pending_diff(run_id)
         except (GitCommandError, OSError):
             # 发布是幂等收尾；git 异常不得掩盖这一段真正的运行结果。
             pass
+
+    def _on_stream_watchdog_expire(self, run_id: str, escalated: bool) -> None:
+        """看门狗到期：关掉模型的 HTTP client，让挂起的流式读抛错。
+
+        ``escalated`` 为真表示用户点过停止而协作式取消落不定；为假表示流在没有取消
+        请求的情况下静默超时。两者都要断开，但收尾状态不同，所以先把意图记下来，
+        由 ``_execute_bound`` 的兜底 except 在退栈时读取。
+
+        注入 adapter（测试替身、e2e 夹具）时 ``_agent_model`` 为空：没有真实连接可断，
+        直接返回，不记意图——否则替身流会被误判成"已强制断开"。
+        """
+        client = getattr(self._agent_model, "root_client", None)
+        if client is None:
+            return
+        reason = "cancel" if escalated else "idle"
+        with self._thread_lock:
+            self._forced_closes[run_id] = reason
+        logger.warning(
+            "force-closing the model connection for run %s (%s)", run_id, reason
+        )
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 - 断开是尽力而为，不得盖掉运行本身的错误
+            pass
+
+    def _take_forced_close(self, run_id: str) -> str | None:
+        with self._thread_lock:
+            return self._forced_closes.pop(run_id, None)
+
+    def _rotate_agent_after_forced_close(self) -> None:
+        """强制断开之后必须换掉懒建的 adapter。
+
+        模型的 HTTP client 已经关了，而编译图还持有它，以及那条进程级的 ``SqliteSaver``
+        连接（``build_checkpointer`` 开了从不关）。丢掉两者，下一个 run 重新装配——这
+        也是在"不重新加锁"的前提下维持 ADR-0010 单写方不变量的方式：万一还有线程挂在
+        旧连接上，它写的是已经被丢弃的那一份。注入的 ``self.adapter`` 不动。
+        """
+        self._built_adapter = None
+        self._agent_model = None
+
+    def _finish_forced_close(self, run_id: str, reason: str) -> None:
+        """看门狗强制断开模型连接之后的收尾：按**可达的**终态落定。
+
+        不能交给 ``_finish_failed``：它的僵尸守卫只放行 RUNNING/RETRYING，而取消升级
+        时 run 已经是 CANCELLING——恰恰是最需要收尾的那个状态。漏掉它，run 就会永远
+        停在 ``cancelling`` 上并一直占着串行门禁，那正是实测那 8.5 小时的形状。
+
+        终态由迁移表决定，不由意图决定。``cancel()`` 先把 run 转成 CANCELLING 再升级
+        看门狗，所以这条路径上唯一能落 CANCELLED 的状态就是 CANCELLING（空闲界与停止
+        键撞在同一刻时也走这里，用户意图优先）。RUNNING/RETRYING **落不了** CANCELLED
+        ——那不是合法迁移，硬走会把 ``InvalidRunTransitionError`` 抛出兜底 except，run
+        反而永远停在 RUNNING 上。它们落 ``unfinished`` 而不是 ``failed``：图状态已按
+        最后完成的超步落盘，``_finish_run_segment`` 还会把标识回写，所以仍然可以续跑。
+        """
+        self._rotate_agent_after_forced_close()
+        current = self.store.get_run(run_id)
+        if current.status == AgentRunStatus.CANCELLING:
+            self.store.finalize_run(
+                run_id,
+                AgentRunOutcome(
+                    status=AgentRunStatus.CANCELLED,
+                    message=(
+                        "Cancelled after the model connection was force-closed; "
+                        "the cooperative cancel point was never reached."
+                    ),
+                ),
+            )
+            return
+        if current.status not in {AgentRunStatus.RUNNING, AgentRunStatus.RETRYING}:
+            return
+        # reason == "cancel" 而 run 还在 RUNNING，只有一种来源：close() 在关停时对一
+        # 个还没被点停止的 run 升级看门狗（``shutdown(wait=True)`` 否则永远等不到）。
+        stalled = (
+            "the model connection was force-closed while the runtime was shutting down"
+            if reason == "cancel"
+            else "the model connection stalled and was force-closed"
+        )
+        self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, stalled)
+
+    def _build_agent(self) -> Any:
+        """懒建产品图，并记住模型句柄供看门狗断开连接。
+
+        模型必须先建出来再传进 ``build_wiki_agent``：它原本在内部构造，运行时拿不到
+        句柄，也就无从关掉那条挂起的连接。中间件、工具白名单与 ``interrupt_on`` 的
+        组装因此逐字不变——传的仍是同一个 ``model=`` 参数。
+        """
+        model = build_model()
+        self._agent_model = model
+        return build_wiki_agent(self.project_root, model=model)
 
     def _execute(
         self,
@@ -1364,7 +1563,7 @@ class AgentRuntimeManager:
             self._running_run_id = run_id
 
         self._equip_run_scope(run)
-        adapter = self.adapter or self._built_adapter or _instantiate_agent(self.project_root)
+        adapter = self.adapter or self._built_adapter or self._build_agent()
         self._built_adapter = adapter
         # ADR-0010 决策 8：墙钟预算跨段累计——续跑段继承已消耗的时间而不是重新计时，
         # "崩溃恢复继承剩余预算"因此可测。
@@ -1465,7 +1664,13 @@ class AgentRuntimeManager:
         except AgentRetryLimitExceeded as error:
             self._finalize_unfinished(run_id, AgentErrorType.BUDGET, str(error))
         except Exception as error:  # noqa: BLE001 - 边界必须收敛所有异常
-            self._finish_failed(run_id, error)
+            # 看门狗强制断开过连接时，原始异常是"连接已关闭"一类，classify_agent_error
+            # 会把它归成 SYSTEM，读起来像我们的 bug；它其实是用户取消或流空闲超时。
+            forced = self._take_forced_close(run_id)
+            if forced is not None:
+                self._finish_forced_close(run_id, forced)
+            else:
+                self._finish_failed(run_id, error)
 
     def _finalize_stream_outcome(
         self, run_id: str, thread_id: str, outcome: _ConsumeOutcome
@@ -1602,6 +1807,10 @@ class AgentRuntimeManager:
                         message=f"Run accounting failed: {error}",
                     )
 
+        # 看门狗在这段流开始时武装。取消门与墙钟预算都只在下面这个循环体里检查，而
+        # 循环体要等模型调用吐出东西才进得去——连接挂起时两者永远轮不到（实测交接
+        # 问题 C）。三个 _open_stream* 入口全部汇入这里，所以界不会漏装在某个入口上。
+        self._watchdog.arm(run_id, settings.agent_stream_idle_seconds)
         segments = self._iterate_safe(
             stream, budget, started_at, on_finish=_flush_accounting
         )
@@ -1717,6 +1926,15 @@ class AgentRuntimeManager:
                         ),
                     )
                     seen.add(key)
+                # 有工具在飞时挂起空闲界：工具执行期间本来就产出不了任何流式增量
+                # （一次 ingest 可以合法地静默好几分钟），按空闲判定会误杀健康的 run。
+                # 必须放在信号循环**之后**——tool_open 是在循环里被打开/关闭的，提前
+                # touch 会让"本条刚开了一个工具"晚一个增量才生效；而工具调用往往就是
+                # 静默之前的最后一条增量，那一格窗口正好把健康的 run 判死。
+                # 已升级（用户点过停止）时 touch 不改界。
+                self._watchdog.touch(
+                    None if tool_open else settings.agent_stream_idle_seconds
+                )
                 if question_pending:
                     break
         finally:
@@ -1945,7 +2163,7 @@ class AgentRuntimeManager:
             self.store.answer_question(run_id, [], timed_out=True)
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, "question timed out")
             return self.store.get_run(run_id).model_dump(mode="json")  # type: ignore[union-attr]
-        adapter = self.adapter or self._built_adapter or _instantiate_agent(self.project_root)
+        adapter = self.adapter or self._built_adapter or self._build_agent()
         self._built_adapter = adapter
         # ADR-0010 决策 4：图 adapter 的续跑依赖该 run 自己的 checkpoint。升级前
         # 产生的 run 一律 checkpoint_id=NULL，必须在登记答案与转 RUNNING 之前显式
@@ -1991,7 +2209,7 @@ class AgentRuntimeManager:
     ) -> None:
         run_id = run.run_id
         thread_id = run.thread_id
-        adapter = self.adapter or self._built_adapter or _instantiate_agent(self.project_root)
+        adapter = self.adapter or self._built_adapter or self._build_agent()
         self._built_adapter = adapter
         # 续跑段与首段配齐同一份作用域：附件可读、读预算真实生效、promote 有回调。
         self._equip_run_scope(run)
@@ -2039,7 +2257,13 @@ class AgentRuntimeManager:
         except AgentRetryLimitExceeded as error:
             self._finalize_unfinished(run_id, AgentErrorType.BUDGET, str(error))
         except Exception as error:  # noqa: BLE001 - 执行器线程里必须收敛所有异常
-            self._finish_failed(run_id, error)
+            # 与首段同理：提问续跑也走同一条 _consume_stream，因此同样被空闲界与
+            # 取消升级覆盖，断开后的原始异常不该被归类成 SYSTEM。
+            forced = self._take_forced_close(run_id)
+            if forced is not None:
+                self._finish_forced_close(run_id, forced)
+            else:
+                self._finish_failed(run_id, error)
 
 
     def _iterate_safe(
@@ -2740,15 +2964,18 @@ class AgentRuntimeManager:
         return self._git
 
     def close(self) -> None:
+        # 先让看门狗立刻断开在飞的模型连接：shutdown(wait=True) 要等 worker 退栈，而
+        # 挂起的流式读不退栈——不断开就是无限期等待。实测那个停在 cancelling 上 8.5
+        # 小时的 run 最后是靠强杀 sidecar 才收敛的，正是因为这里会一直等下去。
+        with self._thread_lock:
+            running = self._running_run_id
+        if running is not None:
+            self._watchdog.escalate(running, 0.0)
         self._executor.shutdown(wait=True)
+        self._watchdog.stop()
         if self.adapter is not None and hasattr(self.adapter, "close"):
             self.adapter.close()
 
 
 def _new_run_id() -> str:
     return f"run_{datetime.now(UTC).strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:8]}"
-
-
-def _instantiate_agent(project_root: Path) -> Any:
-    """System-owned lazy agent instantiation (kept for tests and sidecars)."""
-    return build_wiki_agent(project_root)
