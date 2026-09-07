@@ -624,6 +624,10 @@ button.message-citation:hover { border-color: #587caf; color: #c4d8fa; backgroun
 .compose-actions button { display: grid; width: 26px; height: 24px; place-items: center; border: 0; border-radius: 5px; color: #10141a; background: #87acf0; }
 .compose-actions button:hover { background: #9abaff; }
 .compose-actions button:disabled { cursor: default; opacity: 0.3; }
+/* 运行中发送键原位变停止键：沿用 .icon-button.stop-run 的危险色相，实心填充以保持
+   与发送键同等的视觉重量。放在 button:hover 之后——特异性相同，靠源码顺序取胜。 */
+.compose-actions button.stop-run { color: #fbeeee; background: #b04f43; }
+.compose-actions button.stop-run:hover { background: #c15e51; }
 .agent-modes { display: flex; gap: 6px; margin-top: 8px; }
 .agent-modes span { padding: 3px 6px; border-radius: 3px; color: #626b77; background: #1c2026; font-size: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
 .agent-modes span.active { color: #abc7fa; background: rgba(88, 128, 190, 0.18); }

@@ -663,6 +663,11 @@ export function AppShell() {
     if (event.type === "progress" && event.message) setAgentActivity(event.message);
     if (event.type === "run_status") {
       const status = event.data.status as AgentRunStatus | undefined;
+      // 运行开始必须把活动条重置成中性态：它此前只被 tool/subagent/verification/
+      // progress 与部分终态事件驱动，于是上一段甚至上一个 run 的终态文案会被带进
+      // 新 run——实测三个 model_calls=0、tool_calls=0 的失败 run 全程显示"工具执行完成"。
+      // 空串会落到渲染处的默认文案，所以这里不需要再造一个键。
+      if (status === "running" || status === "queued") setAgentActivity("");
       if (status === "cancelling") setAgentActivity(t("chat.cancelling"));
       if (status === "retrying") setAgentActivity(t("chat.retrying"));
       if (status === "applying" || status === "verifying") setAgentActivity(t("chat.verifying"));
@@ -1030,6 +1035,9 @@ export function AppShell() {
     const text = draft.trim();
     if (!text || agentBusy || waitingOnQuestion) return;
     setAgentBusy(true);
+    // 与忙碌指示器同时清活动条：否则新 run 的头几帧会显示上一个 run 留下的终态文案
+    // （典型是"Agent 运行已取消"），读起来像这一次发送已经被取消了。
+    setAgentActivity("");
     try {
       await waitForAgentAttachmentUploads();
       const currentAttachmentIds = useUiStore.getState().activeAttachmentIds;
@@ -1583,7 +1591,7 @@ export function AppShell() {
                   <Play size={12} />{t("chat.resume")}
                 </button>
               )}
-              {agentBusy && <div className="agent-thinking"><i /><i /><i /><span>{agentActivity || t("chat.tracing")}</span></div>}
+              {agentBusy && <div className="agent-thinking"><i /><i /><i /><span>{agentActivity || t("chat.reasoningLive")}</span></div>}
               {waitingOnQuestion && (
                 <div className="composer-waiting-hint">{t("chat.waitingForConfirmation")}</div>
               )}
@@ -1648,7 +1656,24 @@ export function AppShell() {
                     </button>
                     <span>{activeAttachments.length > 0 ? t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length)) : t("chat.agentContext")}</span>
                   </div>
-                  <button onClick={() => void sendMessage()} disabled={!draft.trim() || agentBusy || waitingOnQuestion} aria-label={t("chat.send")}><Send size={15} /></button>
+                  {activeAgentRunId ? (
+                    // 运行中把发送键**原位**换成停止键：同一个位置、同一个尺寸，只换
+                    // 语义色与图标。中断入口必须在注意力焦点上，且要能被读屏与自动化
+                    // 按 role+name 找到——标题栏那颗 13px 方块两者都做不到（实测像素
+                    // 点击 4 次偏 3 次）。标题栏那颗仍保留：它是 UNFINISHED 下唯一能
+                    // 释放串行门禁的出口。
+                    <button
+                      type="button"
+                      className="stop-run"
+                      onClick={() => void cancelActiveAgentRun()}
+                      title={t("chat.cancel")}
+                      aria-label={t("chat.cancel")}
+                    >
+                      <Square size={15} />
+                    </button>
+                  ) : (
+                    <button onClick={() => void sendMessage()} disabled={!draft.trim() || agentBusy || waitingOnQuestion} aria-label={t("chat.send")}><Send size={15} /></button>
+                  )}
                 </div>
                 <input
                   ref={attachmentRef}

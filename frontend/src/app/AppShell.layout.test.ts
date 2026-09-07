@@ -83,4 +83,47 @@ describe("Agent sidebar layout", () => {
     expect(appShellSource).not.toContain("loadChangeSetReview");
     expect(appShellSource).not.toContain("GraphWorkspace");
   });
+
+  it("把运行中的中断入口放在 composer 里原位切换，并标注得能被读屏发现", () => {
+    const composeStart = appShellSource.indexOf('<div className="compose-actions">');
+    expect(composeStart, "missing anchor: compose-actions").toBeGreaterThan(-1);
+    const composeSource = appShellSource.slice(
+      composeStart,
+      appShellSource.indexOf("<input", composeStart),
+    );
+
+    // 原位切换：同一个位置既有发送也有停止，用户不必把视线移开 composer，
+    // 自动化与读屏也能按 role+name 命中（标题栏那颗 13px 方块两者都做不到）。
+    expect(composeSource).toContain("{activeAgentRunId ? (");
+    expect(composeSource).toContain('className="stop-run"');
+    expect(composeSource).toContain("onClick={() => void cancelActiveAgentRun()}");
+    expect(composeSource).toContain('aria-label={t("chat.cancel")}');
+    expect(composeSource).toContain('aria-label={t("chat.send")}');
+    // 标题栏那颗保留：它是 UNFINISHED 下唯一能释放串行门禁的出口。
+    expect(appShellSource).toContain('className="icon-button stop-run"');
+  });
+
+  it("运行开始时重置活动条，不让上一个 run 的终态文案漏进新 run", () => {
+    const eventStart = appShellSource.indexOf("function applyAgentEvent");
+    const eventSource = appShellSource.slice(
+      eventStart,
+      appShellSource.indexOf("function subscribeToAgentRun", eventStart),
+    );
+    expect(eventSource).toContain(
+      'if (status === "running" || status === "queued") setAgentActivity("");',
+    );
+
+    const sendStart = appShellSource.indexOf("async function sendMessage()");
+    const sendSource = appShellSource.slice(
+      sendStart,
+      appShellSource.indexOf("async function cancelActiveAgentRun", sendStart),
+    );
+    expect(sendSource.indexOf('setAgentActivity("");'))
+      .toBeLessThan(sendSource.indexOf("await runAgent"));
+
+    // 兜底文案曾是 ChangeSet 时代的「正在追踪证据」，而因为它兜底，反而是最常见的
+    // 那条。chat.reasoningLive 早已存在，不需要新键。
+    expect(appShellSource).toContain('{agentActivity || t("chat.reasoningLive")}');
+    expect(appShellSource).not.toContain('{agentActivity || t("chat.tracing")}');
+  });
 });
