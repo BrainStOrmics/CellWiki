@@ -10,10 +10,11 @@ type AgentRunDiagnosticsProps = {
 };
 
 /**
- * One compact stats line per settled run (model · rounds · steps | LLM and
- * tool time | first-token average · throughput | cache hit | token totals).
- * The line wraps freely with the sidebar width; clicking it expands the
- * per-round detail table.
+ * One compact stats line per settled run (model · model calls | LLM and tool
+ * time | first-token average · throughput | cache hit | token totals). The
+ * derived rates only appear on a succeeded run that accounted at least one
+ * model call; the per-round table always shows the raw spans. The line wraps
+ * freely with the sidebar width; clicking it expands that table.
  */
 export function AgentRunDiagnostics({ runId, usageSegments }: AgentRunDiagnosticsProps) {
   const { t } = useI18n();
@@ -145,14 +146,14 @@ function summarySegments(
   t: Translate,
 ): string[] {
   const segments: string[] = [];
-  // Conversation semantics: one run is one round; "steps" counts how often
-  // the model was called inside this run (usage.model_calls mixes LangGraph
-  // supersteps, so model spans are the reliable count).
-  const rounds = diagnostics.thread_summary?.run_count ?? 0;
+  // 只数本 run 的模型调用 span（usage.model_calls 混着 LangGraph 超步，span 才是可靠
+  // 计数）。会话轮次不进摘要头：thread_summary.run_count 是请求时对整条会话现算的，而
+  // 本卡片每次挂载都重新取，会话恢复会把历史卡片整体重挂——昨天那个 run 的"7轮"今天
+  // 就成了"11轮"。追溯性变化的数字不该钉在已落定的 run 上；展开详情里那次 runs 计数说
+  // 的本来就是整条会话，是诚实的，保留。
   const steps = modelSpans.length;
   const head = [
     diagnostics.model,
-    rounds > 0 ? fill(t("chat.diagRounds"), rounds) : "",
     steps > 0 ? fill(t("chat.diagSteps"), steps) : "",
   ].filter(Boolean).join(" · ");
   if (head) segments.push(head);
@@ -168,16 +169,22 @@ function summarySegments(
   const ttfts = modelSpans
     .map((span) => span.ttft_ms)
     .filter((value): value is number => value != null);
-  const throughput = llmMs > 0 && usage.output_tokens > 0
+  // 派生比值只在"跑完且真的记到了模型调用"时才有意义。span 的 duration_ms 是观测窗口
+  // （同一 model_call_id 首末 chunk 之间），一次爆发或中途断流只有几毫秒，除出来就是
+  // 68k tok/s；TTFT 更是结构性≈0——起点与首 token 由同一个首 delta 置位。失败 run 上
+  // 可信的是状态、错误类型、工具计数与墙钟，不是这些比值。下面那张按轮的表照旧渲染
+  // 缓存/命中两列，所以信息没丢，只是不在摘要里冒充结论。
+  const derivedRates = usage.model_calls > 0 && diagnostics.status === "succeeded";
+  const throughput = derivedRates && llmMs > 0 && usage.output_tokens > 0
     ? `${Math.round(usage.output_tokens / (llmMs / 1000))} tok/s`
     : "";
   const speed = [
-    ttfts.length > 0 ? fill(t("chat.diagTtft"), formatSeconds(ttfts.reduce((a, b) => a + b, 0) / ttfts.length)) : "",
+    derivedRates && ttfts.length > 0 ? fill(t("chat.diagTtft"), formatSeconds(ttfts.reduce((a, b) => a + b, 0) / ttfts.length)) : "",
     throughput,
   ].filter(Boolean).join(" · ");
   if (speed) segments.push(speed);
 
-  if (usage.cached_input_tokens && usage.input_tokens > 0) {
+  if (derivedRates && usage.cached_input_tokens && usage.input_tokens > 0) {
     segments.push(fill(t("chat.diagCache"), hitRate(usage.cached_input_tokens, usage.input_tokens).replace("%", "")));
   }
   const totals = [
