@@ -25,7 +25,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from cellwiki.agent.app import build_wiki_agent
-from cellwiki.api.app import create_app
+from cellwiki.api.app import CHECKPOINT_MISSING_CODE, create_app
 from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.questions import PendingQuestion
@@ -850,8 +850,12 @@ def test_diagnostics_reports_the_checkpoint_carrier_size(tmp_path: Path):
 
 
 def test_resume_and_answer_map_a_missing_checkpoint_to_409(tmp_path: Path):
-    """决策 4 的 API 边界：CheckpointMissingError 继承 RuntimeError，
-    漏掉映射就是 500。"""
+    """决策 4 的 API 边界：``CheckpointMissingError`` 继承 RuntimeError，漏掉映射就是 500。
+
+    ``detail`` 是 ``{code, message}`` 而不是裸字符串：同一个端点的门禁冲突也是 409，
+    前端只能靠这个稳定码把"永远续不了"与"稍后再试"分开——分不清就是实测交接
+    问题 A 的死结（「继续」被还回来、点一次 409 一次）。码是契约，文案不是。
+    """
     store = RuntimeStore(tmp_path)
     store.create_run(AgentRun(run_id="run_409", thread_id="t_409", input_message="x"))
     _drive_to_unfinished(store, "run_409")
@@ -859,10 +863,22 @@ def test_resume_and_answer_map_a_missing_checkpoint_to_409(tmp_path: Path):
     try:
         client = TestClient(create_app(tmp_path, agent_runtime=manager))
 
-        response = client.post("/api/agent/runs/run_409/resume")
+        resumed = client.post("/api/agent/runs/run_409/resume")
 
-        assert response.status_code == 409, response.text
-        assert "resend" in response.json()["detail"]
+        assert resumed.status_code == 409, resumed.text
+        detail = resumed.json()["detail"]
+        assert detail["code"] == CHECKPOINT_MISSING_CODE
+        assert "resend" in detail["message"]
+
+        # 先建 manager 再挂起问题：构造时的重启收敛（决策 10）会把"没有 checkpoint 的
+        # WAITING_CONFIRMATION"降级掉，那正是本用例要手工摆出来的前置状态。
+        store.create_run(AgentRun(run_id="run_409q", thread_id="t_409q", input_message="x"))
+        _park_on_question(store, "run_409q", "t_409q")
+
+        answered = client.post("/api/agent/runs/run_409q/question", json={"answers": ["是"]})
+
+        assert answered.status_code == 409, answered.text
+        assert answered.json()["detail"]["code"] == CHECKPOINT_MISSING_CODE
     finally:
         manager.close()
 

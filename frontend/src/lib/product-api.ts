@@ -5,18 +5,44 @@ export class ProductApiError extends Error {
     message: string,
     readonly status: number,
     readonly detail?: unknown,
+    readonly code?: string,
   ) {
     super(message);
   }
 }
 
+/** FastAPI 的 `detail` 既可能是裸字符串，也可能是 `{code, message}`。后者用于需要
+ *  前端按类别分流、而不是按文案分流的错误——例如续跑被永久拒绝时要把「继续」换成
+ *  「重试」。码是契约，文案不是，所以文案日后本地化不会打断分流。 */
+function readDetail(
+  body: { detail?: unknown } | null,
+): { message: string | null; code: string | null } {
+  const detail = body?.detail;
+  if (typeof detail === "string") return { message: detail, code: null };
+  if (detail && typeof detail === "object") {
+    const record = detail as { message?: unknown; code?: unknown };
+    return {
+      message: typeof record.message === "string" ? record.message : null,
+      code: typeof record.code === "string" ? record.code : null,
+    };
+  }
+  return { message: null, code: null };
+}
+
+function toApiError(body: { detail?: unknown } | null, response: Response): ProductApiError {
+  const { message, code } = readDetail(body);
+  return new ProductApiError(
+    message ?? `${response.status} ${response.statusText}`,
+    response.status,
+    body,
+    code ?? undefined,
+  );
+}
+
 async function parseResponse<T>(response: Response): Promise<T> {
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { detail?: unknown } | null;
-    const message = body && typeof body.detail === "string"
-      ? body.detail
-      : `${response.status} ${response.statusText}`;
-    throw new ProductApiError(message, response.status, body);
+    throw toApiError(body, response);
   }
   return response.json() as Promise<T>;
 }
@@ -29,11 +55,7 @@ export async function getText(path: string): Promise<string> {
   const response = await productFetch(path);
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { detail?: unknown } | null;
-    throw new ProductApiError(
-      body && typeof body.detail === "string" ? body.detail : `${response.status} ${response.statusText}`,
-      response.status,
-      body,
-    );
+    throw toApiError(body, response);
   }
   return response.text();
 }

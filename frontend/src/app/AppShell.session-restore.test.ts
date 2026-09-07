@@ -63,9 +63,23 @@ describe("续跑被拒时收敛 busy 并留下可重试出口（F7）", () => {
     expect(resumeSource).toContain("} finally {");
   });
 
-  it("失败时把\"继续\"还回来，并给出可诊断的错误消息", () => {
-    expect(resumeSource).toContain("setResumableAgentRunId(resumedRunId);");
+  it("失败时按判别码分流，并给出可诊断的错误消息", () => {
     expect(resumeSource).toContain("agentRequestFailure(");
+    expect(resumeSource).toContain("failure.code === checkpointMissingCode");
+
+    // 永久拒绝（载体里没有该 run 的图状态）：「继续」再点也是 409，必须摘掉并换成
+    // retry——它清状态后从有界 transcript 重放，不依赖 checkpoint。修订前这里无条件
+    // 把「继续」还回去，于是成了死结：按钮点不动，而 UNFINISHED 仍占着串行门禁。
+    const permanent = resumeSource.slice(
+      resumeSource.indexOf("failure.code === checkpointMissingCode"),
+      resumeSource.indexOf("} else {"),
+    );
+    expect(permanent).toContain("setRetryableAgentRunId(resumedRunId);");
+    expect(permanent).not.toContain("setResumableAgentRunId(resumedRunId);");
+
+    // 可重试拒绝（典型是门禁冲突 409）仍要把「继续」还回来，这是 F7 的原意。
+    expect(resumeSource.slice(resumeSource.indexOf("} else {")))
+      .toContain("setResumableAgentRunId(resumedRunId);");
   });
 
   it("busy 在 finally 里清零，任何路径都不会留下永久思考指示器", () => {

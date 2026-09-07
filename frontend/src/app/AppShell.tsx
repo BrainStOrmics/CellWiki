@@ -95,6 +95,11 @@ const pausedAgentStatuses = new Set<AgentRunStatus>([
   "waiting_approval",
   "unfinished",
 ]);
+
+/** 镜像后端 `CHECKPOINT_MISSING_CODE`：续跑被**永久**拒绝，载体里没有该 run 的图状态。
+ *  同一个端点的门禁冲突 409 是可重试拒绝，两者必须分流——按文案分流会在文案本地化时
+ *  静默失效，所以后端把码放进了 `detail`。 */
+const checkpointMissingCode = "checkpoint_missing";
 function agentRunStorageKey(contextKey: string) {
   return `cellwiki.agent.active_run_id.${contextKey}`;
 }
@@ -672,6 +677,10 @@ export function AppShell() {
       if (status === "unfinished") {
         setAgentActivity(t("chat.runUnfinished"));
         setResumableAgentRunId(event.run_id);
+        // 后端 is_retryable_run 对 unfinished 同样返回真，而 retry 不依赖 checkpoint
+        // （清状态 + 从有界 transcript 重放），所以图状态丢了它也走得通。两条出路一起
+        // 给出来，用户不必先撞一次 409 才发现「继续」不可用。
+        if (event.data.retryable === true) setRetryableAgentRunId(event.run_id);
       }
       if (status && terminalAgentStatuses.has(status)) {
         setAgentBusy(false);
@@ -965,6 +974,9 @@ export function AppShell() {
       } else if (run.status === "unfinished") {
         setAgentActivity(t("chat.runUnfinished"));
         setResumableAgentRunId(runId);
+        // 重启后端再回到会话正是"图状态在、字段为 NULL"的复现路径；retry 不依赖
+        // checkpoint，所以它必须在这里就可见，而不是等「继续」撞一次 409。
+        if (run.retryable) setRetryableAgentRunId(runId);
         setActiveAgentRunId(runId);
         setAgentBusy(false);
       } else if (!terminalAgentStatuses.has(run.status)) {
@@ -1002,6 +1014,7 @@ export function AppShell() {
         clearActiveAttachments();
         setActiveAgentRunId(null);
         setRetryableAgentRunId(null);
+        setResumableAgentRunId(null);
         setMessages([initialAgentMessage]);
       }
     } catch (error) {
@@ -1101,13 +1114,21 @@ export function AppShell() {
       }
       await subscribeToAgentRun(resumedRunId);
     } catch (error) {
-      // 续跑被拒（典型是门禁冲突 409）必须收敛 busy 并把"继续"还回来：
-      // 否则按钮已清空、思考指示器永远转下去，用户在这个会话里无路可走。
-      setResumableAgentRunId(resumedRunId);
       const failure = agentRequestFailure(
         error,
         isDesktopRuntime ? t("workflow.runtimeDesktop") : t("workflow.runtimeWeb"),
       );
+      if (failure.code === checkpointMissingCode) {
+        // 永久拒绝：载体里没有这个 run 的图状态，「继续」再点多少次都是 409。摘掉它，
+        // 换成真正走得通的出路——retry 先清状态键、再从有界 transcript 重放后端持久化
+        // 的原话（`input_message`），不依赖 checkpoint。修订前这里把「继续」还回去，
+        // 于是成了死结：按钮点不动，而 UNFINISHED 仍占着串行门禁，重发同样是 409。
+        setRetryableAgentRunId(resumedRunId);
+      } else {
+        // 可重试拒绝（典型是门禁冲突 409）必须把"继续"还回来：否则按钮已清空、
+        // 思考指示器永远转下去，用户在这个会话里无路可走。
+        setResumableAgentRunId(resumedRunId);
+      }
       setMessages((current) => [...current, {
         role: "agent",
         text: failure.text,
@@ -1232,6 +1253,7 @@ export function AppShell() {
     setActiveThreadId(null);
     setActiveAgentRunId(null);
     setRetryableAgentRunId(null);
+    setResumableAgentRunId(null);
     setAgentActivity("");
     agentEventSequenceRef.current = 0;
     processedAgentEventsRef.current.clear();
@@ -1702,9 +1724,10 @@ export function agentRequestFailure(error: unknown, offlineMessage: string) {
     return {
       text: error.message,
       meta: `AGENT REQUEST FAILED · HTTP ${error.status}`,
+      code: error.code ?? null,
     };
   }
-  return { text: offlineMessage, meta: "RUNTIME OFFLINE" };
+  return { text: offlineMessage, meta: "RUNTIME OFFLINE", code: null };
 }
 
 function legacyTerminalEvent(run: AgentRun, sequence: number): AgentEvent {

@@ -57,6 +57,14 @@ from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 from cellwiki.services.runtime_store import RuntimeStore, ThreadDeletionBlockedError
 
 
+# 决策 4（2026-09-07 修订）：checkpoint 缺失是**永久性**拒绝——载体里没有该 run 的
+# 图状态，「继续」不可能成功，正确的出路是 retry（清状态 + 从有界 transcript 重放）。
+# 而同一个端点的门禁冲突 409 是**可重试**拒绝。两者 HTTP 状态相同、消息都是英文，
+# 前端只能靠这个稳定码区分：否则要么把死结的「继续」按钮还回来，要么在门禁冲突时
+# 误摘按钮。码是契约，消息文案不是。
+CHECKPOINT_MISSING_CODE = "checkpoint_missing"
+
+
 # ===========================================================================
 # 请求/响应模型 —— 定义所有 API 端点的输入输出格式
 # ===========================================================================
@@ -584,8 +592,12 @@ def create_app(
         except InvalidRunTransitionError:
             raise HTTPException(status_code=409, detail="run is not waiting for a question")
         except CheckpointMissingError as error:
-            # 决策 4：没有 checkpoint 就不能在空图上静默重放，明确失败并让用户重发。
-            raise HTTPException(status_code=409, detail=str(error)) from None
+            # 决策 4（2026-09-07 修订）：载体里也没有该 run 的图状态，明确失败而不是在
+            # 空图上静默重放。带稳定码，前端据此不再把用户留在一条走不通的路上。
+            raise HTTPException(
+                status_code=409,
+                detail={"code": CHECKPOINT_MISSING_CODE, "message": str(error)},
+            ) from None
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error))
         return _agent_run_payload(
@@ -694,8 +706,14 @@ def create_app(
         except InvalidRunTransitionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except CheckpointMissingError as error:
-            # 决策 4：升级前产生的 run 没有 checkpoint，明确降级为可重发而不是静默重放。
-            raise HTTPException(status_code=409, detail=str(error)) from None
+            # 决策 4（2026-09-07 修订）：载体复核后仍没有该 run 的图状态，明确失败而不是
+            # 在空图上静默重放。带稳定码让前端把「继续」换成「重试」——retry 清状态后从
+            # 有界 transcript 重放，用的正是后端持久化的 input_message，是这条唯一走得通的
+            # 恢复路径；而 UNFINISHED 仍占着串行门禁，所以单纯让用户"重发消息"是死路。
+            raise HTTPException(
+                status_code=409,
+                detail={"code": CHECKPOINT_MISSING_CODE, "message": str(error)},
+            ) from None
         except AgentRunInProgressError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except ValueError as error:

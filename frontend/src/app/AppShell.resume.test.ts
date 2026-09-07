@@ -32,3 +32,46 @@ describe("terminalAgentStatuses", () => {
     expect(reducerSource).toContain('from "./run-status"');
   });
 });
+
+describe("续跑出路不得是死结（决策 4 修订 / 实测交接问题 A）", () => {
+  function sliceBetween(start: string, end: string): string {
+    const startIndex = appShellSource.indexOf(start);
+    expect(startIndex, `missing anchor: ${start}`).toBeGreaterThan(-1);
+    const endIndex = appShellSource.indexOf(end, startIndex);
+    expect(endIndex, `missing anchor: ${end}`).toBeGreaterThan(startIndex);
+    return appShellSource.slice(startIndex, endIndex);
+  }
+
+  it("UNFINISHED 同时给出「重试」：retry 不依赖 checkpoint，是图状态丢失时唯一的出路", () => {
+    // 后端 is_retryable_run 对 unfinished 也返回真，但 UI 曾经只在 failed 时亮重试，
+    // 于是图状态丢了的 run 只剩一个必然 409 的「继续」。
+    const live = sliceBetween(
+      'if (status === "unfinished") {',
+      "if (status && terminalAgentStatuses.has(status)) {",
+    );
+    expect(live).toContain("setResumableAgentRunId(event.run_id);");
+    expect(live).toContain("setRetryableAgentRunId(event.run_id);");
+
+    // 会话恢复路径：重启后端再回到会话正是 P0 的复现路径。
+    const restored = sliceBetween(
+      '} else if (run.status === "unfinished") {',
+      "} else if (!terminalAgentStatuses.has(run.status)) {",
+    );
+    expect(restored).toContain("setResumableAgentRunId(runId);");
+    expect(restored).toContain("if (run.retryable) setRetryableAgentRunId(runId);");
+  });
+
+  it("恢复线索不得跨会话滞留：`+` 新建与删除会话都清掉 resumable", () => {
+    const startNewChat = sliceBetween(
+      "async function startNewChat()",
+      "function openSearchResult(",
+    );
+    expect(startNewChat).toContain("setResumableAgentRunId(null);");
+
+    const deleteThread = sliceBetween(
+      "async function deleteAgentThread(",
+      "async function sendMessage()",
+    );
+    expect(deleteThread).toContain("setResumableAgentRunId(null);");
+  });
+});
