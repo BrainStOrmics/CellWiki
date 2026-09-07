@@ -212,10 +212,45 @@ def test_cancel_waits_for_safe_event_boundary(tmp_path: Path):
         running = _wait_for_status(manager, started.run_id, {AgentRunStatus.RUNNING})
         cancelling = manager.cancel(running.run_id)
         assert cancelling.status == AgentRunStatus.CANCELLING
-        # 释放适配器，让运行在安全事件边界被取消
+        # 释放适配器，让运行在安全事件边界落地
         adapter.release.set()
-        cancelled = _wait_for_status(manager, started.run_id, {AgentRunStatus.CANCELLED})
-        assert cancelled.status == AgentRunStatus.CANCELLED
+        stopped = _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+        assert stopped.status == AgentRunStatus.UNFINISHED
+    finally:
+        manager.close()
+
+
+def test_a_user_stop_pauses_the_run_instead_of_destroying_it(tmp_path: Path):
+    """ADR-0007 决策 10 把"用户停止后继续"列为可从 checkpoint 续跑的中断三态之一，
+    实现却一直把主动停止送进 ``CANCELLED`` —— 而 ``_TRANSITIONS[CANCELLED]`` 是空集，
+    图状态明明还在载体里（取消路径不删 checkpoint），状态机却没有任何出路。
+
+    ``error_type`` 为空是有意的：``is_retryable_run`` 因此返回假，主动停止只给
+    「继续」不给「重试」——重试会删掉状态键从头重放，那不是按下停止的人想要的。
+    被动中断（TIMEOUT/BUDGET）带 error_type，两个出路都还在。
+    """
+    adapter = BlockingAdapter()
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id="thread_stop_resume",
+            message="停下来，我还要接着跑",
+            context=_context("thread_stop_resume"),
+        )
+        running = _wait_for_status(manager, started.run_id, {AgentRunStatus.RUNNING})
+        manager.cancel(running.run_id)
+        adapter.release.set()
+        stopped = _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+
+        assert stopped.error_type is None
+        assert is_retryable_run(stopped) is False
+
+        resumed = manager.resume(started.run_id)
+        assert resumed.status == AgentRunStatus.RUNNING
+        completed = _wait_for_status(
+            manager, started.run_id, {AgentRunStatus.SUCCEEDED}
+        )
+        assert completed.status == AgentRunStatus.SUCCEEDED
     finally:
         manager.close()
 
@@ -789,17 +824,28 @@ def test_pending_diff_patch_not_truncated_for_large_diff(tmp_path: Path):
 
 
 def test_recover_stale_runs_handles_cancelling_and_queued(tmp_path: Path):
-    # CANCELLING -> CANCELLED；QUEUED -> UNFINISHED（重启恢复语义）
+    """重启收敛：孤儿 CANCELLING -> CANCELLED；孤儿 QUEUED -> UNFINISHED。
+
+    两个孤儿都直接写库、不挂 worker。改之前这条测试先 start 一个真 run 再 cancel，
+    靠 ``manager.close()``（它会 ``adapter.close()`` -> ``release.set()``）让旧 worker
+    自己把状态落地——那测的是**关停**收敛，``recover_stale_runs`` 压根看不到
+    CANCELLING 行。现在主动停止落 ``unfinished``（可续跑的暂停，见
+    ``_finalize_stopped_by_user``），那条路给出的不再是 ``cancelled``，与本测试要钉
+    的重启语义无关；重启时停止没跑完的 run 仍按终态收敛，这是有意的保守读法。
+    """
     adapter = BlockingAdapter()
     manager = AgentRuntimeManager(tmp_path, adapter=adapter)
     try:
-        cancelling = manager.start(
+        manager.store.create_thread("thread_recover_2")
+        cancelling = AgentRun(
+            run_id=_new_run_id(),
             thread_id="thread_recover_2",
-            message="取消中的任务",
-            context=_context("thread_recover_2"),
+            project_id="cellwiki",
+            status=AgentRunStatus.CANCELLING,
+            input_message="取消中的任务",
+            budget=RunBudget(max_model_calls=5, max_runtime_seconds=30),
+            created_at=datetime.now(UTC),
         )
-        _wait_for_status(manager, cancelling.run_id, {AgentRunStatus.RUNNING})
-        manager.cancel(cancelling.run_id)  # CANCELLING
         queued = AgentRun(
             run_id=_new_run_id(),
             thread_id="thread_recover_2",
@@ -809,18 +855,16 @@ def test_recover_stale_runs_handles_cancelling_and_queued(tmp_path: Path):
             budget=RunBudget(max_model_calls=5, max_runtime_seconds=30),
             created_at=datetime.now(UTC),
         )
+        manager.store.create_run(cancelling)
         manager.store.create_run(queued)
     finally:
         manager.close()
-    adapter.release.set()
-    time.sleep(1.0)  # 旧 worker 收敛：CANCELLING -> CANCELLED
     recovered = AgentRuntimeManager(tmp_path, adapter=BlockingAdapter())
     try:
         assert recovered.store.get_run(cancelling.run_id).status == AgentRunStatus.CANCELLED
         assert recovered.store.get_run(queued.run_id).status == AgentRunStatus.UNFINISHED
     finally:
         recovered.close()
-        manager.close()
 
 
 class QuestionCapableAdapter:

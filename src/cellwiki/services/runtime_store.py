@@ -80,8 +80,19 @@ _TRANSITIONS: dict[AgentRunStatus, set[AgentRunStatus]] = {
     },
     AgentRunStatus.FAILED: {AgentRunStatus.RETRYING},
     AgentRunStatus.RETRYING: {AgentRunStatus.RUNNING, AgentRunStatus.FAILED, AgentRunStatus.UNFINISHED},
-    AgentRunStatus.UNFINISHED: {AgentRunStatus.RUNNING, AgentRunStatus.FAILED, AgentRunStatus.CANCELLED},
-    AgentRunStatus.CANCELLING: {AgentRunStatus.CANCELLED, AgentRunStatus.FAILED},
+    # RETRYING 也在后继里：is_retryable_run 与 run payload 的 retryable 都宣布中断态
+    # 可重试，前端更把 retry 当成「继续」撞上 checkpoint_missing 之后的兜底出路。
+    # ADR-0010 决策 5 只定 retry 的语义，没钉死"谁能 retry"。
+    AgentRunStatus.UNFINISHED: {
+        AgentRunStatus.RUNNING,
+        AgentRunStatus.FAILED,
+        AgentRunStatus.CANCELLED,
+        AgentRunStatus.RETRYING,
+    },
+    # CANCELLING 能落 UNFINISHED：主动停止是暂停而不是销毁（ADR-0007 决策 10 的
+    # "用户停止后继续"），图状态还在载体里。CANCELLED 仍是后继——那是"放弃一个已
+    # 中断的 run"，也是松开串行门禁的出口。
+    AgentRunStatus.CANCELLING: {AgentRunStatus.CANCELLED, AgentRunStatus.FAILED, AgentRunStatus.UNFINISHED},
     AgentRunStatus.SUCCEEDED: set(),
     AgentRunStatus.REJECTED: set(),
     AgentRunStatus.CANCELLED: set(),
@@ -1399,7 +1410,15 @@ class RuntimeStore:
         return updated
 
     def claim_retry(self, run_id: str) -> AgentRun:
-        """Atomically increment retry accounting and claim the retry slot."""
+        """Atomically increment retry accounting and claim the retry slot.
+
+        准入是 ``FAILED`` 与 ``UNFINISHED``。后者不是放松安全，是与既有意图对齐：
+        ``is_retryable_run`` 对 unfinished+{system,rate_limit,timeout} 返回真、run
+        payload 因此给 ``retryable: true``，前端更把 retry 当成「继续」撞上
+        ``checkpoint_missing`` 之后唯一的兜底出路。只放行 FAILED 时那条出路是死的
+        ——用户点「重试」必然 409，等于没有兜底。ADR-0010 决策 5 只定 retry 的语义
+        （同 run_id、先删状态键、从有界 transcript 重放），没有钉死"谁能 retry"。
+        """
 
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1412,7 +1431,9 @@ class RuntimeStore:
             _assert_run_transition(
                 current.status,
                 AgentRunStatus.RETRYING,
-                allowed_sources=frozenset({AgentRunStatus.FAILED}),
+                allowed_sources=frozenset(
+                    {AgentRunStatus.FAILED, AgentRunStatus.UNFINISHED}
+                ),
                 action="retry",
             )
             updated = current.model_copy(

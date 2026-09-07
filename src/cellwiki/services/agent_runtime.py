@@ -1468,43 +1468,41 @@ class AgentRuntimeManager:
         self._agent_model = None
 
     def _finish_forced_close(self, run_id: str, reason: str) -> None:
-        """看门狗强制断开模型连接之后的收尾：按**可达的**终态落定。
+        """看门狗强制断开模型连接之后的收尾：按**可达的**状态落定。
 
         不能交给 ``_finish_failed``：它的僵尸守卫只放行 RUNNING/RETRYING，而取消升级
         时 run 已经是 CANCELLING——恰恰是最需要收尾的那个状态。漏掉它，run 就会永远
         停在 ``cancelling`` 上并一直占着串行门禁，那正是实测那 8.5 小时的形状。
 
-        终态由迁移表决定，不由意图决定。``cancel()`` 先把 run 转成 CANCELLING 再升级
-        看门狗，所以这条路径上唯一能落 CANCELLED 的状态就是 CANCELLING（空闲界与停止
-        键撞在同一刻时也走这里，用户意图优先）。RUNNING/RETRYING **落不了** CANCELLED
-        ——那不是合法迁移，硬走会把 ``InvalidRunTransitionError`` 抛出兜底 except，run
-        反而永远停在 RUNNING 上。它们落 ``unfinished`` 而不是 ``failed``：图状态已按
-        最后完成的超步落盘，``_finish_run_segment`` 还会把标识回写，所以仍然可以续跑。
+        落点由迁移表决定，不由意图决定。``cancel()`` 先把 run 转成 CANCELLING 再升级
+        看门狗，所以 CANCELLING 就是"用户按过停止"：交给 ``_finalize_user_stop``，
+        载体里有图状态就落 ``unfinished`` 留着「继续」，没有才落 ``cancelled``。
+        RUNNING/RETRYING **落不了** CANCELLED——那不是合法迁移，硬走会把
+        ``InvalidRunTransitionError`` 抛出兜底 except，run 反而永远停在 RUNNING 上。
+        它们落 ``unfinished`` 而不是 ``failed``：图状态已按最后完成的超步落盘，
+        ``_finish_run_segment`` 还会把标识回写，所以仍然可以续跑。
+
+        轮换放在 ``finally`` 里：``_stopped_run_is_resumable`` 要读 ``_built_adapter``
+        来分辨图路径与协议路径，轮换会把它置空，所以收尾必须先跑；但轮换又必须保证
+        发生——被 ``close()`` 过的客户端不能留给下一个 run。
         """
-        self._rotate_agent_after_forced_close()
         current = self.store.get_run(run_id)
-        if current.status == AgentRunStatus.CANCELLING:
-            self.store.finalize_run(
-                run_id,
-                AgentRunOutcome(
-                    status=AgentRunStatus.CANCELLED,
-                    message=(
-                        "Cancelled after the model connection was force-closed; "
-                        "the cooperative cancel point was never reached."
-                    ),
-                ),
+        try:
+            if current.status == AgentRunStatus.CANCELLING:
+                self._finalize_user_stop(run_id)
+                return
+            if current.status not in {AgentRunStatus.RUNNING, AgentRunStatus.RETRYING}:
+                return
+            # reason == "cancel" 而 run 还在 RUNNING，只有一种来源：close() 在关停时对一
+            # 个还没被点停止的 run 升级看门狗（``shutdown(wait=True)`` 否则永远等不到）。
+            stalled = (
+                "the model connection was force-closed while the runtime was shutting down"
+                if reason == "cancel"
+                else "the model connection stalled and was force-closed"
             )
-            return
-        if current.status not in {AgentRunStatus.RUNNING, AgentRunStatus.RETRYING}:
-            return
-        # reason == "cancel" 而 run 还在 RUNNING，只有一种来源：close() 在关停时对一
-        # 个还没被点停止的 run 升级看门狗（``shutdown(wait=True)`` 否则永远等不到）。
-        stalled = (
-            "the model connection was force-closed while the runtime was shutting down"
-            if reason == "cancel"
-            else "the model connection stalled and was force-closed"
-        )
-        self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, stalled)
+            self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, stalled)
+        finally:
+            self._rotate_agent_after_forced_close()
 
     def _build_agent(self) -> Any:
         """懒建产品图，并记住模型句柄供看门狗断开连接。
@@ -1677,13 +1675,9 @@ class AgentRuntimeManager:
     ) -> None:
         """Persist the assistant text and make normal graph termination explicit."""
         if outcome.cancelled:
-            self.store.finalize_run(
-                run_id,
-                AgentRunOutcome(
-                    status=AgentRunStatus.CANCELLED,
-                    message="Run cancelled at a safe event boundary.",
-                ),
-            )
+            # 落到安全事件边界了：图流已关、checkpoint 已回写（见 _consume_stream 的
+            # finally），所以这是一次可续跑的暂停，不是一个终态。
+            self._finalize_user_stop(run_id)
             return
         if outcome.final_answer and outcome.final_answer.strip():
             self.store.append_message(
@@ -2364,6 +2358,61 @@ class AgentRuntimeManager:
         )
         self._maintain_unfinished(run)
         return run
+
+    def _stopped_run_is_resumable(self, run: AgentRun) -> bool:
+        """主动停止之后这个 run 还能不能续跑。
+
+        必须与 ``resume()`` 的判定同构：协议型 adapter 没有图状态，续跑就是按原输入
+        重放，不受载体约束；图路径则要问载体里有没有该 run 的状态。判定错了就会造出
+        新的死结——落 ``unfinished`` 让 UI 给出「继续」、点下去必然
+        ``CheckpointMissingError`` 409，那正是实测问题 A 的形状。
+
+        调用时机有约束：``_rotate_agent_after_forced_close`` 会把 ``_built_adapter``
+        置空，从而改变这里的答案，所以必须在轮换**之前**问。
+        """
+        adapter = self.adapter or self._built_adapter
+        graph_path = adapter is None or not hasattr(adapter, "execute")
+        if not graph_path:
+            return True
+        return self._run_checkpoint_is_resumable(run)
+
+    def _finalize_user_stop(self, run_id: str) -> AgentRun:
+        """主动停止的落点：可续跑落 ``unfinished``，续不了才落 ``cancelled``。
+
+        ADR-0007 决策 10 把"用户停止后继续"与崩溃恢复、提问态并列为可从 checkpoint
+        续跑的中断三态，但实现一直把停止送进 ``CANCELLED`` —— 那是个后继集合为空的
+        终态，于是图状态明明还在载体里（取消路径不删 checkpoint，
+        ``delete_run_checkpoints`` 全仓只有 ``retry()`` 一个调用点），用户却没有任何
+        出路。停止是暂停，不是销毁。
+
+        ``error_type`` 刻意留空：``is_retryable_run`` 因此返回假，主动停止只给
+        「继续」不给「重试」——重试会删掉状态键从头重放，那不是按下停止的人想要的。
+        被动中断（TIMEOUT/BUDGET）带 error_type，两条出路都还在。区分靠事件
+        ``data.reason``，不靠新增 ``AgentErrorType``：停止不是错误。
+
+        走 ``transition`` 而不是 ``finalize_run``：后者的终态集合不含 ``unfinished``。
+        """
+        run = self.store.get_run(run_id)
+        if not self._stopped_run_is_resumable(run):
+            return self.store.finalize_run(
+                run_id,
+                AgentRunOutcome(
+                    status=AgentRunStatus.CANCELLED,
+                    message=(
+                        "Stopped by the user, but nothing was resumable, "
+                        "so the run was cancelled."
+                    ),
+                ),
+            )
+        stopped = self.store.transition(
+            run_id,
+            AgentRunStatus.UNFINISHED,
+            message="Run paused: stopped by the user. Resume to continue.",
+            data={"reason": "user_stopped"},
+            finished_at=datetime.now(UTC),
+        )
+        self._maintain_unfinished(stopped)
+        return stopped
 
     def _finish_failed(self, run_id: str, error: Exception) -> AgentRun:
         # 僵尸 worker 防改写：运行已被恢复/终结时不再落盘 FAILED

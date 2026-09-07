@@ -38,6 +38,7 @@ from cellwiki.services.agent_runtime import (
     AgentRuntimeManager,
     RuntimeSignal,
     _StreamWatchdog,
+    is_retryable_run,
 )
 from cellwiki.services.runtime_store import RuntimeStore
 
@@ -364,8 +365,12 @@ def test_a_cancel_that_never_lands_is_escalated_into_a_forced_close(
     """裁定 2：停止键自动升级，而不是新增「强制终止」按钮。
 
     空闲界放到 600s，于是唯一可能到期的是取消宽限期——证明触发的是升级路径。
-    终态必须是 CANCELLED 且串行门禁真的空了：实测那 8.5 小时占住门禁的形状，就是
-    run 一直停在 ``cancelling``（``_ensure_single_active_run`` 把它算作 active）。
+    必须收敛出 ``cancelling``：实测那 8.5 小时占住门禁的形状，就是 run 一直停在
+    ``cancelling``（``_ensure_single_active_run`` 把它算作 active）。
+
+    落点是 ``unfinished`` 而不是 ``cancelled``：用户按过停止，那是一次可续跑的暂停
+    （ADR-0007 决策 10 的"用户停止后继续"）。所以门禁仍被这个 run 占着，要靠第二次
+    取消（"放弃"）才放开——这一步也在这里钉住，否则两步语义会退化成新的死结。
     """
     monkeypatch.setattr(settings, "agent_stream_idle_seconds", 600)
     monkeypatch.setattr(settings, "agent_cancel_grace_seconds", 0.25)
@@ -379,14 +384,23 @@ def test_a_cancel_that_never_lands_is_escalated_into_a_forced_close(
         assert cancelling.status == AgentRunStatus.CANCELLING
         _wait_for_close(adapter)
 
-        run = _wait_for_status(manager, run_id, {AgentRunStatus.CANCELLED})
-        # 终态措辞落在 RUN_STATUS 事件上（run 行没有 message 字段）。
+        run = _wait_for_status(manager, run_id, {AgentRunStatus.UNFINISHED})
+        # 措辞落在 RUN_STATUS 事件上（run 行没有 message 字段）。
         assert any(
             event.type == AgentEventType.RUN_STATUS
-            and "force-closed" in event.message
+            and "stopped by the user" in event.message
             for event in manager.store.list_events(run_id)
         )
+        # 主动停止不是错误：error_type 为空 -> is_retryable_run 为假 -> 只给「继续」，
+        # 不给「重试」（重试会删状态键从头重放，那不是按下停止的人想要的）。
         assert run.error_type is None
+        assert is_retryable_run(run) is False
+
+        # 暂停仍占着串行门禁；放弃（第二次取消）才放开。
+        assert manager._ensure_single_active_run() is not None
+        manager.cancel(run_id)
+        abandoned = _wait_for_status(manager, run_id, {AgentRunStatus.CANCELLED})
+        assert abandoned.status == AgentRunStatus.CANCELLED
         assert manager._ensure_single_active_run() is None
     finally:
         adapter.release.set()
@@ -397,7 +411,7 @@ def test_a_silent_tool_does_not_trip_the_idle_bound(tmp_path: Path, monkeypatch)
     """误杀守卫：工具在飞时流本来就静默，空闲界必须挂起。
 
     后半段顺带证明挂起不是免死金牌——用户点停止仍然会升级并强制断开，run 落
-    CANCELLED，门禁放开。
+    ``unfinished``（可续跑的暂停，门禁仍被占着），再取消一次才落 ``cancelled`` 放开。
     """
     monkeypatch.setattr(settings, "agent_stream_idle_seconds", 0.25)
     monkeypatch.setattr(settings, "agent_cancel_grace_seconds", 0.25)
@@ -413,6 +427,9 @@ def test_a_silent_tool_does_not_trip_the_idle_bound(tmp_path: Path, monkeypatch)
 
         manager.cancel(run_id)
         _wait_for_close(adapter)
+        _wait_for_status(manager, run_id, {AgentRunStatus.UNFINISHED})
+        assert manager._ensure_single_active_run() is not None
+        manager.cancel(run_id)
         _wait_for_status(manager, run_id, {AgentRunStatus.CANCELLED})
         assert manager._ensure_single_active_run() is None
     finally:

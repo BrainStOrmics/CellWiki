@@ -41,6 +41,7 @@ from cellwiki.services import agent_runtime as agent_runtime_module
 from cellwiki.services.agent_runtime import (
     AgentRuntimeManager,
     RuntimeSignal,
+    is_retryable_run,
     prompt_configuration_hash,
 )
 from cellwiki.services.checkpoints import (
@@ -528,6 +529,38 @@ def test_retry_deletes_the_run_state_key_before_replaying(tmp_path: Path, monkey
 
         # 决策 5：删的是**该 run** 的状态键，不是整个线程。
         assert calls == [("t_retry", "run_retry")]
+    finally:
+        manager.close()
+
+
+def test_retry_accepts_an_unfinished_run(tmp_path: Path):
+    """中断态必须能重试：兜底出路自己不能是死的。
+
+    ``is_retryable_run`` 对 unfinished+timeout 返回真，payload 也给
+    ``retryable: true``，前端更把 retry 当成「继续」撞上 ``checkpoint_missing``
+    之后的兜底出路。但 ``claim_retry`` 的 ``allowed_sources`` 只有 ``{FAILED}``，
+    且 ``_TRANSITIONS[UNFINISHED]`` 里没有 RETRYING，于是点「重试」必然 409 ——
+    三处既有意图都指着同一个出口，只有闸门不通。
+
+    ADR-0010 决策 5 只定 retry 的语义（同 run_id、先删状态键、从有界 transcript
+    重放），没有钉死"谁能 retry"；放宽闸门是让实现对齐既有意图，不是改合同。
+    """
+    store = RuntimeStore(tmp_path)
+    store.create_run(
+        AgentRun(run_id="run_retry_paused", thread_id="t_retry_paused", input_message="x")
+    )
+    _drive_to_unfinished(store, "run_retry_paused")
+
+    manager = AgentRuntimeManager(tmp_path, adapter=_RecordingProtocolAdapter())
+    try:
+        paused = manager.store.get_run("run_retry_paused")
+        assert paused.status == AgentRunStatus.UNFINISHED
+        assert is_retryable_run(paused) is True
+
+        retried = manager.retry("run_retry_paused")
+
+        assert retried.status == AgentRunStatus.RETRYING
+        assert retried.retry_count == 1
     finally:
         manager.close()
 
