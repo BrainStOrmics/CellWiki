@@ -69,9 +69,11 @@
 5. 查询 run 只读、不产生 diff。
 6. lint 门禁：run 结束系统强制重跑 `lint_knowledge_base`；失败不进入待确认、
    不撤销 commit。
-7. 预算或时长耗尽终态 = `unfinished`：commit 保留、可续；"继续" = 同一 run
-   回到 RUNNING 带相同输入重新执行（运行时持久化记录即 checkpoint）；崩溃恢复
-   继承剩余预算。审批单元边界 = 判定而非发布（见术语"待确认 diff"）。
+7. 中断态 = `unfinished`：预算或时长耗尽、崩溃/重启恢复、以及**用户主动停止**都落
+   这里，commit 保留、可续；"继续" = 同一 run 回到 RUNNING、从该 run 的 checkpoint
+   续跑并继承剩余预算（ADR-0010 决策 6 取代了"带相同输入重新执行"的旧机制）。
+   `cancelled` 只表示"放弃一个已中断的 run"，不是停止的落点，因此停止不等于释放
+   工作区（见不变量 4）。审批单元边界 = 判定而非发布（见术语"待确认 diff"）。
 8. 内容归 Agent、派生与门禁归系统、人工负责接受/拒绝 diff。
 9. 品牌与兼容术语不随重构改名。
 10. 系统维护文件（`overview.md`/`statistics.md` 系统重建，`log.md`/`audit_report.md` append-only）只在 run 判定事件由系统维护；accept 后合并为系统维护 commit 提交；Agent 工具对系统维护文件的写操作一律拒绝。
