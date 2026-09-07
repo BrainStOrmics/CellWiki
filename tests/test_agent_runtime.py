@@ -1231,6 +1231,21 @@ def _wait_for_diff(manager: AgentRuntimeManager, run_id: str):
     return diffs
 
 
+def _wait_for_segment_finish(manager: AgentRuntimeManager, run_id: str) -> None:
+    """等这一段真正收尾，而不只是等状态与 pending diff 落库。
+
+    两者都写在 ``_forced_lint_audit`` **之前**，而后者还要 ``git add`` + ``commit``
+    审计快照。测试紧接着自己动 git 就会撞上还没释放的 ``index.lock``（Windows 上实测
+    约 1/3 概率）。``_finish_run_segment`` 在审计之后才清串行门，所以门空了就意味着本
+    段写侧的 git 已经结束（其后那次发布只读 ``git log``/``show``，不取 index 锁）。
+    """
+    for _ in range(int(WAIT_TIMEOUT / 0.02)):
+        if manager._running_run_id is None:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"run {run_id} never released the serial gate")
+
+
 def _wait_for_file_text(path: Path, fragment: str) -> str:
     text = path.read_text(encoding="utf-8") if path.exists() else ""
     for _ in range(int(WAIT_TIMEOUT / 0.02)):
@@ -1440,6 +1455,8 @@ def test_foreign_staged_does_not_block_accept_and_warning_is_actionable(
         )
         _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
         diff = _wait_for_diff(manager, started.run_id)[0]
+        # 本段的写侧 git（含强制 lint 审计提交）必须结束，下面自己 add 才不撞锁。
+        _wait_for_segment_finish(manager, started.run_id)
 
         git = GitExecutor(repo)
         (repo / "stray.md").write_text("user staged", encoding="utf-8")
