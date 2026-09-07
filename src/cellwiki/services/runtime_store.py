@@ -35,7 +35,11 @@ from cellwiki.domain.runs import (
     RunUsage,
 )
 from cellwiki.domain.pending_diff import PendingDiff, PendingDiffStatus
-from cellwiki.services.checkpoints import delete_thread_checkpoints, has_run_checkpoint
+from cellwiki.services.checkpoints import (
+    delete_thread_checkpoints,
+    has_run_checkpoint,
+    latest_run_checkpoint_id,
+)
 
 
 _TRANSITIONS: dict[AgentRunStatus, set[AgentRunStatus]] = {
@@ -1049,24 +1053,39 @@ class RuntimeStore:
                 AgentRunStatus.RUNNING,
                 AgentRunStatus.RETRYING,
             }:
-                recovered.append(
-                    self.transition(
-                        run.run_id,
-                        AgentRunStatus.UNFINISHED,
-                        error_type=AgentErrorType.TIMEOUT,
-                        error_message="Interrupted by restart while running.",
-                        message="Run paused (restart). Resume to continue.",
-                        finished_at=now,
-                    )
+                converged = self.transition(
+                    run.run_id,
+                    AgentRunStatus.UNFINISHED,
+                    error_type=AgentErrorType.TIMEOUT,
+                    error_message="Interrupted by restart while running.",
+                    message="Run paused (restart). Resume to continue.",
+                    finished_at=now,
                 )
+                # 决策 4（2026-09-07 修订）：字段回写只发生在流关闭/分段边界，进程被
+                # 硬杀时钩子没机会跑，于是字段停在 NULL 而载体里图状态完好。启动收敛是
+                # 唯一无竞争的回填时机——manager 在构造执行器之前就调本方法。续跑闸门
+                # 只问存在性、不读该字段，回填是为了兑现决策 4"成为可查询字段"的承诺。
+                if not converged.checkpoint_id:
+                    backfilled = latest_run_checkpoint_id(
+                        self.project_root, converged.thread_id, converged.run_id
+                    )
+                    if backfilled:
+                        converged = self.set_run_checkpoint(converged.run_id, backfilled)
+                recovered.append(converged)
             elif run.status == AgentRunStatus.WAITING_CONFIRMATION and graph_state_durable:
                 # 决策 10：挂在提问上的 run 重启后仍停在 WAITING_CONFIRMATION。
                 # checkpoint 还在就原样留着，用户直接作答即可续跑；丢了就关掉未回答
                 # 的问题并落到 UNFINISHED，让"继续"按决策 4 明确拒绝并要求重发，
                 # 而不是在空图上静默 Command(resume=...)。
-                if run.checkpoint_id and has_run_checkpoint(
-                    self.project_root, run.thread_id, run.run_id
-                ):
+                # 决策 4（2026-09-07 修订）：判定只看载体，不再以字段为空短路——硬杀
+                # 同样会让这里的字段停在 NULL，短路会白白关掉一个其实还能作答的问题。
+                if has_run_checkpoint(self.project_root, run.thread_id, run.run_id):
+                    if not run.checkpoint_id:
+                        backfilled = latest_run_checkpoint_id(
+                            self.project_root, run.thread_id, run.run_id
+                        )
+                        if backfilled:
+                            self.set_run_checkpoint(run.run_id, backfilled)
                     continue
                 self.answer_question(run.run_id, [], timed_out=True)
                 recovered.append(

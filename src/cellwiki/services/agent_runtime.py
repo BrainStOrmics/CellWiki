@@ -1063,17 +1063,20 @@ class AgentRuntimeManager:
         return self._claim_and_submit(run_id, AgentRunStatus.RETRYING, reason)
 
     def _run_checkpoint_is_resumable(self, run: AgentRun) -> bool:
-        """决策 4：字段非空只是必要条件，载体里还得真的存着该 run 的图状态。
+        """决策 4（2026-09-07 修订）：判定的是"载体里有没有该 run 的图状态"。
 
-        两类"不能续跑"都要挡住：升级前产生的 run 一律 ``checkpoint_id = NULL``；
-        清过 ``data/`` 或换了机器的 run 则是"字段在、状态没了"。后者若只看字段，
-        就会在空图上静默 ``Command(resume=...)``。回滚闸（``inmemory``）下没有可查
-        的持久载体，图状态本就只活在本进程里，因此仍按字段判定。
+        三类都要正确落地：清过 ``data/`` 或换了机器的是"字段在、状态没了"；升级前
+        产生的 run 是"字段空、载体也空"（那时用进程内 ``InMemorySaver``）；被硬杀的
+        run 是"字段空、状态还在"——回写只发生在流关闭/分段边界，进程被杀时钩子没
+        机会跑。修订前把最后一类判成不可续跑，崩溃恢复就成了死结：run 落
+        ``unfinished``、UI 给「继续」、点下去必然 409，而发送键仍禁用。
+
+        这里只需要**存在性**，不需要标识值：``_open_stream_continue`` 以 ``None`` 输入
+        起图、只传 run 作用域状态键，最新 checkpoint 由 LangGraph 自己解析。回滚闸
+        （``inmemory``）下没有可查的持久载体，图状态只活在本进程里，因此退回按字段判定。
         """
-        if not run.checkpoint_id:
-            return False
         if settings.agent_checkpointer != "sqlite":
-            return True
+            return bool(run.checkpoint_id)
         return has_run_checkpoint(self.project_root, run.thread_id, run.run_id)
 
     def resume(self, run_id: str, *, reason: str = "resume") -> AgentRun:
@@ -1084,9 +1087,10 @@ class AgentRuntimeManager:
         adapter = self.adapter or self._built_adapter
         # adapter 为空意味着稍后会构建产品图，因此同样按图路径判定。
         graph_path = adapter is None or not hasattr(adapter, "execute")
-        # 决策 4：升级前产生的 run 一律 checkpoint_id=NULL；显式失败（API 映射 409
-        # 并提示重发消息），禁止在空图上静默重放。协议型 adapter 没有图状态，
-        # 续跑就是按原输入重放，不受这道闸门约束。
+        # 决策 4（2026-09-07 修订）：闸门问的是"载体里有没有该 run 的图状态"，不是
+        # "字段有没有记下来"——硬杀会让字段停在 NULL 而载体完好。载体里也没有才显式
+        # 失败（API 映射 409 并给出可操作提示），禁止在空图上静默重放。协议型 adapter
+        # 没有图状态，续跑就是按原输入重放，不受这道闸门约束。
         if graph_path and not self._run_checkpoint_is_resumable(run):
             raise CheckpointMissingError(
                 f"run {run_id} has no usable checkpoint; resend the message to start a new run"

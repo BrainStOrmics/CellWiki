@@ -146,6 +146,39 @@ def latest_checkpoint_id(adapter: Any, thread_id: str, run_id: str) -> str | Non
     return str(checkpoint_id) if checkpoint_id else None
 
 
+def latest_run_checkpoint_id(
+    project_root: Path | str, thread_id: str, run_id: str
+) -> str | None:
+    """决策 4（2026-09-07 修订）：从载体取回该 run 最新的 checkpoint 标识。
+
+    与 ``latest_checkpoint_id`` 的差别只在入口：那个从编译图自己持有的 checkpointer
+    读，需要活的 adapter；这个走 ``has_run_checkpoint`` 同一条短连接路径，因此
+    ``recover_stale_runs`` 也能用——它住在 ``RuntimeStore`` 里，手上没有 adapter，
+    而启动收敛正是"字段停在 NULL、载体里状态完好"唯一无竞争的回填时机。
+
+    SQL 逐字镜像 ``SqliteSaver.get_tuple`` 对"最新"的定义（根命名空间 +
+    ``ORDER BY checkpoint_id DESC LIMIT 1``）：``subgraphs=True`` 会写子图命名空间
+    的行，不按 ``checkpoint_ns`` 过滤就可能取到子图的标识。
+    """
+    if settings.agent_checkpointer == "inmemory":
+        return None
+    path = checkpoint_path(project_root)
+    if not path.exists():
+        return None
+    key = checkpoint_state_key(thread_id, run_id)
+    connection = sqlite3.connect(path, check_same_thread=False)
+    try:
+        row = connection.execute(
+            "SELECT checkpoint_id FROM checkpoints "
+            "WHERE thread_id = ? AND checkpoint_ns = '' "
+            "ORDER BY checkpoint_id DESC LIMIT 1",
+            (key,),
+        ).fetchone()
+    finally:
+        connection.close()
+    return str(row[0]) if row and row[0] else None
+
+
 __all__ = [
     "CHECKPOINT_FILE_NAME",
     "CheckpointMissingError",
@@ -157,4 +190,5 @@ __all__ = [
     "delete_thread_checkpoints",
     "has_run_checkpoint",
     "latest_checkpoint_id",
+    "latest_run_checkpoint_id",
 ]

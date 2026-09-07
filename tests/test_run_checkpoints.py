@@ -53,6 +53,7 @@ from cellwiki.services.checkpoints import (
     delete_thread_checkpoints,
     has_run_checkpoint,
     latest_checkpoint_id,
+    latest_run_checkpoint_id,
 )
 from cellwiki.services.conversation_context import ConversationContextView
 from cellwiki.services.runtime_store import RuntimeStore, SerialGateViolationError
@@ -144,6 +145,23 @@ class _StubGraph:
 
     def stream(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover
         raise AssertionError("must not open a stream without a checkpoint")
+
+
+class _PermissiveStubGraph:
+    """图形状替身，但**允许**开流：用来验证闸门放行之后 ``resume`` 真的认领了 run。
+
+    ``_StubGraph`` 是为拒绝路径准备的（它的 ``stream`` 直接断言失败），而修订后的
+    决策 4 还要测放行路径。返回空流，执行器随即收尾，不影响用例的同步断言。
+    """
+
+    checkpointer = None
+
+    def __init__(self) -> None:
+        self.opened = 0
+
+    def stream(self, *args: Any, **kwargs: Any) -> Any:
+        self.opened += 1
+        return iter(())
 
 
 class _RecordingProtocolAdapter:
@@ -634,6 +652,145 @@ def test_waiting_confirmation_degrades_when_its_checkpoint_is_gone(
             manager.resume("run_lost")
     finally:
         manager.close()
+
+
+def _park_with_live_carrier(tmp_path: Path, thread_id: str) -> str:
+    """用真实产品图跑出一个**活的**载体，返回 run_id（run 停在未回答的问题上）。
+
+    真实图 + 假模型是 checkpoint 唯一真正的生产路径（见 ``_graph_manager``）；
+    手工塞进 sqlite 的行代表不了 ``SqliteSaver`` 真正写下的形状。
+    """
+    _seed_workspace(tmp_path)
+    manager = AgentRuntimeManager(
+        tmp_path, adapter=build_wiki_agent(tmp_path, model=_InterruptRecordingModel())
+    )
+    try:
+        run = manager.start(
+            thread_id=thread_id,
+            message="分析后问我是否继续",
+            context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
+        )
+        _wait_for_status(manager, run.run_id, {AgentRunStatus.WAITING_CONFIRMATION})
+        _wait_for_checkpoint(manager, run.run_id)
+        assert has_run_checkpoint(tmp_path, thread_id, run.run_id)
+        return run.run_id
+    finally:
+        manager.close()
+
+
+def test_resume_admits_a_hard_killed_run_whose_checkpoint_id_is_null(tmp_path: Path):
+    """决策 4（2026-09-07 修订）的 P0 回归：字段 NULL 不等于图状态不存在。
+
+    复现桌面端实测问题 A：进程被硬杀时 ``checkpoint_id`` 的回写钩子没机会跑，字段
+    停在 NULL 而载体完好。修订前 ``resume`` 直接判死回 409，UI 的「继续」于是成了
+    死结——按钮不消失、发送键仍禁用，用户既不能继续也不能重发。
+    """
+    thread_id = "thread_hard_kill"
+    run_id = _park_with_live_carrier(tmp_path, thread_id)
+
+    store = RuntimeStore(tmp_path)
+    store.answer_question(run_id, [], timed_out=True)
+    _drive_to_unfinished(store, run_id)
+    # 硬杀的效果：载体完好，run 行的字段没来得及回写。
+    store.set_run_checkpoint(run_id, None)
+    assert store.get_run(run_id).checkpoint_id is None
+    assert has_run_checkpoint(tmp_path, thread_id, run_id)
+
+    manager = AgentRuntimeManager(tmp_path, adapter=_PermissiveStubGraph())
+    try:
+        claimed = manager.resume(run_id)  # 修订前这里抛 CheckpointMissingError
+        assert claimed.status == AgentRunStatus.RUNNING
+    finally:
+        manager.close()
+
+
+def test_recover_stale_runs_backfills_the_checkpoint_id_of_a_hard_killed_run(tmp_path: Path):
+    """决策 4（2026-09-07 修订）：启动收敛把标识回填成可查询字段。
+
+    收敛是唯一无竞争的回填时机——manager 在构造执行器**之前**就调
+    ``recover_stale_runs``，那时没有执行者会与段末回写争这一行。``resume`` 跑在
+    HTTP 线程上，在那里回填会与该 run 自己的段末回写竞争。
+    """
+    thread_id = "thread_backfill"
+    run_id = _park_with_live_carrier(tmp_path, thread_id)
+
+    store = RuntimeStore(tmp_path)
+    store.answer_question(run_id, [], timed_out=True)
+    # 停在 RUNNING：这正是硬杀时 worker 的状态，收敛会把它落成 UNFINISHED。
+    store.transition(run_id, AgentRunStatus.RUNNING, message="Started.")
+    store.set_run_checkpoint(run_id, None)
+    assert store.get_run(run_id).checkpoint_id is None
+
+    manager = AgentRuntimeManager(tmp_path, adapter=_PermissiveStubGraph())
+    try:
+        recovered = manager.store.get_run(run_id)
+        assert recovered.status == AgentRunStatus.UNFINISHED
+        assert recovered.checkpoint_id
+        assert recovered.checkpoint_id == latest_run_checkpoint_id(
+            tmp_path, thread_id, run_id
+        )
+    finally:
+        manager.close()
+
+
+def test_waiting_confirmation_survives_restart_even_when_its_field_is_null(tmp_path: Path):
+    """决策 10 + 决策 4（2026-09-07 修订）：不以字段为空短路载体复核。
+
+    修订前是 ``if run.checkpoint_id and has_run_checkpoint(...)``，字段 NULL 时直接
+    走降级分支——关掉一个其实还能作答的问题、把 run 打成 UNFINISHED。这条同时
+    关闭交接文档 §4 标注的"WAITING_CONFIRMATION 中重启后端"未实测缺口。
+    """
+    thread_id = "thread_question_null"
+    run_id = _park_with_live_carrier(tmp_path, thread_id)
+
+    store = RuntimeStore(tmp_path)
+    store.set_run_checkpoint(run_id, None)
+    assert store.get_run(run_id).status == AgentRunStatus.WAITING_CONFIRMATION
+
+    manager = AgentRuntimeManager(tmp_path, adapter=_PermissiveStubGraph())
+    try:
+        recovered = manager.store.get_run(run_id)
+        assert recovered.status == AgentRunStatus.WAITING_CONFIRMATION
+        question = manager.store.get_open_question(run_id)
+        assert question is not None and question["question"] == "继续吗？"
+        assert recovered.checkpoint_id
+        assert recovered.checkpoint_id == latest_run_checkpoint_id(
+            tmp_path, thread_id, run_id
+        )
+    finally:
+        manager.close()
+
+
+def test_latest_run_checkpoint_id_reads_the_root_namespace_only(tmp_path: Path):
+    """子图行不能冒充最新标识：``subgraphs=True`` 会写子图命名空间的行。
+
+    SQL 逐字镜像 ``SqliteSaver.get_tuple`` 对"最新"的定义（根命名空间 +
+    ``checkpoint_id`` 降序取一条），否则回填可能把一个子图标识写进 run 行。
+    """
+    saver = build_checkpointer(tmp_path)
+    key = checkpoint_state_key("thread_ns", "run_ns")
+
+    def put(namespace: str, checkpoint_id: str) -> None:
+        saver.conn.execute(
+            "INSERT INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id,"
+            " parent_checkpoint_id, type, checkpoint, metadata)"
+            " VALUES (?, ?, ?, NULL, 'msgpack', x'00', x'00')",
+            (key, namespace, checkpoint_id),
+        )
+        saver.conn.commit()
+
+    put("sub:0", "ffff0000-0000-0000-0000-000000000000")
+    assert latest_run_checkpoint_id(tmp_path, "thread_ns", "run_ns") is None
+    # has_run_checkpoint 不过滤命名空间，所以这个组合是"存在但取不到标识"。
+    # 该不对称是承重的：续跑闸门只问存在性，字段留空也安全。
+    assert has_run_checkpoint(tmp_path, "thread_ns", "run_ns")
+
+    put("", "1f1aa5d8-55f8-6780-8021-c170ea10bc03")
+    put("", "1f1aa5da-535b-6c60-8022-4d3c37d67985")
+    put("sub:0", "ffffffff-ffff-ffff-ffff-ffffffffffff")
+    assert latest_run_checkpoint_id(tmp_path, "thread_ns", "run_ns") == (
+        "1f1aa5da-535b-6c60-8022-4d3c37d67985"
+    )
 
 
 def test_protocol_adapter_question_is_left_alone_on_restart(tmp_path: Path):
