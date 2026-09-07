@@ -112,3 +112,53 @@ test("a refused resume clears busy and keeps the continue affordance", async ({ 
   );
   await expect(continueButton).toBeVisible();
 });
+
+test("a permanently refused resume swaps the dead end for a way out", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.goto("/", { waitUntil: "domcontentloaded", timeout: 120_000 });
+  await expect(page.getByText("CellWiki", { exact: true }).first()).toBeVisible();
+
+  await page.route(`**/api/agent/runs/${SEEDED_RUN_ID}`, async (route) => {
+    const response = await route.fetch();
+    const body = await response.json() as Record<string, unknown>;
+    await route.fulfill({
+      response,
+      body: JSON.stringify({
+        ...body,
+        status: "unfinished",
+        resumable: true,
+        retryable: true,
+      }),
+    });
+  });
+  // 永久性拒绝：detail 是带稳定码的 dict（决策 4 修订后的形状）。与上一条测试的
+  // 裸字符串 detail 形成对照——那个是门禁冲突，可重试，必须把「继续」还回来。
+  await page.route(`**/api/agent/runs/${SEEDED_RUN_ID}/resume`, (route) => (
+    route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify({
+        detail: {
+          code: "checkpoint_missing",
+          message: "run has no usable checkpoint; resend the message to start a new run",
+        },
+      }),
+    })
+  ));
+
+  await selectSeededThread(page);
+  const continueButton = page.getByRole("button", { name: /继续|Resume|Continue/ });
+  const retryButton = page.getByRole("button", { name: /重试|Retry/ });
+  await expect(continueButton).toBeVisible();
+  // retry 不依赖 checkpoint（清状态 + 从有界 transcript 重放），所以它必须在用户
+  // 撞 409 之前就已可见，而不是等失败后才出现。
+  await expect(retryButton).toBeVisible();
+
+  await continueButton.click();
+
+  // 死结的两半都要解除：「继续」不再被还回来（点多少次都是同一个 409），
+  // 「重试」仍在，思考指示器不残留。
+  await expect(page.locator(".agent-thinking")).toHaveCount(0);
+  await expect(continueButton).toHaveCount(0);
+  await expect(retryButton).toBeVisible();
+});
