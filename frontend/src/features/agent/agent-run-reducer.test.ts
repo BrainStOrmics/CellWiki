@@ -42,6 +42,24 @@ describe("reduceAgentRunMessages", () => {
     expect(twice[0].process).toHaveLength(1);
   });
 
+  it("renders a run's error once, however often the event is fed", () => {
+    // "error" 在 processEventTypes 里，所以 appendProcessEventNode 已经追加了一个带
+    // step、按 event_id 去重的 danger 节点。error 分支曾经再追加一个同标签节点，于是
+    // 桌面端每个失败 run 的错误条都成对出现，重放时还越喂越多（实测交接问题 G）。
+    const failure = event(1, "error", { error_type: "timeout" }, "Provider timed out");
+    const dangerLabels = (messages: ChatMessage[]) => (messages[0].timeline ?? [])
+      .flatMap((node) => (node.kind === "status" && node.tone === "danger" ? [node.label] : []));
+
+    const once = reduceAgentRunMessages([], failure, labels);
+    expect(dangerLabels(once)).toEqual(["Provider timed out"]);
+    expect(dangerLabels(reduceAgentRunMessages(once, failure, labels)))
+      .toEqual(["Provider timed out"]);
+
+    // 去重不许把错误信息一起去掉：text 是"没有时间线节点"时的唯一落点。
+    expect(once[0].text).toBe("Provider timed out");
+    expect(once[0].meta).toBe("failed · timeout");
+  });
+
   it("settles every running step on a failed terminal event and preserves the error", () => {
     const started = reduceAgentRunMessages(
       [],

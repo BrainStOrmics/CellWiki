@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentMessageBubble } from "./AgentMessageBubble";
+import { reduceAgentRunMessages } from "./agent-run-reducer";
 import { LanguageProvider } from "../../i18n";
 import type { AgentProcessStep, AgentTimelineNode, ChatMessage } from "../../types";
 
@@ -239,5 +240,25 @@ describe("AgentMessageBubble", () => {
     renderBubble({ role: "agent", text: "answer", runId: "run_1", runStatus: "succeeded" });
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(screen.queryByTestId("question-card")).toBeNull();
+  });
+
+  it("renders a failed run's error exactly once", () => {
+    // 端到端复现实测交接问题 G：测试者在无障碍树里看到每个失败 run 的错误条成对出现
+    // （[31]/[32]、[44]/[45]、[57]/[58] 三连复现）。用真实 reducer 产出消息，锁住的就是
+    // "事件 → 时间线 → DOM"整条链，而不只是渲染层的一半。
+    const [message] = reduceAgentRunMessages([], {
+      event_id: "e_err",
+      run_id: "run_1",
+      thread_id: "thread_1",
+      sequence: 1,
+      type: "error",
+      message: "Provider timed out",
+      data: { error_type: "timeout" },
+      created_at: "2026-09-07T00:00:00Z",
+    }, { failed: "failed", cancelled: "cancelled", unfinished: "unfinished" });
+
+    renderBubble({ ...message, streaming: false });
+
+    expect(screen.getAllByText("Provider timed out")).toHaveLength(1);
   });
 });

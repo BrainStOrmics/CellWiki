@@ -128,17 +128,19 @@ export function reduceAgentRunMessages(
 
   if (event.type === "error") {
     const errorText = event.message || labels.failed;
+    // 时间线节点由 appendProcessEventNode 统一追加（"error" 在 processEventTypes 里），
+    // 那一份带 step 且按 event_id 去重。这里再追加一次就是同一句话渲染两遍——桌面端
+    // 实测每个失败 run 的错误条都成对出现，重放时还会越喂越多。text 仍要写：它是
+    // "没有时间线节点"时错误的唯一落点（气泡只在那种情况下渲染正文）。
     return updateRunMessage(next, event.run_id, (message) => ({
       ...message,
       text: message.text || errorText,
-      timeline: [...(message.timeline ?? freshTimeline(labels)), { kind: "status", tone: "danger", label: errorText }],
       meta: `${labels.failed} · ${String(event.data.error_type ?? "system")}`,
     }), {
       role: "agent",
       text: errorText,
       meta: `${labels.failed} · ${String(event.data.error_type ?? "system")}`,
       runId: event.run_id,
-      timeline: [...freshTimeline(labels), { kind: "status", tone: "danger", label: errorText }],
       streaming: true,
     });
   }
