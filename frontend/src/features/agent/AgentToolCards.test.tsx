@@ -11,6 +11,7 @@ const labels: AgentRunReducerLabels = {
   failed: "FAILED",
   cancelled: "CANCELLED",
   unfinished: "UNFINISHED",
+  errorTypes: {},
 };
 
 const EDIT_DIFF = {

@@ -20,6 +20,8 @@ export type AgentRunReducerLabels = {
   failed: string;
   cancelled: string;
   unfinished: string;
+  /** AgentErrorType 的码 -> 用户可读的一句话（键与后端 domain/runs.py 一一对应）。 */
+  errorTypes: Record<string, string>;
   timelineContext?: { label: string; detail?: string } | null;
 };
 
@@ -44,6 +46,20 @@ const statusTones: Record<string, AgentTimelineStatusTone> = {
   changeset_ready: "success",
   verification: "info",
 };
+
+/**
+ * 实测交接问题 E：失败 run 过去把 provider 的原始英文报错当作唯一可见文本，用户看到的
+ * 是一串 ``Error code: 500 - {...}``。durable 的 error 事件与终态 run_status 本来就带
+ * ``error_type``，reducer 只是从来不读它。
+ *
+ * 原始文本没有丢：它仍在 ``step.message`` 与诊断面板的 ``error_message`` 里，两处都在
+ * API 出口脱敏过。未知码回落到原文——后端新增一个分类不该让前端变成哑巴。
+ */
+function localizedError(event: AgentEvent, labels: AgentRunReducerLabels): string | null {
+  const code = event.data?.error_type;
+  if (typeof code !== "string" || !code) return null;
+  return labels.errorTypes[code] ?? null;
+}
 
 /** Pure projection from durable run events to the user-visible transcript. */
 export function reduceAgentRunMessages(
@@ -127,7 +143,7 @@ export function reduceAgentRunMessages(
   }
 
   if (event.type === "error") {
-    const errorText = event.message || labels.failed;
+    const errorText = localizedError(event, labels) ?? (event.message || labels.failed);
     // 时间线节点由 appendProcessEventNode 统一追加（"error" 在 processEventTypes 里），
     // 那一份带 step 且按 event_id 去重。这里再追加一次就是同一句话渲染两遍——桌面端
     // 实测每个失败 run 的错误条都成对出现，重放时还会越喂越多。text 仍要写：它是
@@ -184,7 +200,8 @@ export function reduceAgentRunMessages(
     const status = event.data.status as AgentRunStatus | undefined;
     if (!status || !terminalAgentStatuses.has(status)) return next;
     return settleRun(next, event.run_id, status, {
-      failed: String(event.data.error_message || event.message || labels.failed),
+      failed: localizedError(event, labels)
+        ?? String(event.data.error_message || event.message || labels.failed),
       cancelled: event.message || labels.cancelled,
     });
   }
@@ -354,7 +371,10 @@ function appendProcessEventNode(
     }];
   }
   const tone: AgentTimelineStatusTone = event.type === "error" ? "danger" : (statusTones[event.type] ?? "info");
-  const label = event.message || event.type.replaceAll("_", " ");
+  // 失败 run 真正被读到的就是这一条：气泡只在"没有时间线节点"时才渲染 message.text，
+  // 而失败 run 必有节点。原始报错留在 step.message 上，不在这里显示。
+  const label = localizedError(event, labels)
+    ?? (event.message || event.type.replaceAll("_", " "));
   return [...base, { kind: "status", tone, label, step }];
 }
 

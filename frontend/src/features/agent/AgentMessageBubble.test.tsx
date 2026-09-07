@@ -242,23 +242,30 @@ describe("AgentMessageBubble", () => {
     expect(screen.queryByTestId("question-card")).toBeNull();
   });
 
-  it("renders a failed run's error exactly once", () => {
-    // 端到端复现实测交接问题 G：测试者在无障碍树里看到每个失败 run 的错误条成对出现
-    // （[31]/[32]、[44]/[45]、[57]/[58] 三连复现）。用真实 reducer 产出消息，锁住的就是
-    // "事件 → 时间线 → DOM"整条链，而不只是渲染层的一半。
+  it("renders a failed run's error exactly once, in the user's language", () => {
+    // 端到端复现实测交接问题 G 与 E：测试者在无障碍树里看到每个失败 run 的错误条成对
+    // 出现（[31]/[32]、[44]/[45]、[57]/[58] 三连复现），而那条错误是 provider 的原始
+    // 英文报错。用真实 reducer 产出消息，锁住的就是"事件 → 时间线 → DOM"整条链。
     const [message] = reduceAgentRunMessages([], {
       event_id: "e_err",
       run_id: "run_1",
       thread_id: "thread_1",
       sequence: 1,
       type: "error",
-      message: "Provider timed out",
+      message: "Error code: 500 - {'error': {'message': 'upstream failure'}}",
       data: { error_type: "timeout" },
       created_at: "2026-09-07T00:00:00Z",
-    }, { failed: "failed", cancelled: "cancelled", unfinished: "unfinished" });
+    }, {
+      failed: "failed",
+      cancelled: "cancelled",
+      unfinished: "unfinished",
+      errorTypes: { timeout: "模型响应超时，进度已保留，可以继续这次运行" },
+    });
 
     renderBubble({ ...message, streaming: false });
 
-    expect(screen.getAllByText("Provider timed out")).toHaveLength(1);
+    expect(screen.getAllByText("模型响应超时，进度已保留，可以继续这次运行")).toHaveLength(1);
+    // 原始报错不再冒泡到界面：它留在 step.message 与诊断面板里，两处都在出口脱敏过。
+    expect(screen.queryByText(/Error code: 500/)).toBeNull();
   });
 });

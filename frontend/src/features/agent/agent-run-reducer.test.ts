@@ -6,6 +6,18 @@ const labels = {
   failed: "failed",
   cancelled: "cancelled",
   unfinished: "unfinished",
+  errorTypes: {
+    input: "localized:input",
+    authentication: "localized:authentication",
+    permission: "localized:permission",
+    rate_limit: "localized:rate_limit",
+    timeout: "localized:timeout",
+    budget: "localized:budget",
+    structured_output: "localized:structured_output",
+    approval: "localized:approval",
+    conflict: "localized:conflict",
+    system: "localized:system",
+  },
 };
 
 function event(
@@ -51,13 +63,70 @@ describe("reduceAgentRunMessages", () => {
       .flatMap((node) => (node.kind === "status" && node.tone === "danger" ? [node.label] : []));
 
     const once = reduceAgentRunMessages([], failure, labels);
-    expect(dangerLabels(once)).toEqual(["Provider timed out"]);
+    expect(dangerLabels(once)).toEqual(["localized:timeout"]);
     expect(dangerLabels(reduceAgentRunMessages(once, failure, labels)))
-      .toEqual(["Provider timed out"]);
+      .toEqual(["localized:timeout"]);
 
     // 去重不许把错误信息一起去掉：text 是"没有时间线节点"时的唯一落点。
-    expect(once[0].text).toBe("Provider timed out");
+    expect(once[0].text).toBe("localized:timeout");
     expect(once[0].meta).toBe("failed · timeout");
+  });
+
+  it("renders every error classification in the user's language", () => {
+    // 实测交接问题 E：失败 run 的唯一可见文本曾经是 provider 的原始英文报错。十个码
+    // 与后端 domain/runs.py 的 AgentErrorType 一一对应，漏一个就回落成原文。
+    const codes = [
+      "input",
+      "authentication",
+      "permission",
+      "rate_limit",
+      "timeout",
+      "budget",
+      "structured_output",
+      "approval",
+      "conflict",
+      "system",
+    ];
+    for (const code of codes) {
+      const raw = `Error code: 500 - run_1 - {'error': {'message': '${code}'}}`;
+      const [message] = reduceAgentRunMessages(
+        [],
+        event(1, "error", { error_type: code }, raw),
+        labels,
+      );
+      const node = message.timeline?.find((entry) => entry.kind === "status");
+      const label = node?.kind === "status" ? node.label : undefined;
+
+      expect(label, code).toBe(`localized:${code}`);
+      expect(message.text, code).toBe(`localized:${code}`);
+      // 原始报错与 run 标识都不进用户可见文本。
+      expect(message.text, code).not.toContain("Error code");
+      expect(label, code).not.toContain("run_1");
+    }
+  });
+
+  it("localizes the terminal run_status of a failed run too", () => {
+    const [message] = reduceAgentRunMessages(
+      [],
+      event(1, "run_status", {
+        status: "failed",
+        terminal: true,
+        error_type: "rate_limit",
+        error_message: "Error code: 429 - rate limited",
+      }, "Run failed."),
+      labels,
+    );
+    expect(message.text).toBe("localized:rate_limit");
+    expect(message.text).not.toContain("429");
+  });
+
+  it("falls back to the raw text for a classification this build does not know", () => {
+    const [message] = reduceAgentRunMessages(
+      [],
+      event(1, "error", { error_type: "quantum_flux" }, "Error code: 500 - unknown"),
+      labels,
+    );
+    expect(message.text).toBe("Error code: 500 - unknown");
   });
 
   it("settles every running step on a failed terminal event and preserves the error", () => {

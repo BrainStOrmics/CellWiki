@@ -824,6 +824,20 @@ export function AppShell() {
       failed: t("chat.runFailed"),
       cancelled: t("chat.runCancelled"),
       unfinished: t("chat.runUnfinished"),
+      // 十个码与后端 domain/runs.py 的 AgentErrorType 一一对应；漏译在 i18n 里是编译
+      // 错误（en 表按 MessageKey 索引），漏一个码则回落到原始报错文本。
+      errorTypes: {
+        input: t("chat.error.input"),
+        authentication: t("chat.error.authentication"),
+        permission: t("chat.error.permission"),
+        rate_limit: t("chat.error.rate_limit"),
+        timeout: t("chat.error.timeout"),
+        budget: t("chat.error.budget"),
+        structured_output: t("chat.error.structured_output"),
+        approval: t("chat.error.approval"),
+        conflict: t("chat.error.conflict"),
+        system: t("chat.error.system"),
+      },
       timelineContext: context ?? buildTimelineContext(),
     };
   }
