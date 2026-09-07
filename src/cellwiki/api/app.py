@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import threading
@@ -39,7 +40,13 @@ from cellwiki.api.errors import create_error_router
 from cellwiki.api.retention import create_retention_router
 from cellwiki.api.security import DesktopTokenMiddleware
 from cellwiki.domain.contracts import WikiAgentContext
-from cellwiki.domain.runs import AgentRun, AgentRunStatus, RunBudget
+from cellwiki.domain.runs import (
+    AgentEvent,
+    AgentEventType,
+    AgentRun,
+    AgentRunStatus,
+    RunBudget,
+)
 from cellwiki.services.attachment_store import (
     AttachmentFileStore,
     MAX_ATTACHMENTS_PER_UPLOAD,
@@ -612,7 +619,7 @@ def create_app(
         """获取智能体运行的事件流（after 参数用于轮询）"""
         try:
             events = get_agent_runtime().store.list_events(run_id, after=after)
-            return [event.model_dump(mode="json") for event in events]
+            return [_redacted_event_payload(event) for event in events]
         except KeyError:
             raise HTTPException(status_code=404, detail="agent run not found") from None
 
@@ -644,10 +651,17 @@ def create_app(
                 events = manager.store.list_events(run_id, after=cursor)
                 for event in events:
                     cursor = event.sequence
+                    # 与 /events 同一份脱敏。ensure_ascii=False + 紧凑分隔符让线上字节
+                    # 与原先的 model_dump_json() 一致：中文按 UTF-8 原样发出，不转义。
+                    payload = json.dumps(
+                        _redacted_event_payload(event),
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    )
                     yield (
                         f"id: {event.sequence}\n"
                         f"event: {event.type.value}\n"
-                        f"data: {event.model_dump_json()}\n\n"
+                        f"data: {payload}\n\n"
                     )
                 run = manager.store.get_run(run_id)
                 if run.status in terminal and not events:
@@ -838,6 +852,29 @@ def _agent_run_payload(run: AgentRun, store: RuntimeStore | None = None) -> dict
         AgentRunStatus.UNFINISHED,
     }
     payload["resumable"] = run.status == AgentRunStatus.UNFINISHED  # 是否可继续/恢复
+    return payload
+
+
+def _redacted_event_payload(event: AgentEvent) -> dict:
+    """事件出口的统一脱敏：ERROR 的 message 与终态 RUN_STATUS 的 error_message。
+
+    这两处原样携带 provider 的报错文本，而它可能把 ``Authorization: Bearer …`` 或
+    API key 一起带回来（实测交接问题 E：前端直接看到 ``Error code: 500 - {...}``）。
+    读侧脱敏而不是写侧：既覆盖已经落库的历史行，又让运行库保留完整原文供调试——与
+    diagnostics 现有的读侧脱敏一致。
+
+    只作用于这两类事件：``_redact_diagnostic_error`` 还会截断到 1000 字，套到
+    MESSAGE_DELTA / REASONING_DELTA 上会把用户可见的正文悄悄截短。
+    """
+    payload = event.model_dump(mode="json")
+    if event.type == AgentEventType.ERROR:
+        payload["message"] = _redact_diagnostic_error(event.message)
+    elif event.type == AgentEventType.RUN_STATUS:
+        data = payload.get("data")
+        if isinstance(data, dict) and data.get("error_message"):
+            data["error_message"] = _redact_diagnostic_error(
+                str(data["error_message"])
+            )
     return payload
 
 

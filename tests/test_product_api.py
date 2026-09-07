@@ -11,7 +11,14 @@ from typing import Any, Iterable
 from fastapi.testclient import TestClient
 
 from cellwiki.api.app import create_app
-from cellwiki.domain.runs import AgentEventType, AgentRunStatus
+from cellwiki.config import settings
+from cellwiki.domain.runs import (
+    AgentErrorType,
+    AgentEventType,
+    AgentRun,
+    AgentRunOutcome,
+    AgentRunStatus,
+)
 from cellwiki.services.agent_runtime import AgentRuntimeManager, RuntimeSignal
 
 
@@ -551,3 +558,77 @@ def test_workspace_select_persists_project_root(tmp_path: Path):
     # 选择当前目录 -> unchanged
     same = client.post("/api/workspace/select", json={"path": str(tmp_path)})
     assert same.status_code == 200 and same.json()["status"] == "unchanged"
+
+
+def test_event_endpoints_redact_provider_secrets(tmp_path: Path, monkeypatch):
+    """实测交接问题 E 的另一半：密钥经事件流直达前端。
+
+    ``/events`` 与 ``/stream`` 过去把事件原样 dump 出去，而脱敏只用在 diagnostics 与
+    run payload 上。provider 的报错文本会把 ``Authorization: Bearer …`` 和 API key 一
+    起回显，于是密钥落进前端 DOM、截图与桌面日志。读侧脱敏也覆盖已经落库的历史行。
+    """
+    monkeypatch.setattr(settings, "openai_api_key", "sk-live-secret-key")
+    manager = AgentRuntimeManager(tmp_path, adapter=_ApiAgentAdapter())
+    client = TestClient(create_app(tmp_path, agent_runtime=manager))
+    try:
+        store = manager.store
+        store.create_run(
+            AgentRun(run_id="run_leak", thread_id="t_leak", input_message="x")
+        )
+        store.transition("run_leak", AgentRunStatus.RUNNING, message="Started.")
+        bearer_leak = (
+            "Error code: 401 - {'error': {'message': "
+            "'Invalid Authorization: Bearer sk-live-secret-key'}}"
+        )
+        key_leak = (
+            "Error code: 500 - {'error': {'message': 'upstream failure', "
+            "'api_key': 'sk-live-secret-key'}}"
+        )
+        # 比脱敏助手的 1000 字截断更长：正文增量必须原样通过，否则脱敏会变成审查。
+        long_delta = "证据" * 900
+        store.append_event(
+            "run_leak", AgentEventType.MESSAGE_DELTA, message=long_delta
+        )
+        store.append_event("run_leak", AgentEventType.ERROR, message=bearer_leak)
+        store.finalize_run(
+            "run_leak",
+            AgentRunOutcome(
+                status=AgentRunStatus.FAILED,
+                message="Run failed.",
+                error_type=AgentErrorType.SYSTEM,
+                error_message=key_leak,
+            ),
+        )
+
+        events = client.get("/api/agent/runs/run_leak/events")
+        assert events.status_code == 200
+        payload = events.json()
+
+        # finalize_run 对 FAILED 还会补一条 ERROR，所以这里是两条：手写的那条（Bearer
+        # 形态）与终态那条（裸 key 形态）。两条脱敏规则都要看得见。
+        errors = [event for event in payload if event["type"] == "error"]
+        assert len(errors) == 2
+        assert all("sk-live-secret-key" not in event["message"] for event in errors)
+        assert any("Bearer [REDACTED]" in event["message"] for event in errors)
+        assert any("'api_key': '[REDACTED]'" in event["message"] for event in errors)
+
+        terminal = next(
+            event
+            for event in payload
+            if event["type"] == "run_status" and event["data"].get("terminal")
+        )
+        assert "sk-live-secret-key" not in terminal["data"]["error_message"]
+        assert "[REDACTED]" in terminal["data"]["error_message"]
+
+        delta = next(
+            event for event in payload if event["type"] == "message_delta"
+        )
+        assert delta["message"] == long_delta
+
+        streamed = client.get("/api/agent/runs/run_leak/stream")
+        assert streamed.status_code == 200
+        assert "sk-live-secret-key" not in streamed.text
+        assert "Bearer [REDACTED]" in streamed.text
+        assert long_delta in streamed.text
+    finally:
+        manager.close()
