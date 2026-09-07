@@ -37,6 +37,7 @@ import { QuestionCard } from "../features/agent/QuestionCard";
 // 终态判定只有一份：unfinished 也是流终态（后端已关 SSE 停在预算上）。漏掉它会让
 // 订阅侧无限重连、agentBusy 永不清零，"继续"按钮因此从不出现——看起来就是卡死。
 import { terminalAgentStatuses } from "../features/agent/run-status";
+import { composerActionFor } from "../features/agent/composer-action";
 import { SearchWorkspace } from "../features/discovery/FeatureWorkspaces";
 import { WorkspaceFileBrowser, type WorkspaceTreeEntry } from "../features/workspace/WorkspaceFileBrowser";
 import { WorkspaceFileViewer } from "../features/workspace/WorkspaceFileViewer";
@@ -300,6 +301,8 @@ export function AppShell() {
   const activeView = useUiStore((state) => state.activeView);
   const setActiveView = useUiStore((state) => state.setActiveView);
   const setCommandPaletteOpen = useUiStore((state) => state.setCommandPaletteOpen);
+  // Esc 停止要让位给命令面板的 Esc，所以这里需要读到开关状态本身，不只是 setter。
+  const commandPaletteOpen = useUiStore((state) => state.commandPaletteOpen);
   const workbenchRef = useRef<HTMLDivElement>(null);
   const attachmentRef = useRef<HTMLInputElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
@@ -513,6 +516,31 @@ export function AppShell() {
       && message.runId === activeAgentRunId
       && (message.runStatus === "waiting_confirmation" || message.runStatus === "waiting_approval")
     ));
+  // 发送/停止/继续共用 composer 里同一个槽位，判定收在纯函数里（composer-action.ts）。
+  const composerAction = composerActionFor({
+    agentBusy,
+    waitingOnQuestion,
+    resumableRunId: resumableAgentRunId,
+    hasDraft: Boolean(draft.trim()),
+  });
+
+  // 这个 effect 必须排在 waitingOnQuestion 之后：依赖数组在渲染期求值，放前面会撞 TDZ。
+  useEffect(() => {
+    const stopRunOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      // 命令面板开着时让位：它的 Esc 关面板且不 stopPropagation，事件照样冒到 window。
+      if (commandPaletteOpen) return;
+      // 只在有请求在飞时响应。提问态下 Esc 不该顺手毁掉一个待答问题；中断态下也不绑
+      // "放弃"——误触一下就把一个可续跑的 run 打成终态，代价太大。放弃走消息区那颗
+      // 显式的键（见 chat.abandon）。
+      if (!agentBusy || waitingOnQuestion) return;
+      event.preventDefault();
+      void cancelActiveAgentRun();
+    };
+    window.addEventListener("keydown", stopRunOnEscape);
+    return () => window.removeEventListener("keydown", stopRunOnEscape);
+  }, [agentBusy, waitingOnQuestion, commandPaletteOpen]);
+
   function beginResize(side: ResizeSide, event: MouseEvent<HTMLDivElement>) {
     event.preventDefault();
     const workbench = workbenchRef.current;
@@ -602,6 +630,7 @@ export function AppShell() {
     agentEventSequenceRef.current = 0;
     setActiveAgentRunId(run.run_id);
     setRetryableAgentRunId(null);
+    setResumableAgentRunId(null);
     window.localStorage.setItem(agentRunStorageKey(threadId), run.run_id);
     const status = await subscribeToAgentRun(run.run_id);
     return { threadId, runId: run.run_id, status };
@@ -680,11 +709,23 @@ export function AppShell() {
         ));
       }
       if (status === "unfinished") {
-        setAgentActivity(t("chat.runUnfinished"));
+        // 主动停止与被动中断读起来不该是同一句话：前者是用户自己按的，说"已中断"
+        // 像出了故障。判别来自后端 RUN_STATUS 事件 data 里的 reason。
+        setAgentActivity(
+          event.data.reason === "user_stopped"
+            ? t("chat.runStopped")
+            : t("chat.runUnfinished"),
+        );
         setResumableAgentRunId(event.run_id);
+        // 主动停止不再落 cancelled，所以横幅不会再由 cancel 那条路收尾，会一直卡在
+        // "正在停止模型请求…"。暂停态有自己的文案，收敛到它。
+        setWorkflow((current) => current.phase === "cancelling" || current.phase === "preparing"
+          ? { phase: "unfinished", message: t("workflow.unfinished") }
+          : current);
         // 后端 is_retryable_run 对 unfinished 同样返回真，而 retry 不依赖 checkpoint
         // （清状态 + 从有界 transcript 重放），所以图状态丢了它也走得通。两条出路一起
-        // 给出来，用户不必先撞一次 409 才发现「继续」不可用。
+        // 给出来，用户不必先撞一次 409 才发现「继续」不可用。主动停止的 error_type 为
+        // 空，retryable 因此是 false —— 那是有意的：按下停止的人要的是继续，不是重放。
         if (event.data.retryable === true) setRetryableAgentRunId(event.run_id);
       }
       if (status && terminalAgentStatuses.has(status)) {
@@ -1053,6 +1094,18 @@ export function AppShell() {
     // （典型是"Agent 运行已取消"），读起来像这一次发送已经被取消了。
     setAgentActivity("");
     try {
+      if (resumableAgentRunId) {
+        // 中断的 run 仍占着串行门禁，直接发新消息必然 409。先放弃它——这是"打了字
+        // 按钮就变回发送"那条判定的另一半。放弃不是无声的：那个 run 会在 transcript
+        // 里落成一条已定的气泡。
+        const released = await cancelActiveAgentRun();
+        // 没放开就别发：请求出去只会再吃一个 409，错误还盖掉了真正的原因。
+        if (!released) return;
+        // cancelActiveAgentRun 收尾时把 busy 清零了（它以为这一轮到此结束），而新 run
+        // 马上要起来：不重新置上，思考指示器与停止键整轮都不会出现。
+        setAgentBusy(true);
+        setAgentActivity("");
+      }
       await waitForAgentAttachmentUploads();
       const currentAttachmentIds = useUiStore.getState().activeAttachmentIds;
       const messageAttachments = attachmentReferencesForIds(
@@ -1087,8 +1140,18 @@ export function AppShell() {
     }
   }
 
-  async function cancelActiveAgentRun() {
-    if (!activeAgentRunId) return;
+  /**
+   * 停止 / 放弃当前 run。同一个入口担两个角色，靠后端返回的状态区分：
+   *
+   * - **停止**一个正在跑的 run：后端返回 `cancelling`（协作式，等安全边界），真正的
+   *   落点由 SSE 的 `unfinished` 事件带来 —— 主动停止是可续跑的暂停，不是终态。
+   * - **放弃**一个已中断的 run：后端立刻返回 `cancelled`，串行门禁随之放开。
+   *
+   * 返回门禁是否**已经**放开：`cancelling` 意味着还在协作式停止途中，此时发新消息
+   * 必然撞 409，调用方必须等 SSE 的落点而不是直接往下走。
+   */
+  async function cancelActiveAgentRun(): Promise<boolean> {
+    if (!activeAgentRunId) return false;
     setWorkflow((current) => current.phase === "preparing"
       ? { phase: "cancelling", message: t("workflow.cancelling") }
       : current);
@@ -1103,13 +1166,18 @@ export function AppShell() {
           : current);
         setActiveAgentRunId(null);
         setAgentBusy(false);
+        // 必须清：不清的话「继续」「重试」会残留在一个已经 cancelled 的 run 上，
+        // 点下去必然 409（status 已不是 unfinished）——又一个死结。
+        setResumableAgentRunId(null);
+        setRetryableAgentRunId(null);
         setAgentActivity(t("chat.runCancelled"));
         if (agentThreadIdRef.current) window.localStorage.removeItem(agentRunStorageKey(agentThreadIdRef.current));
         // 让等待确认/未完成的气泡落定到 cancelled，并让问题卡停止轮询
         applyAgentEvent(legacyTerminalEvent(run, agentEventSequenceRef.current + 1));
-      } else {
-        setAgentActivity(t("chat.cancelling"));
+        return true;
       }
+      setAgentActivity(t("chat.cancelling"));
+      return false;
     } catch (error) {
       setWorkflow((current) => current.phase === "cancelling"
         ? { phase: "failed", message: t("workflow.proposalFailed"), error: error instanceof Error ? error.message : t("source.failedTitle") }
@@ -1119,6 +1187,7 @@ export function AppShell() {
         text: error instanceof Error ? error.message : t("chat.runFailed"),
         meta: "RUNTIME · CANCEL ERROR",
       }]);
+      return false;
     }
   }
 
@@ -1548,9 +1617,6 @@ export function AppShell() {
             <div className="agent-toolbar">
               <div className="agent-title"><span className="agent-icon"><Bot size={16} /></span><div><strong>CewiPilot</strong><small>{t("chat.subtitle")}</small></div></div>
               <div className="agent-toolbar-actions">
-                {activeAgentRunId && (
-                  <button className="icon-button stop-run" onClick={() => void cancelActiveAgentRun()} title={t("chat.cancel")} aria-label={t("chat.cancel")}><Square size={13} /></button>
-                )}
                 <button className="icon-button" disabled={attachmentUploadBusy} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
               </div>
             </div>
@@ -1601,8 +1667,11 @@ export function AppShell() {
                 </button>
               )}
               {resumableAgentRunId && !agentBusy && (
-                <button className="agent-retry" onClick={() => void resumeUnfinishedAgentRun()}>
-                  <Play size={12} />{t("chat.resume")}
+                // 标题栏那颗停止键删掉之后，这里是"只放弃、不发新消息"的唯一出口。
+                // 不能省：中断态的 run 占着串行门禁，而 delete_thread 有活动 run 守卫，
+                // 没有放弃入口的话连会话都删不掉 —— 又一个死结。
+                <button className="agent-retry" onClick={() => void cancelActiveAgentRun()}>
+                  <X size={12} />{t("chat.abandon")}
                 </button>
               )}
               {agentBusy && <div className="agent-thinking"><i /><i /><i /><span>{agentActivity || t("chat.reasoningLive")}</span></div>}
@@ -1670,23 +1739,36 @@ export function AppShell() {
                     </button>
                     <span>{activeAttachments.length > 0 ? t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length)) : t("chat.agentContext")}</span>
                   </div>
-                  {activeAgentRunId ? (
+                  {composerAction.kind === "stop" && (
                     // 运行中把发送键**原位**换成停止键：同一个位置、同一个尺寸，只换
                     // 语义色与图标。中断入口必须在注意力焦点上，且要能被读屏与自动化
-                    // 按 role+name 找到——标题栏那颗 13px 方块两者都做不到（实测像素
-                    // 点击 4 次偏 3 次）。标题栏那颗仍保留：它是 UNFINISHED 下唯一能
-                    // 释放串行门禁的出口。
+                    // 按 role+name 找到——实测标题栏那颗 13px 方块两者都做不到（像素
+                    // 点击 4 次偏 3 次），所以它已经删了。Esc 是同一动作的键盘入口。
                     <button
                       type="button"
                       className="stop-run"
                       onClick={() => void cancelActiveAgentRun()}
-                      title={t("chat.cancel")}
+                      title={t("chat.cancelHint")}
                       aria-label={t("chat.cancel")}
                     >
                       <Square size={15} />
                     </button>
-                  ) : (
-                    <button onClick={() => void sendMessage()} disabled={!draft.trim() || agentBusy || waitingOnQuestion} aria-label={t("chat.send")}><Send size={15} /></button>
+                  )}
+                  {composerAction.kind === "resume" && (
+                    // 中断态且输入框空着：同一个槽位换成「继续」。沿用发送键的强调色
+                    // 而不是停止键的危险色——它是"接着走"，不是"危险操作"。用户一旦
+                    // 打字，composerActionFor 会把槽位让回发送键。
+                    <button
+                      type="button"
+                      onClick={() => void resumeUnfinishedAgentRun()}
+                      title={t("chat.resume")}
+                      aria-label={t("chat.resume")}
+                    >
+                      <Play size={15} />
+                    </button>
+                  )}
+                  {composerAction.kind === "send" && (
+                    <button onClick={() => void sendMessage()} disabled={composerAction.disabled} aria-label={t("chat.send")}><Send size={15} /></button>
                   )}
                 </div>
                 <input

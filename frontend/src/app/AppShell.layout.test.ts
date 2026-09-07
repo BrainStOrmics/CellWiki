@@ -84,7 +84,7 @@ describe("Agent sidebar layout", () => {
     expect(appShellSource).not.toContain("GraphWorkspace");
   });
 
-  it("把运行中的中断入口放在 composer 里原位切换，并标注得能被读屏发现", () => {
+  it("把运行控制收进 composer 的同一个槽位，并标注得能被读屏发现", () => {
     const composeStart = appShellSource.indexOf('<div className="compose-actions">');
     expect(composeStart, "missing anchor: compose-actions").toBeGreaterThan(-1);
     const composeSource = appShellSource.slice(
@@ -92,15 +92,41 @@ describe("Agent sidebar layout", () => {
       appShellSource.indexOf("<input", composeStart),
     );
 
-    // 原位切换：同一个位置既有发送也有停止，用户不必把视线移开 composer，
-    // 自动化与读屏也能按 role+name 命中（标题栏那颗 13px 方块两者都做不到）。
-    expect(composeSource).toContain("{activeAgentRunId ? (");
+    // 一个槽位三种动作，判定收在纯函数里（composer-action.ts 有自己的单测）。
+    // 原位切换：用户不必把视线移开 composer，自动化与读屏也能按 role+name 命中。
+    expect(composeSource).toContain('composerAction.kind === "stop"');
+    expect(composeSource).toContain('composerAction.kind === "resume"');
+    expect(composeSource).toContain('composerAction.kind === "send"');
     expect(composeSource).toContain('className="stop-run"');
     expect(composeSource).toContain("onClick={() => void cancelActiveAgentRun()}");
+    expect(composeSource).toContain("onClick={() => void resumeUnfinishedAgentRun()}");
     expect(composeSource).toContain('aria-label={t("chat.cancel")}');
+    expect(composeSource).toContain('aria-label={t("chat.resume")}');
     expect(composeSource).toContain('aria-label={t("chat.send")}');
-    // 标题栏那颗保留：它是 UNFINISHED 下唯一能释放串行门禁的出口。
-    expect(appShellSource).toContain('className="icon-button stop-run"');
+    // 停止键的 title 要说出键盘入口，否则 Esc 无从发现。
+    expect(composeSource).toContain('title={t("chat.cancelHint")}');
+
+    // 标题栏那颗 13px 停止键已删（实测像素点击 4 次偏 3 次，读屏也找不到）。它原本
+    // 担的活——"中断态下只放弃、不发新消息"——由消息区那颗显式的键接过去。不能没有：
+    // 中断的 run 占着串行门禁，而 delete_thread 有活动 run 守卫，否则连会话都删不掉。
+    expect(appShellSource).not.toContain('className="icon-button stop-run"');
+    expect(appShellSource).toContain('t("chat.abandon")');
+  });
+
+  it("Esc 停止运行，但让位给命令面板，且不碰提问态与中断态", () => {
+    const escStart = appShellSource.indexOf("const stopRunOnEscape");
+    expect(escStart, "missing anchor: stopRunOnEscape").toBeGreaterThan(-1);
+    const escSource = appShellSource.slice(
+      escStart,
+      appShellSource.indexOf("}, [agentBusy, waitingOnQuestion, commandPaletteOpen]);", escStart),
+    );
+
+    // 命令面板自己的 Esc 关面板且不 stopPropagation，事件照样冒到 window。
+    expect(escSource).toContain("if (commandPaletteOpen) return;");
+    // 提问态下 Esc 不该顺手毁掉一个待答问题；中断态下也不绑"放弃"——误触一下就把
+    // 一个可续跑的 run 打成终态，代价太大。
+    expect(escSource).toContain("if (!agentBusy || waitingOnQuestion) return;");
+    expect(escSource).toContain("void cancelActiveAgentRun();");
   });
 
   it("运行开始时重置活动条，不让上一个 run 的终态文案漏进新 run", () => {

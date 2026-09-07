@@ -75,3 +75,53 @@ describe("续跑出路不得是死结（决策 4 修订 / 实测交接问题 A�
     expect(deleteThread).toContain("setResumableAgentRunId(null);");
   });
 });
+
+describe("停止是暂停而不是死结（composer 单按钮合并）", () => {
+  function sliceBetween(start: string, end: string): string {
+    const startIndex = appShellSource.indexOf(start);
+    expect(startIndex, `missing anchor: ${start}`).toBeGreaterThan(-1);
+    const endIndex = appShellSource.indexOf(end, startIndex);
+    expect(endIndex, `missing anchor: ${end}`).toBeGreaterThan(startIndex);
+    return appShellSource.slice(startIndex, endIndex);
+  }
+
+  it("放弃一个中断的 run 时清掉恢复线索，否则「继续」残留下来点一次 409 一次", () => {
+    const cancel = sliceBetween(
+      "async function cancelActiveAgentRun",
+      "async function resumeUnfinishedAgentRun",
+    );
+    expect(cancel).toContain("setResumableAgentRunId(null);");
+    expect(cancel).toContain("setRetryableAgentRunId(null);");
+    // 新 run 起来时同样要失效：runAgent 早就清了 retryable，resumable 不能漏。
+    const runAgent = sliceBetween("async function runAgent(", "async function resumeAgent(");
+    expect(runAgent).toContain("setResumableAgentRunId(null);");
+  });
+
+  it("中断态下发送新消息必须先放弃旧 run：门禁还占着，直接发必然 409", () => {
+    const send = sliceBetween(
+      "async function sendMessage()",
+      "async function cancelActiveAgentRun",
+    );
+    expect(send).toContain("if (resumableAgentRunId) {");
+    expect(send).toContain("await cancelActiveAgentRun();");
+    // 没放开就别发：第二个 409 会盖掉真正的原因。
+    expect(send).toContain("if (!released) return;");
+
+    // 放弃的收尾会把 busy 清零（它以为这一轮到此结束），而新 run 马上要起来：
+    // 不重新置上，思考指示器与停止键整轮都不会出现。
+    const afterCancel = send.slice(send.indexOf("await cancelActiveAgentRun();"));
+    expect(afterCancel.indexOf("setAgentBusy(true);"))
+      .toBeLessThan(afterCancel.indexOf("await runAgent"));
+  });
+
+  it("主动停止与被动中断读起来不是同一句话，横幅也不再卡在停止中", () => {
+    const live = sliceBetween(
+      'if (status === "unfinished") {',
+      "if (status && terminalAgentStatuses.has(status)) {",
+    );
+    expect(live).toContain('event.data.reason === "user_stopped"');
+    expect(live).toContain('t("chat.runStopped")');
+    // 停止不再落 cancelled，所以横幅不会再由 cancel 那条路收尾。
+    expect(live).toContain('{ phase: "unfinished", message: t("workflow.unfinished") }');
+  });
+});
