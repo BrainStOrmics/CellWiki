@@ -120,6 +120,25 @@ describe("reduceAgentRunMessages", () => {
     expect(message.text).not.toContain("429");
   });
 
+  it("drops the failure label once a retry of the same run succeeds", () => {
+    // 真机实测：第一次失败后点「重试」，run 与气泡都是同一个；succeeded 只改了状态与
+    // 正文，error 事件盖的 meta 留在成功答案底下，看着像又失败了一次。
+    const failed = reduceAgentRunMessages(
+      [],
+      event(1, "error", { error_type: "system" }, "Error code: 500"),
+      labels,
+    );
+    expect(failed[0].meta).toBe("failed · system");
+
+    const [revived] = reduceAgentRunMessages(
+      failed,
+      event(2, "run_status", { status: "succeeded", terminal: true }, "Run completed."),
+      labels,
+    );
+    expect(revived.runStatus).toBe("succeeded");
+    expect(revived.meta).toBeUndefined();
+  });
+
   it("falls back to the raw text for a classification this build does not know", () => {
     const [message] = reduceAgentRunMessages(
       [],

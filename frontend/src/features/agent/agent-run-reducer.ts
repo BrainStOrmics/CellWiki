@@ -247,6 +247,10 @@ function settleRun(
   return updateRunMessage(messages, runId, (message) => ({
     ...message,
     runStatus: status,
+    // meta 只有失败分支会写（"Agent 运行失败 · system"）。retry/续跑复用同一条 run 与
+    // 同一个气泡，救活之后第一次失败盖的标签必须让位，否则成功的答案底下永远挂着
+    // 上一轮的失败字样（真机实测：重试成功后页脚仍显示运行失败）。
+    meta: status === "succeeded" ? undefined : message.meta,
     text: status === "failed"
       ? message.text || terminalText.failed
       : status === "cancelled"
