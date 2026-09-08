@@ -229,6 +229,9 @@ class _ConsumeOutcome:
     final_answer: str | None = None
     cancelled: bool = False
     question_pending: bool = False
+    # 本段流有没有真正吐出过信号。续跑一个已经跑完的图时它是 False，用来把
+    # "没有可继续的内容"与"跑完了却没有答案"这两种零产出分开。
+    saw_any_signal: bool = False
 
 
 @dataclass
@@ -1646,7 +1649,12 @@ class AgentRuntimeManager:
                 except (GitCommandError, OSError):
                     pass
                 return
-            self._finalize_stream_outcome(run_id, thread_id, outcome)
+            self._finalize_stream_outcome(
+                run_id,
+                thread_id,
+                outcome,
+                continued=continue_from_checkpoint,
+            )
             # 尽早发布 pending diff（幂等：git 异常不影响运行结果）
             try:
                 published = self._maybe_publish_pending_diff(run_id)
@@ -1671,27 +1679,49 @@ class AgentRuntimeManager:
                 self._finish_failed(run_id, error)
 
     def _finalize_stream_outcome(
-        self, run_id: str, thread_id: str, outcome: _ConsumeOutcome
+        self,
+        run_id: str,
+        thread_id: str,
+        outcome: _ConsumeOutcome,
+        *,
+        continued: bool = False,
     ) -> None:
         """Persist the assistant text and make normal graph termination explicit."""
+        answer = outcome.final_answer or ""
+        # 答案一旦产生就落盘，与这段流是正常结束还是被停止打断无关：停止可以正好发生
+        # 在最终答案之后（实测：用户看到答案按了 Esc），不落盘线程里就永远没有这条
+        # 回答，而续跑时图已无事可做，答案就此丢失。
+        if answer.strip():
+            self.store.append_message(
+                thread_id=thread_id,
+                run_id=run_id,
+                role="assistant",
+                content=answer,
+                data={"source": "agent_runtime"},
+            )
         if outcome.cancelled:
             # 落到安全事件边界了：图流已关、checkpoint 已回写（见 _consume_stream 的
             # finally），所以这是一次可续跑的暂停，不是一个终态。
             self._finalize_user_stop(run_id)
             return
-        if outcome.final_answer and outcome.final_answer.strip():
-            self.store.append_message(
-                thread_id=thread_id,
-                run_id=run_id,
-                role="assistant",
-                content=outcome.final_answer,
-                data={"source": "agent_runtime"},
-            )
+        if answer.strip():
             self.store.finalize_run(
                 run_id,
                 AgentRunOutcome(
                     status=AgentRunStatus.SUCCEEDED,
                     message="Run completed.",
+                ),
+            )
+            return
+        if continued and not outcome.saw_any_signal:
+            # 续跑一个其实已经跑完的图：图直接结束，一个信号都不产出。那不是系统故障，
+            # 是"没有可继续的内容"（实测：答案落盘后点继续，得到 failed/system 与
+            # 一条用户看不懂的"运行出错"）。
+            self.store.finalize_run(
+                run_id,
+                AgentRunOutcome(
+                    status=AgentRunStatus.SUCCEEDED,
+                    message="Run had already completed; nothing left to continue.",
                 ),
             )
             return
@@ -1736,6 +1766,7 @@ class AgentRuntimeManager:
         steps_at_end = 0
         question_pending = False
         accounting_flushed = False
+        saw_any_signal = False
 
         def _flush_accounting() -> None:
             """落盘本段 spans + usage，恰好一次，中止也不例外。
@@ -1814,6 +1845,7 @@ class AgentRuntimeManager:
                     gate = self._cancellations.get(run_id)
                     if gate is not None and gate.is_set():
                         break
+                saw_any_signal = True
                 for signal in signals:
                     steps_at_end = steps
                     if signal.model_call_id:
@@ -1969,6 +2001,7 @@ class AgentRuntimeManager:
             final_answer=final_answer,
             cancelled=cancelled,
             question_pending=question_pending,
+            saw_any_signal=saw_any_signal,
         )
 
     def _open_tool_span(

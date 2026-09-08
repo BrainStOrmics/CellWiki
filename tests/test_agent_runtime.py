@@ -38,6 +38,7 @@ from cellwiki.services.agent_runtime import (
     InvalidRunTransitionError,
     AgentRuntimeManager,
     RuntimeSignal,
+    _ConsumeOutcome,
     _signals_from_stream_item,
     _new_run_id,
     classify_agent_error,
@@ -251,6 +252,94 @@ def test_a_user_stop_pauses_the_run_instead_of_destroying_it(tmp_path: Path):
             manager, started.run_id, {AgentRunStatus.SUCCEEDED}
         )
         assert completed.status == AgentRunStatus.SUCCEEDED
+    finally:
+        manager.close()
+
+
+def test_a_stop_after_the_final_answer_keeps_the_answer_in_the_thread(tmp_path: Path):
+    """实测（2026-09-08 真机）：用户在模型说完最后一句时按停止，run 正确落
+    ``unfinished``，但那段最终回答只流到了界面、没落库——之后无论续跑还是放弃，
+    会话里都再也看不到它。停止是暂停，不是把已经说出口的话抹掉。
+    """
+    manager = AgentRuntimeManager(tmp_path, adapter=BlockingAdapter())
+    try:
+        store = manager.store
+        store.create_run(
+            AgentRun(run_id="run_stop_late", thread_id="t_late", input_message="x")
+        )
+        store.transition("run_stop_late", AgentRunStatus.RUNNING, message="Started.")
+        store.transition("run_stop_late", AgentRunStatus.CANCELLING, message="Stopping.")
+
+        manager._finalize_stream_outcome(
+            "run_stop_late",
+            "t_late",
+            _ConsumeOutcome(final_answer="这是最终答案。", cancelled=True),
+        )
+
+        assert store.get_run("run_stop_late").status == AgentRunStatus.UNFINISHED
+        texts = [
+            message["content"]
+            for message in store.list_messages("t_late")
+            if message["role"] == "assistant"
+        ]
+        assert "这是最终答案。" in texts
+    finally:
+        manager.close()
+
+
+def test_resuming_an_already_finished_graph_is_a_completion_not_a_system_error(
+    tmp_path: Path,
+):
+    """实测（2026-09-08 真机）：停止落在答案流完之后，用户点「继续」→ 续跑段从终态
+    checkpoint 起图，``stream(None)`` 什么都不产出 → 被记成 FAILED/system
+    "Agent completed without a textual answer."，界面上是一条吓人的红字。
+
+    零产出的**续跑**段不是错误：图已经走完，工作本来就做完了，答案在首段就落库。
+    """
+    manager = AgentRuntimeManager(tmp_path, adapter=BlockingAdapter())
+    try:
+        store = manager.store
+        store.create_run(
+            AgentRun(run_id="run_already_done", thread_id="t_done", input_message="x")
+        )
+        store.transition("run_already_done", AgentRunStatus.RUNNING, message="Started.")
+        store.transition("run_already_done", AgentRunStatus.UNFINISHED, message="Paused.")
+        store.transition("run_already_done", AgentRunStatus.RUNNING, message="Resumed.")
+
+        manager._finalize_stream_outcome(
+            "run_already_done",
+            "t_done",
+            _ConsumeOutcome(final_answer=None, cancelled=False, saw_any_signal=False),
+            continued=True,
+        )
+
+        run = store.get_run("run_already_done")
+        assert run.status == AgentRunStatus.SUCCEEDED
+        assert run.error_type is None
+    finally:
+        manager.close()
+
+
+def test_a_first_segment_with_no_answer_is_still_a_failure(tmp_path: Path):
+    """对照锁：首段零产出仍然是真错误，不能被续跑那条豁免吞掉。"""
+    manager = AgentRuntimeManager(tmp_path, adapter=BlockingAdapter())
+    try:
+        store = manager.store
+        store.create_run(
+            AgentRun(run_id="run_empty_first", thread_id="t_empty", input_message="x")
+        )
+        store.transition("run_empty_first", AgentRunStatus.RUNNING, message="Started.")
+
+        manager._finalize_stream_outcome(
+            "run_empty_first",
+            "t_empty",
+            _ConsumeOutcome(final_answer=None, cancelled=False, saw_any_signal=False),
+            continued=False,
+        )
+
+        run = store.get_run("run_empty_first")
+        assert run.status == AgentRunStatus.FAILED
+        assert run.error_type == AgentErrorType.SYSTEM
     finally:
         manager.close()
 
