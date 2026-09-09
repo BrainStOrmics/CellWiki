@@ -1678,6 +1678,14 @@ class AgentRuntimeManager:
             else:
                 self._finish_failed(run_id, error)
 
+    def _replayed_answer(self, run_id: str) -> str:
+        """Concat the run's message_delta events in sequence order: the full answer text."""
+        return "".join(
+            event.message or ""
+            for event in self.store.list_events(run_id)
+            if event.type == AgentEventType.MESSAGE_DELTA
+        )
+
     def _finalize_stream_outcome(
         self,
         run_id: str,
@@ -1687,7 +1695,10 @@ class AgentRuntimeManager:
         continued: bool = False,
     ) -> None:
         """Persist the assistant text and make normal graph termination explicit."""
-        answer = outcome.final_answer or ""
+        # 落库以事件流为准：final_answer 只含最后一段流的累积，被提问/停止打断后又续跑
+        # 的 run，打断前说过的段落只活在 message_delta 里；只落最后一段会让模型历史
+        # 丢掉它自己在 run 中途说过的话（实测 6fbd4609：2423 字只落了 1481 字）。
+        answer = self._replayed_answer(run_id) or outcome.final_answer or ""
         # 答案一旦产生就落盘，与这段流是正常结束还是被停止打断无关：停止可以正好发生
         # 在最终答案之后（实测：用户看到答案按了 Esc），不落盘线程里就永远没有这条
         # 回答，而续跑时图已无事可做，答案就此丢失。

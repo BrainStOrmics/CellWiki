@@ -287,6 +287,41 @@ def test_a_stop_after_the_final_answer_keeps_the_answer_in_the_thread(tmp_path: 
         manager.close()
 
 
+def test_finalize_persists_every_streamed_segment_not_just_the_last(tmp_path: Path):
+    """实测（2026-09-08 真机，run 6fbd4609）：run 被提问打断又答完续跑后，落库的
+    assistant 消息只有打断后的 1481 字，打断前说出的三段（含一张诊断表）只活在事件
+    流里——模型历史丢掉了它自己在 run 中途说过的话。落库必须以 message_delta 回放
+    为准，而不是只含最后一段流累积的 final_answer。
+    """
+    manager = AgentRuntimeManager(tmp_path, adapter=BlockingAdapter())
+    try:
+        store = manager.store
+        store.create_run(AgentRun(run_id="run_seg", thread_id="t_seg", input_message="x"))
+        store.transition("run_seg", AgentRunStatus.RUNNING, message="Started.")
+        store.append_event("run_seg", AgentEventType.MESSAGE_DELTA, message="诊断表在此。")
+        store.append_event(
+            "run_seg",
+            AgentEventType.TASK_CONFIRMATION_REQUIRED,
+            data={"question": "继续吗？"},
+        )
+        store.append_event("run_seg", AgentEventType.MESSAGE_DELTA, message="收尾段。")
+
+        manager._finalize_stream_outcome(
+            "run_seg",
+            "t_seg",
+            _ConsumeOutcome(final_answer="收尾段。"),
+        )
+
+        texts = [
+            message["content"]
+            for message in store.list_messages("t_seg")
+            if message["role"] == "assistant"
+        ]
+        assert texts == ["诊断表在此。收尾段。"]
+    finally:
+        manager.close()
+
+
 def test_resuming_an_already_finished_graph_is_a_completion_not_a_system_error(
     tmp_path: Path,
 ):
