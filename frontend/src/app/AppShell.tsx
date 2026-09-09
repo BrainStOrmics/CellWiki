@@ -1,7 +1,6 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Bot,
   ChevronRight,
   FileText,
   GitPullRequest,
@@ -1488,7 +1487,6 @@ export function AppShell() {
       />
       <header className="app-titlebar">
         <div className="titlebar-brand">
-          <span className="brand-glyph">CW</span>
           <strong>CellWiki</strong>
           <span className="titlebar-separator" />
           <span>cellwiki</span>
@@ -1644,7 +1642,7 @@ export function AppShell() {
 
           <aside className="agent-panel" style={{ width: rightWidth }}>
             <div className="agent-toolbar">
-              <div className="agent-title"><span className="agent-icon"><Bot size={16} /></span><div><strong>CewiPilot</strong><small>{t("chat.subtitle")}</small></div></div>
+              <div className="agent-title"><strong>CewiPilot</strong><small>{t("chat.subtitle")}</small></div>
               <div className="agent-toolbar-actions">
                 <button className="icon-button" disabled={attachmentUploadBusy} onClick={startNewChat} title={t("chat.new")} aria-label={t("chat.new")}><CirclePlus size={16} /></button>
               </div>
