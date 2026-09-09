@@ -879,6 +879,13 @@ export function AppShell() {
         conflict: t("chat.error.conflict"),
         system: t("chat.error.system"),
       },
+      maintenance: {
+        lint: t("chat.maintenance.lint"),
+        accept: t("chat.maintenance.accept"),
+        reject: t("chat.maintenance.reject"),
+        unfinished: t("chat.maintenance.unfinished"),
+        failed: t("chat.maintenance.failed"),
+      },
       timelineContext: context ?? buildTimelineContext(),
     };
   }

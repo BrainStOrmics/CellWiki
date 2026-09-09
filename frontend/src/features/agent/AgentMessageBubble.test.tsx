@@ -260,6 +260,7 @@ describe("AgentMessageBubble", () => {
       cancelled: "cancelled",
       unfinished: "unfinished",
       errorTypes: { timeout: "模型响应超时，进度已保留，可以继续这次运行" },
+      maintenance: {},
     });
 
     renderBubble({ ...message, streaming: false });

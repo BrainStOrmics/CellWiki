@@ -12,6 +12,7 @@ const labels: AgentRunReducerLabels = {
   cancelled: "CANCELLED",
   unfinished: "UNFINISHED",
   errorTypes: {},
+  maintenance: {},
 };
 
 const EDIT_DIFF = {

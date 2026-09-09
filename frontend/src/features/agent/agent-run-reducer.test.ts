@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentEvent, ChatMessage } from "../../types";
+import type { AgentEvent, AgentTimelineNode, ChatMessage } from "../../types";
 import { reduceAgentRunMessages } from "./agent-run-reducer";
 
 const labels = {
@@ -17,6 +17,13 @@ const labels = {
     approval: "localized:approval",
     conflict: "localized:conflict",
     system: "localized:system",
+  },
+  maintenance: {
+    lint: "localized:maintenance-lint",
+    accept: "localized:maintenance-accept",
+    reject: "localized:maintenance-reject",
+    unfinished: "localized:maintenance-unfinished",
+    failed: "localized:maintenance-failed",
   },
 };
 
@@ -213,6 +220,38 @@ describe("reduceAgentRunMessages", () => {
     expect(late[0].runStatus).toBe("unfinished");
     expect(late).toHaveLength(1);
     expect(late[0].process).toHaveLength(2);
+  });
+
+  it("localizes a maintenance receipt per verdict with a success tone", () => {
+    const [message] = reduceAgentRunMessages(
+      [],
+      event(1, "progress", { kind: "maintenance", verdict: "lint" }, "Workspace maintenance applied."),
+      labels,
+    );
+    const node = (message.timeline ?? [])[0] as Extract<AgentTimelineNode, { kind: "status" }>;
+    expect(node.label).toBe("localized:maintenance-lint");
+    expect(node.tone).toBe("success");
+  });
+
+  it("keeps a failed maintenance receipt visible as a warning", () => {
+    const [message] = reduceAgentRunMessages(
+      [],
+      event(1, "progress", { kind: "maintenance_failed", verdict: "accept" }, "Workspace maintenance failed; will retry on next run start."),
+      labels,
+    );
+    const node = (message.timeline ?? [])[0] as Extract<AgentTimelineNode, { kind: "status" }>;
+    expect(node.label).toBe("localized:maintenance-failed");
+    expect(node.tone).toBe("warning");
+  });
+
+  it("falls back to the raw receipt text for a verdict this build does not know", () => {
+    const [message] = reduceAgentRunMessages(
+      [],
+      event(1, "progress", { kind: "maintenance", verdict: "quantum" }, "Workspace maintenance applied."),
+      labels,
+    );
+    const node = (message.timeline ?? [])[0] as Extract<AgentTimelineNode, { kind: "status" }>;
+    expect(node.label).toBe("Workspace maintenance applied.");
   });
 
   it("downgrades legacy high-confidence answers without verification fields", () => {

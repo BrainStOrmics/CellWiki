@@ -22,6 +22,9 @@ export type AgentRunReducerLabels = {
   unfinished: string;
   /** AgentErrorType 的码 -> 用户可读的一句话（键与后端 domain/runs.py 一一对应）。 */
   errorTypes: Record<string, string>;
+  /** 系统维护回执的 verdict -> 用户可读的一句话（verdict 与 workspace_maintenance.py
+   * 一一对应）；maintenance_failed 统一取 failed；漏译的 verdict 回落事件原文。 */
+  maintenance: Record<string, string>;
   timelineContext?: { label: string; detail?: string } | null;
 };
 
@@ -373,6 +376,20 @@ function appendProcessEventNode(
       resultPreview,
       editDiff: readEditDiff(event.data),
     }];
+  }
+  if (event.type === "progress") {
+    const progressData = event.data as Record<string, unknown>;
+    const maintenanceKind = String(progressData.kind ?? "");
+    if (maintenanceKind === "maintenance" || maintenanceKind === "maintenance_failed") {
+      // 回执原文是一句英文，两条并排挂在气泡末尾读起来像报错：按 verdict 本地化，
+      // 成功项给绿点；失败项保留警告色，与成功回执区分开。
+      const verdict = String(progressData.verdict ?? "");
+      const label = maintenanceKind === "maintenance_failed"
+        ? labels.maintenance.failed
+        : labels.maintenance[verdict] ?? event.message;
+      const maintenanceTone: AgentTimelineStatusTone = maintenanceKind === "maintenance_failed" ? "warning" : "success";
+      return [...base, { kind: "status", tone: maintenanceTone, label, step }];
+    }
   }
   const tone: AgentTimelineStatusTone = event.type === "error" ? "danger" : (statusTones[event.type] ?? "info");
   // 失败 run 真正被读到的就是这一条：气泡只在"没有时间线节点"时才渲染 message.text，
