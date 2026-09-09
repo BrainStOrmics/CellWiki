@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AgentMessageBubble } from "./AgentMessageBubble";
+import { AgentTranscriptMessage, type AgentRunAction } from "./AgentTranscriptMessage";
 import { reduceAgentRunMessages } from "./agent-run-reducer";
 import { LanguageProvider } from "../../i18n";
 import type { AgentProcessStep, AgentTimelineNode, ChatMessage } from "../../types";
@@ -32,16 +32,19 @@ function pendingQuestion() {
 afterEach(cleanup);
 
 const labels = {
-  agentLabel: "CewiPilot",
-  userLabel: "You",
   reasoningTitle: "think",
   reasoningLiveLabel: "思考中…",
 };
 
-function renderBubble(message: ChatMessage) {
+function renderMessage(message: ChatMessage, runActions?: AgentRunAction[]) {
   return render(
     <LanguageProvider>
-      <AgentMessageBubble {...labels} message={message} onQuestionAnswered={vi.fn()} />
+      <AgentTranscriptMessage
+        {...labels}
+        message={message}
+        runActions={runActions}
+        onQuestionAnswered={vi.fn()}
+      />
     </LanguageProvider>,
   );
 }
@@ -86,7 +89,7 @@ function toolNode(overrides: Partial<Extract<AgentTimelineNode, { kind: "tool" }
   };
 }
 
-describe("AgentMessageBubble", () => {
+describe("AgentTranscriptMessage", () => {
   it("renders context, thinking, tool and text nodes as a flat timeline in order", () => {
     const timeline: AgentTimelineNode[] = [
       { kind: "context", label: "上下文注入", detail: "wiki/index.md" },
@@ -94,7 +97,7 @@ describe("AgentMessageBubble", () => {
       toolNode({ toolCallId: "c1", summary: "grep → 2 matches" }),
       { kind: "text", text: "找到了 2 处" },
     ];
-    renderBubble({ role: "agent", text: "", timeline, streaming: true });
+    renderMessage({ role: "agent", text: "", timeline, streaming: true });
 
     expect(screen.getByText(/上下文注入 · wiki\/index.md/)).toBeInTheDocument();
     expect(screen.getByText("Grep", { selector: ".at-kind" })).toBeInTheDocument();
@@ -102,7 +105,7 @@ describe("AgentMessageBubble", () => {
   });
 
   it("no longer renders citation chips or missing-evidence blocks", () => {
-    renderBubble({
+    renderMessage({
       role: "agent",
       text: "answer",
       citations: [{ page_id: "wiki/x" }],
@@ -117,7 +120,7 @@ describe("AgentMessageBubble", () => {
   });
 
   it("renders thinking as a collapsed single line with a truncated preview", () => {
-    renderBubble({
+    renderMessage({
       role: "agent",
       text: "",
       timeline: [{ kind: "thinking", text: "第一段思考内容\n第二段思考内容" }],
@@ -130,7 +133,7 @@ describe("AgentMessageBubble", () => {
   });
 
   it("shows the first line as preview and full text after expanding when settled", () => {
-    renderBubble({
+    renderMessage({
       role: "agent",
       text: "done",
       timeline: [{ kind: "thinking", text: "第一段思考内容\n第二段思考内容" }, { kind: "text", text: "done" }],
@@ -144,7 +147,7 @@ describe("AgentMessageBubble", () => {
   });
 
   it("stops labeling a finished thinking block as live once a later node arrives", () => {
-    renderBubble({
+    renderMessage({
       role: "agent",
       text: "",
       timeline: [
@@ -158,7 +161,7 @@ describe("AgentMessageBubble", () => {
   });
 
   it("keeps the trailing thinking block live while the run streams", () => {
-    renderBubble({
+    renderMessage({
       role: "agent",
       text: "",
       timeline: [
@@ -173,13 +176,13 @@ describe("AgentMessageBubble", () => {
 
   it("truncates a long thinking preview line", () => {
     const long = "x".repeat(150);
-    renderBubble({ role: "agent", text: "", timeline: [{ kind: "thinking", text: long }] });
+    renderMessage({ role: "agent", text: "", timeline: [{ kind: "thinking", text: long }] });
     const preview = screen.getByText(/…$/, { selector: ".at-think-preview" });
     expect(preview.textContent?.length).toBeLessThanOrEqual(101);
   });
 
   it("renders persisted answer text for legacy messages that only carry process steps", () => {
-    renderBubble({
+    renderMessage({
       role: "agent",
       text: "古老答案文本",
       process: [toolStep({ message: "grep → 2 matches", toolName: "grep", toolCallId: "c1" })],
@@ -191,7 +194,7 @@ describe("AgentMessageBubble", () => {
 
   it("expands a legacy tool card to its safe detail on click", () => {
     const timeline: AgentTimelineNode[] = [toolNode({ toolCallId: "c1", summary: "grep → 2 matches" })];
-    const { container } = renderBubble({ role: "agent", text: "", timeline });
+    const { container } = renderMessage({ role: "agent", text: "", timeline });
     expect(container.querySelector(".at-card-body")).toBeNull();
     fireEvent.click(container.querySelector(".at-card-head") as HTMLButtonElement);
     const detail = container.querySelector(".at-detail");
@@ -207,7 +210,7 @@ describe("AgentMessageBubble", () => {
       argsDisplay: { command: "Get-Location; Get-ChildItem -Force", title: "Get-Location; Get-ChildItem -Force" },
       resultPreview: { head: "Path\n----\nD:\\GitHub\\CellWiki", tail: "", total_chars: 30, total_lines: 3, truncated: false, kind: "text" },
     })];
-    const { container } = renderBubble({ role: "agent", text: "", timeline });
+    const { container } = renderMessage({ role: "agent", text: "", timeline });
     expect(screen.getByText("Pwsh", { selector: ".at-kind" })).toBeInTheDocument();
     expect(screen.getByText("Get-Location; Get-ChildItem -Force", { selector: ".at-label" })).toBeInTheDocument();
     fireEvent.click(container.querySelector(".at-card-head") as HTMLButtonElement);
@@ -232,7 +235,7 @@ describe("AgentMessageBubble", () => {
         kind: "text",
       },
     })];
-    const { container } = renderBubble({ role: "agent", text: "", timeline });
+    const { container } = renderMessage({ role: "agent", text: "", timeline });
     expect(screen.getByText("Read", { selector: ".at-kind" })).toBeInTheDocument();
     fireEvent.click(container.querySelector(".at-card-head") as HTMLButtonElement);
     expect(container.querySelectorAll(".at-code-no").length).toBeGreaterThan(0);
@@ -246,7 +249,7 @@ describe("AgentMessageBubble", () => {
   });
 
   it("marks failed and running tool cards", () => {
-    const { container } = renderBubble({
+    const { container } = renderMessage({
       role: "agent",
       text: "",
       timeline: [
@@ -259,13 +262,13 @@ describe("AgentMessageBubble", () => {
   });
 
   it("mounts the question card only while its run awaits the user's answer", async () => {
-    renderBubble({ role: "agent", text: "answer", runId: "run_1", runStatus: "waiting_confirmation" });
+    renderMessage({ role: "agent", text: "answer", runId: "run_1", runStatus: "waiting_confirmation" });
     expect(await screen.findByTestId("question-card")).toBeInTheDocument();
     expect(screen.getByText("确认，开始 ingest")).toBeInTheDocument();
   });
 
   it("does not mount a question card for a settled run", async () => {
-    renderBubble({ role: "agent", text: "answer", runId: "run_1", runStatus: "succeeded" });
+    renderMessage({ role: "agent", text: "answer", runId: "run_1", runStatus: "succeeded" });
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     expect(screen.queryByTestId("question-card")).toBeNull();
   });
@@ -291,10 +294,66 @@ describe("AgentMessageBubble", () => {
       maintenance: {},
     });
 
-    renderBubble({ ...message, streaming: false });
+    renderMessage({ ...message, streaming: false });
 
     expect(screen.getAllByText("模型响应超时，进度已保留，可以继续这次运行")).toHaveLength(1);
     // 原始报错不再冒泡到界面：它留在 step.message 与诊断面板里，两处都在出口脱敏过。
     expect(screen.queryByText(/Error code: 500/)).toBeNull();
+  });
+
+  it("renders the agent answer as document flow, with no author row and no bubble", () => {
+    const { container } = renderMessage({ role: "agent", text: "答案正文" });
+
+    expect(screen.getByText("答案正文")).toBeInTheDocument();
+    expect(container.querySelector(".message.agent .message-body")).not.toBeNull();
+    expect(container.querySelector(".message-author")).toBeNull();
+    expect(container.querySelector(".message-bubble")).toBeNull();
+  });
+
+  it("keeps the user's message a right-aligned block and nothing else", () => {
+    const { container } = renderMessage({ role: "user", text: "请给我诊断表" });
+
+    expect(container.querySelector(".message.user .message-body")).not.toBeNull();
+    // 对齐就是身份：作者行删了，"你"那个标签也不需要了。
+    expect(container.querySelector(".message-author")).toBeNull();
+  });
+
+  it("puts the run's exits in its footnote, each clickable exactly once", () => {
+    const onRetry = vi.fn();
+    const onAbandon = vi.fn();
+    renderMessage(
+      { role: "agent", text: "答案", runId: "run_1", runStatus: "unfinished" },
+      [
+        { kind: "retry", onAct: onRetry },
+        { kind: "abandon", onAct: onAbandon },
+      ],
+    );
+
+    // 状态词只说结果；完整那句说明仍由时间线的 status 节点独家承担。
+    expect(screen.getByTestId("agent-footnote").textContent).toContain("已中断");
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    fireEvent.click(screen.getByRole("button", { name: "放弃" }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(onAbandon).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows a settled run's status word and no exits it was not given", () => {
+    renderMessage({ role: "agent", text: "答案", runId: "run_1", runStatus: "succeeded" });
+
+    const footnote = screen.getByTestId("agent-footnote");
+    expect(footnote.textContent).toContain("已完成");
+    expect(footnote.querySelector(".footnote-action")).toBeNull();
+  });
+
+  it("holds the footnote back while the run is still streaming", () => {
+    renderMessage({
+      role: "agent",
+      text: "答",
+      runId: "run_1",
+      runStatus: "running",
+      streaming: true,
+    });
+
+    expect(screen.queryByTestId("agent-footnote")).toBeNull();
   });
 });

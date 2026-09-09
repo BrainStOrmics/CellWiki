@@ -165,7 +165,7 @@ export function reduceAgentRunMessages(
   }
 
   if (event.type === "task_confirmation_required") {
-    // 提问卡挂在 message.runStatus 上（AgentMessageBubble.isAwaitingUserAnswer）。
+    // 提问卡挂在 message.runStatus 上（AgentTranscriptMessage.isAwaitingUserAnswer）。
     // 直播路径此前没有注册这个事件名，EventSource 直接丢弃；回放路径虽然把事件
     // 喂给了 reducer，这里也不认它 —— 两条路径都只能指望随后那条 run_status。
     // 让事件自己把 run 标成"等待用户回答"，卡片就不再依赖事件到达顺序。

@@ -1,5 +1,4 @@
 import {
-  Brain,
   Check,
   ChevronRight,
   CircleAlert,
@@ -15,7 +14,7 @@ import {
 import { useState, type ComponentType } from "react";
 import { Highlight, Prism, type PrismTheme } from "prism-react-renderer";
 import { MarkdownContent } from "../../components/MarkdownContent";
-import { useI18n } from "../../i18n";
+import { useI18n, type MessageKey } from "../../i18n";
 import { getText } from "../../lib/product-api";
 import { AgentRunDiagnostics } from "./AgentRunDiagnostics";
 import { QuestionCard } from "./QuestionCard";
@@ -26,35 +25,41 @@ import type {
   AgentToolArgsDisplay,
   AgentToolEditDiff,
   AgentToolResultPreview,
+  AgentUsageSegment,
   ChatMessage,
 } from "../../types";
 
-type AgentMessageBubbleProps = {
+/** 属于某条 run 的出口动作，由 AppShell 判定后投给对应的那条消息。 */
+export type AgentRunAction = {
+  kind: "retry" | "abandon";
+  onAct: () => void;
+};
+
+type AgentTranscriptMessageProps = {
   message: ChatMessage;
-  agentLabel: string;
-  userLabel: string;
   reasoningTitle: string;
   reasoningLiveLabel: string;
+  runActions?: AgentRunAction[];
   onQuestionAnswered?: (runId: string) => void;
 };
 
-/** One agent message rendered as a flat, chronological timeline of lightweight nodes. */
-export function AgentMessageBubble({
+/**
+ * One turn rendered as document flow: no bubble, no avatar, no author row.
+ * Alignment alone separates the two speakers — the user's message is a small
+ * right-aligned block, the agent's answer sits directly on the panel.
+ */
+export function AgentTranscriptMessage({
   message,
-  agentLabel,
-  userLabel,
   reasoningTitle,
   reasoningLiveLabel,
+  runActions,
   onQuestionAnswered,
-}: AgentMessageBubbleProps) {
+}: AgentTranscriptMessageProps) {
   const isAgent = message.role === "agent";
   const nodes = timelineNodes(message);
 
   return (
     <div className={`message ${message.role} ${message.streaming ? "is-streaming" : ""}`}>
-      <div className="message-author">
-        {isAgent ? <><Brain size={13} />{agentLabel}</> : userLabel}
-      </div>
       {!isAgent && message.attachments && message.attachments.length > 0 && (
         <div className="message-attachments">
           {message.attachments.map((attachment) => (
@@ -69,7 +74,7 @@ export function AgentMessageBubble({
           ))}
         </div>
       )}
-      <div className="message-bubble">
+      <div className="message-body">
         {isAgent && nodes.length > 0 ? (
           <div className="agent-timeline">
             {nodes.map((node, index) => (
@@ -94,7 +99,12 @@ export function AgentMessageBubble({
       {isAgent && message.runId && (
         <>
           {!message.streaming && (
-            <AgentRunDiagnostics runId={message.runId} usageSegments={message.usageSegments} />
+            <AgentRunFootnote
+              runId={message.runId}
+              status={message.runStatus}
+              usageSegments={message.usageSegments}
+              runActions={runActions}
+            />
           )}
           {isAwaitingUserAnswer(message.runStatus) && (
             <QuestionCard runId={message.runId} onAnswered={onQuestionAnswered} />
@@ -102,6 +112,69 @@ export function AgentMessageBubble({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * The quiet line a run ends on: what happened to it, what it cost, and the exits
+ * it promised. Exported because a run with no transcript message of its own still
+ * needs somewhere to put its exits.
+ */
+export function AgentRunFootnote({
+  runId,
+  status,
+  usageSegments,
+  runActions,
+}: {
+  runId: string;
+  status?: AgentRunStatus;
+  usageSegments?: AgentUsageSegment[];
+  runActions?: AgentRunAction[];
+}) {
+  return (
+    <div className="message-footnote" data-testid="agent-footnote">
+      <RunStatusWord status={status} />
+      <AgentRunDiagnostics runId={runId} usageSegments={usageSegments} />
+      <RunActions actions={runActions} />
+    </div>
+  );
+}
+
+/** 终态才出状态词；进行中的态由活动条和 composer 的槽位表达，不在脚注里重复。 */
+const RUN_STATUS_WORD: Partial<Record<AgentRunStatus, MessageKey>> = {
+  succeeded: "chat.runStatus.succeeded",
+  failed: "chat.runStatus.failed",
+  unfinished: "chat.runStatus.unfinished",
+  cancelled: "chat.runStatus.cancelled",
+  rejected: "chat.runStatus.rejected",
+  waiting_confirmation: "chat.runStatus.waiting",
+  waiting_approval: "chat.runStatus.waiting",
+};
+
+function RunStatusWord({ status }: { status: AgentRunStatus | undefined }) {
+  const { t } = useI18n();
+  const key = status ? RUN_STATUS_WORD[status] : undefined;
+  if (!key) return null;
+  return <span className={`footnote-status is-${status}`}>{t(key)}</span>;
+}
+
+function RunActions({ actions }: { actions?: AgentRunAction[] }) {
+  const { t } = useI18n();
+  if (!actions || actions.length === 0) return null;
+  return (
+    <>
+      {actions.map((action) => (
+        <button
+          className="footnote-action"
+          key={action.kind}
+          type="button"
+          title={action.kind === "retry" ? t("chat.retryHint") : t("chat.abandonHint")}
+          onClick={action.onAct}
+        >
+          {action.kind === "retry" ? t("chat.retry") : t("chat.abandon")}
+        </button>
+      ))}
+    </>
   );
 }
 

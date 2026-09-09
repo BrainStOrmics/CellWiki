@@ -10,7 +10,6 @@ import {
   PanelLeft,
   Play,
   RefreshCw,
-  RotateCcw,
   CirclePlus,
   Search,
   Send,
@@ -30,7 +29,7 @@ import { useUiStore } from "../stores/ui-store";
 import { appendAsyncTask, attachmentReferencesForIds } from "./attachment-upload-queue";
 import { CommandPalette } from "../features/search/CommandPalette";
 import { ThreadList } from "../features/agent/ThreadList";
-import { AgentMessageBubble } from "../features/agent/AgentMessageBubble";
+import { AgentRunFootnote, AgentTranscriptMessage, type AgentRunAction } from "../features/agent/AgentTranscriptMessage";
 import { reduceAgentRunMessages, type AgentRunReducerLabels } from "../features/agent/agent-run-reducer";
 import { createAgentEventScheduler, flushesChatImmediately } from "../features/agent/agent-event-scheduler";
 import { QuestionCard } from "../features/agent/QuestionCard";
@@ -523,6 +522,25 @@ export function AppShell() {
     resumableRunId: resumableAgentRunId,
     hasDraft: Boolean(draft.trim()),
   });
+
+  // 重试/放弃跟着它所属的那条 run 走，渲染在该 run 的脚注里，面板底部不再另设一份。
+  // 停止/继续仍留在 composer 的槽位：运行态的动作只有一个家，两处并存迟早互相打脸。
+  function runActionsFor(runId: string | null): AgentRunAction[] {
+    if (!runId || agentBusy) return [];
+    const actions: AgentRunAction[] = [];
+    if (retryableAgentRunId === runId) actions.push({ kind: "retry", onAct: () => void retryAgentRun() });
+    // 标题栏那颗停止键删掉之后，"只放弃、不发新消息"就只剩这一个出口。不能省：中断态
+    // 的 run 占着串行门禁，而 delete_thread 有活动 run 守卫，没有它连会话都删不掉。
+    if (resumableAgentRunId === runId) actions.push({ kind: "abandon", onAct: () => void cancelActiveAgentRun() });
+    return actions;
+  }
+
+  // 被取消的 run 不落 assistant 行，transcript 里没有它的消息，脚注就无处可挂。这种
+  // 情况下在面板底部补一条同样的脚注，否则上面那个死结又回来了。
+  const orphanActionRunId = [retryableAgentRunId, resumableAgentRunId]
+    .find((runId): runId is string => Boolean(runId) && !messages.some((message) => message.runId === runId))
+    ?? null;
+  const orphanRunActions = runActionsFor(orphanActionRunId);
 
   // 这个 effect 必须排在 waitingOnQuestion 之后：依赖数组在渲染期求值，放前面会撞 TDZ。
   useEffect(() => {
@@ -1662,28 +1680,21 @@ export function AppShell() {
             <div className="chat-scroll" ref={chatScrollRef}>
               <div className="chat-day">{t("chat.session")}</div>
               {messages.map((message, index) => (
-                <AgentMessageBubble
+                <AgentTranscriptMessage
                   key={`${message.role}-${message.runId ?? "message"}-${index}`}
                   message={message}
-                  agentLabel="CewiPilot"
-                  userLabel={t("agent.you")}
                   reasoningTitle={t("chat.reasoning")}
                   reasoningLiveLabel={t("chat.reasoningLive")}
+                  runActions={runActionsFor(message.runId ?? null)}
                   onQuestionAnswered={(runId) => { void resumeAfterAnswer(runId); }}
                 />
               ))}
-              {retryableAgentRunId && !agentBusy && (
-                <button className="agent-retry" onClick={() => void retryAgentRun()}>
-                  <RotateCcw size={12} />{t("chat.retry")}
-                </button>
-              )}
-              {resumableAgentRunId && !agentBusy && (
-                // 标题栏那颗停止键删掉之后，这里是"只放弃、不发新消息"的唯一出口。
-                // 不能省：中断态的 run 占着串行门禁，而 delete_thread 有活动 run 守卫，
-                // 没有放弃入口的话连会话都删不掉 —— 又一个死结。
-                <button className="agent-retry" onClick={() => void cancelActiveAgentRun()}>
-                  <X size={12} />{t("chat.abandon")}
-                </button>
+              {orphanRunActions.length > 0 && orphanActionRunId && (
+                <AgentRunFootnote
+                  runId={orphanActionRunId}
+                  status={retryableAgentRunId === orphanActionRunId ? "failed" : "unfinished"}
+                  runActions={orphanRunActions}
+                />
               )}
               {agentBusy && <div className="agent-thinking"><i /><i /><i /><span>{agentActivity || t("chat.reasoningLive")}</span></div>}
               {waitingOnQuestion && (

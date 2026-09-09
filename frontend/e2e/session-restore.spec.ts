@@ -38,7 +38,7 @@ test("a settled conversation is still there after a page reload", async ({ page 
   await expect(page.getByText("CellWiki", { exact: true }).first()).toBeVisible();
 
   await selectSeededThread(page);
-  await expect(page.locator(".message.user .message-bubble")).toBeVisible();
+  await expect(page.locator(".message.user .message-body")).toBeVisible();
   const threadId = await persistedActiveThreadId(page);
   expect(threadId).not.toBeNull();
 
@@ -46,8 +46,8 @@ test("a settled conversation is still there after a page reload", async ({ page 
   await page.reload({ waitUntil: "domcontentloaded", timeout: 120_000 });
   await expect.poll(() => persistedActiveThreadId(page)).toBe(threadId);
   await expect(page.locator(".markdown-content h2", { hasText: /Evidence summary|证据摘要/ })).toBeVisible();
-  await expect(page.locator(".message.user .message-bubble")).toBeVisible();
-  await expect(page.locator(".message.agent .message-bubble")).toBeVisible();
+  await expect(page.locator(".message.user .message-body")).toBeVisible();
+  await expect(page.locator(".message.agent .message-body")).toBeVisible();
 });
 
 test("reselecting the open conversation then + starts a new one", async ({ page }) => {
@@ -72,7 +72,7 @@ test("reselecting the open conversation then + starts a new one", async ({ page 
   await page.waitForTimeout(2_500);
   expect(await persistedActiveThreadId(page)).toBe(newThreadId);
   await expect(page.locator(".markdown-content h2", { hasText: /Evidence summary|证据摘要/ })).toHaveCount(0);
-  await expect(page.locator(".message.user .message-bubble")).toHaveCount(0);
+  await expect(page.locator(".message.user .message-body")).toHaveCount(0);
 });
 
 test("a refused resume clears busy and keeps the continue affordance", async ({ page }) => {
@@ -107,7 +107,7 @@ test("a refused resume clears busy and keeps the continue affordance", async ({ 
   await continueButton.click();
 
   await expect(page.locator(".agent-thinking")).toHaveCount(0);
-  await expect(page.locator(".message.agent .message-bubble").last()).toContainText(
+  await expect(page.locator(".message.agent .message-body").last()).toContainText(
     /invalid resume|409/,
   );
   await expect(continueButton).toBeVisible();

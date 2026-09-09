@@ -107,10 +107,16 @@ describe("Agent sidebar layout", () => {
     expect(composeSource).toContain('title={t("chat.cancelHint")}');
 
     // 标题栏那颗 13px 停止键已删（实测像素点击 4 次偏 3 次，读屏也找不到）。它原本
-    // 担的活——"中断态下只放弃、不发新消息"——由消息区那颗显式的键接过去。不能没有：
-    // 中断的 run 占着串行门禁，而 delete_thread 有活动 run 守卫，否则连会话都删不掉。
+    // 担的活——"中断态下只放弃、不发新消息"——现在由 run 脚注里那颗显式的键接过去
+    // （渲染在 AgentTranscriptMessage 里）。AppShell 这边只剩判定与投递：每条消息拿到
+    // 属于自己 run 的动作，另给"transcript 里没有消息可挂"的 run 兜一条同样的脚注。
+    // 不能没有：中断的 run 占着串行门禁，而 delete_thread 有活动 run 守卫，否则连会话
+    // 都删不掉。
     expect(appShellSource).not.toContain('className="icon-button stop-run"');
-    expect(appShellSource).toContain('t("chat.abandon")');
+    expect(appShellSource).not.toContain('className="agent-retry"');
+    expect(appShellSource).toContain('kind: "abandon"');
+    expect(appShellSource).toContain("runActionsFor(message.runId ?? null)");
+    expect(appShellSource).toContain("<AgentRunFootnote");
   });
 
   it("Esc 停止运行，但让位给命令面板，且不碰提问态与中断态", () => {

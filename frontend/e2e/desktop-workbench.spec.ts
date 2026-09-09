@@ -68,8 +68,8 @@ test("three-pane workspace, grounded search, and language settings remain usable
   await expect(page.locator(".markdown-content h2", { hasText: /Evidence summary|证据摘要/ })).toBeVisible();
   await expect(page.locator(".markdown-content table")).toBeVisible();
   await expect(page.locator(".markdown-content pre code")).toContainText("Evidence");
-  await expect(page.locator(".message.user .message-bubble")).toBeVisible();
-  await expect(page.locator(".message.agent .message-bubble")).toBeVisible();
+  await expect(page.locator(".message.user .message-body")).toBeVisible();
+  await expect(page.locator(".message.agent .message-body")).toBeVisible();
   const restoredTrace = page.locator(".agent-run-diagnostics").first();
   await expect(restoredTrace).toBeVisible();
   await expect(restoredTrace).not.toHaveAttribute("open", "");
@@ -137,8 +137,8 @@ test("Agent streams ordinary text through the browser, runtime, SSE, and durable
   await page.locator(".chat-compose textarea").fill(prompt);
   await page.getByRole("button", { name: /发送消息|Send message/ }).click();
 
-  await expect(page.locator(".message.user .message-bubble").last()).toContainText("FOXP3");
-  const answer = page.locator(".message.agent .message-bubble", {
+  await expect(page.locator(".message.user .message-body").last()).toContainText("FOXP3");
+  const answer = page.locator(".message.agent .message-body", {
     hasText: "FOXP3 是 Regulatory T cell 的证据标记。",
   });
   await expect(answer).toBeVisible();

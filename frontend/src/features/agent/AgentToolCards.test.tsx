@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { AgentMessageBubble } from "./AgentMessageBubble";
+import { AgentTranscriptMessage } from "./AgentTranscriptMessage";
 import { reduceAgentRunMessages, type AgentRunReducerLabels } from "./agent-run-reducer";
 import { LanguageProvider } from "../../i18n";
 import type { AgentEvent, AgentProcessStep, AgentTimelineNode, ChatMessage } from "../../types";
@@ -46,10 +46,8 @@ function event(
 function renderBubble(message: ChatMessage) {
   return render(
     <LanguageProvider>
-      <AgentMessageBubble
+      <AgentTranscriptMessage
         message={message}
-        agentLabel="Agent"
-        userLabel="You"
         reasoningTitle="Thinking"
         reasoningLiveLabel="live"
       />
