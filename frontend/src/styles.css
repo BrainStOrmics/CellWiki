@@ -573,15 +573,6 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .message-attachments { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; margin: 0 0 6px; }
 .message-attachment { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid var(--border-soft); border-radius: var(--radius-s); color: var(--muted); background: var(--bg-raised); font-size: 10.5px; }
 .message-attachment span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.message-citations { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
-.message-citation { display: inline-flex; max-width: 100%; align-items: center; gap: 5px; padding: 5px 7px; border: 1px solid #35465e; border-radius: 4px; color: #9dbcf0; background: #192230; font-size: 9px; }
-button.message-citation:hover { border-color: #587caf; color: #c4d8fa; background: #1e2a3c; }
-.message-citation span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.message-citation small { display: inline; margin: 0 0 0 2px; color: #627898; font-size: 8px; letter-spacing: 0; }
-.message-evidence-gap { margin-top: 9px; padding: 8px 9px; border-left: 2px solid #8d6d38; color: #8b7959; background: rgba(112, 85, 39, 0.08); font-size: 9px; line-height: 1.45; }
-.message-evidence-gap b,
-.message-evidence-gap span { display: block; }
-.message-evidence-gap b { margin-bottom: 3px; color: #b8a171; font-weight: 600; }
 .agent-thinking { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 11.5px; }
 .agent-thinking i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); animation: pulse 1s infinite; }
 .agent-thinking i:nth-child(2) { animation-delay: 140ms; }
@@ -1582,11 +1573,6 @@ button.message-citation:hover { border-color: #587caf; color: #c4d8fa; backgroun
 
 /* Agent chat primitives */
 :root[data-theme="light"] .chat-day { color: var(--subtle); }
-:root[data-theme="light"] .message-citation { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft-2); }
-:root[data-theme="light"] button.message-citation:hover { border-color: var(--accent-line-strong); color: var(--accent); background: var(--accent-soft); }
-:root[data-theme="light"] .message-citation small { color: var(--subtle); }
-:root[data-theme="light"] .message-evidence-gap { border-left-color: #b88d48; color: #806329; background: #fff8e8; }
-:root[data-theme="light"] .message-evidence-gap b { color: #8a6a2c; }
 :root[data-theme="light"] { --code-plain: #33373d; --code-comment: #8b9199; --code-keyword: #6b53a8; --code-string: #3f7a52; --code-number: #96650f; --code-function: #5f57a8; --code-punctuation: #6b7280; }
 
 :root[data-theme="light"] .agent-review-card { border-color: rgba(154, 116, 38, 0.45); background: var(--warning-soft); }
@@ -1684,7 +1670,6 @@ textarea {
   border-radius: var(--radius-m);
   font-size: 11px;
 }
-.message-citations button,
 .quality-issue > button,
 .agent-review-card button {
   border-radius: var(--radius-m);
@@ -1930,10 +1915,6 @@ select:focus-visible {
 :root[data-theme="light"] .agent-process-trace-list { border-color: #d9e3ec; }
 :root[data-theme="light"] .agent-process-step { color: #526271; }
 :root[data-theme="light"] .agent-process-step + .agent-process-step { border-color: #dde5ed; }
-
-/* Message citations and evidence */
-:root[data-theme="light"] .message-citations button { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft-2); }
-:root[data-theme="light"] .message-evidence-gap { border-color: #b88d48; color: #806329; background: #fff8e8; }
 
 /* Compose actions and agent modes */
 
