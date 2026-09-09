@@ -26,4 +26,19 @@ describe("Diff review panel toggle and view restore", () => {
     expect(appShellSource).toContain("onClick={() => (diffPanelOpen ? closeDiffPanel() : openDiffPanel())}");
     expect(appShellSource).toContain("<DiffBrowser onExit={closeDiffPanel}");
   });
+
+  it("lets new navigation take over from an open diff panel instead of swallowing it", () => {
+    // 工作区按 CRLF 检出，?raw 里带 \r\n；多行片段断言前先归一化。
+    const source = appShellSource.replaceAll("\r\n", "\n");
+    expect(source).toContain("function leaveDiffPanelForNavigation()");
+    expect(source).toContain(
+      "function openWorkspaceFile(entry: WorkspaceTreeEntry) {\n    if (diffPanelOpen) leaveDiffPanelForNavigation();",
+    );
+    expect(source).toContain(
+      "async function openWikiTarget(pageId: string) {\n    if (diffPanelOpen) leaveDiffPanelForNavigation();",
+    );
+    expect(source).toContain(
+      "if (result.page_id) {\n      if (diffPanelOpen) leaveDiffPanelForNavigation();",
+    );
+  });
 });

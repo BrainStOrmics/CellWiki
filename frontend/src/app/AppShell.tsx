@@ -1380,6 +1380,7 @@ export function AppShell() {
 
   function openSearchResult(result: SearchResult) {
     if (result.page_id) {
+      if (diffPanelOpen) leaveDiffPanelForNavigation();
       setSelectedId(result.page_id);
       setComposerPageRef({ page_id: result.page_id, title: result.title });
       setActiveView("wiki");
@@ -1388,6 +1389,7 @@ export function AppShell() {
 
   // 工作区文件树打开：wiki 页面走现有阅读器，其余文件走工作区查看器
   function openWorkspaceFile(entry: WorkspaceTreeEntry) {
+    if (diffPanelOpen) leaveDiffPanelForNavigation();
     setActiveView("wiki");
     if (entry.kind === "file" && entry.type === "md" && entry.path.startsWith("wiki/")) {
       const page = pages.find((candidate) => candidate.path === entry.path);
@@ -1406,6 +1408,7 @@ export function AppShell() {
   }
 
   async function openWikiTarget(pageId: string) {
+    if (diffPanelOpen) leaveDiffPanelForNavigation();
     // 优先按页面注册表跳转 Wiki 阅读器；找不到时在工作区树里按文件名解析并打开
     if (pages.some((page) => page.page_id === pageId)) {
       const page = pages.find((candidate) => candidate.page_id === pageId);
@@ -1449,6 +1452,13 @@ export function AppShell() {
     const saved = diffReturnRef.current;
     setWorkspaceFile(saved.workspaceFile);
     setSelectedId(saved.selectedId);
+  }
+
+  // 面板开着时的新导航（树点击 / wiki 链接 / 命令面板）优先接管阅读器：直接关面板，
+  // 并作废打开面板时记的"关闭回旧页"预约，否则用户会被拽回已经离开的旧页。
+  function leaveDiffPanelForNavigation() {
+    diffReturnRef.current = { workspaceFile: null, selectedId: "" };
+    setDiffPanelOpen(false);
   }
 
   return (

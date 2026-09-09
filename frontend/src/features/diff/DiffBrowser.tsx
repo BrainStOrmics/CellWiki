@@ -194,10 +194,14 @@ export function DiffBrowser({ onExit, onCountChange }: Props) {
               <div className="tree-empty diff-empty">当前没有待判定单元；已判定单元见下方历史。</div>
             ) : pending.map((d) => (
               <button key={d.diff_id} className={selected?.diff_id === d.diff_id ? "diff-card selected" : "diff-card"} onClick={() => void open(d)}>
-                <span className={`diff-status ${d.status}`}>{d.status}</span>
-                {unitBadge(d)}
-                <strong>{d.run_id}</strong>
-                <small>+{d.insertions} −{d.deletions} · {d.files.length} 文件 · {d.commits.length} 提交</small>
+                <span className="diff-card-top">
+                  <span className={`diff-status ${d.status}`}>{d.status}</span>
+                  {unitBadge(d)}
+                </span>
+                <span className="diff-card-main">
+                  <strong>{d.run_id}</strong>
+                  <small>+{d.insertions} −{d.deletions} · {d.files.length} 文件 · {d.commits.length} 提交</small>
+                </span>
               </button>
             ))}
           </div>
@@ -211,10 +215,14 @@ export function DiffBrowser({ onExit, onCountChange }: Props) {
                 <div className="diff-list diff-history-list">
                   {resolved.map((d) => (
                     <button key={d.diff_id} className={selected?.diff_id === d.diff_id ? "diff-card selected readonly" : "diff-card readonly"} onClick={() => void open(d)}>
-                      <span className={`diff-status ${d.status}`}>{d.status}</span>
-                      {unitBadge(d)}
-                      <strong>{d.run_id}</strong>
-                      <small>+{d.insertions} −{d.deletions} · {d.files.length} 文件</small>
+                      <span className="diff-card-top">
+                        <span className={`diff-status ${d.status}`}>{d.status}</span>
+                        {unitBadge(d)}
+                      </span>
+                      <span className="diff-card-main">
+                        <strong>{d.run_id}</strong>
+                        <small>+{d.insertions} −{d.deletions} · {d.files.length} 文件</small>
+                      </span>
                     </button>
                   ))}
                 </div>
