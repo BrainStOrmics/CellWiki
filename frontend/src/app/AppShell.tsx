@@ -1591,11 +1591,6 @@ export function AppShell() {
                 <article className="wiki-document">
                   <div className="document-kicker">{t("reader.cellType").toUpperCase()} · {String(detail.frontmatter.cl_id ?? t("reader.unmapped").toUpperCase())}</div>
                   <h1>{selectedTitle}</h1>
-                  <div className="document-meta">
-                    <span>{references.length} {t("reader.references")}</span>
-                    <span>{t("reader.stable")}</span>
-                    <span>{t("reader.verified")}</span>
-                  </div>
                   <MarkdownReader
                     markdown={detail.markdown}
                     onWikiLink={(pageId) => { void openWikiTarget(pageId); }}
@@ -1621,7 +1616,6 @@ export function AppShell() {
                           : <span>{t("reader.noReferences")}</span>}
                       </div>
                     </div>
-                    <span>{t("reader.projectionStable")}</span>
                   </footer>
                 </article>
               )}
