@@ -143,6 +143,34 @@ describe("AgentMessageBubble", () => {
     expect(document.querySelector(".agent-timeline-think-body")?.textContent).toContain("第二段思考内容");
   });
 
+  it("stops labeling a finished thinking block as live once a later node arrives", () => {
+    renderBubble({
+      role: "agent",
+      text: "",
+      timeline: [
+        { kind: "thinking", text: "第一段思考内容\n第二段思考内容" },
+        toolNode({ toolCallId: "c1" }),
+      ],
+      streaming: true,
+    });
+    expect(screen.queryByText("思考中…")).not.toBeInTheDocument();
+    expect(screen.getByText("第一段思考内容", { selector: ".at-think-preview" })).toBeInTheDocument();
+  });
+
+  it("keeps the trailing thinking block live while the run streams", () => {
+    renderBubble({
+      role: "agent",
+      text: "",
+      timeline: [
+        toolNode({ toolCallId: "c1" }),
+        { kind: "thinking", text: "第一段思考内容\n第二段思考内容" },
+      ],
+      streaming: true,
+    });
+    expect(screen.getByText("思考中…")).toBeInTheDocument();
+    expect(screen.getByText("第二段思考内容", { selector: ".at-think-preview" })).toBeInTheDocument();
+  });
+
   it("truncates a long thinking preview line", () => {
     const long = "x".repeat(150);
     renderBubble({ role: "agent", text: "", timeline: [{ kind: "thinking", text: long }] });

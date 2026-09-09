@@ -76,7 +76,9 @@ export function AgentMessageBubble({
               <TimelineNode
                 key={`${node.kind}-${index}`}
                 node={node}
-                streaming={Boolean(message.streaming)}
+                // 只有时间线末尾的思考块还在接收 delta；已结束的思考段即使 run 没跑完
+                // 也不该再挂"思考中…"和末行预览（实测：思考结束后标签一直亮到 run 终态）。
+                streaming={Boolean(message.streaming) && index === nodes.length - 1}
                 reasoningTitle={reasoningTitle}
                 reasoningLiveLabel={reasoningLiveLabel}
               />
