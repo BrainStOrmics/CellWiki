@@ -1764,8 +1764,6 @@ class AgentRuntimeManager:
         call_usage: dict[str, list[int]] = {}
         call_started: dict[str, float] = {}
         call_seen_last: dict[str, float] = {}
-        # First visible-content delta per model call -> TTFT for that round.
-        call_first_token: dict[str, float] = {}
         # Open tool calls keyed by tool_call_id -> (name, started_monotonic).
         tool_open: dict[str, tuple[str, float]] = {}
         counted_tool_starts: set[str] = set()
@@ -1797,7 +1795,6 @@ class AgentRuntimeManager:
                     call_usage,
                     call_started,
                     call_seen_last,
-                    call_first_token,
                 )
                 # Any tool call that never reported completion (cancelled/failed
                 # run) still gets a span so the timeline totals reflect the time
@@ -1910,8 +1907,6 @@ class AgentRuntimeManager:
                         break
                     if signal.type == AgentEventType.MESSAGE_DELTA:
                         if signal.message:
-                            if signal.model_call_id:
-                                call_first_token.setdefault(signal.model_call_id, time.monotonic())
                             assistant_text_parts.append(signal.message)
                             self.store.append_event(
                                 run_id,
@@ -1930,8 +1925,6 @@ class AgentRuntimeManager:
                         continue
                     if signal.type == AgentEventType.REASONING_DELTA:
                         if signal.message:
-                            if signal.model_call_id:
-                                call_first_token.setdefault(signal.model_call_id, time.monotonic())
                             self.store.append_event(
                                 run_id,
                                 signal.type,
@@ -2074,7 +2067,6 @@ class AgentRuntimeManager:
         call_usage: dict[str, list[int]],
         call_started: dict[str, float],
         call_seen_last: dict[str, float],
-        call_first_token: dict[str, float],
     ) -> None:
         """Write one redacted span per model call so diagnostics has per-round rows."""
         if not call_usage:
@@ -2085,8 +2077,6 @@ class AgentRuntimeManager:
             started = call_started.get(call_id, 0.0)
             last = call_seen_last.get(call_id, started)
             duration_ms = max(0.0, (last - started) * 1000.0)
-            first = call_first_token.get(call_id)
-            ttft_ms = max(0.0, (first - started) * 1000.0) if first else None
             started_at = (
                 finished_at - timedelta(seconds=duration_ms / 1000.0)
                 if duration_ms > 0
@@ -2102,7 +2092,6 @@ class AgentRuntimeManager:
                     started_at=started_at,
                     finished_at=finished_at,
                     duration_ms=duration_ms,
-                    ttft_ms=ttft_ms,
                     input_tokens=tokens[0],
                     output_tokens=tokens[1],
                     cached_input_tokens=tokens[2],

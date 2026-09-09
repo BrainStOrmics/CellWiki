@@ -1920,11 +1920,7 @@ _SENSITIVE_SPAN_KEYS = {
 
 
 def _merge_usage(base: RunUsage, add: RunUsage) -> RunUsage:
-    """Sum one stream segment's usage into the run's lifetime totals.
-
-    ``ttft_ms`` keeps the first observed value (the run's first model call),
-    not a sum; every other field is cumulative work actually performed.
-    """
+    """Sum one stream segment's usage into the run's lifetime totals."""
 
     return RunUsage(
         model_calls=base.model_calls + add.model_calls,
@@ -1939,7 +1935,6 @@ def _merge_usage(base: RunUsage, add: RunUsage) -> RunUsage:
         tool_calls_completed=base.tool_calls_completed + add.tool_calls_completed,
         tool_calls_failed=base.tool_calls_failed + add.tool_calls_failed,
         tool_calls_cancelled=base.tool_calls_cancelled + add.tool_calls_cancelled,
-        ttft_ms=base.ttft_ms if base.ttft_ms is not None else add.ttft_ms,
         elapsed_seconds=base.elapsed_seconds + add.elapsed_seconds,
         read_chars=base.read_chars + add.read_chars,
         read_tokens=base.read_tokens + add.read_tokens,

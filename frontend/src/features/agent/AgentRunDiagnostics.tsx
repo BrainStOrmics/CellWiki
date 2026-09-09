@@ -44,7 +44,6 @@ export function AgentRunDiagnostics({ runId, usageSegments }: AgentRunDiagnostic
   const segments = summarySegments(diagnostics, modelSpans, toolSpans, usage, t);
   if (segments.length === 0) return null;
 
-  const hasTtft = modelSpans.some((span) => span.ttft_ms != null);
   const thread = diagnostics.thread_summary;
 
   return (
@@ -113,7 +112,6 @@ export function AgentRunDiagnostics({ runId, usageSegments }: AgentRunDiagnostic
             <thead>
               <tr>
                 <th>Round</th><th>In</th><th>Out</th><th>Cached</th><th>Hit</th><th>Duration</th>
-                {hasTtft && <th>TTFT</th>}
               </tr>
             </thead>
             <tbody>
@@ -125,7 +123,6 @@ export function AgentRunDiagnostics({ runId, usageSegments }: AgentRunDiagnostic
                   <td>{span.cached_input_tokens ?? 0}</td>
                   <td>{hitRate(span.cached_input_tokens ?? 0, span.input_tokens)}</td>
                   <td>{Math.round(span.duration_ms ?? 0)} ms</td>
-                  {hasTtft && <td>{span.ttft_ms == null ? "—" : `${Math.round(span.ttft_ms)} ms`}</td>}
                 </tr>
               ))}
             </tbody>
@@ -166,22 +163,15 @@ function summarySegments(
   ].filter(Boolean).join(" · ");
   if (timing) segments.push(timing);
 
-  const ttfts = modelSpans
-    .map((span) => span.ttft_ms)
-    .filter((value): value is number => value != null);
   // 派生比值只在"跑完且真的记到了模型调用"时才有意义。span 的 duration_ms 是观测窗口
   // （同一 model_call_id 首末 chunk 之间），一次爆发或中途断流只有几毫秒，除出来就是
-  // 68k tok/s；TTFT 更是结构性≈0——起点与首 token 由同一个首 delta 置位。失败 run 上
-  // 可信的是状态、错误类型、工具计数与墙钟，不是这些比值。下面那张按轮的表照旧渲染
-  // 缓存/命中两列，所以信息没丢，只是不在摘要里冒充结论。
+  // 68k tok/s。失败 run 上可信的是状态、错误类型、工具计数与墙钟，不是这些比值。
+  // 下面那张按轮的表照旧渲染缓存/命中两列，所以信息没丢，只是不在摘要里冒充结论。
   const derivedRates = usage.model_calls > 0 && diagnostics.status === "succeeded";
   const throughput = derivedRates && llmMs > 0 && usage.output_tokens > 0
     ? `${Math.round(usage.output_tokens / (llmMs / 1000))} tok/s`
     : "";
-  const speed = [
-    derivedRates && ttfts.length > 0 ? fill(t("chat.diagTtft"), formatSeconds(ttfts.reduce((a, b) => a + b, 0) / ttfts.length)) : "",
-    throughput,
-  ].filter(Boolean).join(" · ");
+  const speed = [throughput].filter(Boolean).join(" · ");
   if (speed) segments.push(speed);
 
   if (derivedRates && usage.cached_input_tokens && usage.input_tokens > 0) {

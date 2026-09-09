@@ -35,17 +35,17 @@ const base: AgentDiagnostics = {
   spans: [
     {
       span_id: "s1", run_id: "run_1", kind: "model", name: "gpt-x", status: "completed",
-      started_at: "2026-08-27T00:00:00Z", duration_ms: 6000, ttft_ms: 800,
+      started_at: "2026-08-27T00:00:00Z", duration_ms: 6000,
       input_tokens: 700, output_tokens: 200, cached_input_tokens: 500, data: {},
     },
     {
       span_id: "s2", run_id: "run_1", kind: "model", name: "gpt-x", status: "completed",
-      started_at: "2026-08-27T00:00:01Z", duration_ms: 6500, ttft_ms: null,
+      started_at: "2026-08-27T00:00:01Z", duration_ms: 6500,
       input_tokens: 500, output_tokens: 140, cached_input_tokens: 300, data: {},
     },
     {
       span_id: "t1", run_id: "run_1", kind: "tool", name: "grep", status: "completed",
-      started_at: "2026-08-27T00:00:00Z", duration_ms: 1200, ttft_ms: null,
+      started_at: "2026-08-27T00:00:00Z", duration_ms: 1200,
       input_tokens: 0, output_tokens: 0, data: {},
     },
   ],
@@ -71,15 +71,15 @@ describe("AgentRunDiagnostics", () => {
     vi.mocked(getJson).mockResolvedValue(base);
     renderDiagnostics();
 
-    // model · model calls | LLM time · tool time | ttft · tok/s | cache | tokens
+    // model · model calls | LLM time · tool time | tok/s | cache | tokens
     expect(await screen.findByText("gpt-x · 2次模型调用")).toBeInTheDocument();
     expect(screen.getByText("LLM 12.5s · 工具调用 1.2s")).toBeInTheDocument();
-    expect(screen.getByText("首token平均 0.8s · 27 tok/s")).toBeInTheDocument();
+    expect(screen.getByText("27 tok/s")).toBeInTheDocument();
     expect(screen.getByText("缓存命中 67%")).toBeInTheDocument();
     expect(screen.getByText("输入 1.2K tok · 输出 340 tok")).toBeInTheDocument();
   });
 
-  it("expands to the per-round detail table with a TTFT column", async () => {
+  it("expands to the per-round detail table", async () => {
     vi.mocked(getJson).mockResolvedValue(base);
     const { container } = renderDiagnostics();
     await screen.findByText("gpt-x · 2次模型调用");
@@ -88,9 +88,7 @@ describe("AgentRunDiagnostics", () => {
 
     fireEvent.click(container.querySelector(".agent-run-summary") as HTMLElement);
     expect((container.querySelector(".agent-run-diagnostics") as HTMLDetailsElement).open).toBe(true);
-    expect(screen.getByRole("columnheader", { name: "TTFT" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Round" })).toBeInTheDocument();
-    expect(screen.getByText("800 ms")).toBeInTheDocument();
     expect(
       screen.getByText("3 runs · 3600 in · 800 out · 1900 cached · avg hit 53%"),
     ).toBeInTheDocument();
@@ -101,13 +99,12 @@ describe("AgentRunDiagnostics", () => {
     // becomes 3 and the tool-time segment disappears.
     vi.mocked(getJson).mockResolvedValue({
       ...base,
-      spans: base.spans.map((span) => ({ ...span, kind: span.kind === "tool" ? "model" : span.kind, ttft_ms: null })),
+      spans: base.spans.map((span) => ({ ...span, kind: span.kind === "tool" ? "model" : span.kind })),
     });
     renderDiagnostics();
 
     expect(await screen.findByText("gpt-x · 3次模型调用")).toBeInTheDocument();
     expect(screen.queryByText(/工具调用/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/首token/)).not.toBeInTheDocument();
     // Throughput still derives from model span durations (12.5s + 1.2s).
     expect(screen.getByText("25 tok/s")).toBeInTheDocument();
   });
@@ -115,8 +112,7 @@ describe("AgentRunDiagnostics", () => {
   it("hides the derived rates on a run that never settled", async () => {
     // The reported shape: a span's duration_ms is the observation window between
     // the first and last chunk of one model call, so a stream cut off mid-flight
-    // lasts 3ms and 204 output tokens divide into 68000 tok/s. TTFT is 0 because
-    // the window start and the first token are set by the same delta.
+    // lasts 3ms and 204 output tokens divide into 68000 tok/s.
     vi.mocked(getJson).mockResolvedValue({
       ...base,
       status: "failed",
@@ -125,7 +121,7 @@ describe("AgentRunDiagnostics", () => {
       spans: [
         {
           span_id: "s1", run_id: "run_1", kind: "model", name: "gpt-x", status: "failed",
-          started_at: "2026-09-07T00:00:00Z", duration_ms: 3, ttft_ms: 0,
+          started_at: "2026-09-07T00:00:00Z", duration_ms: 3,
           input_tokens: 1200, output_tokens: 204, cached_input_tokens: 800, data: {},
         },
       ],
@@ -134,7 +130,6 @@ describe("AgentRunDiagnostics", () => {
 
     await screen.findByText("gpt-x · 1次模型调用");
     expect(screen.queryByText(/tok\/s/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/首token/)).not.toBeInTheDocument();
     expect(screen.queryByText(/缓存命中/)).not.toBeInTheDocument();
     // What is still trustworthy on a failed run: the raw token totals, and the
     // per-round table one click away.
@@ -153,7 +148,6 @@ describe("AgentRunDiagnostics", () => {
 
     await screen.findByText("gpt-x · 2次模型调用");
     expect(screen.queryByText(/tok\/s/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/首token/)).not.toBeInTheDocument();
     expect(screen.queryByText(/缓存命中/)).not.toBeInTheDocument();
     expect(screen.getByText("输入 1.2K tok · 输出 340 tok")).toBeInTheDocument();
   });

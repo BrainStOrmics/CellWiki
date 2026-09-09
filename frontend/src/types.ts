@@ -212,7 +212,6 @@ export type AgentRun = {
     tool_calls_completed?: number;
     tool_calls_failed?: number;
     tool_calls_cancelled?: number;
-    ttft_ms?: number | null;
     elapsed_seconds: number;
   };
 };
@@ -268,7 +267,6 @@ export type AgentSpan = {
   started_at: string;
   finished_at?: string | null;
   duration_ms?: number | null;
-  ttft_ms?: number | null;
   input_tokens: number;
   output_tokens: number;
   cached_input_tokens?: number;

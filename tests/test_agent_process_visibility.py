@@ -187,8 +187,7 @@ def test_model_spans_and_usage_are_recorded(tmp_path: Path):
         assert span.input_tokens == 100
         assert span.output_tokens == 20
         assert span.cached_input_tokens == 60
-        # TTFT is now collected: the first content delta of a call is timed.
-        assert span.ttft_ms is not None and span.ttft_ms >= 0
+        assert span.duration_ms is not None and span.duration_ms >= 0
 
         summary = manager.store.thread_usage_summary("t1")
         assert summary["run_count"] == 1

@@ -96,7 +96,6 @@ class RunUsage(ContractModel):
     tool_calls_completed: int = Field(default=0, ge=0)
     tool_calls_failed: int = Field(default=0, ge=0)
     tool_calls_cancelled: int = Field(default=0, ge=0)
-    ttft_ms: float | None = Field(default=None, ge=0)
     elapsed_seconds: float = Field(default=0, ge=0)          # 已用时间（秒）
     read_chars: int = Field(default=0, ge=0)                 # 附件读取字符数（run 级累计）
     read_tokens: int = Field(default=0, ge=0)                # 附件读取估算 token
@@ -177,7 +176,6 @@ class AgentSpan(ContractModel):
     started_at: datetime
     finished_at: datetime | None = None
     duration_ms: float | None = Field(default=None, ge=0)
-    ttft_ms: float | None = Field(default=None, ge=0)
     input_tokens: int = Field(default=0, ge=0)
     output_tokens: int = Field(default=0, ge=0)
     cached_input_tokens: int = Field(default=0, ge=0)
