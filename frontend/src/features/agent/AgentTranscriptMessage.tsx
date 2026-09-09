@@ -365,7 +365,6 @@ function ToolCard({ node }: { node: Extract<AgentTimelineNode, { kind: "tool" }>
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <ChevronRight size={12} className={`at-chevron ${open ? "is-open" : ""}`} />
         <Icon size={12} />
         <span className="at-kind">{label}</span>
         {title && <span className="at-label">{title}</span>}

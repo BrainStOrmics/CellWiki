@@ -983,18 +983,17 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .agent-timeline-node .spin { animation: agent-spin 1s linear infinite; }
 @keyframes agent-spin { to { transform: rotate(360deg); } }
 
-/* 工具行：一行淡字，点开才见详情。class 名沿用 card —— 注册表提案
+/* 工具行：等宽字、比思考行深一档的字色、带色相的工具图标，与 sans 淡字的思考行
+   拉开区分；整行就是开关，不再放展开箭头。class 名沿用 card —— 注册表提案
    design/archive/2026-08-28-agent-timeline-tool-cards.md 的 DOM 契约有测试钉着 ——
    但视觉上已经不是卡片了。 */
 .agent-timeline-card { min-width: 0; }
-.agent-timeline-card .at-card-head { display: flex; min-width: 0; width: 100%; align-items: baseline; gap: 6px; padding: 1px 0; border: 0; color: var(--text-3); background: none; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
-.agent-timeline-card .at-card-head:hover { color: var(--text-2); }
-.agent-timeline-card .at-card-head > svg { flex: 0 0 auto; }
-.agent-timeline-card .at-chevron { color: var(--subtle); transition: transform 0.12s ease; }
-.agent-timeline-card .at-chevron.is-open { transform: rotate(90deg); }
-.agent-timeline-card .at-kind { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-weight: 600; }
+.agent-timeline-card .at-card-head { display: flex; min-width: 0; width: 100%; align-items: baseline; gap: 7px; padding: 2px 4px; margin: 0 -4px; border: 0; border-radius: var(--radius-s); color: var(--text-2); background: none; font: inherit; font-family: var(--font-mono); font-size: 11.5px; text-align: left; cursor: pointer; }
+.agent-timeline-card .at-card-head:hover { color: var(--text); background: var(--accent-soft-2); }
+.agent-timeline-card .at-card-head > svg { flex: 0 0 auto; align-self: center; color: var(--accent); }
+.agent-timeline-card .at-kind { flex: 0 0 auto; color: var(--text); font-size: 11.5px; font-weight: 600; }
 .agent-timeline-card .at-label { min-width: 0; overflow-wrap: anywhere; }
-.agent-timeline-card .at-status { flex: 0 0 auto; margin-left: auto; align-self: center; }
+.agent-timeline-card .at-status { flex: 0 0 auto; margin-left: auto; align-self: center; color: var(--subtle); }
 .agent-timeline-card .at-status > svg { display: block; }
 .agent-timeline-card.completed .at-status { color: var(--success); }
 /* 边框没了，失败就改自己的字色：这是唯一值得打断阅读的过程行。 */
