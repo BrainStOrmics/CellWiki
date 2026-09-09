@@ -258,8 +258,9 @@ function TimelineNode({ node, streaming, reasoningTitle, reasoningLiveLabel }: T
 }
 
 /**
- * Reasoning renders as one quiet, truncated line so streaming thoughts never
- * flood the transcript; the full text opens on demand.
+ * Reasoning has two shapes. While it streams it is a dim run of the newest lines
+ * laid straight on the panel — no card, no disclosure widget. Once it settles it
+ * collapses to one preview line that opens on demand.
  */
 function ThinkingNode({
   text,
@@ -272,26 +273,37 @@ function ThinkingNode({
   title: string;
   live: string;
 }) {
-  const preview = thinkingPreview(text, streaming);
+  if (streaming) {
+    return (
+      <div className="agent-think is-live">
+        <span className="agent-think-label">{live}</span>
+        <div className="agent-think-stream">{tailLines(text, 6)}</div>
+      </div>
+    );
+  }
+  const preview = thinkingPreview(text);
   return (
-    <details className={`agent-timeline-think ${streaming ? "is-live" : ""}`}>
+    <details className="agent-think">
       <summary>
         <ChevronRight size={12} className="at-chevron" />
         <span>{title}</span>
-        {preview && <span className="at-think-preview">{preview}</span>}
-        {streaming && <small>{live}</small>}
+        {preview && <span className="agent-think-preview">{preview}</span>}
       </summary>
-      <div className="agent-timeline-think-body">{text}</div>
+      <div className="agent-think-body">{text}</div>
     </details>
   );
 }
 
-function thinkingPreview(text: string, streaming: boolean): string {
+/** 直播只留最近几行：思考可以流，但不能把答案顶出屏幕。 */
+function tailLines(text: string, max: number): string {
+  const lines = text.split("\n").filter((line) => line.trim().length > 0);
+  return lines.slice(-max).join("\n");
+}
+
+function thinkingPreview(text: string): string {
   const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
   if (lines.length === 0) return "";
-  // While streaming, the newest line is the useful signal; after the run the
-  // first line summarizes the thought.
-  const source = streaming ? lines[lines.length - 1] : lines[0];
+  const source = lines[0];
   return source.length > 100 ? `${source.slice(0, 100)}…` : source;
 }
 

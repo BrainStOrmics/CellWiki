@@ -119,17 +119,33 @@ describe("AgentTranscriptMessage", () => {
     expect(screen.getByText("answer")).toBeInTheDocument();
   });
 
-  it("renders thinking as a collapsed single line with a truncated preview", () => {
-    renderMessage({
+  it("streams a live thinking block as dim text, with no disclosure widget", () => {
+    const { container } = renderMessage({
       role: "agent",
       text: "",
       timeline: [{ kind: "thinking", text: "第一段思考内容\n第二段思考内容" }],
       streaming: true,
     });
-    const details = document.querySelector(".agent-timeline-think") as HTMLDetailsElement;
-    // Streaming shows the newest line only; the body stays collapsed.
-    expect(details.open).toBe(false);
-    expect(screen.getByText("第二段思考内容", { selector: ".at-think-preview" })).toBeInTheDocument();
+
+    expect(screen.getByText("思考中…", { selector: ".agent-think-label" })).toBeInTheDocument();
+    expect(container.querySelector(".agent-think-stream")?.textContent).toContain("第二段思考内容");
+    // 直播形态不是折叠件：没有 <details>，也就没有"点开才看得见"这一步。
+    expect(container.querySelector("details.agent-think")).toBeNull();
+  });
+
+  it("caps the live stream to the newest lines so a long thought cannot flood the panel", () => {
+    const text = Array.from({ length: 20 }, (_, index) => `第${index + 1}行思考`).join("\n");
+    const { container } = renderMessage({
+      role: "agent",
+      text: "",
+      timeline: [{ kind: "thinking", text }],
+      streaming: true,
+    });
+
+    const stream = container.querySelector(".agent-think-stream")?.textContent ?? "";
+    expect(stream).toContain("第20行思考");
+    expect(stream).not.toContain("第14行思考");
+    expect(stream.split("\n")).toHaveLength(6);
   });
 
   it("shows the first line as preview and full text after expanding when settled", () => {
@@ -139,15 +155,15 @@ describe("AgentTranscriptMessage", () => {
       timeline: [{ kind: "thinking", text: "第一段思考内容\n第二段思考内容" }, { kind: "text", text: "done" }],
       streaming: false,
     });
-    expect(screen.getByText("第一段思考内容", { selector: ".at-think-preview" })).toBeInTheDocument();
-    const summary = document.querySelector(".agent-timeline-think summary") as HTMLElement;
+    expect(screen.getByText("第一段思考内容", { selector: ".agent-think-preview" })).toBeInTheDocument();
+    const summary = document.querySelector(".agent-think summary") as HTMLElement;
     fireEvent.click(summary);
-    expect((document.querySelector(".agent-timeline-think") as HTMLDetailsElement).open).toBe(true);
-    expect(document.querySelector(".agent-timeline-think-body")?.textContent).toContain("第二段思考内容");
+    expect((document.querySelector(".agent-think") as HTMLDetailsElement).open).toBe(true);
+    expect(document.querySelector(".agent-think-body")?.textContent).toContain("第二段思考内容");
   });
 
   it("stops labeling a finished thinking block as live once a later node arrives", () => {
-    renderMessage({
+    const { container } = renderMessage({
       role: "agent",
       text: "",
       timeline: [
@@ -157,11 +173,12 @@ describe("AgentTranscriptMessage", () => {
       streaming: true,
     });
     expect(screen.queryByText("思考中…")).not.toBeInTheDocument();
-    expect(screen.getByText("第一段思考内容", { selector: ".at-think-preview" })).toBeInTheDocument();
+    expect(container.querySelector(".agent-think-stream")).toBeNull();
+    expect(screen.getByText("第一段思考内容", { selector: ".agent-think-preview" })).toBeInTheDocument();
   });
 
   it("keeps the trailing thinking block live while the run streams", () => {
-    renderMessage({
+    const { container } = renderMessage({
       role: "agent",
       text: "",
       timeline: [
@@ -171,13 +188,13 @@ describe("AgentTranscriptMessage", () => {
       streaming: true,
     });
     expect(screen.getByText("思考中…")).toBeInTheDocument();
-    expect(screen.getByText("第二段思考内容", { selector: ".at-think-preview" })).toBeInTheDocument();
+    expect(container.querySelector(".agent-think-stream")?.textContent).toContain("第二段思考内容");
   });
 
   it("truncates a long thinking preview line", () => {
     const long = "x".repeat(150);
     renderMessage({ role: "agent", text: "", timeline: [{ kind: "thinking", text: long }] });
-    const preview = screen.getByText(/…$/, { selector: ".at-think-preview" });
+    const preview = screen.getByText(/…$/, { selector: ".agent-think-preview" });
     expect(preview.textContent?.length).toBeLessThanOrEqual(101);
   });
 
