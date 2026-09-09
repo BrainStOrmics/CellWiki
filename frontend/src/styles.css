@@ -993,7 +993,7 @@ button.message-citation:hover { border-color: #587caf; color: #c4d8fa; backgroun
 @keyframes agent-spin { to { transform: rotate(360deg); } }
 
 /* 工具行：一行淡字，点开才见详情。class 名沿用 card —— 注册表提案
-   design/active/2026-08-28-agent-timeline-tool-cards.md 的 DOM 契约有测试钉着 ——
+   design/archive/2026-08-28-agent-timeline-tool-cards.md 的 DOM 契约有测试钉着 ——
    但视觉上已经不是卡片了。 */
 .agent-timeline-card { min-width: 0; }
 .agent-timeline-card .at-card-head { display: flex; min-width: 0; width: 100%; align-items: baseline; gap: 6px; padding: 1px 0; border: 0; color: var(--text-3); background: none; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
