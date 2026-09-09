@@ -8,6 +8,15 @@ import { expect, test, type Page } from "@playwright/test";
 
 async function themeViolations(page: Page) {
   return page.evaluate(() => {
+    // Controls cross-fade background-color over 120ms, so scanning right after a
+    // theme switch reads the fade's starting colour. Freeze motion to measure the
+    // settled surface, which is what this contract is about.
+    if (!document.getElementById("theme-scan-freeze")) {
+      const freeze = document.createElement("style");
+      freeze.id = "theme-scan-freeze";
+      freeze.textContent = "*, *::before, *::after { transition: none !important; animation: none !important; }";
+      document.head.append(freeze);
+    }
     const allowedClassPart = /source-state|rail-health|connection|compose-tool-button|settings-save|approve-action|primary-action|theme-toggle/;
     const luminance = ([r, g, b]: number[]) => {
       const f = (v: number) => {
