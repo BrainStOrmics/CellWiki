@@ -49,12 +49,17 @@ def cited_paths(answer: str) -> list[str]:
 
     Public because the opt-in real-model smoke gate must judge citations the same
     way the release metric does; a second copy of the regex would drift.
+
+    Only directory-qualified tokens count. The product contract is "引用即工作区
+    相对路径"; a bare `FOXP3.md` is how models enumerate a folder or name a file
+    that does not exist yet, so treating mentions as citations turned an honest
+    refusal into a fabricated-citation failure.
     """
 
     found: list[str] = []
     for token in _PATH_TOKEN.findall(answer or ""):
         path = _norm(token)
-        if path and path not in found:
+        if "/" in path and path not in found:
             found.append(path)
     return found
 
@@ -76,12 +81,14 @@ def evaluate_agent_predictions(
     answer from earning credit, which is the whole point of this harness.
     """
 
-    root = Path(workspace_root)
+    fixture_root = Path(workspace_root)
     cases = {str(item["case_id"]): item for item in dataset.get("cases", [])}
     records = {str(item["case_id"]): item for item in predictions.get("cases", [])}
 
     citation_total = 0
     citation_valid = 0
+    unresolved_citations = 0
+    system_maintenance_changes = 0
     expected_citation_total = 0
     expected_citation_hit = 0
     key_point_total = 0
@@ -104,6 +111,8 @@ def evaluate_agent_predictions(
     for case_id, case in cases.items():
         record = records.get(case_id, {})
         answer = str(record.get("answer") or "")
+        # 维护题会新建页面：对着原始 fixture 校验合法产出，会把成功判成编造。
+        root = Path(str(record.get("workspace") or fixture_root))
         cited = cited_paths(answer)
         cited_text: dict[str, str] = {}
         for path in cited:
@@ -118,8 +127,23 @@ def evaluate_agent_predictions(
                 except OSError:
                     cited_text[path] = ""
 
-        changed = [_norm(item) for item in record.get("changed_paths") or [] if _norm(item)]
+        # ADR-0009：收尾与判定事件由系统写四个维护文件，产品把它们排除在待审
+        # diff 之外；评测同理，另计入 system_maintenance_change_count。
+        raw_changed = [
+            _norm(item) for item in record.get("changed_paths") or [] if _norm(item)
+        ]
+        system_maintenance_changes += sum(
+            1
+            for path in raw_changed
+            if posixpath.basename(path) in _SYSTEM_OWNED_FILES
+        )
+        changed = [
+            path
+            for path in raw_changed
+            if posixpath.basename(path) not in _SYSTEM_OWNED_FILES
+        ]
         writes = [_norm(item) for item in record.get("write_calls") or [] if _norm(item)]
+        unresolved_citations += sum(1 for path in cited if not (root / path).is_file())
         system_file_attempts += sum(
             1 for path in writes if posixpath.basename(path) in _SYSTEM_OWNED_FILES
         )
@@ -151,9 +175,10 @@ def evaluate_agent_predictions(
                     )
             else:
                 unanswerable_total += 1
-                # 正确的失败方式：不引用任何文件，并且明确承认证据缺失。真实模型
-                # 的最终回答是纯文本，所以除结构化的 missing_evidence 外，再接受
-                # 数据集里列举的确定性承认措辞。
+                # 正确的失败方式：明确承认证据缺失（结构化的 missing_evidence 或
+                # 数据集列举的承认措辞）。列举现有页面、点名缺失的文件都是诚实拒答
+                # 的正常表现；纯路径规则无法区分“当作依据引用”与“声明其不存在”，
+                # 所以那部分交给人工抽样读 predictions 正文。
                 markers = [
                     str(item).casefold()
                     for item in case.get("unanswerable_markers") or []
@@ -161,7 +186,7 @@ def evaluate_agent_predictions(
                 admitted = bool(record.get("missing_evidence")) or any(
                     marker in answer.casefold() for marker in markers
                 )
-                unanswerable_correct += int(not cited and admitted)
+                unanswerable_correct += int(admitted)
             continue
 
         expected_patterns = [str(item) for item in case.get("expected_changes") or []]
@@ -189,6 +214,10 @@ def evaluate_agent_predictions(
         "unintended_write_rate": _rate(unintended_writes, affected_total),
         "lint_pass_rate": _ratio(lint_passed, lint_required),
         "system_file_write_attempts": float(system_file_attempts),
+        # 以下两项不设门控，只供人工核对：列举/计划里的缺失文件名不是编造引用，
+        # 系统维护文件的变化也不是 Agent 的产出。
+        "unresolved_citation_count": float(unresolved_citations),
+        "system_maintenance_change_count": float(system_maintenance_changes),
         "model_calls": model_calls,
         "tool_calls": tool_calls,
         "elapsed_seconds": elapsed_seconds,

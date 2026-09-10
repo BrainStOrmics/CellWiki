@@ -46,6 +46,21 @@ uv run python scripts/evaluate_agent_runs.py
   遵守，而且白烧预算。
 - `model_calls` / `tool_calls` / `elapsed_seconds`：成本，用于发现失控循环。
 
+## 两个不设门控、只供人工核对的计数
+
+- `unresolved_citation_count`：答案里以路径形式出现、但在工作区里不存在的 token。
+- `system_maintenance_change_count`：改动面里属于系统维护文件（ADR-0009 由系统写）
+  的条数，**不算** Agent 的越界改动。
+
+已知的判据边界（首轮真实运行暴露）：纯路径规则无法区分「把某页当作依据引用」与
+「声明某页不存在 / 计划新建某页」。模型诚实的回答是后者：
+
+> 无法回答：`wiki/` 与 `raw/` 中 iNKT 关键词 0 命中，也没有肺组织页
+> （`wiki/tissues/lung.md` 不存在）
+
+因此 `citation_validity` 目前定的是零容忍（min 1.0），这类"点名不存在的文件"会把
+门控判红，需要人工读一眼 `predictions.json` 确认它到底是编造依据还是诚实声明。
+
 ## 加一道题
 
 1. 在 `workspace/` 里补需要的页面（细胞类型页要满足 lint：`standard_name` 等于

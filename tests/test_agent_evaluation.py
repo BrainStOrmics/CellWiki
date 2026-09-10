@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 from cellwiki.evaluation.agent_eval import cited_paths, evaluate_agent_predictions
@@ -123,3 +124,70 @@ def test_final_response_contract_keeps_the_answer_in_message_not_data():
     assert "citations" not in payload
     assert cited_paths(answer) == ["wiki/cell_types/regulatory_t_cell.md"]
     assert cited_paths(str(payload["label_args"]["answer"])) == cited_paths(answer)
+
+def test_bare_file_names_are_mentions_not_citations():
+    # 第一轮真实运行里，诚实拒答会列举目录与裸文件名（`FOXP3.md`），把它们当引用
+    # 会把正确的"我不知道"判成编造引用。
+    predictions = _load("reference_predictions.json")
+    case = _case(predictions, "query_treg_markers")
+    case["answer"] = "目录 wiki/cell_types/ 下有 regulatory_t_cell.md 与 FOXP3.md。"
+
+    metrics = _metrics(predictions)
+
+    assert metrics["citation_validity"] == 1.0
+    assert metrics["unresolved_citation_count"] == 0.0
+    # 期望的那一页没被以路径形式引用，所以这题在 4 个期望引用里丢 1 分。
+    assert metrics["expected_citation_recall"] == 0.75
+
+
+def test_maintenance_output_is_validated_against_the_post_run_workspace(tmp_path: Path):
+    # 维护题会新建页面；引用自己刚创建的页是正确行为，不能对着改动前的 fixture 判成编造。
+    # 造一个"跑完之后"的工作区：fixture 的副本 + 本轮新建的页，
+    # 新页只存在于运行现场，不在版本控制里的 fixture 里。
+    shutil.copytree(EVALS / "workspace", tmp_path / "fixture", dirs_exist_ok=True)
+    run_root = tmp_path / "fixture"
+    created = run_root / "wiki" / "cell_types" / "dn3_regulatory_intermediate_state.md"
+    created.write_text("# DN3\n\nFOXP3 IL2RA\n", encoding="utf-8")
+
+    predictions = _load("reference_predictions.json")
+    case = _case(predictions, "maintenance_ingest_subset_page")
+    case["answer"] = (
+        "已新建 wiki/cell_types/dn3_regulatory_intermediate_state.md，"
+        "依据 raw/fixture_treg_paper.md。"
+    )
+    case["workspace"] = str(run_root)
+    case["changed_paths"] = ["wiki/cell_types/dn3_regulatory_intermediate_state.md"]
+    case["write_calls"] = ["wiki/cell_types/dn3_regulatory_intermediate_state.md"]
+
+    metrics = _metrics(predictions)
+
+    assert metrics["citation_validity"] == 1.0
+    assert metrics["expected_write_recall"] == 1.0
+    assert metrics["unintended_write_rate"] == 0.0
+
+
+def test_system_maintenance_file_changes_are_not_attributed_to_the_agent():
+    # ADR-0009：run 收尾由系统追加 audit_report.md。产品把它排除在待审 diff 之外，
+    # 评测也不能把它算成 Agent 的越界改动。
+    predictions = _load("reference_predictions.json")
+    case = _case(predictions, "maintenance_ingest_subset_page")
+    case["changed_paths"] = case["changed_paths"] + ["audit_report.md"]
+
+    metrics = _metrics(predictions)
+
+    assert metrics["unintended_write_rate"] == 0.0
+    assert metrics["system_maintenance_change_count"] == 1.0
+
+
+def test_an_honest_refusal_may_still_enumerate_the_workspace():
+    predictions = _load("reference_predictions.json")
+    case = _case(predictions, "query_unanswerable_subset")
+    case["answer"] = (
+        "无法回答：wiki/ 与 raw/ 中 iNKT 关键词 0 命中，"
+        "也没有肺组织页（wiki/tissues/lung.md 不存在）。"
+    )
+    case["missing_evidence"] = []
+
+    metrics = _metrics(predictions)
+
+    assert metrics["unanswerable_accuracy"] == 1.0

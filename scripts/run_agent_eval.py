@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
+import stat
 import subprocess
 import time
 from datetime import UTC, datetime
@@ -55,15 +57,36 @@ def _git(root: Path, *args: str) -> str:
     return completed.stdout
 
 
+def _remove_tree(target: Path) -> None:
+    """Delete a disposable workspace on Windows, where git keeps objects read-only."""
+
+    def _retry(func, path, exc: BaseException) -> None:
+        if isinstance(exc, PermissionError):
+            os.chmod(path, stat.S_IWRITE)
+            func(path)
+        else:  # pragma: no cover - surfaces the original failure
+            raise exc
+
+    if target.exists():
+        shutil.rmtree(target, onexc=_retry)
+
+
 def _prepare(case_id: str) -> Path:
     """Copy the tracked fixture into a disposable workspace and commit its baseline."""
 
     work = ROOT / "build" / "agent-eval" / case_id
-    if work.exists():
-        shutil.rmtree(work)
+    _remove_tree(work)
     work.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(FIXTURE, work)
     ensure_workspace(work)
+    # 与真实工作区保持一致：运行时产物（运行库、checkpoint、附件临时区）不是知识，
+    # 不该被算进"这一轮 Agent 改了什么"。产品假定 .gitignore 已排除 data/runtime/
+    # 但 ensure_workspace 并不创建它，这里按已治理工作区的实际形态补上。
+    (work / ".gitignore").write_text(
+        "# 运行时产物：运行库、检查点、错误转储都由产品自己创建，不进版本库\n"
+        "data/runtime/\n",
+        encoding="utf-8",
+    )
     _git(work, "add", "-A")
     _git(work, "commit", "-m", "chore(eval): fixture baseline")
     return work
