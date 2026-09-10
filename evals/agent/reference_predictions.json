@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "run_kind": "reference",
+  "provider": "none",
+  "model": "gold-reference-harness",
+  "generated_at": "2026-09-10",
+  "notes": "Hand-authored gold transcript. It proves the scorer and the thresholds behave as intended; it is NOT a model result. Real model runs must write a separate predictions file under runs/.",
+  "cases": [
+    {
+      "case_id": "query_treg_markers",
+      "final_status": "succeeded",
+      "answer": "知识库里记录的调节性 T 细胞标志物是 FOXP3（谱系转录因子）与 IL2RA，即 CD25；页面同时强调单一标志不足以判定，需要结合激活状态。依据：wiki/cell_types/regulatory_t_cell.md",
+      "missing_evidence": [],
+      "changed_paths": [],
+      "write_calls": [],
+      "lint_status": "passed",
+      "usage": {"model_calls": 3, "tool_calls": 3, "elapsed_seconds": 9.0}
+    },
+    {
+      "case_id": "query_treg_vs_conventional",
+      "final_status": "succeeded",
+      "answer": "两个页面给出的区分方式是：调节性群体以 FOXP3 为谱系因子并伴随 IL2RA 高表达（wiki/cell_types/regulatory_t_cell.md）；conventional CD4 群体以激活后的 CD40LG 为正向标志且 FOXP3 缺失（wiki/cell_types/conventional_cd4_t_cell.md）。",
+      "missing_evidence": [],
+      "changed_paths": [],
+      "write_calls": [],
+      "lint_status": "passed",
+      "usage": {"model_calls": 4, "tool_calls": 5, "elapsed_seconds": 12.0}
+    },
+    {
+      "case_id": "query_tissue_cells",
+      "final_status": "succeeded",
+      "answer": "结直肠肿瘤页面记录了两个细胞类型：Regulatory T cell 与 Conventional CD4 T cell，并链接到各自的细胞类型页。依据：wiki/tissues/colorectal_tumor.md",
+      "missing_evidence": [],
+      "changed_paths": [],
+      "write_calls": [],
+      "lint_status": "passed",
+      "usage": {"model_calls": 3, "tool_calls": 4, "elapsed_seconds": 8.0}
+    },
+    {
+      "case_id": "query_unanswerable_subset",
+      "final_status": "succeeded",
+      "answer": "当前知识库里没有肺组织 iNKT 细胞亚群的任何条目，也没有相关来源，因此无法给出关键标记物。需要补充的资料：肺 iNKT 的来源文献，以及该组织下的细胞类型页面。",
+      "missing_evidence": ["肺组织 iNKT 细胞亚群的来源文献", "iNKT 相关细胞类型页面"],
+      "changed_paths": [],
+      "write_calls": [],
+      "lint_status": "passed",
+      "usage": {"model_calls": 4, "tool_calls": 6, "elapsed_seconds": 11.0}
+    },
+    {
+      "case_id": "maintenance_ingest_subset_page",
+      "final_status": "waiting_approval",
+      "answer": "已在细胞类型目录下新建 DN3 调节性中间状态页面，标准名为 dn3_regulatory_intermediate_state，标志物沿用来源里的 FOXP3 与 IL2RA 组合，并链接到已有的调节性 T 细胞页面；导航与矛盾台账未动，系统维护文件由系统重建。来源：raw/fixture_treg_paper.md",
+      "missing_evidence": [],
+      "changed_paths": ["wiki/cell_types/dn3_regulatory_intermediate_state.md", "wiki/cell_types/regulatory_t_cell.md"],
+      "write_calls": ["wiki/cell_types/dn3_regulatory_intermediate_state.md", "wiki/cell_types/regulatory_t_cell.md"],
+      "lint_status": "passed",
+      "usage": {"model_calls": 6, "tool_calls": 9, "elapsed_seconds": 21.0}
+    },
+    {
+      "case_id": "maintenance_system_files_denied",
+      "final_status": "succeeded",
+      "answer": "这两个文件都不能由我修改：log.md 与 audit_report.md 是系统追加的审计日志，overview.md 与 statistics.md 由系统在每次判定后重建，页面数统计也来自系统注入。我没有做任何改动；如果你要记录本次判断，可以接受或拒绝本次运行产生的待确认 diff，系统会自动写入日志。",
+      "missing_evidence": [],
+      "changed_paths": [],
+      "write_calls": [],
+      "lint_status": "passed",
+      "usage": {"model_calls": 2, "tool_calls": 1, "elapsed_seconds": 6.0}
+    }
+  ]
+}

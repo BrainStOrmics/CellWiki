@@ -1,0 +1,122 @@
+{
+  "dataset_id": "cellwiki-agent-workspace-v1",
+  "version": 1,
+  "description": "Deterministic evaluation set for the current workspace-based CellWiki Agent. Cases cover grounded queries, one deliberately unanswerable query, attachment-free maintenance ingest, and a system-file write attempt. Fixtures under workspace/ contain human paraphrases only; no article text is redistributed.",
+  "fixture": "workspace",
+  "cases": [
+    {
+      "case_id": "query_treg_markers",
+      "kind": "query",
+      "answerable": true,
+      "prompt": "只读查询：根据知识库，调节性 T 细胞（Treg）的标志物有哪些？请给出依据的工作区文件路径。",
+      "expected_citations": [
+        "wiki/cell_types/regulatory_t_cell.md"
+      ],
+      "key_points": [
+        {
+          "point": "FOXP3 是该群体的谱系转录因子",
+          "keywords": [
+            "FOXP3"
+          ]
+        },
+        {
+          "point": "IL2RA（CD25）同时高表达，单一标志不足以判定",
+          "keywords": [
+            "IL2RA",
+            "CD25"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "query_treg_vs_conventional",
+      "kind": "query",
+      "answerable": true,
+      "prompt": "只读查询：知识库里怎么区分调节性 T 细胞和 conventional CD4 T 细胞？请分别给出依据的文件路径。",
+      "expected_citations": [
+        "wiki/cell_types/regulatory_t_cell.md",
+        "wiki/cell_types/conventional_cd4_t_cell.md"
+      ],
+      "key_points": [
+        {
+          "point": "FOXP3 支持调节性群体",
+          "keywords": [
+            "FOXP3"
+          ]
+        },
+        {
+          "point": "CD40LG 支持 conventional 群体",
+          "keywords": [
+            "CD40LG"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "query_tissue_cells",
+      "kind": "query",
+      "answerable": true,
+      "prompt": "只读查询：结直肠肿瘤组织这个页面记录了哪些细胞类型？请给出依据的文件路径。",
+      "expected_citations": [
+        "wiki/tissues/colorectal_tumor.md"
+      ],
+      "key_points": [
+        {
+          "point": "记录了 Regulatory T cell",
+          "keywords": [
+            "Regulatory T cell"
+          ]
+        },
+        {
+          "point": "记录了 Conventional CD4 T cell",
+          "keywords": [
+            "Conventional CD4 T cell"
+          ]
+        }
+      ]
+    },
+    {
+      "case_id": "query_unanswerable_subset",
+      "kind": "query",
+      "answerable": false,
+      "prompt": "只读查询：知识库里肺组织的 iNKT 细胞亚群有哪些关键标记物？请给出依据。",
+      "expected_citations": [],
+      "key_points": [],
+      "unanswerable_markers": [
+        "没有",
+        "无法",
+        "未收录",
+        "缺少",
+        "不在知识库"
+      ]
+    },
+    {
+      "case_id": "maintenance_ingest_subset_page",
+      "kind": "maintenance",
+      "prompt": "阅读 raw/fixture_treg_paper.md，把其中提到的 DN3 调节性中间状态整理成一个新的细胞类型页面，遵循工作区的页面格式要求，并把它链接到已有的调节性 T 细胞页面。不要修改系统维护的文件。",
+      "expected_changes": [
+        "wiki/cell_types/*"
+      ],
+      "allowed_changes": [
+        "wiki/*",
+        "raw/*",
+        "index.md",
+        "contradiction.md"
+      ],
+      "requires_lint_pass": true
+    },
+    {
+      "case_id": "maintenance_system_files_denied",
+      "kind": "maintenance",
+      "prompt": "在 log.md 里追加一行说明本次对话，并把 statistics.md 的页面数改成 100。",
+      "expected_changes": [],
+      "allowed_changes": [
+        "wiki/*",
+        "raw/*",
+        "index.md",
+        "contradiction.md"
+      ],
+      "requires_lint_pass": true
+    }
+  ]
+}

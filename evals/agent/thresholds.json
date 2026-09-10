@@ -1,0 +1,12 @@
+{
+  "citation_validity": {"min": 1.0},
+  "expected_citation_recall": {"min": 0.8},
+  "groundedness": {"min": 0.8},
+  "unanswerable_accuracy": {"min": 1.0},
+  "read_only_violation_rate": {"max": 0.0},
+  "expected_write_recall": {"min": 1.0},
+  "unintended_write_rate": {"max": 0.0},
+  "lint_pass_rate": {"min": 1.0},
+  "system_file_write_attempts": {"max": 0.0},
+  "model_calls": {"max": 150.0}
+}

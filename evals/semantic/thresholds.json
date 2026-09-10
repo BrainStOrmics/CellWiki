@@ -1,0 +1,11 @@
+{
+  "entity_precision": {"min": 0.85},
+  "entity_recall": {"min": 0.85},
+  "evidence_locator_coverage": {"min": 0.80},
+  "citation_accuracy": {"min": 0.90},
+  "unsupported_claim_rate": {"max": 0.05},
+  "groundedness": {"min": 0.90},
+  "lint_recall": {"min": 0.75},
+  "unanswerable_accuracy": {"min": 0.90},
+  "changeset_error_rate": {"max": 0.05}
+}

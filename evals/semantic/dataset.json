@@ -1,0 +1,165 @@
+{
+  "dataset_id": "cellwiki-semantic-public-v1",
+  "version": 1,
+  "description": "Human-curated semantic evaluation manifest over six public-access single-cell papers. Annotations are concise paraphrases, not copied article text.",
+  "sources": [
+    {
+      "source_id": "pmc5241818",
+      "title": "Massively parallel digital transcriptional profiling of single cells",
+      "year": 2017,
+      "pmcid": "PMC5241818",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5241818/"
+    },
+    {
+      "source_id": "pmc5775029",
+      "title": "Single-cell RNA-seq reveals new types of human blood dendritic cells, monocytes and progenitors",
+      "year": 2017,
+      "pmcid": "PMC5775029",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC5775029/"
+    },
+    {
+      "source_id": "pmc6642641",
+      "title": "Single-cell transcriptomics of 20 mouse organs creates a Tabula Muris",
+      "year": 2018,
+      "pmcid": "PMC6642641",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC6642641/"
+    },
+    {
+      "source_id": "pmc7577958",
+      "title": "Functional CRISPR dissection of gene networks controlling human regulatory T cell identity",
+      "year": 2020,
+      "pmcid": "PMC7577958",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC7577958/"
+    },
+    {
+      "source_id": "pmc9426617",
+      "title": "Distinguishing activated T regulatory cell and T conventional cells by single-cell technologies",
+      "year": 2022,
+      "pmcid": "PMC9426617",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC9426617/"
+    },
+    {
+      "source_id": "pmc7235421",
+      "title": "SCSA: A Cell Type Annotation Tool for Single-Cell RNA-seq Data",
+      "year": 2020,
+      "pmcid": "PMC7235421",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC7235421/"
+    }
+  ],
+  "entities": [
+    "regulatory_t_cell",
+    "conventional_cd4_t_cell",
+    "dendritic_cell",
+    "monocyte",
+    "endothelial_cell"
+  ],
+  "claims": [
+    {
+      "claim_id": "claim_high_throughput_digital_profiling",
+      "subject": "single_cell_rna_sequencing",
+      "predicate": "supports",
+      "object": "massively_parallel_digital_profiling",
+      "source_id": "pmc5241818",
+      "locator": "abstract"
+    },
+    {
+      "claim_id": "claim_new_blood_dc_types",
+      "subject": "human_blood_dendritic_cell",
+      "predicate": "has",
+      "object": "new_transcriptional_subtypes",
+      "source_id": "pmc5775029",
+      "locator": "abstract"
+    },
+    {
+      "claim_id": "claim_tabula_muris_scale",
+      "subject": "tabula_muris",
+      "predicate": "profiles",
+      "object": "over_100000_cells_across_20_organs",
+      "source_id": "pmc6642641",
+      "locator": "abstract"
+    },
+    {
+      "claim_id": "claim_treg_foxp3_identity",
+      "subject": "regulatory_t_cell",
+      "predicate": "identity_maintained_by",
+      "object": "FOXP3",
+      "source_id": "pmc7577958",
+      "locator": "abstract"
+    },
+    {
+      "claim_id": "claim_activated_tconv_overlap",
+      "subject": "activated_conventional_cd4_t_cell",
+      "predicate": "can_overlap_treg_markers",
+      "object": "FOXP3_CD25_CD127",
+      "source_id": "pmc9426617",
+      "locator": "introduction"
+    },
+    {
+      "claim_id": "claim_marker_annotation_ambiguity",
+      "subject": "marker_gene_annotation",
+      "predicate": "is_complicated_by",
+      "object": "markers_shared_across_cell_types",
+      "source_id": "pmc7235421",
+      "locator": "introduction"
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "qa_treg_identity",
+      "type": "qa",
+      "question": "Which factor is central to human regulatory T-cell identity in the registered evidence?",
+      "answerable": true,
+      "expected_claim_ids": ["claim_treg_foxp3_identity"],
+      "expected_citations": [{"source_id": "pmc7577958", "locator": "abstract"}]
+    },
+    {
+      "case_id": "qa_treg_specificity",
+      "type": "qa",
+      "question": "Is FOXP3 alone always sufficient to distinguish activated human Treg from Tconv cells?",
+      "answerable": true,
+      "expected_claim_ids": ["claim_treg_foxp3_identity", "claim_activated_tconv_overlap"],
+      "expected_citations": [
+        {"source_id": "pmc7577958", "locator": "abstract"},
+        {"source_id": "pmc9426617", "locator": "introduction"}
+      ]
+    },
+    {
+      "case_id": "qa_atlas_scale",
+      "type": "qa",
+      "question": "What organism and scale are represented by Tabula Muris?",
+      "answerable": true,
+      "expected_claim_ids": ["claim_tabula_muris_scale"],
+      "expected_citations": [{"source_id": "pmc6642641", "locator": "abstract"}]
+    },
+    {
+      "case_id": "qa_dendritic_discovery",
+      "type": "qa",
+      "question": "Did single-cell RNA-seq identify new human blood dendritic-cell subtypes?",
+      "answerable": true,
+      "expected_claim_ids": ["claim_new_blood_dc_types"],
+      "expected_citations": [{"source_id": "pmc5775029", "locator": "abstract"}]
+    },
+    {
+      "case_id": "qa_annotation_limits",
+      "type": "qa",
+      "question": "Why can a single marker be insufficient for cell-type annotation?",
+      "answerable": true,
+      "expected_claim_ids": ["claim_marker_annotation_ambiguity"],
+      "expected_citations": [{"source_id": "pmc7235421", "locator": "introduction"}]
+    },
+    {
+      "case_id": "qa_unanswerable_therapy",
+      "type": "qa",
+      "question": "Which approved therapy is proven by these sources to permanently convert Tconv cells into Treg cells?",
+      "answerable": false,
+      "expected_claim_ids": [],
+      "expected_citations": []
+    }
+  ],
+  "expected_lint_categories": [
+    "contradiction",
+    "missing_context",
+    "single_source_support",
+    "statement_strength"
+  ]
+}

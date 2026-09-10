@@ -21,6 +21,7 @@ jobs:
           src/cellwiki/agent src/cellwiki/api src/cellwiki/domain
           src/cellwiki/evaluation src/cellwiki/services
           scripts/evaluate_ingest_model.py scripts/evaluate_semantic.py
+          scripts/evaluate_agent_runs.py scripts/run_agent_eval.py
           scripts/build_sidecar.py scripts/sync_version.py
           scripts/generate_release_manifest.py
       - name: Type-check maintained Python modules
@@ -31,6 +32,7 @@ jobs:
           --ignore-missing-imports
       - run: uv run pytest -q
       - run: uv run python scripts/evaluate_semantic.py
+      - run: uv run python scripts/evaluate_agent_runs.py
   frontend:
     runs-on: ubuntu-latest
     steps:

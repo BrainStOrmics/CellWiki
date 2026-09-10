@@ -26,7 +26,7 @@ cache/
 
 # Generated output
 output/
-evals/
+evals/agent/runs/
 
 # Derived data
 extractions/
@@ -36,6 +36,10 @@ raw/
 # directory has to be re-included or its source files silently stay untracked.
 wiki/
 !frontend/src/features/wiki/
+# The evaluation fixture is a knowledge base on purpose: its wiki/ and raw/
+# content must be versioned even though both patterns match at any depth.
+!evals/agent/workspace/wiki/
+!evals/agent/workspace/raw/
 
 # Runtime data (can be regenerated)
 data/extraction/

@@ -1,0 +1,29 @@
+{
+  "run_kind": "gold-reference-harness-check",
+  "entities": [
+    "regulatory_t_cell",
+    "conventional_cd4_t_cell",
+    "dendritic_cell",
+    "monocyte",
+    "endothelial_cell"
+  ],
+  "claims": [
+    {"claim_id": "claim_high_throughput_digital_profiling", "source_id": "pmc5241818", "locator": "abstract"},
+    {"claim_id": "claim_new_blood_dc_types", "source_id": "pmc5775029", "locator": "abstract"},
+    {"claim_id": "claim_tabula_muris_scale", "source_id": "pmc6642641", "locator": "abstract"},
+    {"claim_id": "claim_treg_foxp3_identity", "source_id": "pmc7577958", "locator": "abstract"},
+    {"claim_id": "claim_activated_tconv_overlap", "source_id": "pmc9426617", "locator": "introduction"},
+    {"claim_id": "claim_marker_annotation_ambiguity", "source_id": "pmc7235421", "locator": "introduction"}
+  ],
+  "answers": [
+    {"case_id": "qa_treg_identity", "claim_ids": ["claim_treg_foxp3_identity"], "citations": [{"source_id": "pmc7577958", "locator": "abstract"}], "missing_evidence": []},
+    {"case_id": "qa_treg_specificity", "claim_ids": ["claim_treg_foxp3_identity", "claim_activated_tconv_overlap"], "citations": [{"source_id": "pmc7577958", "locator": "abstract"}, {"source_id": "pmc9426617", "locator": "introduction"}], "missing_evidence": []},
+    {"case_id": "qa_atlas_scale", "claim_ids": ["claim_tabula_muris_scale"], "citations": [{"source_id": "pmc6642641", "locator": "abstract"}], "missing_evidence": []},
+    {"case_id": "qa_dendritic_discovery", "claim_ids": ["claim_new_blood_dc_types"], "citations": [{"source_id": "pmc5775029", "locator": "abstract"}], "missing_evidence": []},
+    {"case_id": "qa_annotation_limits", "claim_ids": ["claim_marker_annotation_ambiguity"], "citations": [{"source_id": "pmc7235421", "locator": "introduction"}], "missing_evidence": []},
+    {"case_id": "qa_unanswerable_therapy", "claim_ids": [], "citations": [], "missing_evidence": ["No registered source supports an approved permanent-conversion therapy."]}
+  ],
+  "lint_categories": ["contradiction", "missing_context", "single_source_support", "statement_strength"],
+  "changeset_operations": [],
+  "usage": {"model_calls": 0, "input_tokens": 0, "output_tokens": 0, "estimated_cost_usd": 0.0}
+}
