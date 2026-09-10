@@ -5,6 +5,7 @@ import {
   FileText,
   GitPullRequest,
   Library,
+  List,
   MessageSquareText,
   PanelLeft,
   Play,
@@ -503,7 +504,6 @@ export function AppShell() {
   const contextTitle = selectedTitle || t("reader.workspace");
   const contextPath = selectedPath;
   const workspaceSelectedPath = workspaceFile?.path ?? (selectedPath.startsWith("wiki/") ? selectedPath : null);
-  const references = Array.isArray(detail.frontmatter.references) ? detail.frontmatter.references : [];
   const activeAttachments = activeAttachmentIds
     .map((attachmentId) => attachments.find((attachment) => attachment.attachment_id === attachmentId))
     .filter((attachment): attachment is AttachmentRecord => Boolean(attachment));
@@ -1605,7 +1605,7 @@ export function AppShell() {
                 <div className="feature-state error">{t("reader.pageError")}</div>
               ) : (
                 <article className="wiki-document">
-                  <div className="document-kicker">{t("reader.cellType").toUpperCase()} · {String(detail.frontmatter.cl_id ?? t("reader.unmapped").toUpperCase())}</div>
+                  <PageProperties frontmatter={detail.frontmatter} label={t("reader.properties")} />
                   <h1>{selectedTitle}</h1>
                   <MarkdownReader
                     markdown={detail.markdown}
@@ -1623,16 +1623,6 @@ export function AppShell() {
                       setDraft(`${t("selection.revise")}: ${text}`);
                     }}
                   />
-                  <footer className="document-footer">
-                    <div>
-                      <b>{t("reader.sourceLedger")}</b>
-                      <div className="reference-list">
-                        {references.length > 0
-                          ? references.slice(0, 6).map((reference, index) => <span key={`${String(reference)}-${index}`}>{formatReference(reference)}</span>)
-                          : <span>{t("reader.noReferences")}</span>}
-                      </div>
-                    </div>
-                  </footer>
                 </article>
               )}
             </div>
@@ -1891,13 +1881,32 @@ function legacyTerminalEvent(run: AgentRun, sequence: number): AgentEvent {
   };
 }
 
-function formatReference(reference: unknown) {
-  if (typeof reference === "string") return reference;
-  if (reference && typeof reference === "object") {
-    const value = reference as { paper_id?: string; title?: string; locator?: string };
-    return value.paper_id ?? value.title ?? value.locator ?? "Evidence reference";
-  }
-  return String(reference);
+function propertyValue(value: unknown): string {
+  if (value === null || value === undefined) return "null";
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(", ");
+  return String(value);
+}
+
+/** 页头元数据按 Obsidian 的 Properties 表展示：键/值两列，可折叠，不再另设来源台账。 */
+function PageProperties({ frontmatter, label }: { frontmatter: Record<string, unknown>; label: string }) {
+  const entries = Object.entries(frontmatter);
+  if (entries.length === 0) return null;
+  return (
+    <details className="doc-properties" open>
+      <summary><List size={13} />{label}</summary>
+      <div className="doc-properties-table">
+        {entries.map(([key, value]) => (
+          <div className="doc-property-row" key={key}>
+            <span className="doc-property-key">
+              <i>{Array.isArray(value) ? "L" : typeof value === "number" ? "N" : "T"}</i>
+              {key}
+            </span>
+            <span className="doc-property-value">{propertyValue(value)}</span>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
 }
 
 
