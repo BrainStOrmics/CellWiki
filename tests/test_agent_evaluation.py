@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from cellwiki.evaluation.agent_eval import cited_paths, evaluate_agent_predictions
+from cellwiki.services.agent_runtime import _signal_payload
 from cellwiki.evaluation.semantic import threshold_failures
 
 
@@ -109,3 +110,16 @@ def test_cited_paths_extracts_workspace_paths_from_plain_text():
         "wiki/cell_types/regulatory_t_cell.md",
         "wiki/marker_genes/FOXP3.md",
     ]
+
+
+def test_final_response_contract_keeps_the_answer_in_message_not_data():
+    # 真实模型 smoke 的判据依赖这条合同：完整正文在 event.message，data 只有有界的
+    # label_args 投影，且当前载荷里不存在 citations 字段。旧 smoke 读 data.citations，
+    # 因此把每一次成功的运行都判成失败。
+    answer = "依据 wiki/cell_types/regulatory_t_cell.md 记录 FOXP3 与 IL2RA。"
+
+    payload = _signal_payload("agent", answer, {"answer": answer})
+
+    assert "citations" not in payload
+    assert cited_paths(answer) == ["wiki/cell_types/regulatory_t_cell.md"]
+    assert cited_paths(str(payload["label_args"]["answer"])) == cited_paths(answer)
