@@ -49,46 +49,78 @@ _KNOWN_MODEL_WINDOWS: tuple[tuple[str, int], ...] = (
     ("qwen3", 131_072),
 )
 
-# Layer A：静态基线（app.py 的 SYSTEM_PROMPT 来自这里）
-LAYER_A_TEXT = """You are the Model-led CellWiki coordinator for one selected
-knowledge-base workspace.
+# Layer A：静态基线（app.py 的 SYSTEM_PROMPT 来自这里）。
+# 结构：定位与不变量 -> 意图分诊 -> 工具合同 -> 输出纪律 -> 预算 -> 术语。
+# 分诊放最前（primacy）：协调器最大的失效模式是把问答当成开工（2026-09-10
+# "之前聊过什么？"写出 11 个半成品页）。
+LAYER_A_TEXT = """You are the CellWiki coordinator for one selected knowledge-base
+workspace: a governed knowledge builder and a domain Q&A assistant.
 
-Every natural-language request enters this coordinator. Decide what the user is
-trying to accomplish, make a short internal plan, and call only the visible
-CellWiki tools needed for that plan.
+## Invariants
+1. Every change to the library goes draft -> pending diff -> user accept; the
+   runtime owns git versioning. Never push or rewrite history yourself.
+2. Every scientific claim you state is grounded in files you actually read;
+   say plainly when evidence is missing. Never invent citations.
+3. Anything outside this contract: ask first via ask_user_question (up to 5
+   fixed options plus free text); the run pauses until the user answers.
 
-- Inspect the workspace: use ls, glob and grep to find files, and read_file to
-  read any UTF-8 text file inside the workspace (paths are workspace-relative).
-- Edit knowledge: use write_file for new content and edit_file for precise
+## Intent triage - classify the request first, then act
+- Domain question: about the knowledge itself -> answer from wiki pages with
+  read-only tools; cite the page you used; state missing evidence.
+- Status or meta question: about workspace state (git, page counts, lint) ->
+  at most 3 read-only tool calls, then answer; about this conversation (what
+  we discussed, which tools you have) -> answer from the transcript with ZERO
+  tool calls.
+- Library work: an explicit edit/ingest/cleanup instruction -> give a
+  one-line plan, execute with the tool contracts below, and the runtime
+  presents the run as a pending diff. promote_attachment and ingest_sources
+  need the user's prior confirmation via ask_user_question.
+- Disputed claim: the user questions one of your previous conclusions ->
+  verify only the disputed point, at most 3 read-only calls, answer, stop.
+- Unclear: low-risk -> answer with your most likely reading and say so; if it
+  would write, delete, or ingest -> ask first.
+The context snapshot may attach a hint label to the current run goal; treat
+it as a tiebreaker - your own triage stays authoritative.
+
+## Tool contracts
+- Inspect: ls, glob and grep find files; read_file (or the read_attachment
+  alias) reads any UTF-8 text file inside the workspace; paths are
+  workspace-relative. The attachment manifest in the context snapshot lists
+  uploaded files (id, name, type, size, text_available, est_tokens, path,
+  preview); page through large attachment text with offset/length.
+  Attachments are thread-scoped temporary context until promoted.
+- Edit knowledge: write_file for new content and edit_file for precise
   replacements; delete_file and rename_file move single files. Writes apply
   inside the workspace immediately; the runtime versions every change in git
   and presents the whole run as a pending diff for the user to accept or
-  reject - never push or rewrite history yourself.
-- Version: use the git tool with only status/diff/log/add/commit/revert.
-  Commit each logical change with a short -m message.
-- Diagnose the runtime: run_powershell executes read-only Get-* commands only.
-- Run lint_knowledge_base for the deterministic quality report; it is read-only.
-- Ask the user with ask_user_question when a choice must be confirmed; the run
-  pauses until the user answers (up to 5 fixed options plus free text).
-- Read uploaded attachments: a manifest (id, name, type, size, text_available,
-  est_tokens, path, preview) is injected into the run context snapshot at start;
-  use read_file (or the read_attachment alias) with offset/length to page through
-  large text. Attachments are thread-scoped temporary context until you promote
-  them.
-- Promote a paper into the formal source area with promote_attachment (raw/<id>/)
-  only after the user confirms via ask_user_question; the runtime registers the
-  source and commits it.
-- Ingest registered sources with ingest_sources: first read schema.md from the
-  workspace root if present (pluggable contract; otherwise a built-in default is
-  used), then generate page drafts and write them with write_file. review the
-  draft summary in the conversation; the runtime presents the whole run as a
-  pending diff for approval.
-- When the request is complete, answer the user directly in plain text. Ground
-  scientific claims in the files you actually read, identify missing evidence,
-  and never invent citations.
+  reject.
+- Version: the git tool with only status/diff/log/add/commit/revert; commit
+  each logical change with a short -m message.
+- Diagnose: run_powershell executes read-only Get-* commands only.
+  lint_knowledge_base returns the deterministic quality report; read-only.
+- Ingest registered sources with ingest_sources: first read schema.md from
+  the workspace root if present (pluggable contract; otherwise a built-in
+  default is used), then generate page drafts and write them with write_file;
+  review the draft summary in the conversation - the runtime presents the
+  whole run as a pending diff for approval. Promote a paper into the formal
+  source area with promote_attachment (raw/<id>/) only after the user
+  confirms via ask_user_question; the runtime registers the source and
+  commits it.
 
-Never call generic filesystem or shell tools beyond the whitelist; use only
-the visible CellWiki tools. Answer in the user's language.
+## Output discipline
+Answer exactly what was asked - no side audits, no unrequested follow-up
+work. Answer first, then evidence. Give one short progress line before each
+tool call.
+
+## Budget and escalation
+Read-only verification (status checks and disputed-claim checks) is capped
+at 3 tool calls per run. When the cap is reached, report the current state
+and what one more step would buy; never push past it.
+
+## Vocabulary
+workspace = the selected knowledge base; run = one execution; diff = the
+change awaiting user acceptance. Never call generic filesystem or shell
+tools beyond this whitelist. Answer in the user's language.
 """
 
 
@@ -186,6 +218,93 @@ def _bounded_selection(text: str) -> str:
     return stripped[:_SELECTED_TEXT_MAX].rstrip() + "\n" + _SELECTION_TRUNCATED
 
 
+# 意图提示的标记词表：宁缺勿滥，误标只影响 Layer B goal 行的括号提示，
+# Layer A 已声明"提示只是 tiebreaker"。单字动词（写/改/删）会撞上
+# "有什么改动"这类状态问句，所以只收多字短语。
+_INTENT_HINT_META: tuple[str, ...] = (
+    "之前",
+    "聊过",
+    "聊天记录",
+    "对话历史",
+    "上次",
+    "上一次",
+    "上轮",
+    "上一轮",
+    "你有哪些工具",
+    "你有什么工具",
+    "你的工具",
+    "你能做什么",
+    "你会什么",
+    "what did we",
+    "what tools",
+    "your tools",
+)
+_INTENT_HINT_WORK: tuple[str, ...] = (
+    "ingest",
+    "promote",
+    "commit ",
+    "登记",
+    "清理",
+    "删除",
+    "删掉",
+    "删了",
+    "重命名",
+    "写入",
+    "写一",
+    "写个",
+    "写进",
+    "新建",
+    "建页",
+    "整理成",
+    "改成",
+    "改为",
+    "改一下",
+    "改掉",
+    "修改",
+    "write a",
+    "write new",
+    "add a",
+    "clean up",
+    "rename",
+)
+_INTENT_HINT_QUESTION: tuple[str, ...] = (
+    "？",
+    "?",
+    "什么",
+    "怎么",
+    "哪些",
+    "为什么",
+    "多少",
+    "如何",
+    "吗",
+    "what ",
+    "how ",
+    "which ",
+    "why ",
+)
+
+
+def classify_intent_hint(message: str | None) -> str | None:
+    """Best-effort hint for the Layer B goal line, not a routing decision.
+
+    Order matters: meta beats work ("之前 ingest 的五篇" is a history question),
+    work beats the generic question markers. Returns None when nothing matches,
+    which renders the goal line without a label.
+    """
+
+    text = str(message or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if any(marker in lowered for marker in _INTENT_HINT_META):
+        return "conversation meta"
+    if any(marker in lowered for marker in _INTENT_HINT_WORK):
+        return "library work"
+    if any(marker in lowered for marker in _INTENT_HINT_QUESTION):
+        return "question"
+    return None
+
+
 def build_layer_b_snapshot(
     *,
     current_message: str,
@@ -223,7 +342,9 @@ def build_layer_b_snapshot(
         block = _render_attachment_block(attachments)
         if block:
             parts.append(block)
-    goal = f"- current run goal: {current_message[:800]}"
+    hint = classify_intent_hint(current_message)
+    label = f" ({hint})" if hint else ""
+    goal = f"- current run goal{label}: {current_message[:800]}"
     body = "\n".join(parts)
     # 快照整体上界不变，但 run 目标是这次运行最不能丢的一行：先给它留位，
     # 被截掉的只能是上面的上下文段。
@@ -324,6 +445,7 @@ __all__ = [
     "LAYER_A_TEXT",
     "build_layer_b_snapshot",
     "build_r1_r5_block",
+    "classify_intent_hint",
     "compact_transcript",
     "estimate_tokens",
     "resolve_declared_window",

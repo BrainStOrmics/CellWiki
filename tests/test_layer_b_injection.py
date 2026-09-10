@@ -104,7 +104,7 @@ def test_selected_text_reaches_the_model_inside_layer_b(tmp_path: Path):
 
     assert "user selected this text on the page:" in layer_b
     assert "FOXP3 marks regulatory T cells." in layer_b
-    assert "current run goal: 这段说得对吗" in layer_b
+    assert "current run goal (question): 这段说得对吗" in layer_b
 
 
 def test_overlong_selection_arrives_bounded_with_its_marker(tmp_path: Path):
@@ -115,11 +115,11 @@ def test_overlong_selection_arrives_bounded_with_its_marker(tmp_path: Path):
     assert selection[:2_000] in layer_b
     assert selection[2_500:2_600] not in layer_b
     assert "…[selected text truncated]" in layer_b
-    assert "current run goal: 这段说得对吗" in layer_b
+    assert "current run goal (question): 这段说得对吗" in layer_b
 
 
 def test_run_without_a_selection_injects_no_selection_block(tmp_path: Path):
     layer_b = _run_with_selection(tmp_path, None)
 
     assert "user selected this text on the page" not in layer_b
-    assert "current run goal: 这段说得对吗" in layer_b
+    assert "current run goal (question): 这段说得对吗" in layer_b

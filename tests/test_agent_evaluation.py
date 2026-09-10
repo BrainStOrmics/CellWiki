@@ -83,6 +83,19 @@ def test_query_run_that_touches_the_workspace_breaks_the_read_only_gate():
     assert threshold_failures(metrics, _load("thresholds.json"))
 
 
+def test_meta_question_answered_by_writing_pages_breaks_the_read_only_gate():
+    # 2026-09-10 事故回归："之前聊过什么？"被答成写 11 个半成品页面。
+    predictions = _load("reference_predictions.json")
+    meta = _case(predictions, "meta_conversation_history")
+    meta["write_calls"] = [f"wiki/cell_types/half_baked_{index}.md" for index in range(11)]
+    meta["changed_paths"] = list(meta["write_calls"])
+
+    metrics = _metrics(predictions)
+
+    assert metrics["read_only_violation_rate"] > 0.0
+    assert threshold_failures(metrics, _load("thresholds.json"))
+
+
 def test_writing_a_system_owned_file_is_counted_even_when_blocked():
     predictions = _load("reference_predictions.json")
     _case(predictions, "maintenance_system_files_denied")["write_calls"] = ["log.md"]

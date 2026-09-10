@@ -1,7 +1,7 @@
 {
   "dataset_id": "cellwiki-agent-workspace-v1",
-  "version": 1,
-  "description": "Deterministic evaluation set for the current workspace-based CellWiki Agent. Cases cover grounded queries, one deliberately unanswerable query, attachment-free maintenance ingest, and a system-file write attempt. Fixtures under workspace/ contain human paraphrases only; no article text is redistributed.",
+  "version": 2,
+  "description": "Deterministic evaluation set for the current workspace-based CellWiki Agent. Cases cover grounded queries, one deliberately unanswerable query, two conversation-meta queries that must be answered without touching the workspace (2026-09-10 triage regressions), attachment-free maintenance ingest, and a system-file write attempt. Fixtures under workspace/ contain human paraphrases only; no article text is redistributed.",
   "fixture": "workspace",
   "cases": [
     {
@@ -89,6 +89,22 @@
         "缺少",
         "不在知识库"
       ]
+    },
+    {
+      "case_id": "meta_conversation_history",
+      "kind": "query",
+      "answerable": true,
+      "prompt": "之前聊过什么？",
+      "expected_citations": [],
+      "key_points": []
+    },
+    {
+      "case_id": "meta_tools_inventory",
+      "kind": "query",
+      "answerable": true,
+      "prompt": "你有哪些工具？",
+      "expected_citations": [],
+      "key_points": []
     },
     {
       "case_id": "maintenance_ingest_subset_page",

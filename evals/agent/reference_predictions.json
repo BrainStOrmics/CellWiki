@@ -47,6 +47,26 @@
       "usage": {"model_calls": 4, "tool_calls": 6, "elapsed_seconds": 11.0}
     },
     {
+      "case_id": "meta_conversation_history",
+      "final_status": "succeeded",
+      "answer": "这是我们这个会话的第一条消息，之前没有聊过任何内容。如果你是想让我动手做某件事（比如 ingest 论文或检查库况），直接说即可。",
+      "missing_evidence": [],
+      "changed_paths": [],
+      "write_calls": [],
+      "lint_status": "passed",
+      "usage": {"model_calls": 1, "tool_calls": 0, "elapsed_seconds": 3.0}
+    },
+    {
+      "case_id": "meta_tools_inventory",
+      "final_status": "succeeded",
+      "answer": "我能用的是 CellWiki 白名单工具：ls、glob、grep、read_file（read_attachment 别名）、write_file、edit_file、delete_file、rename_file、git（status/diff/log/add/commit/revert）、run_powershell（只读 Get-*）、lint_knowledge_base、ask_user_question、read_attachment、promote_attachment、ingest_sources。全部在工作区内受治理，没有通用文件系统或 shell 工具。",
+      "missing_evidence": [],
+      "changed_paths": [],
+      "write_calls": [],
+      "lint_status": "passed",
+      "usage": {"model_calls": 1, "tool_calls": 0, "elapsed_seconds": 3.0}
+    },
+    {
       "case_id": "maintenance_ingest_subset_page",
       "final_status": "waiting_approval",
       "answer": "已在细胞类型目录下新建 DN3 调节性中间状态页面，标准名为 dn3_regulatory_intermediate_state，标志物沿用来源里的 FOXP3 与 IL2RA 组合，并链接到已有的调节性 T 细胞页面；导航与矛盾台账未动，系统维护文件由系统重建。来源：raw/fixture_treg_paper.md",

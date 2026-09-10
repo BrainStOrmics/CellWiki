@@ -8,6 +8,7 @@ from cellwiki.services.prompt_layers import (
     LAYER_A_TEXT,
     build_layer_b_snapshot,
     build_r1_r5_block,
+    classify_intent_hint,
     compact_transcript,
     estimate_tokens,
     resolve_declared_window,
@@ -48,6 +49,20 @@ def test_layer_b_snapshot_contains_git_open_page_and_goal():
     assert "recent transcript" in snapshot
     assert "current run goal: 总结一下 FOXP3" in snapshot
     assert len(snapshot) <= 8_000
+
+
+def test_intent_hint_classifier_and_goal_label():
+    # 分诊事故回归（2026-09-10）：会话元问题必须拿到"别开工"的提示标签。
+    assert classify_intent_hint("之前聊过什么？") == "conversation meta"
+    assert classify_intent_hint("你有哪些工具？") == "conversation meta"
+    assert classify_intent_hint("先 ingest 五篇，我看看效果") == "library work"
+    assert classify_intent_hint("现在 git 状态是怎么样的？") == "question"
+    # 状态问句里的"改动"不能误判成工作指令。
+    assert classify_intent_hint("有什么未提交的改动？") == "question"
+    assert classify_intent_hint("总结一下 FOXP3") is None
+    assert classify_intent_hint("") is None
+    snapshot = build_layer_b_snapshot(current_message="之前聊过什么？")
+    assert "current run goal (conversation meta): 之前聊过什么？" in snapshot
 
 
 def test_layer_b_bounds_an_overlong_selection_with_a_visible_marker():
