@@ -182,7 +182,6 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .connection { display: flex; align-items: center; }
 .titlebar-brand { gap: 8px; }
 .titlebar-brand strong { color: var(--text); font-size: 12px; font-weight: 600; }
-.titlebar-separator { width: 1px; height: 13px; background: var(--line); }
 .titlebar-status { gap: 14px; color: var(--subtle); }
 .titlebar-refresh {
   display: inline-flex;
@@ -235,7 +234,7 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 }
 .rail-button { position: relative; width: 39px; height: 37px; border-radius: 6px; }
 .rail-button:hover { color: #c6cbd3; background: #1b1f26; }
-.rail-button.active { color: #dce8ff; background: var(--accent-soft); }
+.rail-button.active { color: var(--accent-strong); background: var(--accent-soft); }
 .rail-button.active::before { content: ""; position: absolute; left: -5px; width: 2px; height: 20px; border-radius: 0 2px 2px 0; background: var(--accent); }
 .rail-health { width: 7px; height: 7px; margin: 4px 0 5px; border-radius: 50%; background: #8a4f56; }
 .rail-health.online { background: var(--green); }
@@ -420,7 +419,7 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
   color: var(--subtle);
   background: #111419;
 }
-.file-search:focus-within { border-color: #44689f; }
+.file-search:focus-within { border-color: var(--accent-line-strong); }
 .file-search input { min-width: 0; flex: 1; border: 0; outline: 0; color: #dfe3e8; background: transparent; font-size: 11px; }
 .file-search input::placeholder { color: #666e79; }
 .file-search kbd { color: #555d68; font-size: 9px; white-space: nowrap; }
@@ -516,12 +515,12 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .published-state.review i { background: var(--accent); }
 
 .reader-scroll { background: var(--bg-panel); }
-.wiki-document { width: min(860px, calc(100% - 72px)); min-height: 100%; margin: 0 auto; padding: 40px 0 78px; }
-/* 页头是文档标题，不是落地页大字；阅读页对齐 Obsidian，标题下不压分隔线。 */
-.wiki-document > h1 { max-width: 730px; margin: 20px 0 14px; color: var(--text); font-size: 28px; font-weight: 600; letter-spacing: -0.015em; line-height: 1.25; }
+.wiki-document { width: min(880px, calc(100% - 72px)); min-height: 100%; margin: 0 auto; padding: 46px 0 84px; }
+/* 页头就是文档唯一的 H1：正文里重复的首个 H1 由 MarkdownReader 去掉，标题下不压分隔线。 */
+.wiki-document > h1 { max-width: 760px; margin: 22px 0 20px; color: var(--text); font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.28; }
 /* frontmatter 以 Obsidian 的 Properties 表呈现：可折叠、键/值两列、类型字母。 */
-.doc-properties { margin: 0 0 8px; overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius-m); }
-.doc-properties summary { display: flex; align-items: center; gap: 7px; padding: 7px 12px; color: var(--muted); background: var(--bg-raised); font-size: 11px; font-weight: 600; cursor: pointer; list-style: none; }
+.doc-properties { margin: 0 0 18px; overflow: hidden; border: 1px solid var(--border-soft); border-radius: var(--radius-m); }
+.doc-properties summary { display: flex; align-items: center; gap: 7px; padding: 8px 12px; color: var(--muted); background: var(--bg-raised); font-size: 12px; font-weight: 600; cursor: pointer; list-style: none; }
 .doc-properties summary::-webkit-details-marker { display: none; }
 .doc-property-row { display: flex; border-top: 1px solid var(--border-soft); }
 .doc-property-key { display: flex; flex: 0 0 34%; gap: 9px; align-items: baseline; padding: 8px 12px; color: var(--muted); font-size: 12px; }
@@ -877,18 +876,39 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .review-risk.high { color: #e18484; }
 
 /* Formal Markdown renderer: raw HTML is ignored and all tables/links are controlled.
-   阅读页对齐 Obsidian：章节之间靠留白分层，不压分隔线。 */
-.formal-markdown-reader { position: relative; color: var(--text-2); line-height: 1.75; }
-.formal-markdown-reader h1 { margin: 22px 0 12px; color: var(--text); font-size: 22px; }
-.formal-markdown-reader h2 { margin: 26px 0 10px; color: var(--text); font-size: 16px; font-weight: 600; }
-.formal-markdown-reader h2[data-origin="curation"]::after { content: "CURATION"; margin-left: 8px; padding: 2px 5px; border: 1px solid var(--warning); border-radius: 3px; color: var(--warning); font-size: 7px; vertical-align: middle; }
-.formal-markdown-reader h2[data-origin="generated"]::after { content: "GENERATED"; margin-left: 8px; color: var(--subtle); font-size: 7px; vertical-align: middle; }
-.formal-markdown-reader h3 { margin: 18px 0 8px; color: var(--text); font-size: 13.5px; font-weight: 600; }
-.formal-markdown-reader p,
-.formal-markdown-reader li { font-size: 13px; }
-.formal-markdown-reader blockquote { margin: 14px 0; padding: 9px 14px; border-left: 3px solid var(--accent-line); border-radius: 0 var(--radius-m) var(--radius-m) 0; color: var(--text-2); background: var(--accent-soft-2); }
-.formal-markdown-reader a { display: inline-flex; align-items: center; gap: 3px; color: var(--accent); }
-.wiki-inline-link { padding: 0; border: 0; color: var(--accent); text-decoration: underline; background: transparent; }
+   阅读页对齐参考稿：正文 16px，标题走 30/23/18 阶梯，章节靠留白分层，
+   链接是下划线紫，行内代码是浅灰药丸；字号只在这一层定义，子元素一律继承。 */
+.formal-markdown-reader { position: relative; color: var(--text-2); font-size: 16px; line-height: 1.7; }
+.formal-markdown-reader > :first-child { margin-top: 0; }
+.formal-markdown-reader h1 { margin: 34px 0 16px; color: var(--text); font-size: 30px; font-weight: 700; letter-spacing: -0.02em; line-height: 1.28; }
+.formal-markdown-reader h2 { margin: 40px 0 14px; color: var(--text); font-size: 23px; font-weight: 700; letter-spacing: -0.015em; line-height: 1.32; }
+.formal-markdown-reader h2[data-origin="curation"]::after { content: "CURATION"; margin-left: 9px; padding: 2px 5px; border: 1px solid var(--warning); border-radius: 3px; color: var(--warning); font-size: 9px; font-weight: 600; letter-spacing: .06em; vertical-align: middle; }
+.formal-markdown-reader h2[data-origin="generated"]::after { content: "GENERATED"; margin-left: 9px; color: var(--subtle); font-size: 9px; font-weight: 600; letter-spacing: .06em; vertical-align: middle; }
+.formal-markdown-reader h3 { margin: 30px 0 10px; color: var(--text); font-size: 18px; font-weight: 650; line-height: 1.4; }
+.formal-markdown-reader h4 { margin: 24px 0 8px; color: var(--text); font-size: 16px; font-weight: 650; }
+.formal-markdown-reader p { margin: 0 0 16px; font-size: inherit; }
+.formal-markdown-reader strong { color: var(--text); font-weight: 650; }
+.formal-markdown-reader ul,
+.formal-markdown-reader ol { margin: 0 0 18px; padding-left: 26px; }
+.formal-markdown-reader li { margin: 5px 0; font-size: inherit; }
+.formal-markdown-reader li::marker { color: var(--subtle); }
+.formal-markdown-reader li > ul,
+.formal-markdown-reader li > ol { margin: 5px 0 0; }
+.formal-markdown-reader blockquote { margin: 18px 0; padding: 12px 18px; border-left: 3px solid var(--accent-line); border-radius: 0 var(--radius-m) var(--radius-m) 0; color: var(--text-2); background: var(--accent-soft-2); }
+.formal-markdown-reader a { color: var(--accent); text-decoration: underline; text-decoration-color: var(--accent-line); text-underline-offset: 2px; }
+.formal-markdown-reader a:hover { color: var(--accent-strong); }
+.formal-markdown-reader a > svg { margin-left: 3px; color: var(--subtle); vertical-align: -1px; }
+.wiki-inline-link { padding: 0; border: 0; color: var(--accent); text-decoration: underline; text-decoration-color: var(--accent-line); text-underline-offset: 2px; background: transparent; }
+.wiki-inline-link:hover { color: var(--accent-strong); }
+/* 行内代码/代码块沿用 markdown-content 的浅灰药丸，但按阅读字号缩放。 */
+.formal-markdown-reader code { padding: 1px 5px; border-radius: var(--radius-s); color: var(--text); background: var(--bg-code); font-family: var(--font-mono); font-size: .88em; }
+.formal-markdown-reader pre { margin: 0 0 18px; padding: 12px 14px; overflow-x: auto; border: 1px solid var(--border-soft); border-radius: var(--radius-m); background: var(--bg-code); font-size: 13.5px; line-height: 1.6; }
+.formal-markdown-reader pre code { padding: 0; background: transparent; font-size: inherit; }
+.formal-markdown-reader hr { margin: 28px 0; border: 0; border-top: 1px solid var(--line); }
+.formal-markdown-reader .markdown-table-wrap { margin: 6px 0 22px; }
+.formal-markdown-reader .markdown-table-wrap table { font-size: 14.5px; }
+.formal-markdown-reader .markdown-table-wrap th,
+.formal-markdown-reader .markdown-table-wrap td { padding: 9px 13px; }
 .selection-actions { position: absolute; z-index: 12; display: flex; width: 250px; padding: 4px; border: 1px solid #3b4656; border-radius: 7px; background: #171b22; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42); }
 .selection-actions button { display: flex; flex: 1; align-items: center; justify-content: center; gap: 4px; padding: 6px 4px; border: 0; border-radius: 4px; color: #bbc5d2; background: transparent; font-size: 8px; }
 .selection-actions button:hover { color: white; background: var(--panel-hover); }
@@ -1274,7 +1294,6 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 :root[data-theme="light"] .icon-rail,
 :root[data-theme="light"] .settings-nav { color: var(--muted); background: var(--bg-chrome); }
 :root[data-theme="light"] .app-titlebar { border-color: var(--border); }
-:root[data-theme="light"] .titlebar-separator { background: var(--border); }
 :root[data-theme="light"] .rail-button { color: var(--muted); }
 :root[data-theme="light"] .rail-button:hover { color: var(--text); background: var(--bg-hover); }
 :root[data-theme="light"] .rail-button.active { color: var(--accent); background: var(--accent-soft); }
@@ -1833,12 +1852,11 @@ select:focus-visible {
 :root[data-theme="light"] .icon-rail,
 :root[data-theme="light"] .settings-nav { color: #687482; background: #f8fafb; }
 :root[data-theme="light"] .app-titlebar { border-color: var(--line); }
-:root[data-theme="light"] .titlebar-separator { background: var(--line); }
 
 /* Rail buttons */
-:root[data-theme="light"] .rail-button { color: #81909e; }
-:root[data-theme="light"] .rail-button:hover { color: #2d3d4d; background: #eaf0f5; }
-:root[data-theme="light"] .rail-button.active { color: #245e9b; background: var(--accent-soft-2); }
+:root[data-theme="light"] .rail-button { color: var(--muted); }
+:root[data-theme="light"] .rail-button:hover { color: var(--text); background: var(--bg-hover); }
+:root[data-theme="light"] .rail-button.active { color: var(--accent); background: var(--accent-soft); }
 
 /* Panels */
 :root[data-theme="light"] .file-panel,

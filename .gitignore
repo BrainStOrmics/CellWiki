@@ -32,8 +32,10 @@ evals/
 extractions/
 raw/
 
-# Generated wiki
+# Generated wiki. The pattern matches any depth, so the frontend Wiki feature
+# directory has to be re-included or its source files silently stay untracked.
 wiki/
+!frontend/src/features/wiki/
 
 # Runtime data (can be regenerated)
 data/extraction/

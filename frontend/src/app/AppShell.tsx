@@ -24,7 +24,7 @@ import { ZoomController } from "../components/ZoomController";
 import { useI18n } from "../i18n";
 import { apiUrl, isDesktopRuntime, productFetch } from "../runtime";
 import { deleteJson, getJson, postJson, ProductApiError } from "../lib/product-api";
-import { MarkdownReader } from "../features/wiki/MarkdownReader";
+import { MarkdownReader, leadingHeading, sameHeadingText } from "../features/wiki/MarkdownReader";
 import { useUiStore } from "../stores/ui-store";
 import { appendAsyncTask, attachmentReferencesForIds } from "./attachment-upload-queue";
 import { CommandPalette } from "../features/search/CommandPalette";
@@ -501,6 +501,9 @@ export function AppShell() {
   const selectedPage = pages.find((page) => page.page_id === selectedId);
   const selectedTitle = String(detail.frontmatter.display_name ?? selectedPage?.title ?? selectedId.replaceAll("_", " "));
   const selectedPath = selectedPage?.path ?? (selectedId ? `wiki/cell_types/${selectedId}.md` : "cellwiki");
+  // 阅读页只保留一个大标题：正文自带不同的 H1 时，页头不再重复渲染文件名标题。
+  const bodyHeading = leadingHeading(detail.markdown);
+  const bodyOwnsTitle = Boolean(bodyHeading) && !sameHeadingText(bodyHeading ?? "", selectedTitle);
   const contextTitle = selectedTitle || t("reader.workspace");
   const contextPath = selectedPath;
   const workspaceSelectedPath = workspaceFile?.path ?? (selectedPath.startsWith("wiki/") ? selectedPath : null);
@@ -1488,8 +1491,6 @@ export function AppShell() {
       <header className="app-titlebar">
         <div className="titlebar-brand">
           <strong>CellWiki</strong>
-          <span className="titlebar-separator" />
-          <span>cellwiki</span>
         </div>
         <div className="titlebar-status">
           <span className={apiOnline ? "connection online" : "connection"}><i />{apiOnline ? t("app.apiConnected") : t("app.localPreview")}</span>
@@ -1606,9 +1607,10 @@ export function AppShell() {
               ) : (
                 <article className="wiki-document">
                   <PageProperties frontmatter={detail.frontmatter} label={t("reader.properties")} />
-                  <h1>{selectedTitle}</h1>
+                  {!bodyOwnsTitle && <h1>{selectedTitle}</h1>}
                   <MarkdownReader
                     markdown={detail.markdown}
+                    title={selectedTitle}
                     onWikiLink={(pageId) => { void openWikiTarget(pageId); }}
                     onAskSelection={(text) => {
                       setSelectedText(text);
@@ -1892,7 +1894,7 @@ function PageProperties({ frontmatter, label }: { frontmatter: Record<string, un
   const entries = Object.entries(frontmatter);
   if (entries.length === 0) return null;
   return (
-    <details className="doc-properties" open>
+    <details className="doc-properties">
       <summary><List size={13} />{label}</summary>
       <div className="doc-properties-table">
         {entries.map(([key, value]) => (
