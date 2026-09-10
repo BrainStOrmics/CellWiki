@@ -382,7 +382,7 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 
 .file-panel,
 .agent-panel { flex: 0 0 auto; background: var(--panel-bg); }
-.reader-panel { min-width: 0; flex: 1; background: #181b21; }
+.reader-panel { min-width: 0; flex: 1; background: var(--bg-panel); }
 
 .panel-toolbar,
 .reader-toolbar,
@@ -515,7 +515,7 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .published-state.review { color: #8ba9d6; }
 .published-state.review i { background: var(--accent); }
 
-.reader-scroll { background: var(--bg-panel-2); }
+.reader-scroll { background: var(--bg-panel); }
 .wiki-document { width: min(860px, calc(100% - 72px)); min-height: 100%; margin: 0 auto; padding: 62px 0 78px; }
 .document-kicker { color: var(--accent); font-size: 10px; font-weight: 600; letter-spacing: 0.1em; }
 /* 页头是文档标题，不是落地页大字：30px、正常字距。上一轮放上去的分隔线保留。 */
@@ -1389,8 +1389,6 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 :root[data-theme="light"] .tree-empty { color: var(--subtle); }
 :root[data-theme="light"] .file-panel-footer button { color: var(--muted); }
 :root[data-theme="light"] .file-panel-footer button:hover { color: var(--text); background: var(--bg-hover); }
-:root[data-theme="light"] .reader-panel,
-:root[data-theme="light"] .reader-scroll { background: var(--bg-panel-2); }
 :root[data-theme="light"] .breadcrumb-path { color: var(--muted); }
 :root[data-theme="light"] .breadcrumb-path > svg { color: var(--accent); }
 :root[data-theme="light"] .breadcrumb-path span:last-child { color: var(--text-2); }
@@ -1866,8 +1864,6 @@ select:focus-visible {
 /* Panels */
 :root[data-theme="light"] .file-panel,
 :root[data-theme="light"] .agent-panel { background: #ffffff; }
-:root[data-theme="light"] .reader-panel,
-:root[data-theme="light"] .reader-scroll { background: #fbfcfd; }
 :root[data-theme="light"] .panel-toolbar,
 :root[data-theme="light"] .reader-toolbar,
 :root[data-theme="light"] .agent-toolbar { background: #ffffff; }
