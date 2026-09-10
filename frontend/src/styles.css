@@ -1224,11 +1224,11 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 }
 .markdown-content pre code { color: inherit; font: inherit; }
 .markdown-content code.markdown-inline-code {
-  padding: 1px 4px;
-  border: 1px solid var(--border-soft);
+  padding: 1px 5px;
+  border: 0;
   border-radius: var(--radius-s);
-  color: var(--accent-text-strong);
-  background: var(--bg-code);
+  color: var(--text-2);
+  background: var(--bg-hover);
   font: 11px var(--font-mono);
 }
 
