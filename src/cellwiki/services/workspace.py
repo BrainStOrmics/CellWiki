@@ -33,6 +33,18 @@ AGENT_GIT_IDENTITY_EMAIL = "cellwiki-agent@cellwiki.local"
 # 系统拥有的文件：Agent 不可手写（overview/statistics 系统重建，
 # log/audit_report 系统 append-only）。
 SYSTEM_OWNED_FILES = frozenset({"overview.md", "statistics.md", "log.md", "audit_report.md"})
+
+# 运行时产物与工作区版本库的边界。ADR-0007 规定历史永不改写，所以一次
+# `git add data/runtime/cellwiki.db` 就会把消息正文、工具输出与检查点永久留在
+# 知识库历史里；这些文件本来就可由 SQLite 重建，进历史只有害处。git 的忽略规则
+# 对未跟踪文件即刻生效，因此这里只创建文件、不做提交——创建根提交会破坏
+# tests/test_agent_runtime.py 钉住的"新工作区无初始 commit -> snapshot 为 None"
+# 首轮 pending diff 语义。
+WORKSPACE_IGNORE_FILE_NAME = ".gitignore"
+WORKSPACE_IGNORE_CONTENT = (
+    "# 运行时产物：运行库、检查点、错误转储都由产品自己创建，不进版本库\n"
+    "data/runtime/\n"
+)
 # Agent 维护的文件：导航正文与矛盾台账。
 AGENT_OWNED_FILES = frozenset({"index.md", "contradiction.md"})
 
@@ -112,6 +124,12 @@ def ensure_workspace(root: Path) -> WorkspaceLayout:
         if not path.exists():
             path.write_text(_file_template(name), encoding="utf-8")
         files[name] = path
+
+    # 已存在的 .gitignore 一律不碰：用户可能另有忽略规则，覆盖会吞掉他的意图。
+    if not (root_resolved / WORKSPACE_IGNORE_FILE_NAME).exists():
+        (root_resolved / WORKSPACE_IGNORE_FILE_NAME).write_text(
+            WORKSPACE_IGNORE_CONTENT, encoding="utf-8"
+        )
 
     # git init（仅当目录还不是仓库时）
     if not (root_resolved / ".git").exists():

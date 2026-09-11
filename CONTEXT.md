@@ -16,6 +16,10 @@
   - `contradiction.md`：Agent 维护矛盾台账。
   - `overview.md`、`statistics.md`：系统重建，Agent 不可手写。
   - `log.md`、`audit_report.md`：系统 append-only，Agent 不可写。
+  - `.gitignore`：系统初始化创建的运行时产物边界（忽略 `data/runtime/`）；已存在
+    则原样保留、不改写。它不是四个系统维护文件之一，Agent 可读写。之所以由系统
+    创建：运行库与检查点里是消息正文和工具输出原文，而不变式 2 规定历史永不改写，
+    一次误提交就无法撤回。
 - **Run**：桌面端一条消息触发的一次 Agent 执行。每个 run 有独立的迭代预算、
   超时、事件流、checkpoint 与终态；可以 unfinished 收尾并续跑。图状态键是 **run
   作用域**的 `{thread_id}::{run_id}`（ADR-0010），所以同一会话里连续两个 run 不会

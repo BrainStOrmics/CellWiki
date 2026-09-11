@@ -79,14 +79,6 @@ def _prepare(case_id: str) -> Path:
     work.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(FIXTURE, work)
     ensure_workspace(work)
-    # 与真实工作区保持一致：运行时产物（运行库、checkpoint、附件临时区）不是知识，
-    # 不该被算进"这一轮 Agent 改了什么"。产品假定 .gitignore 已排除 data/runtime/
-    # 但 ensure_workspace 并不创建它，这里按已治理工作区的实际形态补上。
-    (work / ".gitignore").write_text(
-        "# 运行时产物：运行库、检查点、错误转储都由产品自己创建，不进版本库\n"
-        "data/runtime/\n",
-        encoding="utf-8",
-    )
     _git(work, "add", "-A")
     _git(work, "commit", "-m", "chore(eval): fixture baseline")
     return work
