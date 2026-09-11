@@ -152,12 +152,23 @@ def _run_case(
             (event.message for event in reversed(events) if event.type == AgentEventType.FINAL_RESPONSE),
             "",
         )
+        # 提问卡片也是给用户的响应：系统文件题的合法终态是 waiting_confirmation，
+        # 此时没有 FINAL_RESPONSE，但 task_confirmation_required 里带着说明。
+        question = next(
+            (
+                event.message
+                for event in reversed(events)
+                if event.type == AgentEventType.TASK_CONFIRMATION_REQUIRED
+            ),
+            "",
+        )
         return {
             "case_id": case_id,
             "final_status": current.status.value,
             "error_type": current.error_type.value if current.error_type else None,
             "error_message": (current.error_message or "")[:300] or None,
             "answer": answer,
+            "question": question or "",
             "changed_paths": _changed_paths(work, current.snapshot_commit),
             "write_calls": _write_calls(events),
             "lint_status": inspect_projection(work)["status"],

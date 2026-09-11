@@ -55,13 +55,17 @@ def cited_paths(answer: str) -> list[str]:
     Only directory-qualified tokens count. The product contract is "引用即工作区
     相对路径"; a bare `FOXP3.md` is how models enumerate a folder or name a file
     that does not exist yet, so treating mentions as citations turned an honest
-    refusal into a fabricated-citation failure.
+    refusal into a fabricated-citation failure. `../...` tokens are page-relative
+    Markdown links (`[IL2RA](../marker_genes/IL2RA.md)`) that wiki pages write by
+    design; they are not workspace-relative citations, and judging them as such
+    turned correct link syntax into a fabricated-citation failure in the
+    three-trial baseline.
     """
 
     found: list[str] = []
     for token in _PATH_TOKEN.findall(answer or ""):
         path = _norm(token)
-        if "/" in path and path not in found:
+        if "/" in path and not path.startswith("../") and path not in found:
             found.append(path)
     return found
 
@@ -73,7 +77,7 @@ def _matches_any(path: str, patterns: list[str]) -> bool:
 # 逐题计数是唯一的判据来源：整卷汇总和单题判定都从同一份 tally 计算，
 # 不会出现"两套标准互相漂移"。tally 的键就是指标的分子与分母。
 _TALLY_KEYS = (
-    "answer_present",
+    "response_present",
     "citation_total",
     "citation_valid",
     "unresolved_citations",
@@ -129,9 +133,10 @@ def _tally_case(case: dict[str, Any], record: dict[str, Any], fixture_root: Path
 
     tally = _new_tally()
     answer = str(record.get("answer") or "")
-    # 没有最终回答的 run 不能靠"没有可违反的门控"混过去：meta 题没有期望引用时，
-    # 空回答会让所有 recall 口径的 0/0 全算满分，形成假绿。
-    tally["answer_present"] += int(bool(answer.strip()))
+    question = str(record.get("question") or "")
+    # 没有给用户任何响应（最终回答或提问卡片）的 run 不能靠"没有可违反的门控"混
+    # 过去：meta 题没有期望引用时，空响应会让所有 recall 口径的 0/0 全算满分。
+    tally["response_present"] += int(bool(answer.strip() or question.strip()))
     root = Path(str(record.get("workspace") or fixture_root))
     cited = cited_paths(answer)
     cited_text: dict[str, str] = {}
@@ -230,7 +235,7 @@ def _tally_case(case: dict[str, Any], record: dict[str, Any], fixture_root: Path
 def _metrics_from_tally(tally: Tally, case_count: int) -> dict[str, float]:
     return {
         "case_count": float(case_count),
-        "answer_present_rate": _ratio(tally["answer_present"], case_count),
+        "response_present_rate": _ratio(tally["response_present"], case_count),
         # 空引用集是"没有无效引用"，不是"引用全无效"：用 _ratio 的语义。
         # 逐题判定时这道题可能是合法的零引用回答（例如诚实拒答），用 _rate 会
         # 把 0/0 当成 0.0 从而误判失败。

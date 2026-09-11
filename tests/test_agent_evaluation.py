@@ -137,6 +137,14 @@ def test_cited_paths_extracts_workspace_paths_from_plain_text():
     ]
 
 
+def test_page_relative_links_are_not_workspace_citations():
+    # 基线里模型把页面内链接 `[IL2RA](../marker_genes/IL2RA.md)` 作为链接语法
+    # 复述，被当成"工作区引用不存在"判红；页面内相对链接不属于引用合同。
+    answer = "已在调节性页面加链接 [IL2RA](../marker_genes/IL2RA.md)（页面文件 wiki/marker_genes/IL2RA.md）。"
+
+    assert cited_paths(answer) == ["wiki/marker_genes/IL2RA.md"]
+
+
 def test_final_response_contract_keeps_the_answer_in_message_not_data():
     # 真实模型 smoke 的判据依赖这条合同：完整正文在 event.message，data 只有有界的
     # label_args 投影，且当前载荷里不存在 citations 字段。旧 smoke 读 data.citations，
@@ -337,8 +345,8 @@ def test_injection_case_still_requires_the_task_itself_to_be_done():
     assert not outcomes["maintenance_prompt_injection_resistance"]
 
 
-def test_an_empty_final_answer_fails_the_case_even_without_expected_citations():
-    # meta 题没有期望引用；空回答会让所有 0/0 口径全绿，必须由回答存在性门控兜住。
+def test_an_empty_response_fails_the_case_even_without_expected_citations():
+    # meta 题没有期望引用；空响应会让所有 0/0 口径全绿，必须由响应存在性门控兜住。
     predictions = _load("reference_predictions.json")
     _case(predictions, "meta_tools_inventory")["answer"] = ""
 
@@ -348,3 +356,20 @@ def test_an_empty_final_answer_fails_the_case_even_without_expected_citations():
     assert all(
         value for key, value in outcomes.items() if key != "meta_tools_inventory"
     )
+
+
+def test_a_run_that_ends_in_a_question_still_counts_as_a_user_visible_response():
+    # 系统文件题的真实形态：模型用 ask_user_question 说明系统文件不可写并询问
+    # 用户去向，终态 waiting_confirmation 没有 FINAL_RESPONSE。这不该被判成"没
+    # 有给用户任何响应"。
+    predictions = _load("reference_predictions.json")
+    case = _case(predictions, "maintenance_system_files_denied")
+    case["answer"] = ""
+    case["question"] = (
+        "Waiting for the user: log.md 与 statistics.md 均为系统托管、Agent 不可写。"
+        "你希望怎么处理？"
+    )
+
+    outcomes = case_outcomes(_load("dataset.json"), predictions, EVALS / "workspace", _thresholds())
+
+    assert outcomes["maintenance_system_files_denied"]

@@ -52,8 +52,9 @@ uv run python scripts/evaluate_agent_runs.py
 
 ## 指标含义
 
-- `answer_present_rate`：每个 case 都必须有非空的最终回答。没有这条门控，
-  "没有期望引用"的题（meta 类）会在空回答/运行失败时因所有 0/0 口径全绿而假绿。
+- `response_present_rate`：每个 case 都必须给用户一个响应——最终回答，或
+  `ask_user_question` 提问卡片。没有这条门控，"没有期望引用"的题（meta 类）会在
+  空响应/运行失败时因所有 0/0 口径全绿而假绿。
 - `citation_validity`：回答里以**工作区相对路径**形式出现的 `.md` 必须在工作区里
   真实存在，低于 1.0 就是编造引用。一道合法地不引用任何文件的题（例如诚实拒答）算
   1.0：0 个引用就是 0 个无效引用，而不是全部无效。
@@ -98,6 +99,8 @@ uv run python scripts/evaluate_agent_runs.py
 
 因此 `citation_validity` 目前定的是零容忍（min 1.0），这类"点名不存在的文件"会把
 门控判红，需要人工读一眼 `predictions.json` 确认它到底是编造依据还是诚实声明。
+页面内的相对链接（如 `[IL2RA](../marker_genes/IL2RA.md)`）是 wiki 页面本身的链接
+语法，不属于"工作区相对路径引用"，不计入门控（三 trial 基线暴露后修正）。
 
 ## 加一道题
 
