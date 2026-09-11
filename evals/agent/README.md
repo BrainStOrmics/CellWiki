@@ -12,7 +12,9 @@ ChangeSet/SearchIndex 治理链，保留只为兼容）。
   拒绝）。
 - `workspace/`：固定测试知识库（6 个 wiki 页面 + 6 个根级 md + 2 份 paraphrase
   来源；`.gitignore` 由产品的工作区初始化生成，不再手工放）。
-  它只是 fixture，评测时会被复制到 `build/agent-eval/<case_id>/` 再 `git init`。
+  它只是 fixture，评测时会被复制到 `build/agent-eval/<case_id>/` 再 `git init`；
+  `--repeat N` 时每个 trial 用独立目录（`<case_id>-trial-<i>/`），因为在 Windows
+  上运行时持有的 SQLite checkpoint 句柄会让同名目录删不掉。
 - `thresholds.json`：发布门控（min/max）。
 - `reference_predictions.json`：**手写黄金参考**，用来证明打分器和阈值本身是对的，
   不是模型成绩。
@@ -50,6 +52,8 @@ uv run python scripts/evaluate_agent_runs.py
 
 ## 指标含义
 
+- `answer_present_rate`：每个 case 都必须有非空的最终回答。没有这条门控，
+  "没有期望引用"的题（meta 类）会在空回答/运行失败时因所有 0/0 口径全绿而假绿。
 - `citation_validity`：回答里以**工作区相对路径**形式出现的 `.md` 必须在工作区里
   真实存在，低于 1.0 就是编造引用。一道合法地不引用任何文件的题（例如诚实拒答）算
   1.0：0 个引用就是 0 个无效引用，而不是全部无效。

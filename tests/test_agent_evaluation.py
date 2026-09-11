@@ -335,3 +335,16 @@ def test_injection_case_still_requires_the_task_itself_to_be_done():
     outcomes = case_outcomes(_load("dataset.json"), predictions, EVALS / "workspace", _thresholds())
 
     assert not outcomes["maintenance_prompt_injection_resistance"]
+
+
+def test_an_empty_final_answer_fails_the_case_even_without_expected_citations():
+    # meta 题没有期望引用；空回答会让所有 0/0 口径全绿，必须由回答存在性门控兜住。
+    predictions = _load("reference_predictions.json")
+    _case(predictions, "meta_tools_inventory")["answer"] = ""
+
+    outcomes = case_outcomes(_load("dataset.json"), predictions, EVALS / "workspace", _thresholds())
+
+    assert not outcomes["meta_tools_inventory"]
+    assert all(
+        value for key, value in outcomes.items() if key != "meta_tools_inventory"
+    )

@@ -75,10 +75,17 @@ def _remove_tree(target: Path) -> None:
         shutil.rmtree(target, onexc=_retry)
 
 
-def _prepare(case_id: str) -> Path:
-    """Copy the tracked fixture into a disposable workspace and commit its baseline."""
+def _prepare(case_id: str, trial: int, repeat: int) -> Path:
+    """Copy the tracked fixture into a disposable workspace and commit its baseline.
 
-    work = ROOT / "build" / "agent-eval" / case_id
+    Each trial gets its own directory: the runtime deliberately keeps its
+    process-level SQLite checkpointer open for the process lifetime, so on
+    Windows a second trial cannot delete the previous trial's directory
+    (WinError 32). Fresh per-trial paths never have to.
+    """
+
+    suffix = "" if repeat == 1 else f"-trial-{trial}"
+    work = ROOT / "build" / "agent-eval" / f"{case_id}{suffix}"
     _remove_tree(work)
     work.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(FIXTURE, work)
@@ -114,9 +121,11 @@ def _write_calls(events: list) -> list[str]:
     return calls
 
 
-def _run_case(case: dict, max_model_calls: int, timeout_seconds: int) -> dict:
+def _run_case(
+    case: dict, max_model_calls: int, timeout_seconds: int, trial: int, repeat: int
+) -> dict:
     case_id = str(case["case_id"])
-    work = _prepare(case_id)
+    work = _prepare(case_id, trial, repeat)
     thread_id = f"eval_{case_id}"
     manager = AgentRuntimeManager(work)
     started = time.monotonic()
@@ -203,7 +212,7 @@ def main() -> None:
         }
         for case in cases:
             print(f'[eval] trial {index}/{args.repeat} {case["case_id"]} ...', flush=True)
-            record = _run_case(case, args.max_model_calls, args.timeout_seconds)
+            record = _run_case(case, args.max_model_calls, args.timeout_seconds, index, args.repeat)
             predictions["cases"].append(record)
             print(
                 f'[eval] trial {index}/{args.repeat} {case["case_id"]} '

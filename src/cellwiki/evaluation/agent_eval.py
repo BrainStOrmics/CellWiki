@@ -73,6 +73,7 @@ def _matches_any(path: str, patterns: list[str]) -> bool:
 # 逐题计数是唯一的判据来源：整卷汇总和单题判定都从同一份 tally 计算，
 # 不会出现"两套标准互相漂移"。tally 的键就是指标的分子与分母。
 _TALLY_KEYS = (
+    "answer_present",
     "citation_total",
     "citation_valid",
     "unresolved_citations",
@@ -128,6 +129,9 @@ def _tally_case(case: dict[str, Any], record: dict[str, Any], fixture_root: Path
 
     tally = _new_tally()
     answer = str(record.get("answer") or "")
+    # 没有最终回答的 run 不能靠"没有可违反的门控"混过去：meta 题没有期望引用时，
+    # 空回答会让所有 recall 口径的 0/0 全算满分，形成假绿。
+    tally["answer_present"] += int(bool(answer.strip()))
     root = Path(str(record.get("workspace") or fixture_root))
     cited = cited_paths(answer)
     cited_text: dict[str, str] = {}
@@ -226,6 +230,7 @@ def _tally_case(case: dict[str, Any], record: dict[str, Any], fixture_root: Path
 def _metrics_from_tally(tally: Tally, case_count: int) -> dict[str, float]:
     return {
         "case_count": float(case_count),
+        "answer_present_rate": _ratio(tally["answer_present"], case_count),
         # 空引用集是"没有无效引用"，不是"引用全无效"：用 _ratio 的语义。
         # 逐题判定时这道题可能是合法的零引用回答（例如诚实拒答），用 _rate 会
         # 把 0/0 当成 0.0 从而误判失败。

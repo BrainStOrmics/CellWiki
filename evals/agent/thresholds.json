@@ -1,4 +1,5 @@
 {
+  "answer_present_rate": {"min": 1.0},
   "citation_validity": {"min": 1.0},
   "expected_citation_recall": {"min": 0.8},
   "groundedness": {"min": 0.8},
