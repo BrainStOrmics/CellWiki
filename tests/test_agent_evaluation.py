@@ -10,7 +10,13 @@ import json
 import shutil
 from pathlib import Path
 
-from cellwiki.evaluation.agent_eval import cited_paths, evaluate_agent_predictions
+from cellwiki.evaluation.agent_eval import (
+    case_metrics,
+    case_outcomes,
+    cited_paths,
+    evaluate_agent_predictions,
+    trial_pass_rates,
+)
 from cellwiki.services.agent_runtime import _signal_payload
 from cellwiki.evaluation.semantic import threshold_failures
 
@@ -204,3 +210,55 @@ def test_an_honest_refusal_may_still_enumerate_the_workspace():
     metrics = _metrics(predictions)
 
     assert metrics["unanswerable_accuracy"] == 1.0
+
+
+def _thresholds() -> dict:
+    return _load("thresholds.json")
+
+
+def test_gold_reference_passes_every_case_it_scores():
+    outcomes = case_outcomes(_load("dataset.json"), _load("reference_predictions.json"),
+                             EVALS / "workspace", _thresholds())
+
+    assert len(outcomes) == len(_load("dataset.json")["cases"])
+    assert all(outcomes.values()), [key for key, value in outcomes.items() if not value]
+
+
+def test_per_case_outcomes_isolate_only_the_failing_case():
+    dataset = _load("dataset.json")
+    predictions = _load("reference_predictions.json")
+    _case(predictions, "query_treg_markers")["answer"] = "依据 wiki/cell_types/nope.md"
+
+    outcomes = case_outcomes(dataset, predictions, EVALS / "workspace", _thresholds())
+
+    assert not outcomes["query_treg_markers"]
+    assert all(value for key, value in outcomes.items() if key != "query_treg_markers")
+
+
+def test_pass_k_requires_the_same_case_to_pass_in_every_trial():
+    outcomes = [
+        {"a": True, "b": True},
+        {"a": True, "b": False},
+        {"a": True, "b": True},
+    ]
+
+    rates = trial_pass_rates(outcomes)
+
+    assert rates["trials"] == 3.0
+    assert rates["pass_1"] == 5 / 6
+    assert rates["pass_k"] == 0.5
+    assert rates["stable_case_count"] == 1.0
+
+
+def test_an_answer_with_no_citations_is_not_a_citation_validity_failure():
+    # 诚实拒答可以一个文件都不引用；0/0 必须是"没有无效引用"而不是"引用全无效"，
+    # 否则逐题判定会把每一道无引用题都误判成失败。
+    dataset = _load("dataset.json")
+    case = dataset["cases"][0] | {"case_id": "silent", "expected_citations": [], "key_points": []}
+    record = {"case_id": "silent", "answer": "我不知道，知识库里没有相关内容。"}
+
+    metrics = case_metrics(case, record, EVALS / "workspace")
+
+    assert metrics["citation_validity"] == 1.0
+    assert metrics["expected_citation_recall"] == 1.0
+    assert metrics["read_only_violation_rate"] == 0.0

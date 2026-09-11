@@ -22,7 +22,11 @@ from urllib.parse import urlparse
 from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.runs import AgentEventType, AgentRunStatus, RunBudget
-from cellwiki.evaluation.agent_eval import evaluate_agent_predictions
+from cellwiki.evaluation.agent_eval import (
+    case_outcomes,
+    evaluate_agent_predictions,
+    trial_pass_rates,
+)
 from cellwiki.evaluation.semantic import threshold_failures
 from cellwiki.services.agent_runtime import AgentRuntimeManager
 from cellwiki.services.quality import inspect_projection
@@ -163,6 +167,12 @@ def main() -> None:
     parser.add_argument("--thresholds", type=Path, default=EVALS / "thresholds.json")
     parser.add_argument("--case", action="append", default=[], help="Run only this case id (repeatable).")
     parser.add_argument("--max-model-calls", type=int, default=40)
+    parser.add_argument(
+        "--repeat",
+        type=int,
+        default=1,
+        help="Run every case N times and report pass^1 / pass^k reliability.",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=600)
     parser.add_argument("--out-dir", type=Path)
     args = parser.parse_args()
@@ -177,39 +187,60 @@ def main() -> None:
     out_dir = args.out_dir or EVALS / "runs" / stamp
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    predictions = {
-        "schema_version": 1,
-        "run_kind": "real_model",
-        "provider": urlparse(settings.openai_base_url or "").hostname or "openai",
-        "model": settings.openai_model,
-        "api_protocol": settings.openai_api_protocol,
-        "generated_at": stamp,
-        "cases": [],
-    }
-    for case in cases:
-        print(f"[eval] {case['case_id']} ...", flush=True)
-        record = _run_case(case, args.max_model_calls, args.timeout_seconds)
-        predictions["cases"].append(record)
-        print(f"[eval] {case['case_id']} -> {record['final_status']}", flush=True)
+    thresholds = json.loads(args.thresholds.read_text(encoding="utf-8"))
+    provider = urlparse(settings.openai_base_url or "").hostname or "openai"
+    trials: list[dict] = []
+    for index in range(1, args.repeat + 1):
+        predictions: dict = {
+            "schema_version": 1,
+            "run_kind": "real_model",
+            "trial": index,
+            "provider": provider,
+            "model": settings.openai_model,
+            "api_protocol": settings.openai_api_protocol,
+            "generated_at": stamp,
+            "cases": [],
+        }
+        for case in cases:
+            print(f'[eval] trial {index}/{args.repeat} {case["case_id"]} ...', flush=True)
+            record = _run_case(case, args.max_model_calls, args.timeout_seconds)
+            predictions["cases"].append(record)
+            print(
+                f'[eval] trial {index}/{args.repeat} {case["case_id"]} '
+                f'-> {record["final_status"]}',
+                flush=True,
+            )
+        name = "predictions.json" if args.repeat == 1 else f"predictions-trial-{index}.json"
+        path = out_dir / name
+        path.write_text(
+            json.dumps(predictions, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        metrics = evaluate_agent_predictions(dataset, predictions, FIXTURE)
+        trials.append(
+            {
+                "trial": index,
+                "predictions": str(path),
+                "metrics": metrics,
+                "case_outcomes": case_outcomes(dataset, predictions, FIXTURE, thresholds),
+                "failures": threshold_failures(metrics, thresholds),
+            }
+        )
 
-    predictions_path = out_dir / "predictions.json"
-    predictions_path.write_text(
-        json.dumps(predictions, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-    metrics = evaluate_agent_predictions(dataset, predictions, FIXTURE)
-    failures = threshold_failures(metrics, json.loads(args.thresholds.read_text(encoding="utf-8")))
+    reliability = trial_pass_rates([trial["case_outcomes"] for trial in trials])
     report = {
         "run_kind": "real_model",
-        "predictions": str(predictions_path),
-        "metrics": metrics,
-        "passed": not failures,
-        "failures": failures,
+        "provider": provider,
+        "model": settings.openai_model,
+        "generated_at": stamp,
+        "reliability": reliability,
+        "trials": trials,
+        "passed": all(not trial["failures"] for trial in trials),
     }
     (out_dir / "report.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
-    if failures:
+    if not report["passed"]:
         raise SystemExit("agent evaluation failed release thresholds")
 
 

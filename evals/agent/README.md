@@ -6,8 +6,11 @@ ChangeSet/SearchIndex 治理链，保留只为兼容）。
 
 ## 组成
 
-- `dataset.json`：6 道题。4 道查询题（其中 1 道故意无解）、2 道维护题。
-- `workspace/`：固定测试知识库（6 个页面 + 6 个根级文件 + 1 份 paraphrase 来源）。
+- `dataset.json`：8 道题。6 道查询题（其中 1 道故意无解；2 道是「之前聊过什么 / 你
+  有哪些工具」这类**不该动知识库**的对话元问题，2026-09-10 事故的回归；另外 3 道
+  是常规有据查询）、2 道维护题。
+- `workspace/`：固定测试知识库（5 个 wiki 页面 + 6 个根级 md + 1 份 paraphrase
+  来源；`.gitignore` 由产品的工作区初始化生成，不再手工放）。
   它只是 fixture，评测时会被复制到 `build/agent-eval/<case_id>/` 再 `git init`。
 - `thresholds.json`：发布门控（min/max）。
 - `reference_predictions.json`：**手写黄金参考**，用来证明打分器和阈值本身是对的，
@@ -28,12 +31,27 @@ uv run python scripts/evaluate_agent_runs.py
 ```powershell
 .venv\Scripts\python.exe scripts/run_agent_eval.py
 .venv\Scripts\python.exe scripts/run_agent_eval.py --case query_treg_markers --case query_unanswerable_subset
+
+# 稳定性：每题跑 3 次，报 pass_1 / pass_k
+.venv\Scripts\python.exe scripts/run_agent_eval.py --repeat 3
 ```
+
+`--repeat N` 为每一 trial 单独写 `predictions-trial-<i>.json`（`N=1` 时仍是
+`predictions.json`），`report.json` 里带 `reliability` 与每题各 trial 的通过位图：
+
+- `pass_1`：所有 (题, trial) 观察里通过的比例 —— 单次成功率
+- `pass_k`：在**全部** k 次里都通过的题占比 —— 串行单用户产品该看这个
+  （借鉴 tau-bench 的 `pass^k`）
+
+单题"通过"的判据与门控完全同一套（`cellwiki.evaluation.agent_eval.case_outcomes`），
+不另立标准；跨题口径（成本、题数）和不设门控的人工核对项按设计不参与单题判定。
+任何一次 trial 触碰门控，脚本都以非 0 退出。
 
 ## 指标含义
 
-- `citation_validity`：回答里提到的每个 `.md` 路径都必须在工作区里真实存在。
-  低于 1.0 就是编造引用。
+- `citation_validity`：回答里以**工作区相对路径**形式出现的 `.md` 必须在工作区里
+  真实存在，低于 1.0 就是编造引用。一道合法地不引用任何文件的题（例如诚实拒答）算
+  1.0：0 个引用就是 0 个无效引用，而不是全部无效。
 - `expected_citation_recall` / `groundedness`：该引的页面引到没有；每个采分点的
   关键词必须真的出现在被引用文件的正文里。
 - `unanswerable_accuracy`：无解的题必须"不引用任何文件 + 明确说缺证据"。
