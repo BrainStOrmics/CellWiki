@@ -3,9 +3,12 @@
 # =============================================================================
 
 from pathlib import Path
+import json
 import shutil
+from datetime import UTC, datetime
 
 import pytest
+from pydantic import ValidationError
 
 from cellwiki.domain.pending_diff import PendingDiff, PendingDiffStatus
 from cellwiki.domain.runs import (
@@ -14,6 +17,7 @@ from cellwiki.domain.runs import (
     AgentRun,
     AgentRunOutcome,
     AgentRunStatus,
+    AgentSpan,
 )
 from cellwiki.services.runtime_store import (
     InvalidRunTransitionError,
@@ -283,6 +287,111 @@ def test_runtime_store_backfills_messages_from_legacy_run_and_final_event(tmp_pa
         ("assistant", "old answer"),
     ]
     assert messages[0]["data"]["attachments"] == [{"attachment_id": attachment_id}]
+
+
+def test_runtime_store_scrubs_retired_payload_fields_from_legacy_rows(tmp_path: Path):
+    """删字段升级回归：旧 payload 带退役字段时运行库必须仍能打开。
+
+    严格契约（extra="forbid"）会把带已删字段的行判为非法；启动守卫要在校验
+    发生前清掉它，且不损伤同一 payload 的其余字段。
+    """
+    store = RuntimeStore(tmp_path)
+    store.create_run(
+        AgentRun(run_id="run_retired", thread_id="thread_retired", input_message="old question")
+    )
+    store.upsert_span(
+        AgentSpan(
+            span_id="span_retired",
+            run_id="run_retired",
+            kind="model",
+            name="coordinator",
+            status="succeeded",
+            started_at=datetime.now(UTC),
+            output_tokens=17,
+        )
+    )
+
+    # 模拟旧版本写下的 payload：usage 与 span 顶部各带一个已退役的 ttft_ms。
+    with store._connect() as connection:
+        run_payload = json.loads(
+            connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", ("run_retired",)
+            ).fetchone()[0]
+        )
+        run_payload["usage"]["ttft_ms"] = None
+        connection.execute(
+            "UPDATE agent_runs SET payload = ? WHERE run_id = ?",
+            (json.dumps(run_payload), "run_retired"),
+        )
+        span_payload = json.loads(
+            connection.execute(
+                "SELECT payload FROM agent_spans WHERE span_id = ?", ("span_retired",)
+            ).fetchone()[0]
+        )
+        span_payload["ttft_ms"] = None
+        connection.execute(
+            "UPDATE agent_spans SET payload = ? WHERE span_id = ?",
+            (json.dumps(span_payload), "span_retired"),
+        )
+    with pytest.raises(ValidationError):
+        AgentRun.model_validate_json(json.dumps(run_payload))
+
+    upgraded = RuntimeStore(tmp_path)
+
+    assert upgraded.get_run("run_retired").input_message == "old question"
+    span = upgraded.list_spans("run_retired")[0]
+    assert (span.name, span.output_tokens) == ("coordinator", 17)
+    with upgraded._connect() as connection:
+        assert (
+            "ttft_ms"
+            not in connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", ("run_retired",)
+            ).fetchone()[0]
+        )
+        assert (
+            "ttft_ms"
+            not in connection.execute(
+                "SELECT payload FROM agent_spans WHERE span_id = ?", ("span_retired",)
+            ).fetchone()[0]
+        )
+    RuntimeStore(tmp_path)
+
+
+def test_reopening_the_store_backfills_streamed_reasoning_into_the_answer(tmp_path: Path):
+    """思考块回归（2026-09-11）：旧消息写的时候还不带思考，只在事件流里有；重开会话
+    只回放最新一条 run 的事件，所以这些历史 run 的思考块要靠启动回填补进消息记录。
+
+    回填必须幂等：已经带上思考的消息不再动，事件扫描只服务还缺思考的 run。
+    """
+    store = RuntimeStore(tmp_path)
+    store.create_run(
+        AgentRun(run_id="run_reasoning", thread_id="thread_reasoning", input_message="q")
+    )
+    store.append_event("run_reasoning", AgentEventType.REASONING_DELTA, message="先查台账。")
+    store.append_event(
+        "run_reasoning", AgentEventType.REASONING_DELTA, message="路径不对，改读 index.md。"
+    )
+    store.append_message(
+        thread_id="thread_reasoning",
+        run_id="run_reasoning",
+        role="assistant",
+        content="答案",
+        data={"source": "agent_runtime"},
+    )
+
+    upgraded = RuntimeStore(tmp_path)
+    assert (
+        upgraded.list_messages("thread_reasoning")[1]["data"]["reasoning"]
+        == "先查台账。路径不对，改读 index.md。"
+    )
+
+    # 已带思考的消息不再被回填覆盖，即使事件流之后又多了增量。
+    store.append_event("run_reasoning", AgentEventType.REASONING_DELTA, message="后补增量")
+    again = RuntimeStore(tmp_path)
+    assert (
+        again.list_messages("thread_reasoning")[1]["data"]["reasoning"]
+        == "先查台账。路径不对，改读 index.md。"
+    )
 
 
 def test_runtime_store_projects_displayable_events_into_assistant_history(tmp_path: Path):

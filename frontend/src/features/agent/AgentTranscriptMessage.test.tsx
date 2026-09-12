@@ -209,6 +209,21 @@ describe("AgentTranscriptMessage", () => {
     expect(screen.getByText("古老答案文本")).toBeInTheDocument();
   });
 
+  it("renders the thinking block for a restored history message that carries reasoning", () => {
+    // 历史 run 的思考随消息落库，恢复出来的消息没有 timeline，只能从字段重建节点。
+    renderMessage({
+      role: "agent",
+      text: "历史答案",
+      reasoning: "第一段思考内容\n第二段思考内容",
+      process: [toolStep({ message: "grep → 2 matches", toolName: "grep", toolCallId: "c1" })],
+    });
+
+    expect(
+      screen.getByText("第一段思考内容", { selector: ".agent-think-preview" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("历史答案")).toBeInTheDocument();
+  });
+
   it("expands a legacy tool card to its safe detail on click", () => {
     const timeline: AgentTimelineNode[] = [toolNode({ toolCallId: "c1", summary: "grep → 2 matches" })];
     const { container } = renderMessage({ role: "agent", text: "", timeline });

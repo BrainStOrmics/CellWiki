@@ -322,6 +322,38 @@ def test_finalize_persists_every_streamed_segment_not_just_the_last(tmp_path: Pa
         manager.close()
 
 
+def test_finalize_persists_streamed_reasoning_with_the_answer(tmp_path: Path):
+    """思考块回归（2026-09-11）：重开会话只回放最新一条 run 的事件，更早的 run 只读
+    消息记录——思考只活在事件流里时，历史 run 一被重开就只剩工具行和答案。思考必须
+    随回答一起落库。
+    """
+    manager = AgentRuntimeManager(tmp_path, adapter=BlockingAdapter())
+    try:
+        store = manager.store
+        store.create_run(AgentRun(run_id="run_think", thread_id="t_think", input_message="x"))
+        store.transition("run_think", AgentRunStatus.RUNNING, message="Started.")
+        store.append_event("run_think", AgentEventType.REASONING_DELTA, message="先查台账。")
+        store.append_event(
+            "run_think", AgentEventType.REASONING_DELTA, message="路径不对，改读 index.md。"
+        )
+        store.append_event("run_think", AgentEventType.MESSAGE_DELTA, message="答案在此。")
+
+        manager._finalize_stream_outcome(
+            "run_think",
+            "t_think",
+            _ConsumeOutcome(final_answer="答案在此。"),
+        )
+
+        assistant = [
+            message
+            for message in store.list_messages("t_think")
+            if message["role"] == "assistant"
+        ]
+        assert assistant[0]["data"]["reasoning"] == "先查台账。路径不对，改读 index.md。"
+    finally:
+        manager.close()
+
+
 def test_resuming_an_already_finished_graph_is_a_completion_not_a_system_error(
     tmp_path: Path,
 ):

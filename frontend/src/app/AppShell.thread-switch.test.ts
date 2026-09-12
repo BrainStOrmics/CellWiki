@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { rebuildAgentTranscript } from "./AppShell";
+import { cacheCoversDurableHistory, rebuildAgentTranscript } from "./AppShell";
 import type { AgentRunReducerLabels } from "../features/agent/agent-run-reducer";
-import type { AgentEvent, ChatMessage } from "../types";
+import type { AgentEvent, AgentMessage, ChatMessage } from "../types";
 
 const labels: AgentRunReducerLabels = {
   failed: "FAILED",
@@ -150,5 +150,42 @@ describe("rebuildAgentTranscript", () => {
 
     expect(rebuilt).toHaveLength(2);
     expect(rebuilt[1]).toMatchObject({ role: "agent", runId: "run_1", text: "durable answer" });
+  });
+});
+
+describe("cacheCoversDurableHistory", () => {
+  function durable(runId: string, role: "user" | "assistant" = "assistant"): AgentMessage {
+    return {
+      message_id: `m_${runId}_${role}`,
+      thread_id: "thread_1",
+      run_id: runId,
+      sequence: 1,
+      role,
+      content: "x",
+      data: {},
+      created_at: "",
+    };
+  }
+
+  it("accepts a cache that still holds every durable run", () => {
+    const cache: ChatMessage[] = [
+      { role: "user", text: "q1", runId: "run_1" },
+      { role: "agent", text: "a1", runId: "run_1" },
+      { role: "user", text: "q2", runId: "run_2" },
+      { role: "agent", text: "a2", runId: "run_2", streaming: true },
+    ];
+    expect(cacheCoversDurableHistory(cache, [durable("run_1"), durable("run_2")])).toBe(true);
+  });
+
+  it("rejects a truncated cache that lost an earlier run", () => {
+    // 实测 2026-09-12：一次失败的历史加载留下"欢迎语 + 后一轮"的残局；该缓存若不算
+    // 作"缺覆盖"，服务端历史就永远铺不进去，早先的轮次再也回不来。
+    const truncated: ChatMessage[] = [
+      { role: "agent", text: "CellWiki 已就绪。" },
+      { role: "user", text: "q2", runId: "run_2" },
+      { role: "agent", text: "a2", runId: "run_2", streaming: false },
+    ];
+    const history = [durable("run_1", "user"), durable("run_1"), durable("run_2")];
+    expect(cacheCoversDurableHistory(truncated, history)).toBe(false);
   });
 });

@@ -188,6 +188,7 @@ class RuntimeStore:
         self._schema_lock = threading.Lock()
         self._ensure_schema()
         self._backfill_messages()
+        self._backfill_message_reasoning()
 
     def create_run(
         self,
@@ -675,6 +676,32 @@ class RuntimeStore:
             "CREATE UNIQUE INDEX IF NOT EXISTS ux_agent_runs_request_id "
             "ON agent_runs(request_id) WHERE request_id IS NOT NULL"
         )
+
+    def _scrub_retired_payload_fields(self, connection: sqlite3.Connection) -> None:
+        """Drop retired contract fields from persisted payloads.
+
+        ``ContractModel`` validates stored payloads with ``extra="forbid"``, so a
+        field removed from a domain model turns every old row that carries it into
+        a ``ValidationError``; the store then fails to open at all. Retired fields
+        have no readers, so removing them is lossless. Idempotent: only rows whose
+        stored JSON still contains the key are rewritten, in place, once.
+        """
+
+        for table, column, path in _RETIRED_PAYLOAD_PATHS:
+            rows = connection.execute(
+                f"SELECT rowid, {column} FROM {table} WHERE {column} LIKE ?",
+                (f'%"{path[-1]}"%',),
+            ).fetchall()
+            for row_id, raw in rows:
+                try:
+                    payload = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if _drop_json_path(payload, path):
+                    connection.execute(
+                        f"UPDATE {table} SET {column} = ? WHERE rowid = ?",
+                        (json.dumps(payload, ensure_ascii=False), row_id),
+                    )
 
     # ---- 线程附件记录 ----
     def save_attachment(self, attachment: Any) -> dict:
@@ -1623,6 +1650,7 @@ class RuntimeStore:
             )
             self._ensure_thread_registry(connection)
             self._ensure_run_idempotency_schema(connection)
+            self._scrub_retired_payload_fields(connection)
 
     def _backfill_messages(self) -> None:
         """Backfill transcripts created before the durable message table existed.
@@ -1713,6 +1741,55 @@ class RuntimeStore:
                             data=event.data,
                         )
                     break
+
+    def _backfill_message_reasoning(self) -> None:
+        """Attach each run's streamed reasoning to its assistant message.
+
+        Opening a conversation replays events for the newest run only; every older run is
+        rendered from ``agent_messages`` alone. Reasoning lived only in the event log, so
+        reopened transcripts lost their thinking blocks for all but the last run. Messages
+        written before reasoning was persisted are repaired here from their own run's
+        ``reasoning_delta`` events. Idempotent: rows that already carry reasoning are
+        skipped, so the event scan only happens for runs that still need it.
+        """
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            rows = connection.execute(
+                """
+                SELECT message_id, run_id, data FROM agent_messages
+                WHERE role = 'assistant' AND run_id IS NOT NULL
+                """
+            ).fetchall()
+            for message_id, run_id, raw in rows:
+                try:
+                    message_data = json.loads(raw)
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if not isinstance(message_data, dict) or message_data.get("reasoning"):
+                    continue
+                reasoning = self._list_run_reasoning(connection, run_id)
+                if not reasoning:
+                    continue
+                message_data["reasoning"] = reasoning
+                connection.execute(
+                    "UPDATE agent_messages SET data = ? WHERE message_id = ?",
+                    (json.dumps(message_data, ensure_ascii=False), message_id),
+                )
+
+    @staticmethod
+    def _list_run_reasoning(connection: sqlite3.Connection, run_id: str) -> str:
+        """Concat one run's reasoning_delta events in sequence order (the thought stream)."""
+
+        parts: list[str] = []
+        for (payload,) in connection.execute(
+            "SELECT payload FROM agent_events WHERE run_id = ? ORDER BY sequence",
+            (run_id,),
+        ):
+            event = AgentEvent.model_validate_json(payload)
+            if event.type == AgentEventType.REASONING_DELTA:
+                parts.append(event.message or "")
+        return "".join(parts)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -1917,6 +1994,31 @@ _SENSITIVE_SPAN_KEYS = {
     "raw_request",
     "raw_response",
 }
+
+
+# ---- 已退役 payload 字段 ----
+# 严格契约（extra="forbid"）让"删字段"变成一次数据迁移：含已删字段的旧 payload
+# 会让整张表的读取路径（含启动时的 _backfill_messages）抛 ValidationError，运行库
+# 直接打不开。退役字段没有读取方，删它不损失信息，所以在启动守卫里幂等清理。
+# 值为 (表, 列, JSON 路径)；事件表不在清单内，因为它的 data 是宽松字典、不参与校验。
+_RETIRED_PAYLOAD_PATHS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("agent_runs", "payload", ("usage", "ttft_ms")),
+    ("agent_spans", "payload", ("ttft_ms",)),
+)
+
+
+def _drop_json_path(payload: Any, path: tuple[str, ...]) -> bool:
+    """Pop one nested key from a decoded payload; True when it was present."""
+
+    cursor: Any = payload
+    for key in path[:-1]:
+        if not isinstance(cursor, dict):
+            return False
+        cursor = cursor.get(key)
+    if isinstance(cursor, dict) and path[-1] in cursor:
+        cursor.pop(path[-1])
+        return True
+    return False
 
 
 def _merge_usage(base: RunUsage, add: RunUsage) -> RunUsage:

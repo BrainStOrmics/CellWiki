@@ -52,6 +52,24 @@ describe("恢复线索不得滞留到下一次切换（F3）", () => {
   });
 });
 
+describe("恢复的历史消息带回思考块（回归 2026-09-11）", () => {
+  it("historyMessageToChatMessage 读取消息记录里的 reasoning", () => {
+    const mapping = sliceBetween("function historyMessageToChatMessage", "const emptyPageDetail");
+    expect(mapping).toContain("reasoning: typeof data.reasoning === \"string\"");
+  });
+});
+
+describe("残缺缓存不得压住服务端历史（回归 2026-09-12）", () => {
+  it("缓存缺 run 时仍用历史接口铺底", () => {
+    const restore = sliceBetween(
+      "const [history, runs] = await Promise.all([",
+      "const threadAttachments = await getJson",
+    );
+    expect(restore).toContain("cacheCoversDurableHistory(cached?.messages ?? [], history)");
+    expect(restore).toContain("const historyMessages = history.map(historyMessageToChatMessage);");
+  });
+});
+
 describe("续跑被拒时收敛 busy 并留下可重试出口（F7）", () => {
   const resumeSource = sliceBetween(
     "async function resumeUnfinishedAgentRun()",

@@ -108,6 +108,7 @@ function historyMessageToChatMessage(message: AgentMessage): ChatMessage {
   const data = message.data as Partial<AgentAnswer> & {
     process?: AgentProcessStep[];
     attachments?: unknown;
+    reasoning?: unknown;
   };
   const attachments = Array.isArray(data.attachments)
     ? data.attachments.flatMap((item): AgentAttachmentReference[] => {
@@ -142,8 +143,26 @@ function historyMessageToChatMessage(message: AgentMessage): ChatMessage {
     validationIssues: data.validation_issues ?? [],
     missingEvidence: data.missing_evidence ?? [],
     process: Array.isArray(data.process) ? data.process : undefined,
+    // 历史 run 的思考随消息落库；恢复时照读，思考块才不会只剩最新一条 run 有。
+    reasoning: typeof data.reasoning === "string" && data.reasoning ? data.reasoning : undefined,
     runId: message.run_id,
   };
+}
+
+/**
+ * Whether the cached view still covers every run the server has persisted.
+ *
+ * 恢复时缓存是"最新视图"，但一次失败的历史加载会让它只剩欢迎语和此后几轮；这种
+ * 残缺缓存一旦被当成权威，早先的轮次在本次会话里就再也显示不出来。缺 run 即不覆盖。
+ */
+export function cacheCoversDurableHistory(
+  messages: ChatMessage[],
+  history: AgentMessage[],
+): boolean {
+  const coveredRuns = new Set(
+    messages.flatMap((message) => (message.runId ? [message.runId] : [])),
+  );
+  return history.every((message) => !message.run_id || coveredRuns.has(message.run_id));
 }
 
 const emptyPageDetail: PageDetail = { page_id: "", frontmatter: {}, markdown: "" };
@@ -993,8 +1012,11 @@ export function AppShell() {
         getJson<AgentRun[]>(`/api/agent/runs?thread_id=${encodeURIComponent(threadId)}&limit=1`),
       ]);
       if (token !== threadRestoreTokenRef.current) return;
-      // 本地缓存仍是该会话的最新视图；仅在没有可用缓存时才用历史接口铺底
-      if (!cacheUsable && history.length > 0) {
+      // 本地缓存仍是该会话的最新视图，但只有覆盖了服务端已落库的每个 run 才可信：
+      // 一次失败的历史加载会留下"只有欢迎语 + 之后几轮"的残局，若让它永久压住
+      // 服务端历史，早先的轮次就再也回不来（实测 2026-09-12）。缺 run 时改用历史
+      // 铺底，最新 run 仍由随后的 restoreAgentRun 从事件流回放。
+      if (history.length > 0 && !cacheCoversDurableHistory(cached?.messages ?? [], history)) {
         const historyMessages = history.map(historyMessageToChatMessage);
         messagesRef.current = historyMessages;
         setMessages(historyMessages);

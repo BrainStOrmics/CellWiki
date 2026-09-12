@@ -1686,6 +1686,18 @@ class AgentRuntimeManager:
             if event.type == AgentEventType.MESSAGE_DELTA
         )
 
+    def _replayed_reasoning(self, run_id: str) -> str:
+        """Concat the run's reasoning_delta events: the thought stream behind the answer.
+
+        思考只能从事件流读到；把它随回答一起写进消息记录，重开会话时历史 run 才有
+        思考块可见（打开会话只回放最新一条 run 的事件，更早的 run 只读消息表）。
+        """
+        return "".join(
+            event.message or ""
+            for event in self.store.list_events(run_id)
+            if event.type == AgentEventType.REASONING_DELTA
+        )
+
     def _finalize_stream_outcome(
         self,
         run_id: str,
@@ -1703,12 +1715,18 @@ class AgentRuntimeManager:
         # 在最终答案之后（实测：用户看到答案按了 Esc），不落盘线程里就永远没有这条
         # 回答，而续跑时图已无事可做，答案就此丢失。
         if answer.strip():
+            message_data: dict[str, str] = {"source": "agent_runtime"}
+            # 思考与回答同批落库：它是用户在会话里看过的那半个过程，缺了它重开
+            # 历史 run 就只剩工具行和答案（打开会话只回放最新一条 run 的事件）。
+            reasoning = self._replayed_reasoning(run_id)
+            if reasoning:
+                message_data["reasoning"] = reasoning
             self.store.append_message(
                 thread_id=thread_id,
                 run_id=run_id,
                 role="assistant",
                 content=answer,
-                data={"source": "agent_runtime"},
+                data=message_data,
             )
         if outcome.cancelled:
             # 落到安全事件边界了：图流已关、checkpoint 已回写（见 _consume_stream 的
