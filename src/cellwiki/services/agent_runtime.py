@@ -34,9 +34,10 @@ from typing import Any, Callable, Generator, Iterable, cast
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
-from cellwiki.agent.app import build_model, build_wiki_agent
+from cellwiki.agent.app import build_model, build_coordinator_model, build_wiki_agent
 from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
+from cellwiki.domain.model_providers import ModelSelection, ResolvedModelSpec
 from cellwiki.domain.pending_diff import PendingDiff, PendingDiffStatus
 from cellwiki.domain.questions import PendingQuestion
 from cellwiki.domain.runs import (
@@ -57,6 +58,7 @@ from cellwiki.services.checkpoints import (
     latest_checkpoint_id,
 )
 from cellwiki.services.conversation_context import ConversationContextView
+from cellwiki.services.model_catalog import ModelCatalogService
 from cellwiki.services.prompt_layers import (
     LAYER_A_TEXT,
     build_layer_b_snapshot,
@@ -107,14 +109,19 @@ _TOOL_ACTIVITY_CODES = {
 }
 
 
-def prompt_configuration_hash(budget: RunBudget) -> str:
+def prompt_configuration_hash(budget: RunBudget, model_name: str | None = None) -> str:
     """ADR-0010 决策 8：Layer A + model + budget 的短哈希，作为执行配置快照。
 
     历史 run 因此能说明自己是在哪份提示词与预算下跑的，不受之后的 .env 漂移影响。
+    公式不变：``model`` 取该 run 的生效模型名（供应商目录选中或 legacy 全局配置），
+    由调用方在创建 run 前解析。
     """
     digest = hashlib.sha256()
     digest.update(LAYER_A_TEXT.encode("utf-8"))
-    digest.update((settings.openai_model or "").encode("utf-8"))
+    effective_model = (
+        model_name if model_name is not None else (settings.openai_model or "")
+    )
+    digest.update((effective_model or "").encode("utf-8"))
     digest.update(budget.model_dump_json().encode("utf-8"))
     return digest.hexdigest()[:16]
 
@@ -1073,12 +1080,16 @@ class AgentRuntimeManager:
         *,
         max_retries: int = 2,
         seed: str | None = None,
+        model_catalog: ModelCatalogService | None = None,
     ) -> None:
         self.project_root = Path(project_root).resolve()
         self.max_retries = max_retries
         self.seed = seed
         self.store = RuntimeStore(self.project_root)
         self.adapter = adapter
+        # 供应商目录：默认跟随本 manager 的 runtime 根（测试隔离）；生产由
+        # create_app 注入与设置页共享的 settings 根实例（.env 同级）。
+        self._model_catalog = model_catalog or ModelCatalogService(self.project_root)
         # 启动时收敛孤儿运行（重启窗口：running -> unfinished 可继续/恢复）。
         # 决策 10：协议型 adapter 没有图状态，挂起态归外部服务，不参与 checkpoint 收敛。
         self.store.recover_stale_runs(
@@ -1090,6 +1101,9 @@ class AgentRuntimeManager:
         )
         self._thread_lock = RLock()
         self._built_adapter: Any | None = None
+        # 当前 _built_adapter 用的模型键：(provider_id, model_id)；legacy 链为
+        # ("", settings.openai_model)。run 请求换模型时据此重建编译图。
+        self._built_adapter_key: tuple[str, str] | None = None
         # 看门狗要靠它才能关掉模型的 HTTP client。注入 adapter 时为空，看门狗到期
         # 也就无操作——测试替身没有真实连接可断。
         self._agent_model: Any | None = None
@@ -1108,9 +1122,6 @@ class AgentRuntimeManager:
         # 系统维护（audit 快照与 accept/reject/unfinished 写入）串行化：
         # run 收尾线程的 lint 快照与 API 线程的判定维护互不交错提交。
         self._maintenance_lock = RLock()
-        warn_if_narrow_window(
-            settings.openai_model.casefold(), settings.agent_context_max_tokens
-        )
 
     # ---- 公共生命周期 ----
     def start(
@@ -1143,6 +1154,8 @@ class AgentRuntimeManager:
         *,
         attachment_ids: list[str] | None = None,
         request_id: str | None = None,
+        model_spec: ResolvedModelSpec | None = None,
+        model_name: str | None = None,
     ) -> tuple[AgentRun, bool]:
         """ADR-0010 决策 7/8：幂等提交 + 执行配置快照，返回 ``(run, replayed)``。
 
@@ -1150,6 +1163,12 @@ class AgentRuntimeManager:
         串行门禁的权威判定在 ``create_run_if_idle`` 的同一事务里；事务外的快速检查
         只为了给出更具体的错误消息，因此仅在**没有** ``request_id`` 时跑——否则重试
         风暴里原 run 还活动着，幂等命中会被误判成 409。
+
+        ``model_spec`` 是供应商目录解析出的本次 run 模型（API 层按
+        request.model → 目录默认链路解析后传入）；None = legacy `.env` 链。
+        ``model_name`` 覆盖快照模型名（目录链路即 ``spec.model_id``）。
+        执行者稍后按 run 记录里的 provider/model 重建编译图，因此这里只需
+        把快照写进 run 记录，不必传 spec 进执行器。
         """
         # 决策 7：带 request_id 时不在事务外做任何预检。重试风暴里原 run 往往还是
         # 活动的，预检会把"命中既有 run"误判成 409；权威判定（先查 replay、再查
@@ -1177,6 +1196,10 @@ class AgentRuntimeManager:
             max_model_calls=settings.agent_max_tool_steps,
             max_runtime_seconds=max(settings.agent_run_max_seconds, MAX_RUN_SECONDS_FLOOR),
         )
+        effective_model_name = (model_name if model_name is not None else settings.openai_model) or ""
+        warn_if_narrow_window(
+            effective_model_name.casefold(), settings.agent_context_max_tokens
+        )
         run = AgentRun(
             run_id=run_id,
             thread_id=thread_id,
@@ -1194,9 +1217,11 @@ class AgentRuntimeManager:
             attachment_ids=list(dict.fromkeys(attachment_ids or [])),
             # Diagnostics read run.model_name; without this write the field stays
             # empty even though model spans carry the name.
-            model_name=settings.openai_model or "",
+            model_name=effective_model_name,
+            model_provider_id=model_spec.provider_id if model_spec else "",
             # 决策 8：执行配置快照，使历史 run 不受 .env 漂移影响。
-            prompt_hash=prompt_configuration_hash(budget),
+            # 公式不变；模型项取本次 run 的生效模型（目录选中或 legacy 全局）。
+            prompt_hash=prompt_configuration_hash(budget, effective_model_name),
             request_id=request_id,
         )
         try:
@@ -1526,6 +1551,7 @@ class AgentRuntimeManager:
         旧连接上，它写的是已经被丢弃的那一份。注入的 ``self.adapter`` 不动。
         """
         self._built_adapter = None
+        self._built_adapter_key = None
         self._agent_model = None
 
     def _finish_forced_close(self, run_id: str, reason: str) -> None:
@@ -1565,16 +1591,67 @@ class AgentRuntimeManager:
         finally:
             self._rotate_agent_after_forced_close()
 
-    def _build_agent(self) -> Any:
+    def _build_agent(self, model_spec: ResolvedModelSpec | None = None) -> Any:
         """懒建产品图，并记住模型句柄供看门狗断开连接。
 
         模型必须先建出来再传进 ``build_wiki_agent``：它原本在内部构造，运行时拿不到
         句柄，也就无从关掉那条挂起的连接。中间件、工具白名单与 ``interrupt_on`` 的
         组装因此逐字不变——传的仍是同一个 ``model=`` 参数。
+
+        ``model_spec`` 非空 = 供应商目录选中链路（key 已在解析时校验）；None =
+        legacy `.env` 单供应商链路。
         """
-        model = build_model()
+        if model_spec is not None:
+            model = build_coordinator_model(model_spec)
+        else:
+            model = build_model()
         self._agent_model = model
         return build_wiki_agent(self.project_root, model=model)
+
+    def _model_spec_for_run(self, run: AgentRun) -> ResolvedModelSpec | None:
+        """按 run 记录解析模型；legacy 链（无 provider id）返回 None。
+
+        目录链路在此重解析（key 不落 run 记录）：供应商在 run 与构建之间被
+        删除/禁用/清 key 会在这里显式失败，而不是拿旧 key 静默续跑。
+        """
+        if not run.model_provider_id:
+            return None
+        return self._model_catalog.resolve(
+            ModelSelection(provider_id=run.model_provider_id, model_id=run.model_name)
+        )
+
+    def _adapter_cache_key(self, model_spec: ResolvedModelSpec | None) -> tuple[str, str]:
+        if model_spec is not None:
+            return (model_spec.provider_id, model_spec.model_id)
+        return ("", settings.openai_model or "")
+
+    def _close_cached_model(self) -> None:
+        """换模型重建前关掉旧模型的 HTTP client，防止连接池泄漏。"""
+        client = getattr(self._agent_model, "root_client", None)
+        if client is None:
+            return
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 - 与强制断连同款尽力而为
+            pass
+
+    def _ensure_adapter_for_run(self, run: AgentRun) -> Any:
+        """取（或按本次 run 的模型键重建）编译图；串行门禁保证无并发重建。
+
+        选中模型与缓存一致时复用既有图；不一致（换模型/换供应商/重启后首跑）
+        才重编译并换掉看门狗句柄，语义与强制断连后的 rotate 相同。
+        """
+        if self.adapter is not None:
+            return self.adapter
+        model_spec = self._model_spec_for_run(run)
+        cache_key = self._adapter_cache_key(model_spec)
+        if self._built_adapter is not None and self._built_adapter_key == cache_key:
+            return self._built_adapter
+        self._close_cached_model()
+        adapter = self._build_agent(model_spec)
+        self._built_adapter = adapter
+        self._built_adapter_key = cache_key
+        return adapter
 
     def _execute(
         self,
@@ -1622,8 +1699,7 @@ class AgentRuntimeManager:
             self._running_run_id = run_id
 
         self._equip_run_scope(run)
-        adapter = self.adapter or self._built_adapter or self._build_agent()
-        self._built_adapter = adapter
+        adapter = self._ensure_adapter_for_run(run)
         # ADR-0010 决策 8：墙钟预算跨段累计——续跑段继承已消耗的时间而不是重新计时，
         # "崩溃恢复继承剩余预算"因此可测。
         started_at = time.monotonic() - (
@@ -2171,7 +2247,13 @@ class AgentRuntimeManager:
         if not call_usage:
             return
         finished_at = datetime.now(UTC)
-        model_name = settings.openai_model or "model"
+        # span 名跟随该 run 快照的模型（目录选中链路），而非当前全局配置。
+        recorded = self.store.get_run(run_id)
+        model_name = (
+            (recorded.model_name if recorded and recorded.model_name else "")
+            or settings.openai_model
+            or "model"
+        )
         for call_id, tokens in call_usage.items():
             started = call_started.get(call_id, 0.0)
             last = call_seen_last.get(call_id, started)
@@ -2289,8 +2371,7 @@ class AgentRuntimeManager:
             self.store.answer_question(run_id, [], timed_out=True)
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, "question timed out")
             return self.store.get_run(run_id).model_dump(mode="json")  # type: ignore[union-attr]
-        adapter = self.adapter or self._built_adapter or self._build_agent()
-        self._built_adapter = adapter
+        adapter = self._ensure_adapter_for_run(run)
         # ADR-0010 决策 4：图 adapter 的续跑依赖该 run 自己的 checkpoint。升级前
         # 产生的 run 一律 checkpoint_id=NULL，必须在登记答案与转 RUNNING 之前显式
         # 失败，否则 run 会停在 RUNNING 而没有执行者。协议型 adapter 没有图状态。
@@ -2335,8 +2416,7 @@ class AgentRuntimeManager:
     ) -> None:
         run_id = run.run_id
         thread_id = run.thread_id
-        adapter = self.adapter or self._built_adapter or self._build_agent()
-        self._built_adapter = adapter
+        adapter = self._ensure_adapter_for_run(run)
         # 续跑段与首段配齐同一份作用域：附件可读、读预算真实生效、promote 有回调。
         self._equip_run_scope(run)
         context = self._context_for_run(run)

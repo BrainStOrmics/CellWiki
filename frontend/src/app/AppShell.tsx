@@ -35,8 +35,9 @@ import { createAgentEventScheduler, flushesChatImmediately } from "../features/a
 import { QuestionCard } from "../features/agent/QuestionCard";
 // 终态判定只有一份：unfinished 也是流终态（后端已关 SSE 停在预算上）。漏掉它会让
 // 订阅侧无限重连、agentBusy 永不清零，"继续"按钮因此从不出现——看起来就是卡死。
-import { terminalAgentStatuses } from "../features/agent/run-status";
+import { isWaitingRunStatus, terminalAgentStatuses } from "../features/agent/run-status";
 import { composerActionFor } from "../features/agent/composer-action";
+import { ModelSwitcher } from "../features/agent/ModelSwitcher";
 import { SearchWorkspace } from "../features/discovery/FeatureWorkspaces";
 import { WorkspaceFileBrowser, type WorkspaceTreeEntry } from "../features/workspace/WorkspaceFileBrowser";
 import { WorkspaceFileViewer } from "../features/workspace/WorkspaceFileViewer";
@@ -96,6 +97,9 @@ const pausedAgentStatuses = new Set<AgentRunStatus>([
   "waiting_approval",
   "unfinished",
 ]);
+
+/** 判定"仍停在底部"的容差（px）：留一点余量，流式把内容顶上去几像素不该算离开。 */
+const CHAT_BOTTOM_THRESHOLD_PX = 48;
 
 /** 镜像后端 `CHECKPOINT_MISSING_CODE`：续跑被**永久**拒绝，载体里没有该 run 的图状态。
  *  同一个端点的门禁冲突 409 是可重试拒绝，两者必须分流——按文案分流会在文案本地化时
@@ -326,6 +330,10 @@ export function AppShell() {
   const attachmentRef = useRef<HTMLInputElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
+  // 转录视口是否停在底部。流式期间每批 delta 都会触发贴底 effect；用户往上翻看
+  // 历史时不能再把人拽回底部，只有停在底部才继续跟随（实测 2026-09-13）。
+  const chatPinnedToBottomRef = useRef(true);
+  const chatScrollNodeRef = useRef<HTMLDivElement | null>(null);
   const agentThreadIdRef = useRef<string | null>(null);
   const agentEventSourceRef = useRef<EventSource | null>(null);
   const agentEventSequenceRef = useRef(0);
@@ -513,10 +521,27 @@ export function AppShell() {
 
   useEffect(() => {
     // Only the message viewport moves; the Agent header and composer remain fixed.
+    // activeView 必须在依赖里：设置/搜索页会整块卸载工作台，回来时滚动位置随 DOM
+    // 一起丢，转录落回第一条消息（实测 2026-09-13）。视图回来了就重新贴底。
     window.requestAnimationFrame(() => {
-      if (chatScrollRef.current) chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+      const node = chatScrollRef.current;
+      if (!node) return;
+      // 视口换了 DOM 节点（切视图回来）等于重新打开会话：贴底并恢复跟随。
+      if (node !== chatScrollNodeRef.current) {
+        chatScrollNodeRef.current = node;
+        chatPinnedToBottomRef.current = true;
+      }
+      if (!chatPinnedToBottomRef.current) return;
+      node.scrollTop = node.scrollHeight;
     });
-  }, [messages, agentBusy]);
+  }, [messages, agentBusy, activeView]);
+
+  function handleChatScroll() {
+    const node = chatScrollRef.current;
+    if (!node) return;
+    chatPinnedToBottomRef.current =
+      node.scrollHeight - node.scrollTop - node.clientHeight <= CHAT_BOTTOM_THRESHOLD_PX;
+  }
 
   const selectedPage = pages.find((page) => page.page_id === selectedId);
   const selectedTitle = String(detail.frontmatter.display_name ?? selectedPage?.title ?? selectedId.replaceAll("_", " "));
@@ -535,7 +560,7 @@ export function AppShell() {
     && messages.some((message) => (
       message.role === "agent"
       && message.runId === activeAgentRunId
-      && (message.runStatus === "waiting_confirmation" || message.runStatus === "waiting_approval")
+      && isWaitingRunStatus(message.runStatus)
     ));
   // 发送/停止/继续共用 composer 里同一个槽位，判定收在纯函数里（composer-action.ts）。
   const composerAction = composerActionFor({
@@ -652,6 +677,7 @@ export function AppShell() {
     const threadId = await ensureAgentThread();
     const currentAttachmentIds = options.attachmentIds
       ?? useUiStore.getState().activeAttachmentIds;
+    const selectedModel = useUiStore.getState().selectedModel;
     const run = await postJson<AgentRun>("/api/agent/runs", {
       thread_id: threadId,
       message: text,
@@ -660,6 +686,8 @@ export function AppShell() {
       source_id: null,
       attachment_ids: currentAttachmentIds,
       selected_text: selectedText || null,
+      // 用户在 composer 显式选择过模型才携带；null = 后端默认链（目录默认 → legacy）。
+      model: selectedModel,
     });
     queryClient.invalidateQueries({ queryKey: ["agent-threads"] });
     // The backend persists the user message while accepting the run. Only then
@@ -685,6 +713,8 @@ export function AppShell() {
 
   /** 答题后的续跑：后端只登记答案与状态迁移就返回，进度必须切回直播订阅。 */
   async function resumeAfterAnswer(runId: string) {
+    // 答题意味着用户回到现场：续跑段的流式输出要跟随在眼前。
+    chatPinnedToBottomRef.current = true;
     setActiveAgentRunId(runId);
     setResumableAgentRunId(null);
     setAgentBusy(true);
@@ -973,6 +1003,8 @@ export function AppShell() {
 
   async function restoreAgentThread(threadId: string, preferredRunId?: string) {
     const token = ++threadRestoreTokenRef.current;
+    // 打开一个会话等于回到它的现场：从最新一条看起，恢复跟随。
+    chatPinnedToBottomRef.current = true;
     // 离开当前会话前缓存其本地视图（含正在流式输出的部分回答与草稿）
     const leavingThreadId = agentThreadIdRef.current;
     cacheCurrentThreadState(leavingThreadId);
@@ -1139,6 +1171,8 @@ export function AppShell() {
   async function sendMessage() {
     const text = draft.trim();
     if (!text || agentBusy || waitingOnQuestion) return;
+    // 用户发言即使此前在翻历史，也要回到最新一条：新消息与随后的流式输出就是他要看的。
+    chatPinnedToBottomRef.current = true;
     setAgentBusy(true);
     // 与忙碌指示器同时清活动条：否则新 run 的头几帧会显示上一个 run 留下的终态文案
     // （典型是"Agent 运行已取消"），读起来像这一次发送已经被取消了。
@@ -1690,7 +1724,7 @@ export function AppShell() {
               {selectedText && <blockquote>{selectedText}</blockquote>}
             </div>
 
-            <div className="chat-scroll" ref={chatScrollRef}>
+            <div className="chat-scroll" ref={chatScrollRef} onScroll={handleChatScroll}>
               <div className="chat-day">{t("chat.session")}</div>
               {messages.map((message, index) => (
                 <AgentTranscriptMessage
@@ -1772,6 +1806,7 @@ export function AppShell() {
                     >
                       <CirclePlus size={14} />
                     </button>
+                    <ModelSwitcher />
                     <span>{activeAttachments.length > 0 ? t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length)) : t("chat.agentContext")}</span>
                   </div>
                   {composerAction.kind === "stop" && (

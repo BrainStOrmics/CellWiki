@@ -127,6 +127,8 @@ class AgentRun(ContractModel):
     prompt_hash: str | None = None
     model_role: str = "coordinator"                           # 模型角色
     model_name: str = ""                                      # 模型名称
+    # 供应商目录选中链路记录 provider id；legacy .env 链为空串。
+    model_provider_id: str = ""
     status: AgentRunStatus = AgentRunStatus.QUEUED            # 当前状态
     budget: RunBudget = Field(default_factory=RunBudget)      # 资源预算
     usage: RunUsage = Field(default_factory=RunUsage)         # 资源用量

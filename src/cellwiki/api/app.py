@@ -40,6 +40,7 @@ from cellwiki.api.errors import create_error_router
 from cellwiki.api.retention import create_retention_router
 from cellwiki.api.security import DesktopTokenMiddleware
 from cellwiki.domain.contracts import WikiAgentContext
+from cellwiki.domain.model_providers import ModelSelection, ProviderModel
 from cellwiki.domain.runs import (
     AgentEvent,
     AgentEventType,
@@ -60,6 +61,11 @@ from cellwiki.services.agent_runtime import (
 )
 from cellwiki.services.checkpoints import CheckpointMissingError, checkpoint_file_bytes
 from cellwiki.services.environment import EnvironmentSettingsService
+from cellwiki.services.model_catalog import (
+    ModelCatalogError,
+    ModelCatalogService,
+    ProviderNotFoundError,
+)
 from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 from cellwiki.services.runtime_store import RuntimeStore, ThreadDeletionBlockedError
 
@@ -99,6 +105,48 @@ class SettingsTestRequest(BaseModel):
     openai_api_key: str | None = Field(default=None, max_length=4000)
 
 
+# ---- 供应商目录请求（目录 CRUD；key 只写不读）----
+class ProviderModelDraft(BaseModel):
+    """供应商目录里一个模型条目的 API 形状。"""
+
+    id: str = Field(min_length=1, max_length=300)
+    display_name: str | None = Field(default=None, max_length=120)
+    enabled: bool = True
+
+
+class ProviderCreateRequest(BaseModel):
+    """新建供应商；`provider_id` 缺省时由 name 生成 slug。"""
+
+    provider_id: str | None = Field(default=None, max_length=64)
+    name: str = Field(min_length=1, max_length=120)
+    base_url: str = Field(default="", max_length=2000)
+    protocol: str = Field(default="chat_completions", max_length=40)
+    enabled: bool = True
+    models: list[ProviderModelDraft] = Field(default_factory=list)
+    request_overrides: dict[str, object] = Field(default_factory=dict)
+    api_key: str | None = Field(default=None, max_length=4000)
+
+
+class ProviderUpdateRequest(BaseModel):
+    """部分更新供应商；`api_key=None` 表示保留已存密钥。"""
+
+    name: str | None = Field(default=None, max_length=120)
+    base_url: str | None = Field(default=None, max_length=2000)
+    protocol: str | None = Field(default=None, max_length=40)
+    enabled: bool | None = None
+    models: list[ProviderModelDraft] | None = None
+    request_overrides: dict[str, object] | None = None
+    api_key: str | None = Field(default=None, max_length=4000)
+    clear_api_key: bool = False
+
+
+class ProviderDefaultRequest(BaseModel):
+    """设置（provider_id/model_id 均非空）或清除（均为空）默认模型选择。"""
+
+    provider_id: str | None = Field(default=None, max_length=64)
+    model_id: str | None = Field(default=None, max_length=300)
+
+
 # ---- 智能体运行请求 ----
 class AnswerQuestionRequest(BaseModel):
     """ask_user_question 5+1 回复：string | array + 超时标记。"""
@@ -134,6 +182,10 @@ class AgentRunRequest(BaseModel):
     # 省略即 None -> 运行时回退 settings（AGENT_MAX_TOOL_STEPS / AGENT_RUN_MAX_SECONDS）。
     # 曾写成 default_factory=RunBudget，把 100/7200 硬编码进 API 边界，配置覆盖成为死路径。
     budget: RunBudget | None = None                               # 运行预算
+    # 供应商目录选择（provider_id + model_id）。缺省 = 目录默认选择，目录
+    # 也没有时回退 legacy .env 单供应商链。解析在 API 层完成，执行者按 run
+    # 记录快照重建模型。
+    model: ModelSelection | None = None
 
 
 # ===========================================================================
@@ -156,6 +208,9 @@ def create_app(
     # .env 定位：显式传入 project_root（测试/嵌入方）时跟随该根，生产默认固定应用根
     resolved_env_root = Path(env_root or (project_root if project_root is not None else settings.project_root)).resolve()
     environment = EnvironmentSettingsService(resolved_env_root)
+    # 供应商目录与设置同根（.env 同级 data/runtime/）；API 端点与运行时共享
+    # 同一实例，run 级模型解析免重启生效。
+    model_catalog = ModelCatalogService(resolved_env_root)
     # 智能体运行时（延迟加载）
     runtime = agent_runtime
     runtime_lock = threading.Lock()
@@ -171,7 +226,7 @@ def create_app(
         with runtime_lock:
             if runtime is None:
                 try:
-                    runtime = AgentRuntimeManager(root)
+                    runtime = AgentRuntimeManager(root, model_catalog=model_catalog)
                 except AgentRuntimeBusyError as error:
                     raise HTTPException(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -267,6 +322,104 @@ def create_app(
             return environment.test_connection(**request.model_dump())
         except (ValueError, RuntimeError) as error:
             return {"ok": False, "message": str(error)}
+
+    # ==================== 供应商目录（免重启生效）====================
+    def _catalog_response() -> dict:
+        return model_catalog.public_view()
+
+    def _catalog_http_error(error: Exception) -> HTTPException:
+        # ValueError 涵盖 pydantic ValidationError（域合约校验失败）与
+        # ModelCatalogError；ProviderNotFoundError 单独映射 404。
+        if isinstance(error, ProviderNotFoundError):
+            return HTTPException(status_code=404, detail=str(error))
+        return HTTPException(status_code=422, detail=str(error))
+
+    @app.get("/api/model-providers")
+    def list_model_providers() -> dict:
+        """Sanitized provider catalog: never includes key material."""
+        return _catalog_response()
+
+    @app.post("/api/model-providers", status_code=status.HTTP_201_CREATED)
+    def create_model_provider(request: ProviderCreateRequest) -> dict:
+        try:
+            provider = model_catalog.create_provider(
+                name=request.name,
+                base_url=request.base_url,
+                protocol=request.protocol,
+                enabled=request.enabled,
+                models=[ProviderModel(**item.model_dump()) for item in request.models],
+                request_overrides=dict(request.request_overrides),
+                api_key=request.api_key,
+                provider_id=request.provider_id,
+            )
+        except ValueError as error:
+            raise _catalog_http_error(error) from None
+        return {"created_id": provider.id, **_catalog_response()}
+
+    # 注意：default-selection 必须先于 /{provider_id} 路由注册——FastAPI 按
+    # 注册顺序匹配，静态段不自动优先。
+    @app.put("/api/model-providers/default-selection")
+    def set_default_model_provider(request: ProviderDefaultRequest) -> dict:
+        selection = None
+        if request.provider_id and request.model_id:
+            selection = ModelSelection(
+                provider_id=request.provider_id, model_id=request.model_id
+            )
+        try:
+            model_catalog.set_default_selection(selection)
+        except ValueError as error:
+            raise _catalog_http_error(error) from None
+        return _catalog_response()
+
+    @app.put("/api/model-providers/{provider_id}")
+    def update_model_provider(provider_id: str, request: ProviderUpdateRequest) -> dict:
+        try:
+            models = (
+                [ProviderModel(**item.model_dump()) for item in request.models]
+                if request.models is not None
+                else None
+            )
+            model_catalog.update_provider(
+                provider_id,
+                name=request.name,
+                base_url=request.base_url,
+                protocol=request.protocol,
+                enabled=request.enabled,
+                models=models,
+                request_overrides=request.request_overrides,
+                api_key=request.api_key,
+                clear_api_key=request.clear_api_key,
+            )
+        except ValueError as error:
+            raise _catalog_http_error(error) from None
+        return _catalog_response()
+
+    @app.delete("/api/model-providers/{provider_id}")
+    def delete_model_provider(provider_id: str) -> dict:
+        try:
+            model_catalog.delete_provider(provider_id)
+        except ValueError as error:
+            raise _catalog_http_error(error) from None
+        return _catalog_response()
+
+    @app.post("/api/model-providers/{provider_id}/test")
+    def test_model_provider(provider_id: str) -> dict:
+        """Bounded connection probe using the provider's stored configuration."""
+        try:
+            return model_catalog.test_provider(provider_id)
+        except ValueError as error:
+            raise _catalog_http_error(error) from None
+        except RuntimeError as error:
+            return {"ok": False, "message": str(error)}
+
+    @app.post("/api/model-providers/{provider_id}/fetch-models")
+    def fetch_model_provider_models(provider_id: str) -> dict:
+        """Proxy `{base_url}/models` for one provider; the key never leaves the backend."""
+        try:
+            models = model_catalog.fetch_models(provider_id)
+        except ValueError as error:
+            raise _catalog_http_error(error) from None
+        return {"models": models}
     # ==================== 项目与页面（工作区浏览）====================
     @app.get("/api/projects/{project_id}/tree")
     def project_tree(project_id: str) -> list[dict]:
@@ -536,6 +689,14 @@ def create_app(
             unknown = [aid for aid in request.attachment_ids if aid not in owned]
             if unknown:
                 raise ValueError(f"attachment(s) do not belong to thread {thread_id}: {unknown[:5]}")
+            # 模型解析链：request.model → 目录默认选择 → legacy .env。目录默认
+            # 已配置但不可用（缺 key/被禁用）时显式失败，不静默回退 legacy。
+            try:
+                model_spec = model_catalog.resolve(request.model)
+            except ProviderNotFoundError as error:
+                raise HTTPException(status_code=404, detail=str(error)) from None
+            except ModelCatalogError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from None
             run, replayed = runtime.start_idempotent(
                 thread_id=thread_id,
                 message=request.message,
@@ -543,6 +704,8 @@ def create_app(
                 budget=request.budget,
                 attachment_ids=request.attachment_ids,
                 request_id=request.request_id,
+                model_spec=model_spec,
+                model_name=model_spec.model_id if model_spec else None,
             )
             payload = _agent_run_payload(run, store=runtime.store)
             if replayed:
@@ -801,6 +964,7 @@ def create_app(
             "task_kind": run.task_kind,
             "model": run.model_name,
             "model_role": run.model_role,
+            "model_provider": run.model_provider_id or None,
             "error_type": run.error_type.value if run.error_type else None,
             "error_message": _redact_diagnostic_error(run.error_message),
             "usage": run.usage.model_dump(mode="json"),

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 import httpx
 from langchain_openai import ChatOpenAI
@@ -14,11 +14,14 @@ from cellwiki.domain.model_provider import (
     OPENAI_PROTOCOL_RESPONSES,
     normalize_openai_protocol,
 )
+from cellwiki.domain.model_providers import ResolvedModelSpec
 
 __all__ = [
     "OPENAI_PROTOCOL_CHAT_COMPLETIONS",
     "OPENAI_PROTOCOL_RESPONSES",
+    "build_model_from_spec",
     "build_openai_chat_model",
+    "fetch_provider_models",
     "normalize_openai_protocol",
     "provider_request_options",
 ]
@@ -62,6 +65,60 @@ def provider_request_options(
     return None
 
 
+def build_model_from_spec(
+    spec: ResolvedModelSpec,
+    *,
+    timeout_seconds: float | None = None,
+    max_retries: int = 1,
+    disable_streaming: bool | Literal["tool_calling"] = "tool_calling",
+    stream_usage: bool | None = None,
+    purpose: Literal[
+        "agent",
+        "structured",
+        "coordinator",
+        "router",
+        "page_query",
+        "structured_extraction",
+    ] = "agent",
+) -> ChatOpenAI:
+    """Build one chat model from a fully resolved provider-catalog selection.
+
+    内置的 URL/模型名嗅探特化保留为兜底；供应商的 ``request_overrides``
+    总是最后合并、覆盖嗅探结果——用户显式配置拥有最高优先级。
+    """
+
+    if not spec.api_key:
+        raise RuntimeError(f"provider {spec.provider_id} has no API key configured")
+
+    protocol = normalize_openai_protocol(spec.protocol)
+    extra_body: dict[str, Any] = dict(
+        provider_request_options(spec.base_url, spec.model_id, purpose=purpose) or {}
+    )
+    for key, value in spec.request_overrides.items():
+        extra_body[key] = value
+    # langchain-openai caches its default httpx client when the timeout is
+    # hashable. Each extraction chunk closes its model client after completion,
+    # so use an unhashable timeout to keep that lifecycle isolated per model.
+    request_timeout = httpx.Timeout(timeout_seconds or 90.0)
+    return ChatOpenAI(
+        model=spec.model_id,
+        api_key=SecretStr(spec.api_key),
+        base_url=spec.base_url or None,
+        temperature=0,
+        timeout=request_timeout,
+        max_retries=max_retries,
+        disable_streaming=disable_streaming,
+        stream_usage=stream_usage,
+        extra_body=extra_body or None,
+        # Explicit booleans prevent model-name heuristics from silently switching
+        # a third-party compatible endpoint to the Responses API.
+        use_responses_api=protocol == OPENAI_PROTOCOL_RESPONSES,
+        output_version=(
+            "responses/v1" if protocol == OPENAI_PROTOCOL_RESPONSES else None
+        ),
+    )
+
+
 def build_openai_chat_model(
     configuration: Settings,
     *,
@@ -78,7 +135,7 @@ def build_openai_chat_model(
         "structured_extraction",
     ] = "agent",
 ) -> ChatOpenAI:
-    """Build one LangChain chat model for either supported OpenAI wire protocol.
+    """Build one LangChain chat model from the legacy single-provider settings.
 
     LangChain owns the message, tool-call, token-limit, and structured-output
     translation between Chat Completions and Responses API. CellWiki only makes
@@ -88,32 +145,59 @@ def build_openai_chat_model(
     if not configuration.openai_api_key:
         raise RuntimeError("OPENAI_API_KEY is required to run CewiPilot")
 
-    protocol = normalize_openai_protocol(configuration.openai_api_protocol)
-    extra_body = provider_request_options(
-        configuration.openai_base_url,
-        configuration.openai_model,
-        purpose=purpose,
+    spec = ResolvedModelSpec(
+        provider_id="",
+        model_id=configuration.openai_model,
+        base_url=configuration.openai_base_url,
+        protocol=configuration.openai_api_protocol,
+        api_key=configuration.openai_api_key,
+        request_overrides={},
     )
-    # langchain-openai caches its default httpx client when the timeout is
-    # hashable. Each extraction chunk closes its model client after completion,
-    # so use an unhashable timeout to keep that lifecycle isolated per model.
-    request_timeout = httpx.Timeout(
-        timeout_seconds or configuration.openai_request_timeout_seconds
-    )
-    return ChatOpenAI(
-        model=configuration.openai_model,
-        api_key=SecretStr(configuration.openai_api_key),
-        base_url=configuration.openai_base_url or None,
-        temperature=0,
-        timeout=request_timeout,
+    return build_model_from_spec(
+        spec,
+        timeout_seconds=timeout_seconds or configuration.openai_request_timeout_seconds,
         max_retries=max_retries,
         disable_streaming=disable_streaming,
         stream_usage=stream_usage,
-        extra_body=extra_body,
-        # Explicit booleans prevent model-name heuristics from silently switching
-        # a third-party compatible endpoint to the Responses API.
-        use_responses_api=protocol == OPENAI_PROTOCOL_RESPONSES,
-        output_version=(
-            "responses/v1" if protocol == OPENAI_PROTOCOL_RESPONSES else None
-        ),
+        purpose=purpose,
     )
+
+
+def fetch_provider_models(
+    base_url: str,
+    api_key: str,
+    *,
+    timeout_seconds: float = 15.0,
+) -> list[str]:
+    """Fetch the model list from an OpenAI-compatible gateway's `/models`.
+
+    仅供后端代理调用：key 只随本请求发往该供应商自身的 base_url。
+    """
+
+    if not base_url:
+        raise RuntimeError("a base URL is required to fetch models")
+    if not api_key:
+        raise RuntimeError("an API key is required to fetch models")
+    url = base_url.rstrip("/") + "/models"
+    try:
+        response = httpx.get(
+            url,
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=httpx.Timeout(timeout_seconds),
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except Exception as error:
+        # 供应商错误可能回显请求头/URL；出栈前把 key 从消息里洗掉。
+        raise RuntimeError(str(error).replace(api_key, "***")[:600]) from None
+    entries = payload.get("data") if isinstance(payload, dict) else payload
+    if not isinstance(entries, list):
+        raise RuntimeError("provider returned an unexpected /models payload shape")
+    models = sorted(
+        {
+            str(entry.get("id")).strip()
+            for entry in entries
+            if isinstance(entry, dict) and str(entry.get("id") or "").strip()
+        }
+    )
+    return models

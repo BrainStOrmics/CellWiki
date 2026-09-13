@@ -5,23 +5,19 @@ import {
   Bot,
   BrainCircuit,
   CheckCircle2,
-  Eye,
-  EyeOff,
   FolderOpen,
   FlaskConical,
-  KeyRound,
   Languages,
   LoaderCircle,
   RotateCcw,
   Save,
   Server,
-  SlidersHorizontal,
-  TestTube2,
   XCircle,
 } from "lucide-react";
 import { useI18n } from "../i18n";
 import { isDesktopRuntime, openLogsDirectory, productFetch, restartBackend, runtimeConfig } from "../runtime";
-import type { AppSettings, ProviderTestResult } from "../types";
+import { ProviderManager } from "./ProviderManager";
+import type { AppSettings } from "../types";
 
 type SettingsSection = "model" | "interface" | "runtime" | "workspace";
 
@@ -56,12 +52,9 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const [section, setSection] = useState<SettingsSection>("model");
   const [stored, setStored] = useState<AppSettings>();
   const [draft, setDraft] = useState<SettingsDraft>(emptyDraft);
-  const [showKey, setShowKey] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "error" | "restart"; text: string }>();
-  const [testResult, setTestResult] = useState<ProviderTestResult>();
   const [runtime, setRuntime] = useState(() => runtimeConfig());
   const [workspacePath, setWorkspacePath] = useState("");
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
@@ -104,7 +97,6 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   function updateDraft(patch: Partial<SettingsDraft>) {
     setDraft((current) => ({ ...current, ...patch }));
     setNotice(undefined);
-    setTestResult(undefined);
   }
 
   async function saveSettings() {
@@ -138,29 +130,6 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.saveError") });
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function testProvider() {
-    setTesting(true);
-    setTestResult(undefined);
-    try {
-      const response = await productFetch("/api/settings/test", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          openai_base_url: draft.openai_base_url,
-          openai_model: draft.openai_model,
-          openai_api_protocol: draft.openai_api_protocol,
-          openai_api_key: draft.openai_api_key || null,
-        }),
-      });
-      if (!response.ok) throw new Error(t("settings.testRequestError"));
-      setTestResult(await response.json() as ProviderTestResult);
-    } catch (error) {
-      setTestResult({ ok: false, message: error instanceof Error ? error.message : t("settings.testError") });
-    } finally {
-      setTesting(false);
     }
   }
 
@@ -209,7 +178,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   }
 
   const page = section === "model"
-    ? { eyebrow: t("settings.wikiAgent"), title: t("settings.modelTitle"), description: t("settings.modelDescription") }
+    ? { eyebrow: t("settings.providersEyebrow"), title: t("settings.modelTitle"), description: t("settings.providersDescription") }
     : section === "interface"
       ? { eyebrow: t("settings.interfaceEyebrow"), title: t("settings.interfaceTitle"), description: t("settings.interfaceDescription") }
       : section === "workspace"
@@ -264,21 +233,13 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
           </div>
         ) : section === "model" ? (
           <div className="settings-content">
-            <section className="settings-card provider-identity">
-              <div className="settings-card-title"><Server size={16} /><div><h3>{t("settings.provider")}</h3><p>{t("settings.providerHint")}</p></div><span>{t("settings.active")}</span></div>
-            </section>
-            <section className="settings-card">
-              <div className="settings-card-title"><SlidersHorizontal size={16} /><div><h3>{t("settings.connection")}</h3><p>{t("settings.connectionHint")}</p></div></div>
-              <label className="settings-field"><span>{t("settings.baseUrl")}</span><input value={draft.openai_base_url} onChange={(event) => updateDraft({ openai_base_url: event.target.value })} placeholder="https://api.openai.com/v1" /><small>{t("settings.baseUrlHint")}</small></label>
-              <label className="settings-field"><span>{t("settings.protocol")}</span><select value={draft.openai_api_protocol} onChange={(event) => updateDraft({ openai_api_protocol: event.target.value as AppSettings["openai_api_protocol"] })}><option value="chat_completions">{t("settings.protocolChatCompletions")}</option><option value="responses">{t("settings.protocolResponses")}</option></select><small>{t("settings.protocolHint")}</small></label>
-              <label className="settings-field"><span>{t("settings.modelField")}</span><input value={draft.openai_model} onChange={(event) => updateDraft({ openai_model: event.target.value })} placeholder="qwen3.6-plus" /></label>
-              <label className="settings-field"><span>{t("settings.apiKey")}</span><div className="secret-input"><KeyRound size={14} /><input type={showKey ? "text" : "password"} value={draft.openai_api_key} onChange={(event) => updateDraft({ openai_api_key: event.target.value, clear_openai_api_key: false })} placeholder={stored?.openai_api_key_configured ? `${stored.openai_api_key_hint ?? "••••"} — ${t("settings.apiKeyKeep")}` : t("settings.apiKeyEnter")} /><button type="button" onClick={() => setShowKey((current) => !current)} aria-label={showKey ? t("settings.hideKey") : t("settings.showKey")}>{showKey ? <EyeOff size={14} /> : <Eye size={14} />}</button></div><small>{t("settings.apiKeyHint")}</small></label>
-              {stored?.openai_api_key_configured && <label className="clear-secret"><input type="checkbox" checked={draft.clear_openai_api_key} onChange={(event) => updateDraft({ clear_openai_api_key: event.target.checked, openai_api_key: "" })} /><span>{t("settings.clearKey")} · {stored.secret_storage === "system" ? "Windows Credential Manager" : ".env"}</span></label>}
-            </section>
-            <section className="settings-card provider-test-card">
-              <div><TestTube2 size={16} /><span><h3>{t("settings.testTitle")}</h3><p>{t("settings.testHint")}</p></span></div>
-              <button onClick={() => void testProvider()} disabled={testing || !draft.openai_model.trim()}>{testing ? <LoaderCircle className="spin" size={14} /> : <TestTube2 size={14} />}{t("settings.test")}</button>
-              {testResult && <div className={testResult.ok ? "provider-test-result ok" : "provider-test-result error"}>{testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}<span><b>{testResult.ok ? t("settings.testSuccess") : testResult.message}</b>{testResult.ok && <small>{testResult.model} · {testResult.protocol} · JSON · {testResult.latency_ms} ms</small>}</span></div>}
+            <section className="settings-card provider-catalog-card">
+              <div className="settings-card-title">
+                <Server size={16} />
+                <div><h3>{t("settings.modelTitle")}</h3><p>{t("settings.providersDescription")}</p></div>
+                <span className="provider-restart-badge">{t("settings.providerRestartNotRequired")}</span>
+              </div>
+              <ProviderManager onNotice={setNotice} />
             </section>
           </div>
         ) : section === "interface" ? (

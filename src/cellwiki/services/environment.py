@@ -186,6 +186,26 @@ class EnvironmentSettingsService:
         self._write_values(persisted)
         return runtime_changed
 
+    def provider_import_snapshot(self) -> dict[str, str]:
+        """Legacy single-provider values for a one-time catalog import.
+
+        只返回 `.env` 里**显式设置**的键（不合默认值），目录服务据此判断
+        是否有可导入的配置；含明文 API key，仅供
+        ``services/model_catalog`` 首次导入时消费，不得序列化到 UI 或日志。
+        """
+
+        values = self._read_values()
+        api_key = values.get("OPENAI_API_KEY", "")
+        system_secret = self._system_secret()
+        if system_secret:
+            api_key = system_secret
+        return {
+            "base_url": values.get("OPENAI_BASE_URL", ""),
+            "model": values.get("OPENAI_MODEL", ""),
+            "protocol": values.get("OPENAI_API_PROTOCOL", ""),
+            "api_key": api_key,
+        }
+
     def set_workspace_path(self, path: str) -> None:
         """Persist the selected workspace root; the next process start reads PROJECT_ROOT."""
         values = self._effective_values()

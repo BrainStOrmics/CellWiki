@@ -25,13 +25,17 @@ from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import SystemMessage, ToolMessage
 
-from cellwiki.adapters.openai_model import build_openai_chat_model
+from cellwiki.adapters.openai_model import (
+    build_model_from_spec,
+    build_openai_chat_model,
+)
 from cellwiki.adapters.openai_reasoning_bridge import attach_reasoning_stream_bridge
 from cellwiki.config import Settings, settings
 from cellwiki.domain.model_provider import (
     OPENAI_PROTOCOL_RESPONSES,
     normalize_openai_protocol,
 )
+from cellwiki.domain.model_providers import ResolvedModelSpec
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.agent.executor import (
     WHITELISTED_TOOL_NAMES,
@@ -206,6 +210,28 @@ def build_model(configuration: Settings = settings) -> BaseChatModel:
     )
     model = build_openai_chat_model(
         configuration,
+        purpose="coordinator",
+        disable_streaming=False if streaming else "tool_calling",
+        stream_usage=True if streaming else None,
+    )
+    if streaming:
+        attach_reasoning_stream_bridge(model)
+    return model
+
+
+# ---------------------------------------------------------------------------
+# 供应商目录选中链路的协调器模型构建
+# 语义与 build_model 逐项一致（流式开关、reasoning bridge、HarnessProfile），
+# 唯一差别是模型配置来自本次 run 解析出的供应商目录条目而非全局 settings。
+# ---------------------------------------------------------------------------
+def build_coordinator_model(spec: ResolvedModelSpec) -> BaseChatModel:
+    _register_cellwiki_harness_profile(spec.model_id)
+    streaming = bool(
+        settings.agent_streaming
+        and normalize_openai_protocol(spec.protocol) == OPENAI_PROTOCOL_RESPONSES
+    )
+    model = build_model_from_spec(
+        spec,
         purpose="coordinator",
         disable_streaming=False if streaming else "tool_calling",
         stream_usage=True if streaming else None,

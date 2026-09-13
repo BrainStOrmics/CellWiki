@@ -68,6 +68,14 @@ export async function postJson<T>(path: string, body: unknown): Promise<T> {
   }));
 }
 
+export async function putJson<T>(path: string, body: unknown): Promise<T> {
+  return parseResponse<T>(await productFetch(path, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+}
+
 export async function deleteJson<T>(path: string): Promise<T> {
   const response = await productFetch(path, { method: "DELETE" });
   // DELETE 端点使用 204 No Content；空响应体不能走 parseResponse 的 json() 解析

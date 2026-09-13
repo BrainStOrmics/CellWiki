@@ -191,6 +191,7 @@ export type AgentRun = {
   task_payload?: Record<string, unknown>;
   model_role?: string;
   model_name?: string;
+  model_provider_id?: string;
   status: AgentRunStatus;
   finished_at?: string | null;
   retry_count: number;
@@ -342,6 +343,42 @@ export type ProviderTestResult = {
   protocol?: "chat_completions" | "responses";
   structured_output?: boolean;
   latency_ms?: number;
+};
+
+// ---------------------------------------------------------------------------
+// 供应商目录 —— 设置页管理与 composer 模型切换共用（key 永不下发，只有配置
+// 标志与掩码 hint）
+// ---------------------------------------------------------------------------
+export type OpenAiProtocol = "chat_completions" | "responses";
+
+export type ModelSelection = {
+  provider_id: string;
+  model_id: string;
+};
+
+export type ProviderModelInfo = {
+  id: string;
+  display_name?: string | null;
+  enabled: boolean;
+};
+
+export type ModelProviderInfo = {
+  id: string;
+  name: string;
+  base_url: string;
+  protocol: OpenAiProtocol;
+  enabled: boolean;
+  models: ProviderModelInfo[];
+  request_overrides: Record<string, unknown>;
+  source: "user" | "legacy";
+  api_key_configured: boolean;
+  api_key_hint?: string | null;
+};
+
+export type ModelProviderCatalog = {
+  version: number;
+  default_selection: ModelSelection | null;
+  providers: ModelProviderInfo[];
 };
 
 export type SearchDocumentType = "page" | "entity" | "source" | "claim" | "evidence" | "lint";

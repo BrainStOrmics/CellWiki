@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { ModelSelection } from "../types";
 
 export type WorkspaceView =
   | "wiki"
@@ -56,6 +57,9 @@ type UiState = {
   activeAttachmentIds: string[];
   zoomLevel: number;
   themeOverride: ThemeOverride;
+  // composer 当前模型（全局语义：作用于下一次 run 的所有会话）；
+  // null = 使用后端默认（目录默认选择或 legacy .env 链）。
+  selectedModel: ModelSelection | null;
   setActiveView: (view: WorkspaceView) => void;
   setCommandPaletteOpen: (open: boolean) => void;
   setSelectedText: (text: string) => void;
@@ -71,6 +75,7 @@ type UiState = {
   resetZoom: () => void;
   setThemeOverride: (theme: Exclude<ThemeOverride, null>) => void;
   clearThemeOverride: () => void;
+  setSelectedModel: (selection: ModelSelection | null) => void;
 };
 
 type PersistedUiState = Pick<
@@ -82,6 +87,7 @@ type PersistedUiState = Pick<
   | "composerPageRef"
   | "activeAttachmentIds"
   | "zoomLevel"
+  | "selectedModel"
 >;
 
 export const useUiStore = create<UiState>()(persist(
@@ -96,6 +102,7 @@ export const useUiStore = create<UiState>()(persist(
     activeAttachmentIds: [],
     zoomLevel: DEFAULT_ZOOM_LEVEL,
     themeOverride: null,
+    selectedModel: null,
     setActiveView: (activeView) => set({ activeView }),
     setCommandPaletteOpen: (commandPaletteOpen) => set({ commandPaletteOpen }),
     setSelectedText: (selectedText) => set({ selectedText }),
@@ -123,11 +130,12 @@ export const useUiStore = create<UiState>()(persist(
     resetZoom: () => set({ zoomLevel: DEFAULT_ZOOM_LEVEL }),
     setThemeOverride: (themeOverride) => set({ themeOverride }),
     clearThemeOverride: () => set({ themeOverride: null }),
+    setSelectedModel: (selectedModel) => set({ selectedModel }),
   }),
   {
     name: "cellwiki.ui.v2",
-    version: 3,
-    migrate: (persistedState) => {
+    version: 4,
+    migrate: (persistedState, version) => {
       const state = persistedState as Partial<PersistedUiState>;
       return {
         activeView: normalizePersistedView(state.activeView),
@@ -137,6 +145,7 @@ export const useUiStore = create<UiState>()(persist(
         composerPageRef: state.composerPageRef ?? null,
         activeAttachmentIds: state.activeAttachmentIds ?? [],
         zoomLevel: state.zoomLevel ?? DEFAULT_ZOOM_LEVEL,
+        selectedModel: state.selectedModel ?? null,
       };
     },
     // Selected scientific text is transient and must not leak into durable UI state.
@@ -148,6 +157,7 @@ export const useUiStore = create<UiState>()(persist(
       composerPageRef: state.composerPageRef,
       activeAttachmentIds: state.activeAttachmentIds,
       zoomLevel: state.zoomLevel,
+      selectedModel: state.selectedModel,
     }),
   },
 ));

@@ -2216,3 +2216,128 @@ select:focus-visible {
 :root[data-theme="light"] .diff-line.hdr, :root[data-theme="light"] .diff-line.binary, :root[data-theme="light"] .diff-line-note { color: #687482; }
 :root[data-theme="light"] .diff-line-num, :root[data-theme="light"] .diff-line-marker { color: #9aa5b0; }
 
+/* ---------------------------------------------------------------------------
+   Composer 模型切换器（ModelSwitcher）
+   附件键旁的胶囊按钮 + 底部锚定的 popover。全部使用主题令牌，保证
+   明暗双主题扫描（e2e/theme-consistency）不出现越界的表面亮度。
+   --------------------------------------------------------------------------- */
+.model-switcher { position: relative; display: inline-flex; }
+.model-switcher-button {
+  display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 9px;
+  border: 1px solid var(--border-strong); border-radius: 999px;
+  color: var(--text-2); background: var(--bg-raised); font-size: 10.5px; line-height: 1;
+}
+.model-switcher-button:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+.model-switcher-button > span { max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-switcher-backdrop { position: fixed; inset: 0; z-index: 60; }
+.model-switcher-popover {
+  position: absolute; bottom: calc(100% + 8px); left: 0; z-index: 61;
+  display: flex; flex-direction: column; width: 300px; max-height: 330px;
+  border: 1px solid var(--border-strong); border-radius: 10px;
+  background: var(--bg-popover); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.32);
+}
+.model-switcher-popover .command-input { border-bottom: 1px solid var(--border-soft); }
+.model-switcher-options { flex: 1 1 auto; overflow-y: auto; padding: 4px; }
+.model-group { margin-bottom: 2px; }
+.model-group-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 6px 8px 2px; color: var(--subtle); font-size: 9.5px;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.model-group-warning { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); text-transform: none; letter-spacing: 0; }
+.model-option {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 6px 8px;
+  border: 0; border-radius: 7px; color: var(--text-2); background: transparent;
+  font-size: 11.5px; text-align: left; cursor: pointer;
+}
+.model-option:hover, .model-option.active { color: var(--text); background: var(--bg-hover); }
+.model-option-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-option em { color: var(--subtle); font-size: 10px; font-style: normal; }
+.model-option-check { color: var(--accent); flex: 0 0 auto; }
+.model-switcher-popover footer {
+  padding: 6px 10px; border-top: 1px solid var(--border-soft);
+  color: var(--subtle); font-size: 9.5px;
+}
+
+/* ---------------------------------------------------------------------------
+   设置页供应商目录（ProviderManager）
+   --------------------------------------------------------------------------- */
+.provider-manager { display: grid; grid-template-columns: 200px 1fr; gap: 14px; align-items: start; }
+.provider-list { display: flex; flex-direction: column; gap: 6px; }
+.provider-item {
+  display: flex; flex-direction: column; gap: 3px; padding: 9px 10px;
+  border: 1px solid var(--border); border-radius: 9px;
+  color: var(--text-2); background: var(--bg-panel-2); text-align: left;
+}
+.provider-item:hover { border-color: var(--border-strong); color: var(--text); }
+.provider-item.active { border-color: var(--accent-line-strong); background: var(--accent-soft-2); }
+.provider-item-name { color: var(--text); font-size: 12px; font-weight: 600; }
+.provider-item small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--subtle); font-size: 10px; }
+.provider-item.add { flex-direction: row; align-items: center; justify-content: center; gap: 6px; border-style: dashed; color: var(--muted); font-size: 11.5px; }
+.provider-item-badges { display: flex; flex-wrap: wrap; gap: 4px; }
+.provider-badge {
+  padding: 1px 6px; border-radius: 999px; background: var(--bg-hover);
+  color: var(--muted); font-size: 9px; font-style: normal;
+}
+.provider-badge.default { color: var(--accent); background: var(--accent-soft); }
+.provider-badge.warn { color: var(--danger); }
+.provider-editor { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.provider-editor .command-state { padding: 18px 0; color: var(--muted); font-size: 12px; }
+.provider-templates { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 8px; color: var(--muted); font-size: 11px; }
+.provider-templates button {
+  padding: 3px 9px; border: 1px solid var(--border); border-radius: 999px;
+  color: var(--text-2); background: var(--bg-panel-2); font-size: 10.5px; cursor: pointer;
+}
+.provider-templates button:hover { border-color: var(--accent-line); color: var(--accent); }
+.provider-models-field .provider-model-list { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 6px; }
+.provider-model-row {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px;
+  border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-raised);
+}
+.provider-model-row code { color: var(--text-2); font-family: var(--font-mono); font-size: 10.5px; }
+.provider-model-default { display: grid; border: 0; color: var(--subtle); background: transparent; place-items: center; cursor: pointer; }
+.provider-model-default.active { color: var(--accent); }
+.provider-model-default:hover:not(:disabled) { color: var(--accent-strong); }
+.provider-model-remove { display: grid; border: 0; color: var(--subtle); background: transparent; place-items: center; cursor: pointer; }
+.provider-model-remove:hover { color: var(--danger); }
+.provider-model-add { display: flex; gap: 6px; }
+.provider-model-add input {
+  flex: 1 1 auto; padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text); background: var(--bg-input); font-size: 11.5px;
+}
+.provider-model-add button {
+  display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px;
+  border: 1px solid var(--border); border-radius: 8px;
+  color: var(--text-2); background: var(--bg-panel-2); font-size: 11px; cursor: pointer;
+}
+.provider-model-add button:hover:not(:disabled) { border-color: var(--accent-line); color: var(--accent); }
+.provider-model-add button:disabled { opacity: 0.45; cursor: default; }
+.provider-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.provider-actions button {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px;
+  border: 1px solid var(--border-strong); border-radius: 9px;
+  color: var(--text-2); background: var(--bg-panel-2); font-size: 11.5px; cursor: pointer;
+}
+.provider-actions button:hover:not(:disabled) { color: var(--text); background: var(--bg-hover); }
+.provider-actions button:disabled { cursor: default; opacity: 0.45; }
+.provider-actions .provider-save { color: var(--accent-text); border-color: transparent; background: var(--accent); }
+.provider-actions .provider-save:hover:not(:disabled) { background: var(--accent-strong); }
+.provider-actions .provider-delete { color: var(--danger); }
+.provider-restart-badge {
+  padding: 2px 9px; border-radius: 999px; color: var(--accent);
+  background: var(--accent-soft); font-size: 10px; white-space: nowrap;
+}
+.provider-test-result {
+  display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding: 9px 11px;
+  border: 1px solid var(--border); border-radius: 9px; font-size: 11.5px;
+}
+.provider-test-result.ok svg, .provider-test-result.ok b { color: var(--accent); }
+.provider-test-result.error svg, .provider-test-result.error b { color: var(--danger); }
+.provider-test-result span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.provider-test-result small { color: var(--muted); font-size: 10px; }
+
+@media (max-width: 900px) {
+  .provider-manager { grid-template-columns: 1fr; }
+}
+
+

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
 
 
@@ -15,7 +16,8 @@ from pathlib import Path
 # 将项目提供商的密钥存储在宿主机的凭据保管库（如 macOS Keychain、
 # Windows Credential Manager）中。keyring 后端在最小化系统上可能不可用，
 # 调用者收到布尔结果后可以显式回退到开发 .env 适配器。
-# 账户名使用项目路径的 SHA256 哈希，确保不同项目使用不同的凭据条目。
+# 账户名使用项目路径的 SHA256 哈希，确保不同项目使用不同的凭据条目；
+# entry 参数支持同一项目下的多条目（如逐供应商密钥）。
 # ---------------------------------------------------------------------------
 class CredentialStore:
     """Store one project provider secret in the host credential vault.
@@ -27,11 +29,13 @@ class CredentialStore:
     # 服务名称，用于在操作系统的凭据管理器中标识条目
     service_name = "org.brainstormics.cellwiki"
 
-    def __init__(self, project_root: Path):
+    def __init__(self, project_root: Path, *, entry: str = "openai"):
         # 使用项目路径的 SHA256 哈希的前 16 个字符作为账户名
-        # 确保不同项目的凭据不会冲突
+        # 确保不同项目的凭据不会冲突；entry 段区分同项目多条目，
+        # 只保留 keyring 账户名里安全的小写 slug 字符。
         digest = hashlib.sha256(str(Path(project_root).resolve()).encode()).hexdigest()[:16]
-        self.account = f"project-{digest}-openai"
+        safe_entry = re.sub(r"[^a-z0-9._-]", "-", entry.strip().lower())[:64] or "openai"
+        self.account = f"project-{digest}-{safe_entry}"
 
     # 获取凭据，如果 keyring 不可用则返回 None
     def get(self) -> str | None:

@@ -69,6 +69,22 @@ describe("UI state boundaries", () => {
     expect(localStorage.getItem("cellwiki.ui.v2") ?? "").not.toContain("themeOverride");
   });
 
+  it("persists the composer model selection as a durable UI preference", () => {
+    useUiStore.getState().setSelectedModel({ provider_id: "gw-a", model_id: "model-b" });
+
+    expect(useUiStore.getState().selectedModel).toEqual({
+      provider_id: "gw-a",
+      model_id: "model-b",
+    });
+    const persisted = JSON.parse(localStorage.getItem("cellwiki.ui.v2") ?? "{}");
+    expect(persisted.state.selectedModel).toEqual({ provider_id: "gw-a", model_id: "model-b" });
+
+    // 清除选择后回到"跟随默认"，持久化状态里也回到 null。
+    useUiStore.getState().setSelectedModel(null);
+    expect(useUiStore.getState().selectedModel).toBeNull();
+    expect(JSON.parse(localStorage.getItem("cellwiki.ui.v2") ?? "{}").state.selectedModel).toBeNull();
+  });
+
   it("does not restore retired feature views as first-level navigation", () => {
     expect(normalizePersistedView("reviews")).toBe("wiki");
     expect(normalizePersistedView("lint")).toBe("wiki");

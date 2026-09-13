@@ -145,6 +145,17 @@ test("Agent streams ordinary text through the browser, runtime, SSE, and durable
   await expect(answer).toContainText("实际读取：wiki/cell_types/regulatory_t_cell.md");
   await expect(page.locator(".message.agent.is-streaming")).toHaveCount(0);
 
+  // UI 在 final_response 事件即清掉 is-streaming，而 store 转到 SUCCEEDED
+  // 稍后（随后那条 run_status 事件才追加），所以这里必须轮询而不是单次读取。
+  await expect.poll(async () => {
+    const runs = await page.evaluate(async ({ activeThreadId }) => {
+      const origin = "http://127.0.0.1:18000";
+      const all = await fetch(`${origin}/api/agent/runs?thread_id=${encodeURIComponent(activeThreadId)}&limit=10`)
+        .then((response) => response.json());
+      return all.find((candidate: { thread_id: string }) => candidate.thread_id === activeThreadId);
+    }, { activeThreadId: threadId! });
+    return (runs as { status: string }).status;
+  }, { timeout: 10_000 }).toBe("succeeded");
   const evidence = await page.evaluate(async ({ activeThreadId }) => {
     const origin = "http://127.0.0.1:18000";
     const runs = await fetch(`${origin}/api/agent/runs?thread_id=${encodeURIComponent(activeThreadId)}&limit=10`)
@@ -157,7 +168,6 @@ test("Agent streams ordinary text through the browser, runtime, SSE, and durable
     return { run, events, messages };
   }, { activeThreadId: threadId! });
 
-  expect(evidence.run.status).toBe("succeeded");
   expect(evidence.events.map((event: { type: string }) => event.type)).toEqual(expect.arrayContaining([
     "tool_started",
     "tool_completed",

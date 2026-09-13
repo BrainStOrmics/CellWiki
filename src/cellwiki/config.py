@@ -82,8 +82,6 @@ class Settings(BaseSettings):
     # ---- 证据优先的 Ingest Agent 设置（Phase A/B）----
     # 逐字接地未命中的证据回给 Agent 改写的最大轮次
     ingest_agent_max_grounding_passes: int = Field(default=2, ge=1, le=5)
-    # 可选独立模型；为空则与协调器共用配置模型
-    ingest_agent_model: str | None = None
     # 未落地实体占候选实体比例超过该阈值时，生成阻塞性审查项
     ingest_ungrounded_entity_ratio_limit: float = Field(default=0.10, ge=0.0, le=1.0)
 
