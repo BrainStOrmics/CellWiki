@@ -67,7 +67,12 @@ def test_diagnostic_suite_includes_gate_scenarios():
     assert diagnostic.layer == "diagnostic"
     gate_ids = [scenario.scenario_id for scenario in gate.scenarios]
     diagnostic_ids = [scenario.scenario_id for scenario in diagnostic.scenarios]
-    assert diagnostic_ids == gate_ids
+    # includes 合并后 diagnostic 覆盖全部 gate 场景；自 2026-09-13 起它还携带
+    # 自己的版本化纪律诊断场景（收口/幻觉提交），所以是严格的超集。
+    assert set(gate_ids) <= set(diagnostic_ids)
+    assert {"write_task_versions_with_git", "commit_claim_requires_tool"} <= set(
+        diagnostic_ids
+    )
 
 
 def test_suite_fixture_hash_is_stable_and_input_sensitive(tmp_path: Path):
@@ -909,3 +914,103 @@ def test_git_command_error_during_verdict_maps_to_approval(tmp_path: Path):
     assert not record.ok
     assert record.error_kind == "dispatch"
     assert record.failure_category == "approval"
+
+
+# ---- 版本化纪律断言（2026-09-13 收口修复的回归防线）----
+
+
+def _assertion_context(tmp_path: Path, **overrides):
+    from cellwiki.evaluation.agent_eval_v2 import AssertionContext
+
+    defaults = dict(
+        workspace=tmp_path,
+        last_answer="",
+        last_run_status="succeeded",
+        last_run_error_type=None,
+        last_run_model_calls=1,
+        trial_model_calls=1,
+        changed_last_run=[],
+        changed_trial=[],
+        write_calls_last_run=[],
+        write_calls_trial=[],
+        git_calls_last_run=[],
+        git_calls_trial=[],
+        unverified_claims_last_run=[],
+    )
+    defaults.update(overrides)
+    return AssertionContext(**defaults)
+
+
+def test_git_tool_used_assertion_fails_without_git_calls(tmp_path: Path):
+    context = _assertion_context(tmp_path, git_calls_last_run=[])
+    failed = context._evaluate_one({"type": "git_tool_used"})
+    assert not failed.passed
+    assert failed.code == "git_tool_missing"
+
+    context = _assertion_context(
+        tmp_path, git_calls_last_run=["add wiki/notes/evidence_note.md"]
+    )
+    passed = context._evaluate_one({"type": "git_tool_used"})
+    assert passed.passed
+    assert passed.code == "git_tool_present"
+
+
+def test_no_unverified_repo_claims_reads_claim_events(tmp_path: Path):
+    context = _assertion_context(tmp_path, unverified_claims_last_run=[])
+    ok = context._evaluate_one({"type": "no_unverified_repo_claims"})
+    assert ok.passed
+
+    context = _assertion_context(
+        tmp_path,
+        unverified_claims_last_run=["声称的提交 c5b3890 不在 git 历史中"],
+    )
+    failed = context._evaluate_one({"type": "no_unverified_repo_claims"})
+    assert not failed.passed
+    assert failed.code == "unverified_repo_claim"
+    assert any("c5b3890" in item for item in failed.evidence)
+
+
+def test_committed_since_snapshot_detects_dirty_worktree(tmp_path: Path):
+    import subprocess
+
+    from cellwiki.evaluation.agent_eval_v2 import run_git
+
+    run_git(tmp_path, "init")
+    run_git(tmp_path, "config", "user.email", "tests@cellwiki.local")
+    run_git(tmp_path, "config", "user.name", "CellWiki Tests")
+    (tmp_path / "index.md").write_text("nav", encoding="utf-8")
+    run_git(tmp_path, "add", "--all")
+    run_git(tmp_path, "commit", "-m", "baseline")
+
+    ok = _assertion_context(tmp_path)._evaluate_one(
+        {"type": "committed_since_snapshot"}
+    )
+    assert ok.passed
+
+    (tmp_path / "index.md").write_text("nav v2", encoding="utf-8")
+    (tmp_path / "overview.md").write_text("dirty system file", encoding="utf-8")
+    failed = _assertion_context(tmp_path)._evaluate_one(
+        {"type": "committed_since_snapshot"}
+    )
+    assert not failed.passed
+    assert failed.code == "uncommitted_changes"
+    assert any("index.md" in item for item in failed.evidence)
+    # 系统维护文件的脏区不算 Agent 内容逃逸
+    assert not any("overview.md" in item for item in failed.evidence)
+    assert subprocess is not None
+
+
+def test_diagnostic_versioning_scenarios_are_wired():
+    suite = load_suite(DIAGNOSTIC_SUITE)
+    by_id = {scenario.scenario_id: scenario for scenario in suite.scenarios}
+    assert "write_task_versions_with_git" in by_id
+    assert "commit_claim_requires_tool" in by_id
+    write_scenario = by_id["write_task_versions_with_git"]
+    assertion_types = {
+        assertion["type"]
+        for step in write_scenario.steps
+        if step["action"] == "assert"
+        for assertion in step["assertions"]
+    }
+    assert {"git_tool_used", "committed_since_snapshot",
+            "no_unverified_repo_claims"} <= assertion_types

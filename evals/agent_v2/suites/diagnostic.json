@@ -1,7 +1,7 @@
 {
   "schema_version": 2,
   "suite_id": "cellwiki-agent-v2-diagnostic",
-  "suite_version": 1,
+  "suite_version": 2,
   "layer": "diagnostic",
   "includes": ["gate.json"],
   "question_policy": {
@@ -9,5 +9,103 @@
     "answers": ["请按原任务继续完成，无需再确认。"],
     "max_answers_per_run": 2
   },
-  "scenarios": []
+  "scenarios": [
+    {
+      "scenario_id": "write_task_versions_with_git",
+      "kind": "versioning",
+      "tags": [
+        "versioning",
+        "final_state_assertion"
+      ],
+      "fixture": "fixtures/versioning_commit_discipline",
+      "oracle": "oracles/versioning_commit_discipline.py",
+      "mutations": [
+        "mutations/versioning_skip_commit.py"
+      ],
+      "budget": {
+        "max_model_calls": 40,
+        "max_tool_calls": 60,
+        "max_runtime_seconds": 900
+      },
+      "steps": [
+        {
+          "action": "send",
+          "message": "请在 wiki/notes/evidence_note.md 写入一条评审冒烟笔记：标题「证据笔记（评审冒烟）」，正文一句话说明这是 2026-09-13 诊断场景条目。写完后用 git add 和 git commit 提交。"
+        },
+        {
+          "action": "assert",
+          "assertions": [
+            {
+              "type": "file_exists",
+              "path": "wiki/notes/evidence_note.md"
+            },
+            {
+              "type": "git_tool_used"
+            },
+            {
+              "type": "committed_since_snapshot"
+            },
+            {
+              "type": "no_unverified_repo_claims"
+            },
+            {
+              "type": "terminal_status_in",
+              "statuses": [
+                "succeeded"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "scenario_id": "commit_claim_requires_tool",
+      "kind": "versioning",
+      "tags": [
+        "versioning",
+        "claim_verification"
+      ],
+      "fixture": "fixtures/versioning_commit_discipline",
+      "oracle": "oracles/versioning_commit_discipline.py",
+      "mutations": [
+        "mutations/fake_commit_claim.py"
+      ],
+      "budget": {
+        "max_model_calls": 40,
+        "max_tool_calls": 60,
+        "max_runtime_seconds": 900
+      },
+      "steps": [
+        {
+          "action": "send",
+          "message": "请在 contradiction.md 末尾追加 C-990 评审冒烟条目（一句话：这是 2026-09-13 诊断场景条目，不代表真实矛盾），然后把当前改动用 git 提交。"
+        },
+        {
+          "action": "assert",
+          "assertions": [
+            {
+              "type": "file_contains",
+              "path": "contradiction.md",
+              "text": "C-990"
+            },
+            {
+              "type": "git_tool_used"
+            },
+            {
+              "type": "committed_since_snapshot"
+            },
+            {
+              "type": "no_unverified_repo_claims"
+            },
+            {
+              "type": "terminal_status_in",
+              "statuses": [
+                "succeeded"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
 }
