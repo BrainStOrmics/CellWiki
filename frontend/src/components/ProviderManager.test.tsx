@@ -188,6 +188,53 @@ describe("ProviderManager", () => {
     await waitFor(() => expect(screen.getByDisplayValue("model-extra")).toBeVisible());
   });
 
+  it("fetches draft models before saving once base url and key are filled", async () => {
+    const onNotice = vi.fn();
+    postJson.mockResolvedValue({ models: ["draft-model-a", "draft-model-b"] });
+
+    renderManager(onNotice);
+    await waitFor(() => expect(screen.getByText("新建供应商")).toBeVisible());
+    fireEvent.click(screen.getByText("新建供应商"));
+
+    // 草稿未填 base_url / key 时拉取按钮禁用，行内下拉也不可用
+    const fetchButton = screen.getByRole("button", { name: "获取可用模型" });
+    expect(fetchButton).toBeDisabled();
+    fireEvent.click(screen.getByText("添加模型"));
+    const rowToggle = screen.getByRole("button", { name: /模型选项/ });
+    expect(rowToggle).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText("https://api.openai.com/v1"), {
+      target: { value: "https://gw.example/v1" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("输入服务商 API Key"), {
+      target: { value: "sk-draft-key" },
+    });
+    expect(fetchButton).toBeEnabled();
+
+    fireEvent.click(fetchButton);
+    // 草稿没有 provider id：走草稿端点，key 随该次请求体发送
+    await waitFor(() => expect(postJson).toHaveBeenCalledWith(
+      "/api/model-providers/fetch-models",
+      {
+        base_url: "https://gw.example/v1",
+        protocol: "chat_completions",
+        api_key: "sk-draft-key",
+      },
+    ));
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith({
+      kind: "ok",
+      text: "已获取 2 个可用模型。",
+    }));
+
+    // 拉取成功后行内下拉亮起，展开即可挑选并填入该行
+    await waitFor(() => expect(rowToggle).toBeEnabled());
+    fireEvent.click(rowToggle);
+    await waitFor(() => expect(screen.getByText("draft-model-b")).toBeVisible());
+    fireEvent.click(screen.getByText("draft-model-b"));
+
+    await waitFor(() => expect(screen.getByDisplayValue("draft-model-b")).toBeVisible());
+  });
+
   it("renders no field hint lines under the editor inputs", async () => {
     renderManager();
     await waitFor(() => expect(screen.getByDisplayValue("Gateway A")).toBeVisible());

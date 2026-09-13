@@ -290,3 +290,51 @@ def test_run_with_keyless_default_still_records_selection(client: TestClient) ->
     assert detail["status"] == "succeeded"
     assert detail["model_name"] == "model-a"
     assert detail["model_provider_id"] == "gw-a"
+
+
+def test_fetch_draft_models_proxies_without_saving_catalog(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_fetch(base_url: str, api_key: str, *, protocol: str) -> list[str]:
+        seen.update({"base_url": base_url, "api_key": api_key, "protocol": protocol})
+        return ["model-x"]
+
+    import cellwiki.adapters.openai_model as adapter_module
+
+    monkeypatch.setattr(adapter_module, "fetch_provider_models", fake_fetch)
+    response = client.post(
+        "/api/model-providers/fetch-models",
+        json={
+            "base_url": "https://gw.example/v1",
+            "protocol": "chat_completions",
+            "api_key": "sk-draft-key",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"models": ["model-x"]}
+    assert seen == {
+        "base_url": "https://gw.example/v1",
+        "api_key": "sk-draft-key",
+        "protocol": "chat_completions",
+    }
+    assert "sk-draft-key" not in response.text
+    # 草稿拉取不落目录：目录仍为空。
+    assert client.get("/api/model-providers").json()["providers"] == []
+
+    missing_key = client.post(
+        "/api/model-providers/fetch-models",
+        json={"base_url": "https://gw.example/v1", "protocol": "chat_completions"},
+    )
+    assert missing_key.status_code == 422
+    bad_url = client.post(
+        "/api/model-providers/fetch-models",
+        json={"base_url": "not-a-url", "protocol": "chat_completions", "api_key": "k"},
+    )
+    assert bad_url.status_code == 422
+    bad_protocol = client.post(
+        "/api/model-providers/fetch-models",
+        json={"base_url": "https://gw.example/v1", "protocol": "bogus", "api_key": "k"},
+    )
+    assert bad_protocol.status_code == 422

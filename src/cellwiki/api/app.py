@@ -147,6 +147,14 @@ class ProviderDefaultRequest(BaseModel):
     model_id: str | None = Field(default=None, max_length=300)
 
 
+class ProviderFetchDraftRequest(BaseModel):
+    """未保存供应商草稿的 /models 拉取请求；key 只随本次请求发往草稿 base_url。"""
+
+    base_url: str = Field(default="", max_length=2000)
+    protocol: str = Field(default="chat_completions", max_length=40)
+    api_key: str | None = Field(default=None, max_length=4000)
+
+
 # ---- 智能体运行请求 ----
 class AnswerQuestionRequest(BaseModel):
     """ask_user_question 5+1 回复：string | array + 超时标记。"""
@@ -411,6 +419,23 @@ def create_app(
             raise _catalog_http_error(error) from None
         except RuntimeError as error:
             return {"ok": False, "message": str(error)}
+
+    @app.post("/api/model-providers/fetch-models")
+    def fetch_draft_model_provider_models(request: ProviderFetchDraftRequest) -> dict:
+        """Proxy a not-yet-saved provider draft's `/models`.
+
+        与 `/api/settings/test` 同级的草稿信任边界：key 只在本次请求内存中
+        消费、只发往请求里的 base_url、不落盘也不回显。
+        """
+        try:
+            models = model_catalog.fetch_models_draft(
+                base_url=request.base_url,
+                protocol=request.protocol,
+                api_key=request.api_key or "",
+            )
+        except ValueError as error:
+            raise _catalog_http_error(error) from None
+        return {"models": models}
 
     @app.post("/api/model-providers/{provider_id}/fetch-models")
     def fetch_model_provider_models(provider_id: str) -> dict:

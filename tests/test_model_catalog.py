@@ -351,3 +351,68 @@ def test_fetch_models_still_requires_base_url_for_openai_protocols(
     )
     with pytest.raises(ModelCatalogError, match="base URL"):
         service.fetch_models("gw-empty")
+
+
+def test_fetch_models_draft_validates_and_passes_draft_config(
+    service: ModelCatalogService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, Any] = {}
+
+    def fake_fetch(base_url: str, api_key: str, *, protocol: str) -> list[str]:
+        seen.update(base_url=base_url, api_key=api_key, protocol=protocol)
+        return ["model-a"]
+
+    import cellwiki.adapters.openai_model as adapter_module
+
+    monkeypatch.setattr(adapter_module, "fetch_provider_models", fake_fetch)
+    assert (
+        service.fetch_models_draft(
+            base_url="https://gw.example/v1",
+            protocol="chat_completions",
+            api_key="sk-draft",
+        )
+        == ["model-a"]
+    )
+    assert seen == {
+        "base_url": "https://gw.example/v1",
+        "api_key": "sk-draft",
+        "protocol": "chat_completions",
+    }
+    # Anthropic 允许空 base_url（官方默认端点）；其余协议要求非空。
+    assert (
+        service.fetch_models_draft(
+            base_url="", protocol="anthropic", api_key="sk-draft"
+        )
+        == ["model-a"]
+    )
+    with pytest.raises(ModelCatalogError, match="API key"):
+        service.fetch_models_draft(
+            base_url="https://gw.example/v1", protocol="chat_completions", api_key=""
+        )
+    with pytest.raises(ModelCatalogError, match="base URL"):
+        service.fetch_models_draft(
+            base_url="", protocol="chat_completions", api_key="sk-draft"
+        )
+    # 草稿字段走 ProviderConfig 同款校验：非绝对 http(s) URL 直接拒绝。
+    with pytest.raises(ValueError):
+        service.fetch_models_draft(
+            base_url="not-a-url", protocol="chat_completions", api_key="sk-draft"
+        )
+
+
+def test_fetch_models_draft_scrubs_draft_key_from_errors(
+    service: ModelCatalogService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fake_fetch(base_url: str, api_key: str, *, protocol: str) -> list[str]:
+        raise RuntimeError(f"connect failed with {api_key}")
+
+    import cellwiki.adapters.openai_model as adapter_module
+
+    monkeypatch.setattr(adapter_module, "fetch_provider_models", fake_fetch)
+    with pytest.raises(ModelCatalogError) as error:
+        service.fetch_models_draft(
+            base_url="https://gw.example/v1",
+            protocol="chat_completions",
+            api_key="sk-draft-secret",
+        )
+    assert "sk-draft-secret" not in str(error.value)

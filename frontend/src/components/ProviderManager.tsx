@@ -114,13 +114,21 @@ export function ProviderManager({
   const editorVisible = creating || selected !== undefined;
 
   // 可用清单只读缓存：顶部按钮或 › 面板触发拉取，拉取结果不自动并入模型目录。
+  // 草稿（新建）还没有 provider id，走草稿端点（key 只随该次请求发往草稿
+  // 自己的 base_url，不落盘）。
   const available = useQuery({
-    queryKey: ["provider-available-models", selectedId],
+    queryKey: ["provider-available-models", creating ? "draft" : selectedId],
     queryFn: async () => {
-      const payload = await postJson<{ models: string[] }>(
-        `/api/model-providers/${encodeURIComponent(selectedId ?? "")}/fetch-models`,
-        {},
-      );
+      const payload = creating
+        ? await postJson<{ models: string[] }>("/api/model-providers/fetch-models", {
+            base_url: draft.base_url.trim(),
+            protocol: draft.protocol,
+            api_key: draft.api_key.trim() || null,
+          })
+        : await postJson<{ models: string[] }>(
+            `/api/model-providers/${encodeURIComponent(selectedId ?? "")}/fetch-models`,
+            {},
+          );
       return payload.models;
     },
     enabled: false,
@@ -177,6 +185,10 @@ export function ProviderManager({
     setOpenPanelIndex(null);
     setPanelQuery("");
     onNotice(undefined);
+    if (asNew) {
+      // 新草稿不继承上一个草稿拉取到的候选清单。
+      queryClient.removeQueries({ queryKey: ["provider-available-models", "draft"] });
+    }
     const provider = asNew ? undefined : catalog?.providers.find((item) => item.id === id);
     setDraft(provider ? draftFromProvider(provider) : emptyDraft());
   }
@@ -343,6 +355,12 @@ export function ProviderManager({
   }
 
   const defaultSelection = catalog?.default_selection ?? null;
+  // 草稿就绪 = key 齐备且（base_url 齐备或 Anthropic 官方端点可留空）。
+  const draftFetchReady =
+    draft.api_key.trim().length > 0
+    && (draft.base_url.trim().length > 0 || draft.protocol === "anthropic");
+  // 草稿态的行内下拉在拉取成功（且结果非空）后才可用。
+  const availableModelsReady = (available.data?.length ?? 0) > 0;
   // 空行（新建后未填调用名）在保存时丢弃
   const draftModels = draft.models
     .map((model) => ({
@@ -451,7 +469,7 @@ export function ProviderManager({
                   type="button"
                   className="provider-models-fetch"
                   onClick={() => void refreshAvailableModels()}
-                  disabled={creating || available.isFetching}
+                  disabled={available.isFetching || (creating && !draftFetchReady)}
                 >
                   {available.isFetching && <LoaderCircle className="spin" size={12} />}
                   {available.isFetching ? t("settings.providerFetching") : t("settings.providerFetchModels")}
@@ -493,7 +511,7 @@ export function ProviderManager({
                           className="provider-model-panel-toggle"
                           aria-label={`${t("settings.providerModelOptions")}: ${model.id}`}
                           aria-expanded={panelOpen}
-                          disabled={creating}
+                          disabled={creating && !availableModelsReady}
                           onClick={() => togglePanel(index)}
                         >
                           <ChevronRight size={14} />

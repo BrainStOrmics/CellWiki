@@ -466,6 +466,40 @@ class ModelCatalogService:
             message = self.scrub_secrets(str(error))
             raise ModelCatalogError(message[:600]) from None
 
+    def fetch_models_draft(
+        self, *, base_url: str, protocol: str, api_key: str
+    ) -> list[str]:
+        """后端代理拉取"未保存供应商草稿"的 /models 清单。
+
+        与 ``fetch_models`` 同安全合同：key 只随本次请求发往草稿自己的
+        base_url、错误清洗；不读不写目录与密钥存储。草稿字段复用
+        ProviderConfig 的域校验（协议枚举、base_url 形状；Anthropic
+        允许空 base_url 取官方默认端点）。
+        """
+        api_key = (api_key or "").strip()
+        if not api_key:
+            raise ModelCatalogError(
+                "an API key is required before fetching the model list"
+            )
+        provider = ProviderConfig(
+            id="draft", name="Draft", base_url=base_url, protocol=protocol
+        )
+        if not provider.base_url and provider.protocol != WIRE_PROTOCOL_ANTHROPIC:
+            raise ModelCatalogError(
+                "a base URL is required before fetching the model list"
+            )
+        # 延迟导入：adapters 依赖 config 单例，避免服务模块加载顺序耦合。
+        from cellwiki.adapters.openai_model import fetch_provider_models
+
+        try:
+            return fetch_provider_models(
+                provider.base_url, api_key, protocol=provider.protocol
+            )
+        except Exception as error:
+            # scrub_secrets 只认识已存密钥；草稿 key 需额外清洗。
+            message = self.scrub_secrets(str(error)).replace(api_key, "***")
+            raise ModelCatalogError(message[:600]) from None
+
     def test_provider(
         self, provider_id: str, *, model_id: str | None = None
     ) -> dict[str, Any]:
