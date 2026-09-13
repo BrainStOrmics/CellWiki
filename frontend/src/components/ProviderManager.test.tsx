@@ -33,12 +33,14 @@ const { getJson, postJson, putJson, deleteJson } = vi.hoisted(() => ({
 
 vi.mock("../lib/product-api", () => ({ getJson, postJson, putJson, deleteJson }));
 
-function renderManager() {
+function renderManager(
+  onNotice: (notice: { kind: "ok" | "error"; text: string } | undefined) => void = vi.fn(),
+) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
       <LanguageProvider>
-        <ProviderManager onNotice={vi.fn()} />
+        <ProviderManager onNotice={onNotice} />
       </LanguageProvider>
     </QueryClientProvider>,
   );
@@ -53,15 +55,39 @@ describe("ProviderManager", () => {
     window.confirm = vi.fn(() => true);
   });
 
-  it("loads the catalog, lists providers with badges, and prefills the editor", async () => {
+  it("loads the catalog, lists providers as single-row entries, and prefills the editor", async () => {
     renderManager();
 
     await waitFor(() => expect(screen.getByText("Gateway A")).toBeVisible());
-    expect(screen.getByText("默认")).toBeVisible();
+    // 列表行只保留 名称 + 状态点，base_url 只出现在编辑器的输入框里
+    expect(screen.queryByText("https://a.example.com/v1")).not.toBeInTheDocument();
     expect(screen.getByDisplayValue("Gateway A")).toBeVisible();
     expect(screen.getByDisplayValue("https://a.example.com/v1")).toBeVisible();
     // key 只回显掩码 placeholder，不回明文
     expect(screen.getByPlaceholderText(/••••9876/)).toBeVisible();
+  });
+
+  it("marks provider health with a status dot on the right edge", async () => {
+    getJson.mockResolvedValue({
+      ...baseCatalog,
+      providers: [
+        baseCatalog.providers[0],
+        { ...baseCatalog.providers[0], id: "gw-b", name: "Gateway B", enabled: false, api_key_hint: "••••1111" },
+        { ...baseCatalog.providers[0], id: "gw-c", name: "Gateway C", api_key_configured: false, api_key_hint: null },
+      ],
+    });
+
+    const { container } = renderManager();
+    await waitFor(() => expect(screen.getByText("Gateway C")).toBeVisible());
+
+    const dots = Array.from(container.querySelectorAll(".provider-dot"));
+    expect(dots.map((dot) => dot.className)).toEqual([
+      "provider-dot ok",
+      "provider-dot off",
+      "provider-dot warn",
+    ]);
+    expect(screen.getByTitle("已停用")).toBeVisible();
+    expect(screen.getByTitle("缺 Key")).toBeVisible();
   });
 
   it("creates a provider via POST and selects the created id", async () => {
@@ -90,36 +116,86 @@ describe("ProviderManager", () => {
     fireEvent.click(screen.getByText("新建供应商"));
 
     fireEvent.change(screen.getByPlaceholderText("OpenRouter"), { target: { value: "OpenRouter" } });
-    const modelInput = screen.getByPlaceholderText(/输入模型名后回车添加/);
-    fireEvent.change(modelInput, { target: { value: "openrouter/auto" } });
-    fireEvent.keyDown(modelInput, { key: "Enter" });
+    fireEvent.click(screen.getByText("添加模型"));
+    fireEvent.click(screen.getByText("添加模型"));
+    const idInputs = screen.getAllByPlaceholderText("模型调用名");
+    expect(idInputs).toHaveLength(2);
+    fireEvent.change(idInputs[0], { target: { value: "openrouter/auto" } });
+    fireEvent.change(screen.getAllByPlaceholderText("显示名称")[0], { target: { value: "Auto Router" } });
     fireEvent.click(screen.getByRole("button", { name: /保存供应商/ }));
 
     await waitFor(() => expect(postJson).toHaveBeenCalledWith(
       "/api/model-providers",
-      expect.objectContaining({ name: "OpenRouter", api_key: null }),
+      expect.objectContaining({
+        name: "OpenRouter",
+        api_key: null,
+        // 未填调用名的空行在保存时丢弃
+        models: [{ id: "openrouter/auto", display_name: "Auto Router", enabled: true }],
+      }),
     ));
-    // 保存后仍选中新建的供应商（模型清单以 code 行呈现）
-    await waitFor(() => expect(screen.getByText("openrouter/auto")).toBeVisible());
+    // 保存后仍选中新建的供应商
+    await waitFor(() => expect(screen.getByDisplayValue("openrouter/auto")).toBeVisible());
   });
 
-  it("sets a model as default via the star action", async () => {
-    putJson.mockResolvedValue({
+  it("sets the default model from the row star, one default at a time", async () => {
+    getJson.mockResolvedValue({
       ...baseCatalog,
       default_selection: { provider_id: "gw-a", model_id: "model-a2" },
+      providers: [{
+        ...baseCatalog.providers[0],
+        models: [{ id: "model-a1", enabled: true }, { id: "model-a2", enabled: true }],
+      }],
+    });
+    putJson.mockResolvedValue({
+      ...baseCatalog,
+      default_selection: { provider_id: "gw-a", model_id: "model-a1" },
     });
 
     renderManager();
     await waitFor(() => expect(screen.getByDisplayValue("Gateway A")).toBeVisible());
 
-    fireEvent.change(screen.getByPlaceholderText(/输入模型名后回车添加/), { target: { value: "model-a2" } });
-    fireEvent.keyDown(screen.getByPlaceholderText(/输入模型名后回车添加/), { key: "Enter" });
-    fireEvent.click(screen.getByRole("button", { name: /设为默认: model-a2/ }));
+    // 每行一颗星；只有当前默认那颗是点亮态
+    expect(screen.getAllByRole("button", { name: /设为默认: / })).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "设为默认: model-a2" })).toHaveClass("active");
+    expect(screen.getByRole("button", { name: "设为默认: model-a1" })).not.toHaveClass("active");
 
+    fireEvent.click(screen.getByRole("button", { name: "设为默认: model-a1" }));
     await waitFor(() => expect(putJson).toHaveBeenCalledWith(
       "/api/model-providers/default-selection",
-      { provider_id: "gw-a", model_id: "model-a2" },
+      { provider_id: "gw-a", model_id: "model-a1" },
     ));
+  });
+
+  it("keeps the available list out of the catalog and fills a row by picking", async () => {
+    const onNotice = vi.fn();
+    postJson.mockResolvedValue({ models: ["model-a1", "model-extra"] });
+
+    renderManager(onNotice);
+    await waitFor(() => expect(screen.getByDisplayValue("Gateway A")).toBeVisible());
+
+    fireEvent.click(screen.getByRole("button", { name: "获取可用模型" }));
+    await waitFor(() => expect(onNotice).toHaveBeenCalledWith({
+      kind: "ok",
+      text: "已获取 2 个可用模型。",
+    }));
+    // 拉取只刷新可用清单，不往目录里塞行
+    expect(screen.queryByDisplayValue("model-extra")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /模型选项: model-a1/ }));
+    await waitFor(() => expect(screen.getByText("model-extra")).toBeVisible());
+    fireEvent.click(screen.getByText("model-extra"));
+
+    await waitFor(() => expect(screen.getByDisplayValue("model-extra")).toBeVisible());
+  });
+
+  it("renders no field hint lines under the editor inputs", async () => {
+    renderManager();
+    await waitFor(() => expect(screen.getByDisplayValue("Gateway A")).toBeVisible());
+
+    expect(screen.queryByText("用于界面展示，如「阿里云百炼」。")).not.toBeInTheDocument();
+    expect(screen.queryByText("留空时使用 OpenAI SDK 默认端点。")).not.toBeInTheDocument();
+    expect(screen.queryByText("模型调用名需与供应商文档完全一致。")).not.toBeInTheDocument();
+    expect(screen.queryByText("已保存的密钥不会返回到桌面界面。")).not.toBeInTheDocument();
   });
 
   it("deletes a provider after confirmation and clears the editor", async () => {

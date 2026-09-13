@@ -5,6 +5,16 @@ export function isResumableRunStatus(status: AgentRunStatus | undefined): boolea
   return status === "unfinished";
 }
 
+/**
+ * 运行正停在“等用户回答/审批”上。
+ *
+ * 它同时是两条 UI 规则的前提：这类 run 要挂问题卡、挡住新消息；而一旦运行继续
+ * （答题后的非终态 run_status），标记必须让位——等待提示不能挂到 run 结束。
+ */
+export function isWaitingRunStatus(status: AgentRunStatus | undefined): boolean {
+  return status === "waiting_confirmation" || status === "waiting_approval";
+}
+
 export const terminalAgentStatuses = new Set<AgentRunStatus>([
   "waiting_confirmation",
   "waiting_approval",

@@ -117,6 +117,36 @@ describe("提问卡在直播与回放两条路径", () => {
     expect(reduced).toHaveLength(2);
     expect(reduced[1]).toMatchObject({ runStatus: "waiting_confirmation", streaming: false });
   });
+
+  it("答题后的非终态 run_status 清掉等待标记，提示行不再挂到 run 结束", () => {
+    // 实测 2026-09-12：后端答题后先发 RUN_STATUS(running)（"Answer received.
+    // Resuming the run."），reducer 只认终态，于是"请先回答上方问题"一直显示。
+    const base: ChatMessage[] = [
+      { role: "user", text: "help" },
+      { role: "agent", text: "", runId: "run_1", runStatus: "waiting_confirmation", streaming: false },
+    ];
+
+    const reduced = reduceAgentRunMessages(
+      base,
+      event("run_status", { status: "running" }, "Answer received. Resuming the run."),
+      labels,
+    );
+
+    expect(reduced).toHaveLength(2);
+    expect(reduced[1].runStatus).toBe("running");
+  });
+
+  it("非终态 run_status 不替不存在的 run 新起气泡", () => {
+    const base: ChatMessage[] = [{ role: "user", text: "help" }];
+
+    const reduced = reduceAgentRunMessages(
+      base,
+      event("run_status", { status: "running" }),
+      labels,
+    );
+
+    expect(reduced).toEqual(base);
+  });
 });
 
 describe("未知事件类型 fail-open", () => {

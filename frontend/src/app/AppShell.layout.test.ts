@@ -158,4 +158,30 @@ describe("Agent sidebar layout", () => {
     expect(appShellSource).toContain('{agentActivity || t("chat.reasoningLive")}');
     expect(appShellSource).not.toContain('{agentActivity || t("chat.tracing")}');
   });
+
+  it("设置/搜索页返回后消息视口重新贴底，不停在第一条", () => {
+    // 实测 2026-09-13：activeView 切到设置会整块卸载工作台，滚动位置随 DOM 一起丢；
+    // 贴底 effect 只依赖 messages/agentBusy，回来时不会重跑，转录停在第一条。
+    const scrollStart = appShellSource.indexOf("// Only the message viewport moves");
+    const scrollEnd = appShellSource.indexOf("}, [messages, agentBusy, activeView]);", scrollStart);
+    expect(scrollStart).toBeGreaterThan(-1);
+    expect(scrollEnd).toBeGreaterThan(scrollStart);
+    const scrollEffect = appShellSource.slice(scrollStart, scrollEnd);
+    expect(scrollEffect).toContain("node.scrollTop = node.scrollHeight;");
+  });
+
+  it("流式期间往上翻历史不被拽回底部，回到底部才继续跟随", () => {
+    // 实测 2026-09-13：贴底 effect 每批 delta 都跑，往上翻历史立即被拽回，读不了旧会话。
+    const scrollStart = appShellSource.indexOf("// Only the message viewport moves");
+    const scrollEnd = appShellSource.indexOf("}, [messages, agentBusy, activeView]);", scrollStart);
+    const scrollEffect = appShellSource.slice(scrollStart, scrollEnd);
+    expect(scrollEffect).toContain("if (!chatPinnedToBottomRef.current) return;");
+    // 换了 DOM 节点（切视图回来）等同于重新打开会话：贴底并恢复跟随。
+    expect(scrollEffect).toContain("chatPinnedToBottomRef.current = true;");
+    // 用户滚动是唯一的"离开底部"入口；容差常量别被内联成魔法数字。
+    expect(appShellSource).toContain("onScroll={handleChatScroll}");
+    expect(appShellSource).toContain("<= CHAT_BOTTOM_THRESHOLD_PX;");
+    // 发言与答题是回到现场的显式动作：即使此前在翻历史也要恢复跟随。
+    expect(appShellSource).toContain("chatPinnedToBottomRef.current = true;");
+  });
 });

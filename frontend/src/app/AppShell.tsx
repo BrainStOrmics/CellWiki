@@ -1806,9 +1806,9 @@ export function AppShell() {
                     >
                       <CirclePlus size={14} />
                     </button>
-                    <ModelSwitcher />
                     <span>{activeAttachments.length > 0 ? t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length)) : t("chat.agentContext")}</span>
                   </div>
+                  <ModelSwitcher />
                   {composerAction.kind === "stop" && (
                     // 运行中把发送键**原位**换成停止键：同一个位置、同一个尺寸，只换
                     // 语义色与图标。中断入口必须在注意力焦点上，且要能被读屏与自动化

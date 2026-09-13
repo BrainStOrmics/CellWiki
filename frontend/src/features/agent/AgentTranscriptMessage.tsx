@@ -18,6 +18,7 @@ import { useI18n, type MessageKey } from "../../i18n";
 import { getText } from "../../lib/product-api";
 import { AgentRunDiagnostics } from "./AgentRunDiagnostics";
 import { QuestionCard } from "./QuestionCard";
+import { isWaitingRunStatus } from "./run-status";
 import type {
   AgentProcessStep,
   AgentRunStatus,
@@ -180,7 +181,7 @@ function RunActions({ actions }: { actions?: AgentRunAction[] }) {
 
 /** 只有等待用户回应的 run 才需要问题卡；历史消息不挂载，避免每个气泡都轮询 /question。 */
 function isAwaitingUserAnswer(status: AgentRunStatus | undefined): boolean {
-  return status === "waiting_confirmation" || status === "waiting_approval";
+  return isWaitingRunStatus(status);
 }
 
 function timelineNodes(message: ChatMessage): AgentTimelineNode[] {

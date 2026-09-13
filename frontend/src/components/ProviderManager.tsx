@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Box,
   CheckCircle2,
+  ChevronRight,
   Eye,
   EyeOff,
   KeyRound,
   LoaderCircle,
   Plus,
   Save,
-  Server,
+  Search,
   Star,
   TestTube2,
   Trash2,
@@ -88,18 +91,45 @@ export function ProviderManager({
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<ProviderDraft>(emptyDraft());
   const [showKey, setShowKey] = useState(false);
-  const [modelInput, setModelInput] = useState("");
+  const [openPanelIndex, setOpenPanelIndex] = useState<number | null>(null);
+  const [panelQuery, setPanelQuery] = useState("");
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
-  const [fetching, setFetching] = useState(false);
   const [testResult, setTestResult] = useState<ProviderTestResult>();
   const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
 
   const selected = useMemo(
     () => catalog?.providers.find((provider) => provider.id === selectedId),
     [catalog, selectedId],
   );
   const editorVisible = creating || selected !== undefined;
+
+  // 可用清单只读缓存：顶部按钮或 › 面板触发拉取，拉取结果不自动并入模型目录。
+  const available = useQuery({
+    queryKey: ["provider-available-models", selectedId],
+    queryFn: async () => {
+      const payload = await postJson<{ models: string[] }>(
+        `/api/model-providers/${encodeURIComponent(selectedId ?? "")}/fetch-models`,
+        {},
+      );
+      return payload.models;
+    },
+    enabled: false,
+    retry: false,
+    staleTime: Infinity,
+  });
+  const filteredAvailable = useMemo(() => {
+    const models = available.data ?? [];
+    const needle = panelQuery.trim().toLowerCase();
+    return needle ? models.filter((id) => id.toLowerCase().includes(needle)) : models;
+  }, [available.data, panelQuery]);
+
+  useEffect(() => {
+    if (openPanelIndex === null || available.data !== undefined || available.isFetching) return;
+    void available.refetch();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openPanelIndex, available.data, available.isFetching]);
 
   async function loadCatalog(selectId?: string) {
     setLoading(true);
@@ -136,23 +166,54 @@ export function ProviderManager({
     setSelectedId(asNew ? null : id);
     setCreating(asNew);
     setTestResult(undefined);
+    setOpenPanelIndex(null);
+    setPanelQuery("");
     onNotice(undefined);
     const provider = asNew ? undefined : catalog?.providers.find((item) => item.id === id);
     setDraft(provider ? draftFromProvider(provider) : emptyDraft());
   }
 
-  function addModel() {
-    const id = modelInput.trim();
-    if (!id || draft.models.some((model) => model.id === id)) {
-      setModelInput("");
-      return;
-    }
-    updateDraft({ models: [...draft.models, { id, enabled: true }] });
-    setModelInput("");
+  function updateModel(index: number, patch: Partial<ProviderDraft["models"][number]>) {
+    updateDraft({
+      models: draft.models.map((model, itemIndex) => (
+        itemIndex === index ? { ...model, ...patch } : model
+      )),
+    });
   }
 
-  function removeModel(id: string) {
-    updateDraft({ models: draft.models.filter((model) => model.id !== id) });
+  function addModelRow() {
+    updateDraft({ models: [...draft.models, { id: "", enabled: true }] });
+    setOpenPanelIndex(null);
+  }
+
+  function removeModel(index: number) {
+    updateDraft({ models: draft.models.filter((_, itemIndex) => itemIndex !== index) });
+    setOpenPanelIndex(null);
+  }
+
+  function togglePanel(index: number) {
+    setOpenPanelIndex((current) => (current === index ? null : index));
+    setPanelQuery("");
+  }
+
+  function pickAvailableModel(index: number, id: string) {
+    updateModel(index, { id });
+    setOpenPanelIndex(null);
+    setPanelQuery("");
+  }
+
+  async function refreshAvailableModels() {
+    onNotice(undefined);
+    const result = await available.refetch();
+    if (result.error) {
+      const message = result.error instanceof Error ? result.error.message : t("settings.providerFetchError");
+      onNotice({ kind: "error", text: message });
+      return;
+    }
+    onNotice({
+      kind: "ok",
+      text: t("settings.providerFetchOk").replace("{count}", String(result.data?.length ?? 0)),
+    });
   }
 
   function applyTemplate(template: (typeof TEMPLATES)[number]) {
@@ -181,7 +242,7 @@ export function ProviderManager({
       onNotice({ kind: "error", text: t("settings.providerOverridesInvalid") });
       return;
     }
-    if (!draft.name.trim() || draft.models.length === 0) return;
+    if (!draft.name.trim() || draftModels.length === 0) return;
     setSaving(true);
     onNotice(undefined);
     try {
@@ -190,7 +251,7 @@ export function ProviderManager({
         base_url: draft.base_url.trim(),
         protocol: draft.protocol,
         enabled: draft.enabled,
-        models: draft.models,
+        models: draftModels,
         request_overrides: overrides,
         api_key: draft.api_key || null,
       };
@@ -210,7 +271,11 @@ export function ProviderManager({
       const nextProvider = payload.providers.find((provider) => provider.id === nextId);
       setSelectedId(nextId);
       setCreating(false);
+      setOpenPanelIndex(null);
+      setPanelQuery("");
       setDraft(nextProvider ? draftFromProvider(nextProvider) : emptyDraft());
+      // key / base_url 可能刚改过，旧可用清单作废
+      await queryClient.invalidateQueries({ queryKey: ["provider-available-models", nextId] });
       onNotice({ kind: "ok", text: t("settings.providerSaved") });
     } catch (error) {
       onNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.saveError") });
@@ -252,31 +317,6 @@ export function ProviderManager({
     }
   }
 
-  async function fetchModels() {
-    if (!selectedId) return;
-    setFetching(true);
-    onNotice(undefined);
-    try {
-      const payload = await postJson<{ models: string[] }>(
-        `/api/model-providers/${encodeURIComponent(selectedId)}/fetch-models`,
-        {},
-      );
-      const existing = new Set(draft.models.map((model) => model.id));
-      const merged = [
-        ...draft.models,
-        ...payload.models
-          .filter((id) => !existing.has(id))
-          .map((id) => ({ id, enabled: true })),
-      ];
-      updateDraft({ models: merged });
-      onNotice({ kind: "ok", text: t("settings.providerFetchOk").replace("{count}", String(payload.models.length)) });
-    } catch (error) {
-      onNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.providerFetchError") });
-    } finally {
-      setFetching(false);
-    }
-  }
-
   async function setDefault(providerId: string, modelId: string) {
     onNotice(undefined);
     try {
@@ -291,33 +331,45 @@ export function ProviderManager({
   }
 
   const defaultSelection = catalog?.default_selection ?? null;
+  // 空行（新建后未填调用名）在保存时丢弃
+  const draftModels = draft.models
+    .map((model) => ({
+      id: model.id.trim(),
+      display_name: model.display_name?.trim() || null,
+      enabled: model.enabled,
+    }))
+    .filter((model) => model.id);
 
   return (
     <div className="provider-manager">
       <div className="provider-list" role="list">
-        {catalog?.providers.map((provider) => (
-          <button
-            key={provider.id}
-            type="button"
-            role="listitem"
-            className={!creating && provider.id === selectedId ? "provider-item active" : "provider-item"}
-            onClick={() => selectProvider(provider.id)}
-          >
-            <span className="provider-item-name">{provider.name}</span>
-            <small>{provider.base_url || "OpenAI"}</small>
-            <span className="provider-item-badges">
-              {defaultSelection?.provider_id === provider.id && <i className="provider-badge default">{t("settings.providerDefaultBadge")}</i>}
-              {!provider.enabled && <i className="provider-badge">{t("settings.providerDisabledBadge")}</i>}
-              {!provider.api_key_configured && <i className="provider-badge warn">{t("settings.providerNoKeyBadge")}</i>}
-            </span>
-          </button>
-        ))}
+        {catalog?.providers.map((provider) => {
+          const health = !provider.enabled ? "off" : provider.api_key_configured ? "ok" : "warn";
+          const healthTitle = health === "off"
+            ? t("settings.providerDisabledBadge")
+            : health === "warn"
+              ? t("settings.providerNoKeyBadge")
+              : undefined;
+          return (
+            <button
+              key={provider.id}
+              type="button"
+              role="listitem"
+              className={!creating && provider.id === selectedId ? "provider-item active" : "provider-item"}
+              onClick={() => selectProvider(provider.id)}
+            >
+              <Box size={12} className="provider-item-icon" />
+              <span className="provider-item-name">{provider.name}</span>
+              <span className={`provider-dot ${health}`} title={healthTitle} />
+            </button>
+          );
+        })}
         <button
           type="button"
           className={creating ? "provider-item add active" : "provider-item add"}
           onClick={() => selectProvider(null, true)}
         >
-          <Plus size={14} />
+          <Plus size={12} />
           <span>{t("settings.providerAdd")}</span>
         </button>
       </div>
@@ -344,18 +396,15 @@ export function ProviderManager({
             )}
             <label className="settings-field"><span>{t("settings.providerName")}</span>
               <input value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} placeholder="OpenRouter" />
-              <small>{t("settings.providerNameHint")}</small>
             </label>
             <label className="settings-field"><span>{t("settings.baseUrl")}</span>
               <input value={draft.base_url} onChange={(event) => updateDraft({ base_url: event.target.value })} placeholder="https://api.openai.com/v1" />
-              <small>{t("settings.baseUrlHint")}</small>
             </label>
             <label className="settings-field"><span>{t("settings.protocol")}</span>
               <select value={draft.protocol} onChange={(event) => updateDraft({ protocol: event.target.value as ProviderDraft["protocol"] })}>
                 <option value="chat_completions">{t("settings.protocolChatCompletions")}</option>
                 <option value="responses">{t("settings.protocolResponses")}</option>
               </select>
-              <small>{t("settings.protocolHint")}</small>
             </label>
             <label className="settings-field"><span>{t("settings.apiKey")}</span>
               <div className="secret-input">
@@ -370,7 +419,6 @@ export function ProviderManager({
                   {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
               </div>
-              <small>{t("settings.apiKeyHint")}</small>
             </label>
             {selected?.api_key_configured && (
               <label className="clear-secret">
@@ -384,55 +432,108 @@ export function ProviderManager({
             </label>
 
             <div className="settings-field provider-models-field">
-              <span>{t("settings.providerModels")}</span>
-              <div className="provider-model-list">
-                {draft.models.map((model) => {
+              <div className="provider-models-header">
+                <span>{t("settings.providerModels")}</span>
+                <button
+                  type="button"
+                  className="provider-models-fetch"
+                  onClick={() => void refreshAvailableModels()}
+                  disabled={creating || available.isFetching}
+                >
+                  {available.isFetching && <LoaderCircle className="spin" size={12} />}
+                  {available.isFetching ? t("settings.providerFetching") : t("settings.providerFetchModels")}
+                </button>
+              </div>
+              <div className="provider-models-list">
+                {draft.models.map((model, index) => {
                   const isDefault = !creating
                     && defaultSelection?.provider_id === selectedId
                     && defaultSelection.model_id === model.id;
+                  const panelOpen = openPanelIndex === index;
                   return (
-                    <span key={model.id} className="provider-model-row">
-                      <button
-                        type="button"
-                        className={isDefault ? "provider-model-default active" : "provider-model-default"}
-                        title={t("settings.providerSetDefault")}
-                        aria-label={`${t("settings.providerSetDefault")}: ${model.id}`}
-                        disabled={creating}
-                        onClick={() => selectedId && void setDefault(selectedId, model.id)}
-                      >
-                        <Star size={12} />
-                      </button>
-                      <code>{model.id}</code>
-                      <button type="button" className="provider-model-remove" onClick={() => removeModel(model.id)} aria-label={`${t("settings.providerDelete")}: ${model.id}`}>
-                        <XCircle size={12} />
-                      </button>
-                    </span>
+                    <div key={index} className="provider-model-row">
+                      <div className="provider-model-line">
+                        <input
+                          className="provider-model-id-input"
+                          value={model.id}
+                          onChange={(event) => updateModel(index, { id: event.target.value })}
+                          placeholder={t("settings.providerModelPlaceholder")}
+                        />
+                        <input
+                          className="provider-model-display-input"
+                          value={model.display_name ?? ""}
+                          onChange={(event) => updateModel(index, { display_name: event.target.value })}
+                          placeholder={t("settings.providerModelDisplayName")}
+                        />
+                        <button
+                          type="button"
+                          className={isDefault ? "provider-model-default active" : "provider-model-default"}
+                          title={isDefault ? t("chat.modelDefault") : t("settings.providerSetDefault")}
+                          aria-label={`${t("settings.providerSetDefault")}: ${model.id}`}
+                          disabled={creating || !model.id.trim()}
+                          onClick={() => selectedId && void setDefault(selectedId, model.id)}
+                        >
+                          <Star size={13} fill={isDefault ? "currentColor" : "none"} />
+                        </button>
+                        <button
+                          type="button"
+                          className="provider-model-panel-toggle"
+                          aria-label={`${t("settings.providerModelOptions")}: ${model.id}`}
+                          aria-expanded={panelOpen}
+                          disabled={creating}
+                          onClick={() => togglePanel(index)}
+                        >
+                          <ChevronRight size={14} />
+                        </button>
+                        <button
+                          type="button"
+                          className="provider-model-remove"
+                          onClick={() => removeModel(index)}
+                          aria-label={`${t("settings.providerDelete")}: ${model.id}`}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                      {panelOpen && (
+                        <div className="provider-model-panel">
+                          <label className="provider-model-search">
+                            <Search size={12} />
+                            <input
+                              value={panelQuery}
+                              onChange={(event) => setPanelQuery(event.target.value)}
+                              placeholder={t("settings.providerModelSearch")}
+                            />
+                          </label>
+                          {available.isError ? (
+                            <div className="command-state error">{(available.error as Error).message}</div>
+                          ) : available.data === undefined ? (
+                            <div className="command-state">{t("settings.providerFetching")}</div>
+                          ) : filteredAvailable.length === 0 ? (
+                            <div className="command-state">{t("settings.providerAvailableEmpty")}</div>
+                          ) : (
+                            <div className="provider-model-available">
+                              {filteredAvailable.map((id) => (
+                                <button
+                                  key={id}
+                                  type="button"
+                                  className={id === model.id ? "active" : ""}
+                                  onClick={() => pickAvailableModel(index, id)}
+                                >
+                                  {id}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   );
                 })}
               </div>
-              <div className="provider-model-add">
-                <input
-                  value={modelInput}
-                  onChange={(event) => setModelInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      addModel();
-                    }
-                  }}
-                  placeholder={t("settings.providerModelPlaceholder")}
-                />
-                <button
-                  type="button"
-                  onClick={() => void fetchModels()}
-                  disabled={creating || fetching}
-                  title={t("settings.providerFetchModels")}
-                >
-                  {fetching ? <LoaderCircle className="spin" size={13} /> : <Server size={13} />}
-                  {fetching ? t("settings.providerFetching") : t("settings.providerFetchModels")}
-                </button>
-              </div>
-              <small>{t("settings.providerModelsHint")}</small>
+              <button type="button" className="provider-model-add-row" onClick={addModelRow}>
+                <Plus size={12} />
+                <span>{t("settings.providerAddModel")}</span>
+              </button>
             </div>
 
             <label className="settings-field"><span>{t("settings.providerRequestOverrides")}</span>
@@ -442,11 +543,10 @@ export function ProviderManager({
                 onChange={(event) => updateDraft({ overrides_text: event.target.value })}
                 placeholder='{"thinking_budget": 1000}'
               />
-              <small>{t("settings.providerRequestOverridesHint")}</small>
             </label>
 
             <div className="provider-actions">
-              <button className="provider-save" type="button" onClick={() => void saveProvider()} disabled={saving || !draft.name.trim() || draft.models.length === 0}>
+              <button className="provider-save" type="button" onClick={() => void saveProvider()} disabled={saving || !draft.name.trim() || draftModels.length === 0}>
                 {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}
                 {t("settings.providerSave")}
               </button>

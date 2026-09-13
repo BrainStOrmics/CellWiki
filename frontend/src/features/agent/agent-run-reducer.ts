@@ -14,7 +14,7 @@ import type {
 } from "../../types";
 // 单一终态来源：reducer 之前自带一份 terminalStatuses，缺 unfinished，与 AppShell
 // 的判定各自漂移——同一 run 在两个地方被判成不同生命周期。统一用 run-status 的集合。
-import { terminalAgentStatuses } from "./run-status";
+import { isWaitingRunStatus, terminalAgentStatuses } from "./run-status";
 
 export type AgentRunReducerLabels = {
   failed: string;
@@ -204,7 +204,16 @@ export function reduceAgentRunMessages(
 
   if (event.type === "run_status") {
     const status = event.data.status as AgentRunStatus | undefined;
-    if (!status || !terminalAgentStatuses.has(status)) return next;
+    if (!status) return next;
+    if (!terminalAgentStatuses.has(status)) {
+      // 答题后的续跑先发一条非终态 run_status（"Answer received. Resuming the run."）：
+      // 等待标记必须就此让位，否则"请先回答上方问题"会一直挂到 run 结束（实测
+      // 2026-09-12，提问卡已回答但提示行不消失）。等待态自身的 run_status 走
+      // settleRun，与回放顺序无关；不存在的 run 不因这条事件新起气泡。
+      return updateRunMessage(next, event.run_id, (message) => (
+        isWaitingRunStatus(message.runStatus) ? { ...message, runStatus: status } : message
+      ), null);
+    }
     return settleRun(next, event.run_id, status, {
       failed: localizedError(event, labels)
         ?? String(event.data.error_message || event.message || labels.failed),
