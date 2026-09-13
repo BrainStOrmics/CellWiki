@@ -27,6 +27,7 @@ cache/
 # Generated output
 output/
 evals/agent/runs/
+evals/agent_v2/runs/
 
 # Derived data
 extractions/
@@ -40,6 +41,10 @@ wiki/
 # content must be versioned even though both patterns match at any depth.
 !evals/agent/workspace/wiki/
 !evals/agent/workspace/raw/
+# Same for the v2 fixtures under evals/agent_v2/ (suite fixtures carry real
+# workspace trees); their runs/ directory stays ignored via the rule above.
+!evals/agent_v2/**/workspace/wiki/
+!evals/agent_v2/**/workspace/raw/
 
 # Runtime data (can be regenerated)
 data/extraction/

@@ -1,0 +1,13 @@
+{
+  "schema_version": 2,
+  "suite_id": "cellwiki-agent-v2-diagnostic",
+  "suite_version": 1,
+  "layer": "diagnostic",
+  "includes": ["gate.json"],
+  "question_policy": {
+    "mode": "answer",
+    "answers": ["请按原任务继续完成，无需再确认。"],
+    "max_answers_per_run": 2
+  },
+  "scenarios": []
+}

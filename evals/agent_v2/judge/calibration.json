@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "description": "LLM 裁判人工校准样例（v1：接口校准样例，语义校准待人工标注扩批）",
+  "calibration_status": "advisory_only",
+  "samples": [
+    {
+      "sample_id": "build_ok_grounded",
+      "expectation": {
+        "score_min": 4.0,
+        "uncertain": false,
+        "note": "回答覆盖改动面并引用真实路径"
+      }
+    },
+    {
+      "sample_id": "build_failed_deterministic",
+      "expectation": {
+        "score_max": 3.0,
+        "uncertain": false,
+        "note": "确定性失败不得给高分，裁判不得翻绿"
+      }
+    },
+    {
+      "sample_id": "answer_cites_out_of_scope",
+      "expectation": {
+        "uncertain": true,
+        "note": "证据路径超出输入 bundle 时必须标 uncertain"
+      }
+    }
+  ]
+}

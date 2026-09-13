@@ -22,6 +22,8 @@ jobs:
           src/cellwiki/evaluation src/cellwiki/services
           scripts/evaluate_ingest_model.py
           scripts/evaluate_agent_runs.py scripts/run_agent_eval.py
+          scripts/evaluate_agent_eval_v2.py scripts/run_agent_eval_v2.py
+          scripts/run_bfcl_calibration.py
           scripts/smoke_agent_runtime.py
           scripts/build_sidecar.py scripts/sync_version.py
           scripts/generate_release_manifest.py
@@ -33,6 +35,10 @@ jobs:
           --ignore-missing-imports
       - run: uv run pytest -q
       - run: uv run python scripts/evaluate_agent_runs.py
+      - name: Agent eval v2 offline self-check (no network, no model)
+        run: >-
+          uv run python scripts/evaluate_agent_eval_v2.py
+          --suite gate --oracle --mutations
   frontend:
     runs-on: ubuntu-latest
     steps:
