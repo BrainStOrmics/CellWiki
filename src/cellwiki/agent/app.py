@@ -24,6 +24,7 @@ from deepagents.backends import StateBackend
 from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_openai import ChatOpenAI
 
 from cellwiki.adapters.openai_model import (
     build_model_from_spec,
@@ -32,8 +33,8 @@ from cellwiki.adapters.openai_model import (
 from cellwiki.adapters.openai_reasoning_bridge import attach_reasoning_stream_bridge
 from cellwiki.config import Settings, settings
 from cellwiki.domain.model_provider import (
-    OPENAI_PROTOCOL_RESPONSES,
-    normalize_openai_protocol,
+    WIRE_PROTOCOL_RESPONSES,
+    normalize_wire_protocol,
 )
 from cellwiki.domain.model_providers import ResolvedModelSpec
 from cellwiki.domain.contracts import WikiAgentContext
@@ -164,7 +165,13 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
 
 @lru_cache(maxsize=None)
 def _register_cellwiki_harness_profile(model_name: str) -> None:
-    """Keep the Deep Agents harness limited to CellWiki-owned capabilities."""
+    """Keep the Deep Agents harness limited to CellWiki-owned capabilities.
+
+    Deep Agents 按模型的 ``ls_provider``（ChatOpenAI 为 ``openai``、
+    ChatAnthropic 为 ``anthropic``）匹配已注册的 profile；两种 provider
+    都要注册，否则原生 Anthropic 模型会落到空 profile，通用工具与
+    TodoListMiddleware 就会进入协调器请求。
+    """
 
     profile = HarnessProfile(
         base_system_prompt=HARNESS_PROMPT,
@@ -185,28 +192,32 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
         ),
         excluded_middleware=frozenset({cast(Any, TodoListMiddleware)}),
     )
-    register_harness_profile("openai", profile)
-    register_harness_profile(f"openai:{model_name}", profile)
+    for provider in ("openai", "anthropic"):
+        register_harness_profile(provider, profile)
+        register_harness_profile(f"{provider}:{model_name}", profile)
 
 
 # ---------------------------------------------------------------------------
 # 构建 LLM 模型实例
-# 使用 ChatOpenAI 以兼容 OpenAI 及第三方提供商（Ollama、vLLM 等）。
-# temperature=0 保证确定性。Responses 协议下默认开启逐 token 流式
-# （AGENT_STREAMING=0 一键回退）：coordinator 请求永远携带工具，此前
-# disable_streaming="tool_calling" 会在 HTTP 层直接退化为阻塞式单响应，
-# 正文与思考整块到达（design/active/2026-08-27-agent-token-streaming.md）。
+# OpenAI 形状用 ChatOpenAI（兼容 Ollama、vLLM 等），原生 Anthropic 协议
+# 用 ChatAnthropic（adapters/anthropic_model.py）。temperature=0 保证确定性。
+# Responses 协议下默认开启逐 token 流式（AGENT_STREAMING=0 一键回退）：
+# coordinator 请求永远携带工具，此前 disable_streaming="tool_calling" 会在
+# HTTP 层直接退化为阻塞式单响应，正文与思考整块到达
+# （design/active/2026-08-27-agent-token-streaming.md）。
 # 流式同时挂上 reasoning bridge，把该网关非标准的
 # response.reasoning_text.delta 事件翻译成 langchain 可识别的标准摘要事件。
 # Chat Completions 协议保持阻塞现状：langchain-core 不提取流式
 # reasoning_content，放开即思考回退，需 provider 子类另行提案。
+# Anthropic 协议 v1 同样保持阻塞（原因同 Chat Completions：thinking 块的
+# 流式映射未验证、默认关闭；见 design/active/2026-09-13-anthropic-protocol-adapter.md）。
 # ---------------------------------------------------------------------------
 def build_model(configuration: Settings = settings) -> BaseChatModel:
     _register_cellwiki_harness_profile(configuration.openai_model)
     streaming = bool(
         configuration.agent_streaming
-        and normalize_openai_protocol(configuration.openai_api_protocol)
-        == OPENAI_PROTOCOL_RESPONSES
+        and normalize_wire_protocol(configuration.openai_api_protocol)
+        == WIRE_PROTOCOL_RESPONSES
     )
     model = build_openai_chat_model(
         configuration,
@@ -215,7 +226,8 @@ def build_model(configuration: Settings = settings) -> BaseChatModel:
         stream_usage=True if streaming else None,
     )
     if streaming:
-        attach_reasoning_stream_bridge(model)
+        # streaming 仅在 responses 协议成立，该分支的工厂返回必为 ChatOpenAI。
+        attach_reasoning_stream_bridge(cast(ChatOpenAI, model))
     return model
 
 
@@ -228,7 +240,7 @@ def build_coordinator_model(spec: ResolvedModelSpec) -> BaseChatModel:
     _register_cellwiki_harness_profile(spec.model_id)
     streaming = bool(
         settings.agent_streaming
-        and normalize_openai_protocol(spec.protocol) == OPENAI_PROTOCOL_RESPONSES
+        and normalize_wire_protocol(spec.protocol) == WIRE_PROTOCOL_RESPONSES
     )
     model = build_model_from_spec(
         spec,
@@ -237,7 +249,8 @@ def build_coordinator_model(spec: ResolvedModelSpec) -> BaseChatModel:
         stream_usage=True if streaming else None,
     )
     if streaming:
-        attach_reasoning_stream_bridge(model)
+        # streaming 仅在 responses 协议成立，该分支的工厂返回必为 ChatOpenAI。
+        attach_reasoning_stream_bridge(cast(ChatOpenAI, model))
     return model
 
 

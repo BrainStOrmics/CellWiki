@@ -156,6 +156,47 @@ def test_fetch_models_requires_key(client: TestClient) -> None:
     assert "no API key" in response.json()["detail"]
 
 
+def test_provider_accepts_anthropic_protocol_and_fetch_passes_it(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    created = client.post(
+        "/api/model-providers",
+        json={
+            "provider_id": "claude",
+            "name": "Claude",
+            "base_url": "",
+            "protocol": "anthropic",
+            "models": [{"id": "claude-sonnet-4-5-20250929"}],
+            "api_key": "sk-ant-live-4321",
+        },
+    )
+    assert created.status_code == 201, created.text
+    provider = next(p for p in created.json()["providers"] if p["id"] == "claude")
+    assert provider["protocol"] == "anthropic"
+    assert provider["api_key_hint"] == "••••4321"
+    assert "sk-ant-live-4321" not in created.text
+
+    seen: dict[str, object] = {}
+
+    def fake_fetch(base_url: str, api_key: str, **kwargs: object) -> list[str]:
+        seen.update({"base_url": base_url, "api_key": api_key}, **kwargs)
+        return ["claude-sonnet-4-5-20250929"]
+
+    import cellwiki.adapters.openai_model as adapter_module
+
+    monkeypatch.setattr(adapter_module, "fetch_provider_models", fake_fetch)
+    response = client.post("/api/model-providers/claude/fetch-models")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"models": ["claude-sonnet-4-5-20250929"]}
+    # anthropic 允许空 base_url（官方默认端点）；协议透传给适配层。
+    assert seen == {
+        "base_url": "",
+        "api_key": "sk-ant-live-4321",
+        "protocol": "anthropic",
+    }
+    assert "sk-ant-live-4321" not in response.text
+
+
 def test_provider_test_uses_stored_key(client: TestClient) -> None:
     _create_provider(client)
     response = client.post("/api/model-providers/gw-a/test")

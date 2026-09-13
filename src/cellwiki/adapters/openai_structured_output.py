@@ -36,6 +36,10 @@ from openai import (
 
 from cellwiki.adapters.openai_model import build_openai_chat_model
 from cellwiki.config import Settings, settings
+from cellwiki.domain.model_provider import (
+    WIRE_PROTOCOL_ANTHROPIC,
+    normalize_wire_protocol,
+)
 from cellwiki.models import (
     ExtractionResult,
     PaperReference,
@@ -489,6 +493,19 @@ def extract_cell_types_from_paper(
     Includes retry logic and error handling.
     """
     active_policy = policy or ExtractionPolicy.from_settings(configuration)
+    # v1 限定：抽取路径依赖 response_format 与 ChatOpenAI 的 root_client，
+    # 不支持原生 Anthropic 协议（design/active/2026-09-13-anthropic-protocol-adapter.md）。
+    # 在构建前显式拒绝，而不是让底层以 AssertionError 崩溃。
+    if (
+        normalize_wire_protocol(configuration.openai_api_protocol)
+        == WIRE_PROTOCOL_ANTHROPIC
+    ):
+        raise StructuredExtractionError(
+            "structured extraction currently requires an OpenAI-compatible "
+            "protocol (chat_completions or responses); the anthropic protocol "
+            "is supported for coordinator runs only",
+            kind="invalid_request",
+        )
     model = build_openai_chat_model(
         configuration,
         timeout_seconds=active_policy.request_timeout_seconds,

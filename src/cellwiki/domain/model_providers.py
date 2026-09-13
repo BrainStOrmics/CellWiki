@@ -1,5 +1,5 @@
 # =============================================================================
-# 供应商目录合约 —— 多供应商 OpenAI 兼容配置与 run 级模型选择
+# 供应商目录合约 —— 多供应商模型配置与 run 级模型选择
 # =============================================================================
 # 设置页可配置 n 个供应商（每个含 base_url / 协议 / n 个模型），运行时按
 # run 解析“当前模型”。密钥永不落在本文件描述的目录文档里：打包环境逐
@@ -22,8 +22,8 @@ from pydantic import Field, field_validator, model_validator
 
 from cellwiki.domain.contracts import ContractModel
 from cellwiki.domain.model_provider import (
-    OPENAI_PROTOCOL_CHAT_COMPLETIONS,
-    normalize_openai_protocol,
+    WIRE_PROTOCOL_CHAT_COMPLETIONS,
+    normalize_wire_protocol,
 )
 
 # 供应商 id：小写 slug（凭据库条目名 + API 路径段），不允许路径分隔符。
@@ -66,12 +66,12 @@ class ProviderModel(ContractModel):
 
 
 class ProviderConfig(ContractModel):
-    """一个 OpenAI 兼容供应商及其模型清单（不含密钥）。"""
+    """一个模型供应商及其模型清单（不含密钥）。"""
 
     id: str
     name: str
     base_url: str = ""               # 空 = 使用 SDK 默认端点
-    protocol: str = OPENAI_PROTOCOL_CHAT_COMPLETIONS
+    protocol: str = WIRE_PROTOCOL_CHAT_COMPLETIONS
     enabled: bool = True
     models: list[ProviderModel] = Field(default_factory=list)
     request_overrides: dict[str, Any] = Field(default_factory=dict)
@@ -112,7 +112,7 @@ class ProviderConfig(ContractModel):
     @field_validator("protocol")
     @classmethod
     def validate_protocol(cls, value: str) -> str:
-        return normalize_openai_protocol(value)
+        return normalize_wire_protocol(value)
 
     @field_validator("source")
     @classmethod

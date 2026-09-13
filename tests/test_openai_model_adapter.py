@@ -5,8 +5,8 @@ import httpx
 from langchain_core.messages import HumanMessage
 
 from cellwiki.adapters.openai_model import (
-    OPENAI_PROTOCOL_CHAT_COMPLETIONS,
-    OPENAI_PROTOCOL_RESPONSES,
+    WIRE_PROTOCOL_CHAT_COMPLETIONS,
+    WIRE_PROTOCOL_RESPONSES,
     build_model_from_spec,
     build_openai_chat_model,
     fetch_provider_models,
@@ -35,7 +35,7 @@ def test_default_timeout_covers_verified_long_structured_requests() -> None:
 
 
 def test_model_instances_do_not_share_default_http_client() -> None:
-    configuration = _settings(OPENAI_PROTOCOL_CHAT_COMPLETIONS)
+    configuration = _settings(WIRE_PROTOCOL_CHAT_COMPLETIONS)
     first = build_openai_chat_model(configuration)
     second = build_openai_chat_model(configuration)
 
@@ -49,7 +49,7 @@ def test_model_instances_do_not_share_default_http_client() -> None:
 
 
 def test_chat_completions_protocol_keeps_chat_payload_shape() -> None:
-    model = build_openai_chat_model(_settings(OPENAI_PROTOCOL_CHAT_COMPLETIONS))
+    model = build_openai_chat_model(_settings(WIRE_PROTOCOL_CHAT_COMPLETIONS))
 
     payload = model._get_request_payload(
         [HumanMessage(content="Return JSON")],
@@ -65,7 +65,7 @@ def test_chat_completions_protocol_keeps_chat_payload_shape() -> None:
 
 
 def test_responses_protocol_uses_langchain_payload_translation() -> None:
-    model = build_openai_chat_model(_settings(OPENAI_PROTOCOL_RESPONSES))
+    model = build_openai_chat_model(_settings(WIRE_PROTOCOL_RESPONSES))
 
     payload = model._get_request_payload(
         [HumanMessage(content="Return JSON")],
@@ -83,7 +83,7 @@ def test_responses_protocol_uses_langchain_payload_translation() -> None:
 
 
 def test_responses_protocol_flattens_chat_completion_tool_schema() -> None:
-    model = build_openai_chat_model(_settings(OPENAI_PROTOCOL_RESPONSES))
+    model = build_openai_chat_model(_settings(WIRE_PROTOCOL_RESPONSES))
     chat_tool = {
         "type": "function",
         "function": {
@@ -151,7 +151,7 @@ def test_provider_specific_options_are_owned_by_the_shared_adapter() -> None:
 # ---------------------------------------------------------------------------
 # 供应商目录 spec 构建与 /models 拉取
 # ---------------------------------------------------------------------------
-def _spec(protocol: str = OPENAI_PROTOCOL_CHAT_COMPLETIONS, **overrides) -> ResolvedModelSpec:
+def _spec(protocol: str = WIRE_PROTOCOL_CHAT_COMPLETIONS, **overrides) -> ResolvedModelSpec:
     values = {
         "provider_id": "gw",
         "model_id": "provider-model",
@@ -167,7 +167,7 @@ def _spec(protocol: str = OPENAI_PROTOCOL_CHAT_COMPLETIONS, **overrides) -> Reso
 def test_spec_build_honors_explicit_protocol_and_overrides() -> None:
     model = build_model_from_spec(
         _spec(
-            OPENAI_PROTOCOL_RESPONSES,
+            WIRE_PROTOCOL_RESPONSES,
             request_overrides={"thinking_budget": 512},
         ),
         purpose="structured_extraction",

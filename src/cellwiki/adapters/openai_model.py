@@ -1,28 +1,35 @@
-"""Shared LangChain model construction for OpenAI-shaped provider protocols."""
+"""Shared LangChain model construction for provider wire protocols."""
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
 import httpx
+from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
+from cellwiki.adapters.anthropic_model import (
+    build_anthropic_model_from_spec,
+    fetch_anthropic_models,
+)
 from cellwiki.config import Settings
 from cellwiki.domain.model_provider import (
-    OPENAI_PROTOCOL_CHAT_COMPLETIONS,
-    OPENAI_PROTOCOL_RESPONSES,
-    normalize_openai_protocol,
+    WIRE_PROTOCOL_ANTHROPIC,
+    WIRE_PROTOCOL_CHAT_COMPLETIONS,
+    WIRE_PROTOCOL_RESPONSES,
+    normalize_wire_protocol,
 )
 from cellwiki.domain.model_providers import ResolvedModelSpec
 
 __all__ = [
-    "OPENAI_PROTOCOL_CHAT_COMPLETIONS",
-    "OPENAI_PROTOCOL_RESPONSES",
+    "WIRE_PROTOCOL_ANTHROPIC",
+    "WIRE_PROTOCOL_CHAT_COMPLETIONS",
+    "WIRE_PROTOCOL_RESPONSES",
     "build_model_from_spec",
     "build_openai_chat_model",
     "fetch_provider_models",
-    "normalize_openai_protocol",
+    "normalize_wire_protocol",
     "provider_request_options",
 ]
 
@@ -40,7 +47,11 @@ def provider_request_options(
         "structured_extraction",
     ] = "agent",
 ) -> dict | None:
-    """Return provider extensions only for the request purpose that needs them."""
+    """Return OpenAI-shape provider extensions for the request purpose that needs them.
+
+    仅服务于 OpenAI 形状的两种协议；原生 Anthropic（Messages API）不走嗅探，
+    只认供应商自己的 ``request_overrides``。
+    """
 
     structured_purpose = purpose in {"structured", "structured_extraction"}
     low_reasoning_purpose = purpose in {"router", "page_query"}
@@ -80,9 +91,11 @@ def build_model_from_spec(
         "page_query",
         "structured_extraction",
     ] = "agent",
-) -> ChatOpenAI:
+) -> BaseChatModel:
     """Build one chat model from a fully resolved provider-catalog selection.
 
+    按协议分发：``anthropic`` 走原生 Messages API 工厂
+    （``adapters/anthropic_model.py``），其余走 ChatOpenAI。OpenAI 形状下
     内置的 URL/模型名嗅探特化保留为兜底；供应商的 ``request_overrides``
     总是最后合并、覆盖嗅探结果——用户显式配置拥有最高优先级。
     """
@@ -90,7 +103,16 @@ def build_model_from_spec(
     if not spec.api_key:
         raise RuntimeError(f"provider {spec.provider_id} has no API key configured")
 
-    protocol = normalize_openai_protocol(spec.protocol)
+    protocol = normalize_wire_protocol(spec.protocol)
+    if protocol == WIRE_PROTOCOL_ANTHROPIC:
+        return build_anthropic_model_from_spec(
+            spec,
+            timeout_seconds=timeout_seconds,
+            max_retries=max_retries,
+            disable_streaming=disable_streaming,
+            stream_usage=stream_usage,
+        )
+
     extra_body: dict[str, Any] = dict(
         provider_request_options(spec.base_url, spec.model_id, purpose=purpose) or {}
     )
@@ -112,9 +134,9 @@ def build_model_from_spec(
         extra_body=extra_body or None,
         # Explicit booleans prevent model-name heuristics from silently switching
         # a third-party compatible endpoint to the Responses API.
-        use_responses_api=protocol == OPENAI_PROTOCOL_RESPONSES,
+        use_responses_api=protocol == WIRE_PROTOCOL_RESPONSES,
         output_version=(
-            "responses/v1" if protocol == OPENAI_PROTOCOL_RESPONSES else None
+            "responses/v1" if protocol == WIRE_PROTOCOL_RESPONSES else None
         ),
     )
 
@@ -134,12 +156,13 @@ def build_openai_chat_model(
         "page_query",
         "structured_extraction",
     ] = "agent",
-) -> ChatOpenAI:
+) -> BaseChatModel:
     """Build one LangChain chat model from the legacy single-provider settings.
 
     LangChain owns the message, tool-call, token-limit, and structured-output
-    translation between Chat Completions and Responses API. CellWiki only makes
-    the protocol choice explicit and supplies provider-specific request options.
+    translation between Chat Completions, Responses API, and the native
+    Anthropic Messages API. CellWiki only makes the protocol choice explicit
+    and supplies provider-specific request options.
     """
 
     if not configuration.openai_api_key:
@@ -167,13 +190,20 @@ def fetch_provider_models(
     base_url: str,
     api_key: str,
     *,
+    protocol: str = WIRE_PROTOCOL_CHAT_COMPLETIONS,
     timeout_seconds: float = 15.0,
 ) -> list[str]:
-    """Fetch the model list from an OpenAI-compatible gateway's `/models`.
+    """Fetch the model list from a provider endpoint, branching on the wire protocol.
 
     仅供后端代理调用：key 只随本请求发往该供应商自身的 base_url。
+    Anthropic 的 base_url 遵循 SDK 语义（API 根，官方端点可留空），端点
+    路径为 ``/v1/models``。
     """
 
+    if normalize_wire_protocol(protocol) == WIRE_PROTOCOL_ANTHROPIC:
+        return fetch_anthropic_models(
+            base_url, api_key, timeout_seconds=timeout_seconds
+        )
     if not base_url:
         raise RuntimeError("a base URL is required to fetch models")
     if not api_key:

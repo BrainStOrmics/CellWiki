@@ -221,4 +221,36 @@ describe("ProviderManager", () => {
     expect(putJson).not.toHaveBeenCalled();
     expect(postJson).not.toHaveBeenCalled();
   });
+
+  it("offers the anthropic protocol option and template, switching the protocol on pick", async () => {
+    postJson.mockResolvedValue({ ...baseCatalog, created_id: "anthropic" });
+    renderManager();
+    await waitFor(() => expect(screen.getByText("新建供应商")).toBeVisible());
+    fireEvent.click(screen.getByText("新建供应商"));
+
+    // 协议下拉含原生 Anthropic 选项
+    expect(screen.getByRole("option", { name: "Anthropic Messages API" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Anthropic 官方"));
+    expect(screen.getByDisplayValue("Anthropic 官方")).toBeVisible();
+    expect(screen.getByDisplayValue("https://api.anthropic.com")).toBeVisible();
+    // 模板选中即把协议切到 anthropic（base_url 是官方端点）
+    expect(screen.getByRole("combobox")).toHaveValue("anthropic");
+
+    fireEvent.click(screen.getByText("添加模型"));
+    fireEvent.change(screen.getAllByPlaceholderText("模型调用名")[0], {
+      target: { value: "claude-sonnet-4-5-20250929" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /保存供应商/ }));
+
+    await waitFor(() => expect(postJson).toHaveBeenCalledWith(
+      "/api/model-providers",
+      expect.objectContaining({
+        name: "Anthropic 官方",
+        base_url: "https://api.anthropic.com",
+        protocol: "anthropic",
+        models: [{ id: "claude-sonnet-4-5-20250929", display_name: null, enabled: true }],
+      }),
+    ));
+  });
 });

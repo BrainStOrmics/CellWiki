@@ -5,7 +5,7 @@ Agentic CellWiki 是一个本地优先的 Windows 桌面科学 Wiki：**你选�
 阅读与编辑，系统负责派生文件与阻断式门禁，**每次正式变更由人工逐条判定 diff**。
 
 > [!WARNING]
-> 当前版本是未签名 Windows Beta 候选版。论文 chunk、Wiki 上下文和对话会发送给用户配置的 OpenAI-compatible 模型供应商；处理敏感或未发表资料前，请先阅读 [安全说明](SECURITY.md)。
+> 当前版本是未签名 Windows Beta 候选版。论文 chunk、Wiki 上下文和对话会发送给用户配置的模型供应商（OpenAI 兼容协议或原生 Anthropic）；处理敏感或未发表资料前，请先阅读 [安全说明](SECURITY.md)。
 
 ## 核心工作流
 

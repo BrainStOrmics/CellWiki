@@ -8,13 +8,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from time import perf_counter
 from typing import Any
 
 from cellwiki.domain.model_provider import (
-    OPENAI_PROTOCOL_CHAT_COMPLETIONS,
-    normalize_openai_protocol,
+    WIRE_PROTOCOL_ANTHROPIC,
+    WIRE_PROTOCOL_CHAT_COMPLETIONS,
+    normalize_wire_protocol,
 )
 from cellwiki.services.credentials import CredentialStore
 
@@ -24,7 +26,7 @@ _DEFAULTS = {
     "OPENAI_API_KEY": "",
     "OPENAI_BASE_URL": "",
     "OPENAI_MODEL": "qwen3.6-plus",
-    "OPENAI_API_PROTOCOL": OPENAI_PROTOCOL_CHAT_COMPLETIONS,
+    "OPENAI_API_PROTOCOL": WIRE_PROTOCOL_CHAT_COMPLETIONS,
     "LOG_LEVEL": "INFO",
     "APP_LANGUAGE": "zh-CN",
     "ENABLE_AGENT_MEMORY": "false",
@@ -130,7 +132,7 @@ class EnvironmentSettingsService:
             "OPENAI_API_PROTOCOL": (
                 current["OPENAI_API_PROTOCOL"]
                 if openai_api_protocol is None
-                else normalize_openai_protocol(openai_api_protocol)
+                else normalize_wire_protocol(openai_api_protocol)
             ),
             "LOG_LEVEL": log_level.strip().upper(),
             "APP_LANGUAGE": app_language.strip(),
@@ -229,38 +231,64 @@ class EnvironmentSettingsService:
             raise ValueError("an API key is required before testing the provider")
         if not model_name:
             raise ValueError("model name is required")
-        protocol = normalize_openai_protocol(
+        protocol = normalize_wire_protocol(
             openai_api_protocol or current["OPENAI_API_PROTOCOL"]
         )
 
         started = perf_counter()
         model = None
         try:
-            # Import after the sidecar has installed the project-scoped environment;
-            # importing Settings at Module load would resurrect stale launcher values.
-            from cellwiki.adapters.openai_model import build_openai_chat_model
-            from cellwiki.config import Settings
+            if protocol == WIRE_PROTOCOL_ANTHROPIC:
+                # Anthropic Messages API 没有 response_format：用"只回 JSON"
+                # 指令探测，对返回文本做宽松解析（围栏/前后文包裹可接受）。
+                from cellwiki.adapters.openai_model import build_model_from_spec
+                from cellwiki.domain.model_providers import ResolvedModelSpec
 
-            configuration = Settings(  # type: ignore[call-arg]  # pydantic-settings 的 _env_file 参数 mypy 无法识别
-                _env_file=None,
-                openai_api_key=api_key,
-                openai_base_url=base_url,
-                openai_model=model_name,
-                openai_api_protocol=protocol,
-                openai_request_timeout_seconds=20,
-            )
-            model = build_openai_chat_model(
-                configuration,
-                timeout_seconds=20,
-                max_retries=0,
-                purpose="structured",
-            )
-            response = model.invoke(
-                "Return only this JSON object: {\"status\":\"CELLWIKI_OK\"}",
-                response_format={"type": "json_object"},
-                max_completion_tokens=80,
-            )
-            parsed = json.loads(response.text)
+                spec = ResolvedModelSpec(
+                    provider_id="",
+                    model_id=model_name,
+                    base_url=base_url,
+                    protocol=protocol,
+                    api_key=api_key,
+                    request_overrides={},
+                )
+                model = build_model_from_spec(
+                    spec,
+                    timeout_seconds=20,
+                    max_retries=0,
+                    purpose="structured",
+                )
+                response = model.invoke(
+                    "Return only this JSON object: {\"status\":\"CELLWIKI_OK\"}",
+                    max_tokens=80,
+                )
+                parsed = _extract_json_object(response.text)
+            else:
+                # Import after the sidecar has installed the project-scoped environment;
+                # importing Settings at Module load would resurrect stale launcher values.
+                from cellwiki.adapters.openai_model import build_openai_chat_model
+                from cellwiki.config import Settings
+
+                configuration = Settings(  # type: ignore[call-arg]  # pydantic-settings 的 _env_file 参数 mypy 无法识别
+                    _env_file=None,
+                    openai_api_key=api_key,
+                    openai_base_url=base_url,
+                    openai_model=model_name,
+                    openai_api_protocol=protocol,
+                    openai_request_timeout_seconds=20,
+                )
+                model = build_openai_chat_model(
+                    configuration,
+                    timeout_seconds=20,
+                    max_retries=0,
+                    purpose="structured",
+                )
+                response = model.invoke(
+                    "Return only this JSON object: {\"status\":\"CELLWIKI_OK\"}",
+                    response_format={"type": "json_object"},
+                    max_completion_tokens=80,
+                )
+                parsed = json.loads(response.text)
             if parsed != {"status": "CELLWIKI_OK"}:
                 raise RuntimeError("provider did not satisfy the CellWiki JSON contract")
         except Exception as error:
@@ -270,8 +298,10 @@ class EnvironmentSettingsService:
         finally:
             # The settings page may run this probe repeatedly; each temporary
             # LangChain client owns an HTTP pool that must be released promptly.
-            if model is not None:
-                model.root_client.close()
+            # 两种协议都提供 root_client 句柄（见 adapters/anthropic_model.py）。
+            client = getattr(model, "root_client", None)
+            if client is not None:
+                client.close()
         return {
             "ok": True,
             "message": "Provider connection succeeded.",
@@ -380,3 +410,26 @@ class EnvironmentSettingsService:
             return int(value)
         except ValueError:
             return default
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    """Loose JSON-object extraction for probes on providers without a JSON mode.
+
+    与 openai_structured_output 的解析同款思路：容忍 markdown 围栏与前后文
+    包裹；返回非对象（数组/标量）视为失败。
+    """
+
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```(?:json)?\n?", "", stripped)
+        stripped = re.sub(r"\n?```$", "", stripped).strip()
+    try:
+        value = json.loads(stripped)
+    except json.JSONDecodeError:
+        match = re.search(r"\{.*\}", stripped, re.DOTALL)
+        if match is None:
+            raise
+        value = json.loads(match.group())
+    if not isinstance(value, dict):
+        raise ValueError("provider response is not a JSON object")
+    return value

@@ -327,6 +327,7 @@ const zh = {
   "settings.protocol": "API 协议",
   "settings.protocolChatCompletions": "Chat Completions（兼容模式）",
   "settings.protocolResponses": "Responses API",
+  "settings.protocolAnthropic": "Anthropic Messages API",
   "settings.modelField": "模型",
   "settings.apiKey": "API Key",
   "settings.apiKeyKeep": "已配置，留空表示保留",
@@ -413,6 +414,7 @@ const zh = {
   "settings.templateDeepSeek": "DeepSeek",
   "settings.templateSiliconFlow": "硅基流动",
   "settings.templateOllama": "Ollama 本地",
+  "settings.templateAnthropic": "Anthropic 官方",
   "settings.providerRestartNotRequired": "免重启生效",
 } as const;
 
@@ -742,6 +744,7 @@ const en: Record<MessageKey, string> = {
   "settings.protocol": "API protocol",
   "settings.protocolChatCompletions": "Chat Completions (compatible)",
   "settings.protocolResponses": "Responses API",
+  "settings.protocolAnthropic": "Anthropic Messages API",
   "settings.modelField": "Model",
   "settings.apiKey": "API key",
   "settings.apiKeyKeep": "Configured — leave blank to keep",
@@ -828,6 +831,7 @@ const en: Record<MessageKey, string> = {
   "settings.templateDeepSeek": "DeepSeek",
   "settings.templateSiliconFlow": "SiliconFlow",
   "settings.templateOllama": "Ollama (local)",
+  "settings.templateAnthropic": "Anthropic",
   "settings.providerRestartNotRequired": "no restart needed",
 };
 

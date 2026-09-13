@@ -22,6 +22,7 @@ import type {
   ModelProviderCatalog,
   ModelProviderInfo,
   ProviderTestResult,
+  WireProtocol,
 } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -33,7 +34,7 @@ import type {
 type ProviderDraft = {
   name: string;
   base_url: string;
-  protocol: "chat_completions" | "responses";
+  protocol: WireProtocol;
   enabled: boolean;
   models: { id: string; display_name?: string | null; enabled: boolean }[];
   api_key: string;
@@ -41,14 +42,21 @@ type ProviderDraft = {
   overrides_text: string;
 };
 
-type TemplateKey = "bailian" | "openrouter" | "deepseek" | "siliconflow" | "ollama";
+type TemplateKey = "bailian" | "openrouter" | "deepseek" | "siliconflow" | "ollama" | "anthropic";
 
-const TEMPLATES: { key: TemplateKey; nameKey: MessageKey; baseUrl: string }[] = [
+const TEMPLATES: {
+  key: TemplateKey;
+  nameKey: MessageKey;
+  baseUrl: string;
+  // 仅原生协议模板带 protocol：OpenAI 兼容模板沿用当前下拉值（既有行为）。
+  protocol?: WireProtocol;
+}[] = [
   { key: "bailian", nameKey: "settings.templateBailian", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
   { key: "openrouter", nameKey: "settings.templateOpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
   { key: "deepseek", nameKey: "settings.templateDeepSeek", baseUrl: "https://api.deepseek.com/v1" },
   { key: "siliconflow", nameKey: "settings.templateSiliconFlow", baseUrl: "https://api.siliconflow.cn/v1" },
   { key: "ollama", nameKey: "settings.templateOllama", baseUrl: "http://127.0.0.1:11434/v1" },
+  { key: "anthropic", nameKey: "settings.templateAnthropic", baseUrl: "https://api.anthropic.com", protocol: "anthropic" },
 ];
 
 function draftFromProvider(provider: ModelProviderInfo): ProviderDraft {
@@ -218,7 +226,11 @@ export function ProviderManager({
 
   function applyTemplate(template: (typeof TEMPLATES)[number]) {
     if (!creating) return; // 快速填充只用于新建
-    updateDraft({ name: t(template.nameKey), base_url: template.baseUrl });
+    updateDraft({
+      name: t(template.nameKey),
+      base_url: template.baseUrl,
+      ...(template.protocol ? { protocol: template.protocol } : {}),
+    });
   }
 
   function parseOverrides(): Record<string, unknown> | null {
@@ -404,6 +416,7 @@ export function ProviderManager({
               <select value={draft.protocol} onChange={(event) => updateDraft({ protocol: event.target.value as ProviderDraft["protocol"] })}>
                 <option value="chat_completions">{t("settings.protocolChatCompletions")}</option>
                 <option value="responses">{t("settings.protocolResponses")}</option>
+                <option value="anthropic">{t("settings.protocolAnthropic")}</option>
               </select>
             </label>
             <label className="settings-field"><span>{t("settings.apiKey")}</span>

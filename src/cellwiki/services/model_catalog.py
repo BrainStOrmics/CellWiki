@@ -31,6 +31,7 @@ from cellwiki.domain.model_providers import (
     ProviderModel,
     ResolvedModelSpec,
 )
+from cellwiki.domain.model_provider import WIRE_PROTOCOL_ANTHROPIC
 from cellwiki.services.credentials import CredentialStore
 from cellwiki.services.environment import EnvironmentSettingsService
 
@@ -438,11 +439,15 @@ class ModelCatalogService:
             return scrubbed
 
     def fetch_models(self, provider_id: str) -> list[str]:
-        """后端代理拉取供应商 /models 清单；key 只发往该供应商自己的 base_url。"""
+        """后端代理拉取供应商 /models 清单；key 只发往该供应商自己的 base_url。
+
+        Anthropic 供应商允许空 base_url——SDK 语义为官方默认端点
+        （``https://api.anthropic.com``），拉取路径为 ``/v1/models``。
+        """
         with self._lock:
             provider = self._require_provider(self._load_locked(), provider_id)
             api_key = self._read_secret(provider_id) or ""
-        if not provider.base_url:
+        if not provider.base_url and provider.protocol != WIRE_PROTOCOL_ANTHROPIC:
             raise ModelCatalogError(
                 "a base URL is required before fetching the model list"
             )
@@ -454,7 +459,9 @@ class ModelCatalogService:
         from cellwiki.adapters.openai_model import fetch_provider_models
 
         try:
-            return fetch_provider_models(provider.base_url, api_key)
+            return fetch_provider_models(
+                provider.base_url, api_key, protocol=provider.protocol
+            )
         except Exception as error:
             message = self.scrub_secrets(str(error))
             raise ModelCatalogError(message[:600]) from None

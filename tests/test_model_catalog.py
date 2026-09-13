@@ -309,3 +309,45 @@ def test_deleted_legacy_provider_stays_deleted(
         credential_factory=lambda entry: FakeSecretEntry(secrets, entry),
     )
     assert fresh.public_view()["providers"] == []
+
+
+# ---------------------------------------------------------------------------
+# /models 拉取：协议透传与 anthropic 空 base_url
+# ---------------------------------------------------------------------------
+def test_fetch_models_passes_protocol_and_allows_anthropic_default_base_url(
+    service: ModelCatalogService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service.create_provider(
+        provider_id="claude",
+        name="Claude",
+        base_url="",
+        protocol="anthropic",
+        models=[ProviderModel(id="claude-sonnet-4-5-20250929")],
+        api_key="sk-ant-secret",
+    )
+    seen: dict[str, Any] = {}
+
+    def fake_fetch(base_url: str, api_key: str, *, protocol: str) -> list[str]:
+        seen.update(base_url=base_url, api_key=api_key, protocol=protocol)
+        return ["claude-a"]
+
+    import cellwiki.adapters.openai_model as adapter_module
+
+    monkeypatch.setattr(adapter_module, "fetch_provider_models", fake_fetch)
+    assert service.fetch_models("claude") == ["claude-a"]
+    assert seen == {"base_url": "", "api_key": "sk-ant-secret", "protocol": "anthropic"}
+
+
+def test_fetch_models_still_requires_base_url_for_openai_protocols(
+    service: ModelCatalogService,
+) -> None:
+    service.create_provider(
+        provider_id="gw-empty",
+        name="GW",
+        base_url="",
+        protocol="chat_completions",
+        models=[ProviderModel(id="model-a1")],
+        api_key="sk-secret",
+    )
+    with pytest.raises(ModelCatalogError, match="base URL"):
+        service.fetch_models("gw-empty")

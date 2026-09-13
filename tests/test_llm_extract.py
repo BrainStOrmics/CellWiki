@@ -496,3 +496,20 @@ class TestMockLLMExtraction:
 
         assert result.paper.title == "Fixture"
         assert extract.call_count == 3
+
+
+class TestAnthropicProtocolScope:
+    def test_extract_rejects_anthropic_protocol_with_readable_error(self):
+        """v1 限定：抽取只支持 OpenAI 兼容协议；anthropic 在构建前显式拒绝。"""
+        configuration = Settings(
+            _env_file=None,
+            openai_api_key="test-key",
+            openai_model="claude-sonnet-4-5-20250929",
+            openai_api_protocol="anthropic",
+        )
+        with pytest.raises(StructuredExtractionError, match="OpenAI-compatible"):
+            extract_cell_types_from_paper(
+                text="This is a paper about CD4+ T cells and their markers.",
+                pdf_path=Path("/tmp/test_paper.pdf"),
+                configuration=configuration,
+            )

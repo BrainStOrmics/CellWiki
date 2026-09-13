@@ -324,7 +324,7 @@ export type AgentThreadEntry = {
 export type AppSettings = {
   openai_base_url: string;
   openai_model: string;
-  openai_api_protocol: "chat_completions" | "responses";
+  openai_api_protocol: WireProtocol;
   openai_api_key_configured: boolean;
   openai_api_key_hint?: string | null;
   secret_storage?: "system" | "env";
@@ -340,7 +340,7 @@ export type ProviderTestResult = {
   ok: boolean;
   message: string;
   model?: string;
-  protocol?: "chat_completions" | "responses";
+  protocol?: WireProtocol;
   structured_output?: boolean;
   latency_ms?: number;
 };
@@ -349,7 +349,7 @@ export type ProviderTestResult = {
 // 供应商目录 —— 设置页管理与 composer 模型切换共用（key 永不下发，只有配置
 // 标志与掩码 hint）
 // ---------------------------------------------------------------------------
-export type OpenAiProtocol = "chat_completions" | "responses";
+export type WireProtocol = "chat_completions" | "responses" | "anthropic";
 
 export type ModelSelection = {
   provider_id: string;
@@ -366,7 +366,7 @@ export type ModelProviderInfo = {
   id: string;
   name: string;
   base_url: string;
-  protocol: OpenAiProtocol;
+  protocol: WireProtocol;
   enabled: boolean;
   models: ProviderModelInfo[];
   request_overrides: Record<string, unknown>;
