@@ -31,6 +31,7 @@ const EVENT_TYPE_CONTRACT: Record<AgentEventType, true> = {
   review_required: true,
   changeset_ready: true,
   verification: true,
+  claim_verification: true,
   usage_updated: true,
   error: true,
 };
@@ -59,6 +60,31 @@ describe("SSE 订阅表与事件合同", () => {
 
   it("登记了 task_confirmation_required：提问卡不再只靠随后的 run_status", () => {
     expect(agentEventTypes).toContain("task_confirmation_required");
+  });
+
+  it("登记了 claim_verification：仓库断言警告在直播路径可见（P0-2 回归）", () => {
+    expect(agentEventTypes).toContain("claim_verification");
+  });
+
+  it("claim_verification 渲染为 danger 色 status 节点，label 取事件摘要", () => {
+    const base: ChatMessage[] = [
+      { role: "user", text: "提交一下" },
+      { role: "agent", text: "partial", runId: "run_1" },
+    ];
+
+    const reduced = reduceAgentRunMessages(
+      base,
+      event("claim_verification", { mismatches: ["声称的提交 c5b3890 不在 git 历史中"] }, "回答包含未经证实的仓库断言：声称的提交 c5b3890 不在 git 历史中"),
+      labels,
+    );
+
+    expect(reduced).toHaveLength(2);
+    const timeline = reduced[1].timeline ?? [];
+    const node = timeline.find((candidate) => candidate.kind === "status");
+    expect(node).toMatchObject({ kind: "status", tone: "danger" });
+    if (node?.kind === "status") {
+      expect(node.label).toContain("未经证实");
+    }
   });
 });
 

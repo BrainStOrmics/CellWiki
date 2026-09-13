@@ -21,6 +21,7 @@ import difflib
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -78,6 +79,7 @@ from cellwiki.services.runtime_store import (
     InvalidRunTransitionError,
     RuntimeStore,
     SerialGateViolationError,
+    TerminalRunError,
 )
 from cellwiki.services.workspace_maintenance import (
     MAINTENANCE_COMMIT_PREFIX,
@@ -139,6 +141,58 @@ class AgentRetryLimitExceeded(AgentRuntimeError):
 
 class _RunTimeoutError(AgentRuntimeError):
     """Raised internally when a run exceeds its wall-clock budget."""
+
+
+class RunVersioningError(AgentRuntimeError):
+    """不变式 1 收口失败：run 存在未提交改动但系统无法代为版本化。
+
+    收尾点捕获后把 run 落 ``unfinished``，禁止"脏改动 + SUCCEEDED"状态存在。
+    """
+
+
+# 系统维护文件不参与自动收口：它们由 workspace_maintenance 在判定事件维护，
+# 出现在脏区只可能是外部改动，不能被卷进 Agent run 的审批单元。
+_SYSTEM_MAINTAINED_FILES = frozenset(
+    {"overview.md", "statistics.md", "log.md", "audit_report.md"}
+)
+
+
+def _porcelain_dirty_paths(porcelain: str) -> list[str]:
+    """Parse ``git status --porcelain`` v1 output into workspace-relative paths.
+
+    每行 ``XY<space>path``，任何非空状态字母都算改动；rename 行的
+    ``old -> new`` 两侧都要 add（旧路径的删除与新路径的内容）。
+    """
+    dirty: list[str] = []
+    for line in porcelain.splitlines():
+        if len(line) < 4:
+            continue
+        if line[0] == " " and line[1] == " ":
+            continue
+        path = line[3:]
+        if path.startswith('"') and path.endswith('"'):
+            path = path[1:-1]
+        if " -> " in path:
+            dirty.extend(part for part in path.split(" -> ") if part)
+        else:
+            dirty.append(path)
+    return dirty
+
+
+# ---- 未证实仓库断言检测（claim verification）----
+# 设计原则：零误报优先。只校验三类确定性断言（提交 SHA 存在、"已提交"、"工作区
+# 干净"），模式不匹配一律不发事件；校验时点是**回答产生时**——收尾的自动收口
+# 发生在其后，不能让系统的兜底提交反过来"证实"模型在说这话时的假话。
+_COMMIT_SHA_RE = re.compile(r"(?<![0-9a-fA-F])([0-9a-fA-F]{7,40})(?![0-9a-fA-F])")
+_COMMIT_CONTEXT_RE = re.compile(r"(commit|提交)", re.IGNORECASE)
+_COMMITTED_CLAIM_RE = re.compile(
+    r"(已提交|已经提交|has\s+been\s+committed|committed\s+(?:the|this|it|to))",
+    re.IGNORECASE,
+)
+_CLEAN_CLAIM_RE = re.compile(
+    r"(工作区(?:现已|已|现在)?干净|clean(?:\s+working)?\s+tree|working\s+(?:directory|tree)\s+is\s+clean)",
+    re.IGNORECASE,
+)
 
 
 # 兼容别名：API 仍在使用旧名（严格串行门禁语义）
@@ -1045,6 +1099,9 @@ class AgentRuntimeManager:
         # 归成 SYSTEM，读起来像我们的 bug，而它其实是超时或用户取消。
         self._forced_closes: dict[str, str] = {}
         self._running_run_id: str | None = None
+        # 已做过仓库断言校验的 run：同一 run 续跑段可能重放同一条最终答案，
+        # 警告事件只发一次。
+        self._claim_verified_runs: set[str] = set()
         self._watchdog = _StreamWatchdog(self._on_stream_watchdog_expire)
         self._watchdog.start()
         self._git: GitExecutor | None = None
@@ -1427,8 +1484,9 @@ class AgentRuntimeManager:
             self._forced_closes.pop(run_id, None)
         try:
             self._maybe_publish_pending_diff(run_id)
-        except (GitCommandError, OSError):
-            # 发布是幂等收尾；git 异常不得掩盖这一段真正的运行结果。
+        except (GitCommandError, OSError, RunVersioningError):
+            # 发布是幂等收尾；git 异常不得掩盖这一段真正的运行结果。收口失败在
+            # SUCCEEDED 落点前已被拦截，这里的兜底只保证不掩盖真实运行结果。
             pass
 
     def _on_stream_watchdog_expire(self, run_id: str, escalated: bool) -> None:
@@ -1646,7 +1704,8 @@ class AgentRuntimeManager:
                 # answer_question() 以 Command(resume=answers) 续跑。
                 try:
                     self._maybe_publish_pending_diff(run_id)
-                except (GitCommandError, OSError):
+                except (GitCommandError, OSError, RunVersioningError):
+                    # 挂起段发布尽力而为；答题后的最终收尾会再次强制收口。
                     pass
                 return
             self._finalize_stream_outcome(
@@ -1658,7 +1717,7 @@ class AgentRuntimeManager:
             # 尽早发布 pending diff（幂等：git 异常不影响运行结果）
             try:
                 published = self._maybe_publish_pending_diff(run_id)
-            except (GitCommandError, OSError):
+            except (GitCommandError, OSError, RunVersioningError):
                 published = False
             if published:
                 # 内容型 run：强制 lint 快照写入 audit_report.md（仅记录，不改门禁语义）
@@ -1734,6 +1793,12 @@ class AgentRuntimeManager:
             self._finalize_user_stop(run_id)
             return
         if answer.strip():
+            try:
+                self._ensure_run_versioned(run_id)
+            except RunVersioningError as error:
+                # 不变式 1 收口失败：宁可 unfinished 也不让脏改动以 SUCCEEDED 收场。
+                self._finalize_unfinished(run_id, AgentErrorType.SYSTEM, str(error))
+                return
             self.store.finalize_run(
                 run_id,
                 AgentRunOutcome(
@@ -1746,6 +1811,11 @@ class AgentRuntimeManager:
             # 续跑一个其实已经跑完的图：图直接结束，一个信号都不产出。那不是系统故障，
             # 是"没有可继续的内容"（实测：答案落盘后点继续，得到 failed/system 与
             # 一条用户看不懂的"运行出错"）。
+            try:
+                self._ensure_run_versioned(run_id)
+            except RunVersioningError as error:
+                self._finalize_unfinished(run_id, AgentErrorType.SYSTEM, str(error))
+                return
             self.store.finalize_run(
                 run_id,
                 AgentRunOutcome(
@@ -1754,6 +1824,11 @@ class AgentRuntimeManager:
                 ),
             )
             return
+        try:
+            self._ensure_run_versioned(run_id)
+        except RunVersioningError:
+            # 失败 run 的收口尽力而为：改动已被 error 语义覆盖，不再翻转状态。
+            pass
         self.store.finalize_run(
             run_id,
             AgentRunOutcome(
@@ -1904,6 +1979,9 @@ class AgentRuntimeManager:
                         last_model_call_id = signal.model_call_id
                     if signal.type == AgentEventType.FINAL_RESPONSE and signal.message.strip() and final_answer is None:
                         final_answer = signal.message
+                        # 脚本/协议路径的最终答案以 FINAL_RESPONSE 信号抵达：
+                        # 在这条事件落库**之前**校验，警告行才会出现在回答上方。
+                        self._emit_claim_verification(run_id, final_answer)
                     if signal.type == AgentEventType.TASK_CONFIRMATION_REQUIRED:
                         self._persist_question(run_id, thread_id, signal)
                         question_key: tuple[str, AgentEventType] = (segment, signal.type)
@@ -2003,6 +2081,9 @@ class AgentRuntimeManager:
         assistant_text = "".join(assistant_text_parts).strip()
         if final_answer is None and assistant_text and not question_pending:
             final_answer = assistant_text
+            # 仓库断言校验必须在 final_response 之前发射，时间线上警告行才会
+            # 出现在回答正文上方；此时点早于收尾自动收口，是断言为真的时点。
+            self._emit_claim_verification(run_id, final_answer)
             self.store.append_event(
                 run_id,
                 AgentEventType.FINAL_RESPONSE,
@@ -2284,13 +2365,14 @@ class AgentRuntimeManager:
                 # 又停在新的问题上：保持 WAITING_CONFIRMATION，等下一次作答。
                 try:
                     self._maybe_publish_pending_diff(run_id)
-                except (GitCommandError, OSError):
+                except (GitCommandError, OSError, RunVersioningError):
+                    # 挂起段发布尽力而为；答题后的最终收尾会再次强制收口。
                     pass
                 return
             self._finalize_stream_outcome(run_id, thread_id, outcome)
             try:
                 published = self._maybe_publish_pending_diff(run_id)
-            except (GitCommandError, OSError):
+            except (GitCommandError, OSError, RunVersioningError):
                 published = False
             if published:
                 # 与首段同一条门禁：续跑段发布的单元同样要留强制 lint 快照。
@@ -2539,6 +2621,126 @@ class AgentRuntimeManager:
                 shas.update(str(item) for item in recorded)
         return frozenset(shas)
 
+    def _workspace_dirty_paths(self, git: GitExecutor) -> list[str]:
+        """Worktree/index paths that differ from HEAD (porcelain v1, any status)."""
+        return _porcelain_dirty_paths(git.run("status", "--porcelain"))
+
+    def _ensure_run_versioned(self, run_id: str) -> None:
+        """不变式 1 收口：run 不得带着未提交的工作区改动离开审批视野。
+
+        发现代码可版本化的脏路径（排除系统维护文件）时，系统以确定性 message
+        代为 add + commit——审批人审的闸门不变，只是版本化不再依赖模型自觉。
+        无法收口（如 ``.git/index.lock``）时抛 :class:`RunVersioningError`。
+        """
+        git = self._git_executor()
+        if git is None:
+            return
+        try:
+            dirty = self._workspace_dirty_paths(git)
+        except GitCommandError:
+            return  # 连 status 都读不到（非 git 工作区等），无从收口
+        versionable = [
+            path
+            for path in dict.fromkeys(dirty)
+            if path not in _SYSTEM_MAINTAINED_FILES
+        ]
+        if not versionable:
+            return
+        try:
+            git.run("add", *versionable)
+            git.run(
+                "commit",
+                "-m",
+                f"wip(agent): auto-version uncommitted changes from run {run_id}",
+            )
+        except GitCommandError as error:
+            raise RunVersioningError(
+                f"run {run_id} finished with uncommitted changes that could not "
+                f"be auto-committed: {error}"
+            ) from error
+        # publish 兜底路径调用时 run 可能已终态；进度事件只是尽力而为的可观测性。
+        try:
+            self.store.append_event(
+                run_id,
+                AgentEventType.PROGRESS,
+                message=(
+                    f"系统已自动提交 {len(versionable)} 个未提交文件以进入待确认 "
+                    "diff 审批（不变式 1 收口）"
+                ),
+                data={"auto_versioned_paths": versionable},
+            )
+        except TerminalRunError:
+            pass
+
+    def _repository_claim_mismatches(self, run: AgentRun, answer: str) -> list[str]:
+        """Cross-check repository-state claims in the answer against actual git.
+
+        只校验三类确定性断言，零误报优先：行内出现提交上下文的 hex 串必须在
+        git 历史中存在；"已提交"断言要求本 run（截至回答时）有新 commit；
+        "工作区干净"断言要求 porcelain 为空。任何 git 读失败都按"无法证伪"
+        处理（返回空），不做 LLM 参与的语义判断。
+        """
+        mismatches: list[str] = []
+        git = self._git_executor()
+        if git is None:
+            return mismatches
+        try:
+            history: list[str] | None = None
+            for line in answer.splitlines():
+                if _COMMIT_CONTEXT_RE.search(line):
+                    for token in _COMMIT_SHA_RE.findall(line):
+                        if history is None:
+                            history = git.commits_since(None)
+                        lowered = token.lower()
+                        if any(sha.startswith(lowered) for sha in history):
+                            continue
+                        mismatches.append(
+                            f"声称的提交 {token} 不在 git 历史中"
+                        )
+                if _COMMITTED_CLAIM_RE.search(line):
+                    new_commits = [
+                        sha
+                        for sha in git.commits_since(run.snapshot_commit)
+                        if not self._is_system_maintenance_commit(git, sha)
+                    ]
+                    if not new_commits:
+                        mismatches.append(
+                            "回答声称已提交，但本次 run 截至回答时没有任何新 commit"
+                        )
+                if _CLEAN_CLAIM_RE.search(line):
+                    if self._workspace_dirty_paths(git):
+                        mismatches.append(
+                            "回答声称工作区干净，但工作区存在未提交改动"
+                        )
+        except GitCommandError:
+            return []
+        return mismatches
+
+    def _emit_claim_verification(self, run_id: str, answer: str) -> None:
+        """Emit a claim_verification event when the answer misstates git state.
+
+        在 final_response 之前发射，时间线上警告行出现在回答正文上方；运行时
+        随后的自动收口不回溯"证实"模型说这话时的假话。
+        """
+        run = self.store.get_run(run_id)
+        if run is None:
+            return
+        if run_id in self._claim_verified_runs:
+            return
+        self._claim_verified_runs.add(run_id)
+        mismatches = self._repository_claim_mismatches(run, answer)
+        if not mismatches:
+            return
+        try:
+            self.store.append_event(
+                run_id,
+                AgentEventType.CLAIM_VERIFICATION,
+                message=f"回答包含未经证实的仓库断言：{'；'.join(mismatches)}",
+                data={"mismatches": mismatches},
+            )
+        except TerminalRunError:
+            pass
+
     def _maybe_publish_pending_diff(self, run_id: str) -> bool:
         """Collect the run's newest commits into the current pending unit.
 
@@ -2559,7 +2761,13 @@ class AgentRuntimeManager:
         except GitCommandError:
             return False
         if not commits:
-            return False
+            # 不变式 1 收口：模型写了文件却没 commit 时，系统代为版本化，让人审
+            # 闸门看得到这些改动。收口失败抛 RunVersioningError，由调用点决定
+            # 翻转 unfinished（SUCCEEDED 落点前）或降级为尽力而为（兜底/挂起）。
+            self._ensure_run_versioned(run_id)
+            commits = git.commits_since(baseline)
+            if not commits:
+                return False
         # 系统维护 commit（chore(system): maintenance ...）不属于任何 Agent
         # run：commit 列表与审查补丁都要排除，避免接受/拒绝时误伤审计记录。
         reverted = self._resolved_revert_commits(run.run_id)

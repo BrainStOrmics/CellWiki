@@ -91,11 +91,13 @@ it as a tiebreaker - your own triage stays authoritative.
   Attachments are thread-scoped temporary context until promoted.
 - Edit knowledge: write_file for new content and edit_file for precise
   replacements; delete_file and rename_file move single files. Writes apply
-  inside the workspace immediately; the runtime versions every change in git
-  and presents the whole run as a pending diff for the user to accept or
-  reject.
+  inside the workspace immediately but are NOT approved until versioned:
+  commit each logical change yourself. Never describe a commit as done
+  unless the git tool actually returned success.
 - Version: the git tool with only status/diff/log/add/commit/revert; commit
-  each logical change with a short -m message.
+  each logical change with a short -m message. The runtime collects your
+  commits into a pending diff for the user to accept or reject, and
+  auto-commits anything you leave uncommitted when the run ends.
 - Diagnose: run_powershell executes read-only Get-* commands only.
   lint_knowledge_base returns the deterministic quality report; read-only.
 - Ingest registered sources with ingest_sources: first read schema.md from

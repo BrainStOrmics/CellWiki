@@ -28,6 +28,7 @@ from cellwiki.agent.app import build_wiki_agent
 from cellwiki.api.app import CHECKPOINT_MISSING_CODE, create_app
 from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
+from cellwiki.domain.pending_diff import PendingDiffStatus
 from cellwiki.domain.questions import PendingQuestion
 from cellwiki.domain.runs import (
     AgentErrorType,
@@ -244,7 +245,19 @@ def _turn(manager: AgentRuntimeManager, thread_id: str, message: str) -> AgentRu
         message=message,
         context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
     )
-    return _wait_for_status(manager, run.run_id, TERMINAL | {AgentRunStatus.UNFINISHED})
+    run = _wait_for_status(manager, run.run_id, TERMINAL | {AgentRunStatus.UNFINISHED})
+    # 2026-09-13 收口语义（ADR-0007 决策 14）：run 产出的提交（含系统对种子/
+    # 脚手架脏区的自动收口）会发布审批单元，未判定单元会挡住下一个 run。
+    # 发布发生在终态之后的执行器线程里，等它落地再判定，让位于下个 run。
+    diffs = manager.store.list_pending_diffs(run_id=run.run_id)
+    deadline = time.monotonic() + 10.0
+    while not diffs and time.monotonic() < deadline:
+        time.sleep(0.05)
+        diffs = manager.store.list_pending_diffs(run_id=run.run_id)
+    for diff in diffs:
+        if diff.status == PendingDiffStatus.PENDING:
+            manager.accept_pending_diff(diff.diff_id)
+    return run
 
 
 def _text(message: Any) -> str:

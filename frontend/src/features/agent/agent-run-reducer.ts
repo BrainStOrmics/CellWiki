@@ -38,6 +38,7 @@ const processEventTypes = new Set([
   "review_required",
   "changeset_ready",
   "verification",
+  "claim_verification",
   "error",
 ]);
 
@@ -48,6 +49,8 @@ const statusTones: Record<string, AgentTimelineStatusTone> = {
   review_required: "warning",
   changeset_ready: "success",
   verification: "info",
+  // 回答里的仓库断言与 git 实况不符：与 error 同级的红色，信任问题不缩水。
+  claim_verification: "danger",
 };
 
 /**

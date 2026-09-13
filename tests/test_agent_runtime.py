@@ -1743,3 +1743,232 @@ def test_real_graph_streams_multiple_message_deltas(tmp_path: Path):
         assert "".join(event.message for event in deltas) == "第一句第二句第三句"
     finally:
         runtime.close()
+
+
+# ---- 不变式 1 收口（run 收尾强制版本化）与仓库断言校验 ----
+
+
+def _wait_for_event(manager: AgentRuntimeManager, run_id: str, event_type: AgentEventType):
+    events = manager.store.list_events(run_id)
+    for _ in range(int(WAIT_TIMEOUT / 0.02)):
+        matched = [event for event in events if event.type == event_type]
+        if matched:
+            return matched
+        time.sleep(0.02)
+        events = manager.store.list_events(run_id)
+    return [event for event in events if event.type == event_type]
+
+
+def _prepared_workspace(tmp: Path) -> Path:
+    """带已提交脚手架的干净工作区：模拟新工作区完成首轮系统初始化后的稳定基线。
+
+    产品里脚手架由 ensure_workspace 惰性创建且不落 commit（被既有测试钉住的
+    snapshot=None 语义）；收口 sweep 会把脚手架一并收进首个审批单元（提案已
+    记录该取舍）。这里的测试只关心 run 自身的改动，所以先把基线清干净。
+    """
+    import subprocess
+
+    from cellwiki.services.workspace import ensure_workspace
+
+    repo = tmp / "repo"
+    repo.mkdir()
+    _init_git_repo(repo)
+    ensure_workspace(repo)
+    subprocess.run(["git", "-C", str(repo), "add", "--all"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "workspace scaffold"],
+        check=True,
+        capture_output=True,
+    )
+    return repo
+
+
+def test_run_finishing_with_uncommitted_changes_is_auto_versioned(tmp_path: Path):
+    """回归（P0-1）：模型写文件但不 commit 时，收尾系统代为版本化并进审批。
+
+    修复前：run 落 SUCCEEDED、无 pending diff，改动以脏工作区直接生效。
+    """
+    repo = _prepared_workspace(tmp_path)
+
+    class WriterWithoutCommit:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "uncommitted.md").write_text("dirty note", encoding="utf-8")
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="写好了", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=WriterWithoutCommit())
+    try:
+        started = manager.start(
+            thread_id="t_autoversion",
+            message="写但不提交",
+            context=_context("t_autoversion"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diff = _wait_for_diff(manager, started.run_id)[0]
+        assert diff.status == PendingDiffStatus.PENDING
+        assert "uncommitted.md" in diff.files
+        patch = manager.pending_diff_patch(diff.diff_id)
+        assert "dirty note" in patch
+        # 自动收口 commit 的 message 可辨识为系统代提交
+        log = GitExecutor(repo).run("log", "--oneline")
+        assert f"wip(agent): auto-version uncommitted changes from run {started.run_id}" in log
+        # 收口动作在时间线上留有 progress 事件
+        progress = _wait_for_event(manager, started.run_id, AgentEventType.PROGRESS)
+        assert any("自动提交" in event.message for event in progress)
+        assert (repo / "uncommitted.md").read_text(encoding="utf-8") == "dirty note"
+    finally:
+        manager.close()
+
+
+def test_question_park_with_dirty_tree_publishes_versioned_unit(tmp_path: Path):
+    """挂起（ask_user_question）时也收口：脏改动进审批单元，run 停在等待。"""
+    repo = _prepared_workspace(tmp_path)
+
+    class ParkWriter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "parked.md").write_text("parked note", encoding="utf-8")
+            yield RuntimeSignal(
+                type=AgentEventType.TASK_CONFIRMATION_REQUIRED,
+                message="继续吗？",
+                data={
+                    "interrupt": {
+                        "question": "继续吗？",
+                        "options": ["是", "否"],
+                        "required": True,
+                    }
+                },
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=ParkWriter())
+    try:
+        started = manager.start(
+            thread_id="t_park_dirty",
+            message="写完问我",
+            context=_context("t_park_dirty"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.WAITING_CONFIRMATION})
+        diff = _wait_for_diff(manager, started.run_id)[0]
+        assert "parked.md" in diff.files
+        log = GitExecutor(repo).run("log", "--oneline")
+        assert f"wip(agent): auto-version uncommitted changes from run {started.run_id}" in log
+    finally:
+        manager.close()
+
+
+def test_auto_version_failure_marks_run_unfinished(tmp_path: Path):
+    """自动收口不可行（index 被锁）时 run 落 unfinished，而不是 SUCCEEDED 带脏区。"""
+    repo = _prepared_workspace(tmp_path)
+
+    class WriterWithoutCommit:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "locked.md").write_text("will stay dirty", encoding="utf-8")
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="写好了", data={}
+            )
+
+    lock = repo / ".git" / "index.lock"
+    lock.write_bytes(b"")
+    manager = AgentRuntimeManager(repo, adapter=WriterWithoutCommit())
+    try:
+        started = manager.start(
+            thread_id="t_lock",
+            message="写但不提交",
+            context=_context("t_lock"),
+        )
+        run = _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+        assert run.error_type == AgentErrorType.SYSTEM
+        assert "could not be auto-committed" in (run.error_message or "")
+        assert (repo / "locked.md").exists(), "改动保留在工作区等待续跑"
+        diffs = manager.store.list_pending_diffs(run_id=started.run_id)
+        assert not diffs, "收口失败时不得发布审批单元"
+    finally:
+        manager.close()
+
+
+def test_hallucinated_commit_claims_emit_claim_verification(tmp_path: Path):
+    """回归（P0-2）：零工具调用却声称"已提交 <sha>"时发 claim_verification 事件。"""
+    repo = _prepared_workspace(tmp_path)
+    answer = "已提交：`c5b3890`，仅含 contradiction.md 的 +11 行，工作区现已干净。"
+
+    class TalkOnlyAdapter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            yield RuntimeSignal(type=AgentEventType.MESSAGE_DELTA, message=answer, data={})
+
+    manager = AgentRuntimeManager(repo, adapter=TalkOnlyAdapter())
+    try:
+        started = manager.start(
+            thread_id="t_hallucinate",
+            message="提交一下",
+            context=_context("t_hallucinate"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        warnings = _wait_for_event(manager, started.run_id, AgentEventType.CLAIM_VERIFICATION)
+        assert warnings, "幻觉提交断言必须触发警告事件"
+        event = warnings[0]
+        joined = " ".join(event.data.get("mismatches", []))
+        assert "c5b3890" in joined
+        assert "没有任何新 commit" in joined
+        # 工作区确实干净，该断言为真，不应出现在 mismatch 里
+        assert "工作区干净" not in joined
+        # 警告必须先于 final_response，时间线上出现在回答上方
+        events = manager.store.list_events(started.run_id)
+        by_type = {event.type: event.sequence for event in events}
+        assert by_type[AgentEventType.CLAIM_VERIFICATION] < by_type[AgentEventType.FINAL_RESPONSE]
+    finally:
+        manager.close()
+
+
+def test_truthful_commit_claim_does_not_warn(tmp_path: Path):
+    """真实 commit + 如实声称：不发 claim_verification（零误报）。"""
+    repo = _prepared_workspace(tmp_path)
+
+    class HonestWriter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "honest.md").write_text("honest note", encoding="utf-8")
+            git = GitExecutor(repo)
+            git.run("add", "honest.md")
+            git.run("commit", "-m", "honest change")
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="已提交 honest.md", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=HonestWriter())
+    try:
+        started = manager.start(
+            thread_id="t_honest",
+            message="写并提交",
+            context=_context("t_honest"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        time.sleep(0.2)
+        warnings = _wait_for_event(manager, started.run_id, AgentEventType.CLAIM_VERIFICATION)
+        assert not warnings
+    finally:
+        manager.close()
+
+
+def test_dirty_tree_clean_claim_warns_even_before_auto_version(tmp_path: Path):
+    """脏工作区声称"干净"：警告在回答时点发出（自动收口发生在其后）。"""
+    repo = _prepared_workspace(tmp_path)
+
+    class DirtyTalker:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "dirty.md").write_text("dirty", encoding="utf-8")
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="已完成，工作区现已干净。", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=DirtyTalker())
+    try:
+        started = manager.start(
+            thread_id="t_dirtyclaim",
+            message="写完说干净",
+            context=_context("t_dirtyclaim"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        warnings = _wait_for_event(manager, started.run_id, AgentEventType.CLAIM_VERIFICATION)
+        assert warnings, "脏工作区声称干净必须触发警告"
+        assert any("工作区" in m for m in warnings[0].data.get("mismatches", []))
+    finally:
+        manager.close()
