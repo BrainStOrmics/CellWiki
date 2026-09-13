@@ -6,8 +6,7 @@ import argparse
 import json
 from pathlib import Path
 
-from cellwiki.evaluation.agent_eval import evaluate_agent_predictions
-from cellwiki.evaluation.semantic import threshold_failures
+from cellwiki.evaluation.agent_eval import evaluate_agent_predictions, threshold_failures
 
 
 ROOT = Path(__file__).resolve().parents[1]

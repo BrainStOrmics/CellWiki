@@ -27,7 +27,7 @@ from cellwiki.evaluation.agent_eval import (
     evaluate_agent_predictions,
     trial_pass_rates,
 )
-from cellwiki.evaluation.semantic import threshold_failures
+from cellwiki.evaluation.agent_eval import threshold_failures
 from cellwiki.services.agent_runtime import AgentRuntimeManager
 from cellwiki.services.quality import inspect_projection
 from cellwiki.services.workspace import ensure_workspace

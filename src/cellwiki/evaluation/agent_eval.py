@@ -1,11 +1,10 @@
 # =============================================================================
 # Agent 运行评测 —— 面向当前工作区架构的确定性轨迹打分
 # =============================================================================
-# 与 semantic.py 的分工：semantic 面向旧治理链的"答案清单"合同
-# （SourceRecord + locator），本模块面向当前 Agent 的真实产出：最终回答里的
-# 工作区相对路径引用、run 结束后的 git 改动面、以及系统强制 lint 的结论。
-# 打分是纯确定性的：只读固定 fixture，不发起任何模型或网络调用，因此可以
-# 进入 CI 作为发布门控；真实模型成绩必须另写 predictions 文件。
+# 面向当前 Agent 的真实产出：最终回答里的工作区相对路径引用、run 结束后的
+# git 改动面、以及系统强制 lint 的结论。打分是纯确定性的：只读固定
+# fixture，不发起任何模型或网络调用，因此可以进入 CI 作为发布门控；真实
+# 模型成绩必须另写 predictions 文件。
 # =============================================================================
 
 """Deterministic metrics over current-architecture CellWiki Agent run records."""
@@ -17,8 +16,6 @@ import posixpath
 import re
 from pathlib import Path
 from typing import Any
-
-from cellwiki.evaluation.semantic import threshold_failures
 
 # 系统拥有的四个根级文件：内容写入由 ADR-0009 在工具层拦截，评测负责发现
 # Agent 是否还在徒劳尝试（每次尝试都白烧预算，也说明提示词没有被遵守）。
@@ -352,3 +349,21 @@ def trial_pass_rates(outcomes: list[dict[str, bool]]) -> dict[str, float]:
         "pass_k": _ratio(float(len(stable)), float(len(case_ids))),
         "stable_case_count": float(len(stable)),
     }
+
+
+def threshold_failures(
+    metrics: dict[str, float],
+    thresholds: dict[str, dict[str, float]],
+) -> list[str]:
+    """Return human-readable release-gate failures for min/max threshold rules."""
+
+    failures: list[str] = []
+    for name, rule in thresholds.items():
+        value = metrics.get(name)
+        if value is None:
+            failures.append(f"{name}: metric missing")
+        elif "min" in rule and value < float(rule["min"]):
+            failures.append(f"{name}: {value:.4f} < {float(rule['min']):.4f}")
+        elif "max" in rule and value > float(rule["max"]):
+            failures.append(f"{name}: {value:.4f} > {float(rule['max']):.4f}")
+    return failures

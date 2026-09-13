@@ -15,10 +15,10 @@ from cellwiki.evaluation.agent_eval import (
     case_outcomes,
     cited_paths,
     evaluate_agent_predictions,
+    threshold_failures,
     trial_pass_rates,
 )
 from cellwiki.services.agent_runtime import _signal_payload
-from cellwiki.evaluation.semantic import threshold_failures
 
 
 ROOT = Path(__file__).resolve().parents[1]

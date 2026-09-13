@@ -1,8 +1,9 @@
 # CellWiki Agent 运行评测卷（当前工作区架构）
 
 这份卷子评的是**现在的 CewiPilot**：白名单工具 + 工作区 git + 待确认 diff。
-它取代旧 `evals/semantic/` 的作用（那份卷子的答案清单合同属于已删除的
-ChangeSet/SearchIndex 治理链，保留只为兼容）。
+它取代了旧 `evals/semantic/`（那份卷子的答案清单合同属于已删除的
+ChangeSet/SearchIndex 治理链；该数据集已于 2026-09-13 移除，需要历史版本时
+从 git 历史取）。
 
 ## 组成
 
