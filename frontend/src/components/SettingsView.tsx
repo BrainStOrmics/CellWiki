@@ -236,7 +236,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             <section className="settings-card provider-catalog-card">
               <div className="settings-card-title">
                 <Server size={16} />
-                <div><h3>{t("settings.modelTitle")}</h3><p>{t("settings.providersDescription")}</p></div>
+                <div><h3>{t("settings.modelTitle")}</h3></div>
                 <span className="provider-restart-badge">{t("settings.providerRestartNotRequired")}</span>
               </div>
               <ProviderManager onNotice={setNotice} />
