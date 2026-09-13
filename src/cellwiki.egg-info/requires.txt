@@ -5,6 +5,7 @@ filelock<4,>=3.18
 langgraph<2,>=1.0
 langgraph-checkpoint-sqlite<4,>=3.0
 langchain-core<2,>=1.4.9
+langchain-anthropic<2,>=1.4.8
 langchain-openai<2,>=1.3.5
 keyring<26,>=25
 openai<3,>=2.45
