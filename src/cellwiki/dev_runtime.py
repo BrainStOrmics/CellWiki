@@ -1,8 +1,8 @@
 # =============================================================================
 # 开发运行时 —— 支撑 `cellwiki dev` 命令的进程管理
 # =============================================================================
-# 负责启动和管理 CellWiki 开发所需的多个子进程：Product API（Uvicorn）、
-# Agent Runtime（LangGraph）和 Desktop 前端（Tauri/Vite）。
+# 负责启动和管理 CellWiki 开发所需的子进程：Product API（Uvicorn）和
+# Desktop 前端（Tauri/Vite）。
 # 自动检测端口占用、管理日志、优雅关闭子进程。
 # =============================================================================
 
@@ -67,12 +67,10 @@ class DevelopmentRuntime:
         self,
         project_root: Path,
         *,
-        include_agent: bool = True,
         include_desktop: bool = True,
         reuse_ports: bool = False,
     ):
         self.project_root = Path(project_root).resolve()
-        self.include_agent = include_agent
         self.include_desktop = include_desktop
         self.reuse_ports = reuse_ports
         self.log_dir = self.project_root / "data" / "runtime" / "logs"
@@ -106,31 +104,6 @@ class DevelopmentRuntime:
                 working_directory=self.project_root,
             )
         ]
-        if self.include_agent:
-            specs.append(
-                DevelopmentProcessSpec(
-                    name="agent-runtime",
-                    port=2024,
-                    command=(
-                        sys.executable,
-                        "-X",
-                        "utf8",
-                        "-c",
-                        "from langgraph_cli.cli import cli; cli()",
-                        "dev",
-                        "--config",
-                        "langgraph.json",
-                        "--host",
-                        "127.0.0.1",
-                        "--port",
-                        "2024",
-                        "--no-browser",
-                        "--no-reload",
-                        "--allow-blocking",
-                    ),
-                    working_directory=self.project_root,
-                )
-            )
         if self.include_desktop:
             specs.append(
                 DevelopmentProcessSpec(

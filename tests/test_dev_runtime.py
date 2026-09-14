@@ -13,21 +13,20 @@ import cellwiki.dev_runtime as dev_runtime
 from cellwiki.dev_runtime import DevelopmentProcessSpec, DevelopmentRuntime, OwnedProcess
 
 
-def test_development_runtime_builds_the_three_expected_processes(monkeypatch, tmp_path: Path):
+def test_development_runtime_builds_the_product_processes(monkeypatch, tmp_path: Path):
     (tmp_path / "frontend").mkdir()
     monkeypatch.setattr("cellwiki.dev_runtime.shutil.which", lambda _name: "npm.cmd")
 
     specs = DevelopmentRuntime(tmp_path).specs()
 
-    assert [spec.name for spec in specs] == ["product-api", "agent-runtime", "desktop"]
-    assert [spec.port for spec in specs] == [8000, 2024, 5173]
+    assert [spec.name for spec in specs] == ["product-api", "desktop"]
+    assert [spec.port for spec in specs] == [8000, 5173]
     assert "uvicorn" in specs[0].command
-    assert any("langgraph_cli.cli" in argument for argument in specs[1].command)
-    assert specs[2].command == ("npm.cmd", "run", "desktop:dev")
+    assert specs[1].command == ("npm.cmd", "run", "desktop:dev")
 
 
 def test_development_runtime_requires_explicit_port_reuse(monkeypatch, tmp_path: Path):
-    runtime = DevelopmentRuntime(tmp_path, include_agent=False, include_desktop=False)
+    runtime = DevelopmentRuntime(tmp_path, include_desktop=False)
     spec = DevelopmentProcessSpec("product-api", 8000, ("python",), tmp_path)
     monkeypatch.setattr("cellwiki.dev_runtime._port_is_open", lambda _port: True)
 
@@ -36,7 +35,6 @@ def test_development_runtime_requires_explicit_port_reuse(monkeypatch, tmp_path:
 
     approved = DevelopmentRuntime(
         tmp_path,
-        include_agent=False,
         include_desktop=False,
         reuse_ports=True,
     )
@@ -70,7 +68,7 @@ def test_development_runtime_stops_the_windows_process_tree(
     )
 
     process = FakeProcess()
-    runtime = DevelopmentRuntime(tmp_path, include_agent=False, include_desktop=False)
+    runtime = DevelopmentRuntime(tmp_path, include_desktop=False)
     runtime.owned.append(
         OwnedProcess(
             DevelopmentProcessSpec("product-api", 8000, ("python",), tmp_path),
@@ -87,10 +85,10 @@ def test_development_runtime_stops_the_windows_process_tree(
 
 
 def test_development_runtime_allows_only_one_orchestrator(tmp_path: Path):
-    first = DevelopmentRuntime(tmp_path, include_agent=False, include_desktop=False)
+    first = DevelopmentRuntime(tmp_path, include_desktop=False)
     first._acquire_project_lock()
     try:
-        second = DevelopmentRuntime(tmp_path, include_agent=False, include_desktop=False)
+        second = DevelopmentRuntime(tmp_path, include_desktop=False)
         with pytest.raises(RuntimeError, match="another CellWiki development runtime"):
             second._acquire_project_lock()
     finally:

@@ -315,63 +315,6 @@ def deduplicate_by_cl_id(wiki: dict[str, WikiCellType]) -> dict[str, WikiCellTyp
     return result
 
 
-# ---------------------------------------------------------------------------
-# 完整 Wiki 重建流程
-# 1. 加载所有提取结果
-# 2. 合并为 WikiCellType 字典
-# 3. 从本体论解析 CL ID
-# 4. 按 CL ID 去重
-# 5. 删除过时的页面
-# 6. 生成细胞类型页面
-# 7. 生成索引页面
-# ---------------------------------------------------------------------------
-def rebuild_wiki():
-    """Full wiki rebuild: load all extractions, merge, deduplicate, regenerate pages."""
-    extractions = load_all_extractions()
-    if not extractions:
-        print("No extractions found. Add papers first.")
-        return
-
-    wiki = merge_to_wiki(extractions)
-
-    # 从细胞本体论解析 CL ID
-    from cellwiki.ontology import load_cell_ontology, resolve_cell_type_to_cl, load_cl_id_registry, load_manual_corrections
-    ontology = load_cell_ontology()
-    registry = load_cl_id_registry()
-    corrections = load_manual_corrections()
-
-    # 对每个没有 CL ID 的条目尝试解析
-    for key, wt in wiki.items():
-        if not wt.cl_id:
-            # 首先尝试用 display_name 解析，如果失败则回退到原始键名
-            wt.cl_id = resolve_cell_type_to_cl(wt.display_name or key, ontology, registry, corrections)
-            if not wt.cl_id:
-                wt.cl_id = resolve_cell_type_to_cl(key, ontology, registry, corrections)
-
-    # 按 CL ID 去重
-    wiki = deduplicate_by_cl_id(wiki)
-
-    # 生成 Wiki 页面
-    from cellwiki.adapters.markdown_renderer import generate_cell_type_page, generate_index_page
-
-    settings.wiki_cell_types_dir.mkdir(parents=True, exist_ok=True)
-
-    # 删除过时的页面（不再存在于 wiki 中的键）
-    valid_keys = set(wiki.keys())
-    for existing in settings.wiki_cell_types_dir.glob("*.md"):
-        if existing.stem not in valid_keys:
-            existing.unlink()
-
-    # 为每个细胞类型生成页面
-    for key, wt in wiki.items():
-        generate_cell_type_page(key, wt)
-
-    # 生成索引页面
-    generate_index_page(wiki)
-
-    print(f"Generated {len(wiki)} cell type pages.")
-
-
 # ============================================================
 # CellWiki v2.0 — Multi-Omics Knowledge Merger
 # CellWiki v2.0 多组学知识合并器

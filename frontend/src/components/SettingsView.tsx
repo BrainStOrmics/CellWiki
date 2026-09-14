@@ -88,7 +88,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     void loadSettings();
     void loadWorkspace();
-    // Product API owns the durable Agent runtime; the old :2024 server is debug-only.
+    // Product API owns the durable Agent runtime.
     void productFetch("/health")
       .then((response) => setRuntime({ ...runtimeConfig(), ready: response.ok }))
       .catch(() => setRuntime({ ...runtimeConfig(), ready: false }));

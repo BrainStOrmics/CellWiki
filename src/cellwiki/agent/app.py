@@ -281,7 +281,7 @@ def build_wiki_agent(
     ]
     # ADR-0010 决策 1/14：产品图默认落 SqliteSaver（data/runtime/checkpoints.sqlite），
     # 与 cellwiki.db 分文件；AGENT_CHECKPOINTER=inmemory 只是短期回滚闸。
-    # 显式传入的 checkpointer（含 create_server_graph 的 False）原样生效。
+    # 显式传入的 checkpointer 原样生效。
     active_checkpointer = (
         build_checkpointer(root) if checkpointer is _DEFAULT_CHECKPOINTER else checkpointer
     )
@@ -297,12 +297,3 @@ def build_wiki_agent(
         context_schema=WikiAgentContext,
         interrupt_on={},
     )
-
-
-# ---------------------------------------------------------------------------
-# LangGraph Agent Server 使用的工厂函数
-# 服务端拥有自己的持久化层，因此传入 checkpointer=False
-# ---------------------------------------------------------------------------
-def create_server_graph():
-    """Factory used by LangGraph Agent Server, which owns persistence."""
-    return build_wiki_agent(checkpointer=False)

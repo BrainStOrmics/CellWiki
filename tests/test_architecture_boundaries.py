@@ -40,14 +40,14 @@ def test_product_modules_use_domain_extraction_contracts() -> None:
     assert offenders == []
 
 
-def test_legacy_extraction_model_exports_resolve_to_domain_contracts() -> None:
+def test_extraction_model_exports_resolve_to_domain_contracts() -> None:
     from cellwiki.domain.extraction import ExtractionResult
-    from cellwiki.models import ExtractionResult as LegacyExtractionResult
+    from cellwiki.models import ExtractionResult as ModelExtractionResult
 
-    assert LegacyExtractionResult is ExtractionResult
+    assert ModelExtractionResult is ExtractionResult
 
 
-def test_structured_extraction_adapter_keeps_legacy_out() -> None:
+def test_structured_extraction_adapter_uses_the_current_adapter_module() -> None:
     imports = _imports(PACKAGE_ROOT / "adapters" / "openai_structured_output.py")
 
     assert "cellwiki.llm_extract" not in imports
@@ -62,13 +62,17 @@ def test_wiki_renderer_owns_merge_and_markdown_implementation() -> None:
     assert "cellwiki.wiki" not in imports
 
 
-def test_product_packages_do_not_import_legacy_graph_workflows() -> None:
+def test_product_packages_do_not_import_retired_legacy_workflows() -> None:
     forbidden = {
+        "cellwiki.legacy",
         "cellwiki.ingest_graph",
         "cellwiki.lint_graph",
         "cellwiki.query_graph",
         "cellwiki.research_graph",
         "cellwiki.orchestrator",
+        "cellwiki.knowledge",
+        "cellwiki.llm_extract",
+        "cellwiki.wiki",
         "graphs",
     }
     product_roots = ["api", "agent", "domain", "services", "adapters"]
@@ -82,27 +86,27 @@ def test_product_packages_do_not_import_legacy_graph_workflows() -> None:
     assert offenders == []
 
 
-def test_legacy_implementations_live_under_legacy_package() -> None:
-    legacy_modules = {
+def test_retired_legacy_modules_are_absent() -> None:
+    retired_modules = {
         "audit",
+        "cli",
         "extract",
         "graph_analysis",
         "ingest_graph",
+        "knowledge",
         "lint_graph",
+        "llm_extract",
         "ontology",
         "orchestrator",
         "query_graph",
         "visualization",
+        "wiki",
     }
 
-    for module in legacy_modules:
-        implementation = PACKAGE_ROOT / "legacy" / f"{module}.py"
-        compatibility = PACKAGE_ROOT / f"{module}.py"
-        assert implementation.is_file(), module
-        assert f"cellwiki.legacy.{module}" in _imports(compatibility), module
-
-    assert (PACKAGE_ROOT / "legacy" / "graphs").is_dir()
+    assert not (PACKAGE_ROOT / "legacy").exists()
     assert not (PACKAGE_ROOT / "research_graph.py").exists()
+    for module in retired_modules:
+        assert not (PACKAGE_ROOT / f"{module}.py").exists(), module
 
 
 def test_packaging_contains_only_the_cellwiki_package_tree() -> None:

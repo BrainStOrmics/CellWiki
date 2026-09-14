@@ -59,7 +59,7 @@ def _read_source_text(stored: Path) -> str | None:
 
 def _run_extraction(text: str, source_path: Path) -> Any:
     """Call the cell-type extraction adapter lazily (tests monkeypatch this)."""
-    from cellwiki.llm_extract import extract_cell_types_from_paper
+    from cellwiki.adapters.openai_structured_output import extract_cell_types_from_paper
 
     return extract_cell_types_from_paper(text, source_path)
 

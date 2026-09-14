@@ -147,29 +147,14 @@ class Settings(BaseSettings):
         validation_alias="PROJECT_ROOT",
     )
 
-    # ---- 细胞本体论（Cell Ontology）----
-    cell_ontology_url: str = "https://purl.obolibrary.org/obo/cl.obo"
-
     # ---- 知识库派生路径（基于工作区根，动态计算）----
     @property
     def data_dir(self) -> Path:
         return self.workspace_root / "data"
 
     @property
-    def references_dir(self) -> Path:
-        return self.data_dir / "references"
-
-    @property
     def extraction_dir(self) -> Path:
         return self.data_dir / "extraction"
-
-    @property
-    def cell_ontology_dir(self) -> Path:
-        return self.data_dir / "cell_ontology"
-
-    @property
-    def cell_ontology_file(self) -> Path:
-        return self.cell_ontology_dir / "cl.obo"
 
     @property
     def wiki_dir(self) -> Path:
@@ -179,57 +164,8 @@ class Settings(BaseSettings):
     def wiki_cell_types_dir(self) -> Path:
         return self.wiki_dir / "cell_types"
 
-    @property
-    def wiki_marker_genes_dir(self) -> Path:
-        return self.wiki_dir / "marker_genes"
-
-    @property
-    def wiki_tissues_dir(self) -> Path:
-        return self.wiki_dir / "tissues"
-
-    @property
-    def wiki_diseases_dir(self) -> Path:
-        return self.wiki_dir / "diseases"
-
-    @property
-    def wiki_methods_dir(self) -> Path:
-        return self.wiki_dir / "methods"
-
-    @property
-    def wiki_trajectories_dir(self) -> Path:
-        return self.wiki_dir / "trajectories"
-
-    @property
-    def wiki_state_spaces_dir(self) -> Path:
-        return self.wiki_dir / "state_spaces"
-
 # ---- 模块级单例 ----
 # 所有下游模块导入此单例，配置在导入时解析一次而不是每次访问时构造。
 # 这意味着导入后环境变量变更不会生效，需要重启。
 settings = Settings()
 setup_logging(settings.log_level)
-
-
-def ensure_dirs():
-    """Create all required directories if they don't exist.
-
-    必须在启动时显式调用（例如在 CLI 入口点），而不是在导入时自动调用，
-    这样简单的 --help 调用就不会创建文件系统状态。
-    """
-    # 遍历所有需要确保存在的目录
-    for d in [
-        settings.data_dir,
-        settings.references_dir,
-        settings.extraction_dir,
-        settings.cell_ontology_dir,
-        settings.wiki_dir,
-        settings.wiki_cell_types_dir,
-        settings.wiki_marker_genes_dir,
-        settings.wiki_tissues_dir,
-        settings.wiki_diseases_dir,
-        settings.wiki_methods_dir,
-        settings.wiki_trajectories_dir,
-        settings.wiki_state_spaces_dir,
-    ]:
-        # exist_ok=True 使此操作幂等 —— 每次启动时调用是安全的
-        d.mkdir(parents=True, exist_ok=True)

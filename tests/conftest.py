@@ -116,13 +116,10 @@ def tmp_wiki_dir(tmp_path):
     cell_types_dir.mkdir(parents=True)
     extraction_dir = tmp_path / "extraction"
     extraction_dir.mkdir(parents=True)
-    references_dir = tmp_path / "references"
-    references_dir.mkdir(parents=True)
     return {
         "wiki_dir": wiki_dir,
         "cell_types_dir": cell_types_dir,
         "extraction_dir": extraction_dir,
-        "references_dir": references_dir,
     }
 
 
@@ -133,5 +130,4 @@ def patched_settings(tmp_wiki_dir):
         mock_settings.wiki_dir = tmp_wiki_dir["wiki_dir"]
         mock_settings.wiki_cell_types_dir = tmp_wiki_dir["cell_types_dir"]
         mock_settings.extraction_dir = tmp_wiki_dir["extraction_dir"]
-        mock_settings.references_dir = tmp_wiki_dir["references_dir"]
         yield mock_settings

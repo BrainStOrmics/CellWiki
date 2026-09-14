@@ -9,7 +9,7 @@ from cellwiki.models import (
     Marker, MarkerType, PaperReference,
     CellTypeExtract, ExtractionResult, WikiCellType,
 )
-from cellwiki.knowledge import merge_to_wiki, deduplicate_by_cl_id
+from cellwiki.adapters.wiki_knowledge import merge_to_wiki, deduplicate_by_cl_id
 
 
 def make_cell_type(name, standard_name, paper_id, cl_id=None, markers=None):

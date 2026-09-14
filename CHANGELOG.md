@@ -13,7 +13,7 @@
 
 - 公开入口文档不再依赖未随代码仓库分发的本地项目与设计文档。
 - 发布说明不再手工维护固定安装包哈希。
-- 产品 CLI、抽取、投影和领域模型已与旧 CLI/图工作流分离；旧实现集中到 `cellwiki.legacy`，默认 `cellwiki` 入口只启动桌面产品运行时。
+- 旧 CLI、顶层兼容壳、`:2024` LangGraph 调试服务及其旧专用依赖已退役；只保留 `cellwiki` 与 `cellwiki-sidecar` 两个 Python 入口。
 - WikiAgent 使用精确 Deep Agents HarnessProfile 隐藏通用文件/TODO 工具，并通过 `submit_agent_answer` 在不强制 `tool_choice` 的前提下校验结构化最终回答。
 
 ## 2.0.0-beta

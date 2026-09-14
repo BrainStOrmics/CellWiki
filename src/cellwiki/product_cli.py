@@ -1,9 +1,4 @@
-"""Product command-line interface for the Agentic CellWiki desktop runtime.
-
-Legacy knowledge-base commands intentionally live behind the separate
-``cellwiki-legacy`` entry point. Keeping this Module small prevents the desktop
-runtime from importing the legacy graph and projection implementations.
-"""
+"""Product command-line interface for the Agentic CellWiki desktop runtime."""
 
 from __future__ import annotations
 
@@ -15,7 +10,7 @@ from cellwiki.dev_runtime import DevelopmentRuntime
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the stable product CLI without importing legacy command Modules."""
+    """Build the stable product CLI."""
 
     parser = argparse.ArgumentParser(
         prog="cellwiki",
@@ -25,12 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     development = subcommands.add_parser(
         "dev",
-        help="Start the Product API, Agent Runtime, and Tauri desktop application",
-    )
-    development.add_argument(
-        "--no-agent",
-        action="store_true",
-        help="Start without the Agent Runtime",
+        help="Start the Product API and Tauri desktop application",
     )
     development.add_argument(
         "--no-desktop",
@@ -51,7 +41,6 @@ def _run_development_runtime(arguments: argparse.Namespace) -> None:
 
     DevelopmentRuntime(
         settings.project_root,
-        include_agent=not arguments.no_agent,
         include_desktop=not arguments.no_desktop,
         reuse_ports=arguments.reuse_ports,
     ).run()

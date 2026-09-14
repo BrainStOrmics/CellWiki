@@ -24,22 +24,14 @@ dependencies = [
     "pydantic-settings>=2.0.0",
     "python-multipart>=0.0.20,<1",
     "rich>=13.0.0",
-    "tqdm>=4.60.0",
-    "requests>=2.28.0",
-    "graphviz>=0.20",
     "pyyaml>=6.0",
     "sqlalchemy>=2.0,<3",
     "uvicorn[standard]>=0.35,<1",
 ]
 
 [project.optional-dependencies]
-analysis = [
-    "networkx",
-    "python-louvain",
-]
 dev = [
     "httpx>=0.28,<1",
-    "langgraph-cli[inmem]==0.4.31",
     "mypy>=1.17,<2",
     "pytest>=7.0.0",
     "ruff>=0.12,<1",
@@ -51,7 +43,6 @@ desktop = [
 
 [project.scripts]
 cellwiki = "cellwiki.product_cli:main"
-cellwiki-legacy = "cellwiki.legacy.cli:main"
 cellwiki-sidecar = "cellwiki.sidecar:main"
 
 [tool.setuptools.dynamic]
@@ -68,16 +59,9 @@ include = ["cellwiki*"]
 testpaths = ["tests"]
 
 
-[tool.ruff.lint.per-file-ignores]
-# legacy/ 是重构前 CLI 管线的隔离包：其历史 lint 问题不属于本次产品重构，
-# 且不参与产品代码路径，按隔离包忽略以保持 `ruff check src tests` 可执行。
-"src/cellwiki/legacy/**" = ["E702", "F401", "F541", "F811", "F821", "F841"]
-
-
 [tool.mypy]
-# legacy/ 是重构前 CLI 管线的隔离包：与 ruff 的 per-file-ignores 一致，
-# 不参与产品代码的类型检查。
-exclude = ['src/cellwiki/legacy/']
+# 历史适配层与模型兼容层仍有先于本次清理存在的严格类型问题；
+# 退役 CLI 后继续按模块显式忽略，待独立收敛。
 
 [[tool.mypy.overrides]]
 # 历史提取/渲染适配层与模型兼容层的既有类型问题先于本次重构存在，

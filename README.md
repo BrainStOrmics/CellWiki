@@ -64,7 +64,7 @@ Copy-Item .env.example .env
 .venv\Scripts\cellwiki.exe dev
 ```
 
-旧版 CLI 和 LangGraph 调试工作流只通过 `.venv\Scripts\cellwiki-legacy.exe` 显式调用；它们是迁移期兼容能力，不属于桌面产品入口。
+旧版 CLI 与 LangGraph 调试入口已退役；当前开发态只由 `cellwiki dev` 编排 Product API 与桌面端，正式使用路径仍是工作区与 Agent。
 
 模型供应商在桌面端“设置 → 模型服务”中管理（支持多个供应商，各含模型清单，配置免重启生效，对话框可切换当前模型）；开发态 `.env` 的 `OPENAI_*` 会在首次使用时自动导入为默认供应商，并保留为目录为空时的兜底。日志级别和界面语言也在“设置”中修改。发布态优先使用 Windows Credential Manager 保存 API Key。
 
