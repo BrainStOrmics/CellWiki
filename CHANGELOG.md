@@ -16,7 +16,14 @@
 - 旧 CLI、顶层兼容壳、`:2024` LangGraph 调试服务及其旧专用依赖已退役；只保留 `cellwiki` 与 `cellwiki-sidecar` 两个 Python 入口。
 - WikiAgent 使用精确 Deep Agents HarnessProfile 隐藏通用文件/TODO 工具，并通过 `submit_agent_answer` 在不强制 `tool_choice` 的前提下校验结构化最终回答。
 
+### Removed
+
+- 删除旧治理链（ChangeSet / Approval / CentralWriter / snapshot / ingest 管线 / memory / research / TaskRouter / SearchIndex / KnowledgeGraph）及旧 CLI、顶层兼容壳和 `:2024` LangGraph 调试入口；当前版本以 git 承载版本与审批。
+- Wiki renderer 不再生成指向已退役 `relationships.json`、`graph.dot`、`graph.mmd` 的链接。
+
 ## 2.0.0-beta
+
+> 本节保留该 beta 阶段的历史能力记录；其中 ChangeSet / CentralWriter / FTS5 / KnowledgeGraph 等旧治理链已在此后版本删除，当前能力以 README、`docs/architecture.md` 和 ADR-0007 为准。
 
 ### Added
 

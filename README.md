@@ -30,8 +30,9 @@ Agentic CellWiki 是一个本地优先的 Windows 桌面科学 Wiki：**你选�
   不复制文件、不产生 git 变更。
 - **工作区浏览与受控编辑**：Obsidian 式文件树、md/txt/PDF 只读预览、页面全文搜索（当前实现是
   对 `wiki/` 的扫描）；界面编辑合成 `workspace_edit` run，同样经待确认 diff 生效。
-- **Agent 协作**：持久 AgentRun 与 SSE 事件流、工具时间线与思考行、`ask_user_question` 提问卡片
-  与续跑、取消、重试与 `/diagnostics` 诊断；会话登记表使新建会话与零 run 会话即时可见、可回访。
+- **Agent 协作**：持久 AgentRun 与 SSE 事件流、run 作用域跨进程 checkpoint、工具时间线与思考行、
+  `ask_user_question` 提问卡片与续跑、取消、重试与 `/diagnostics` 诊断；会话登记表使新建会话与
+  零 run 会话即时可见、可回访。
 - **治理门禁**：Agent 只能用白名单工具与白名单 git 动作（改写历史的命令一律拒绝）、受路径沙箱
   约束、`lint_knowledge_base` 仅报告不修复；`log.md`、`audit_report.md`、`overview.md`、
   `statistics.md` 由系统维护提交，Agent 不得改写。
@@ -40,10 +41,8 @@ Agentic CellWiki 是一个本地优先的 Windows 桌面科学 Wiki：**你选�
   各含 Base URL、协议、API Key 与模型清单，配置免重启生效，对话框可随时切换当前模型）、
   日志级别与中英界面，API Key 优先存 Windows Credential Manager。
 
-**尚未落地，不要按这些预期使用**：跨进程持久化 checkpoint（
-`docs/adr/0010-run-scoped-persistent-checkpointer.md` 已接受但实现未合入，当前 checkpoint 只存在于
-进程内）、子 Agent 委托（注册表为空）、安装包代码签名与干净 VM 外部验收。完整清单见
-`docs/architecture.md`「当前限制」。
+**尚未落地，不要按这些预期使用**：子 Agent 委托（注册表为空）、安装包代码签名与
+干净 VM 外部验收。完整清单见 `docs/architecture.md`「当前限制」。
 
 ## 开发环境
 

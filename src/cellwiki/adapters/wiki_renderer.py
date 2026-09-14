@@ -1,7 +1,7 @@
-"""Compatibility Adapter for the original merge and Markdown renderer.
+"""Projection adapter for merge and Markdown rendering.
 
-This is the only product-side Module allowed to call the legacy projection
-implementation while it is replaced incrementally.
+This adapter is used by projection tests and one-time historical migration paths.
+It must not depend on retired CLI or graph workflow modules.
 """
 
 from __future__ import annotations
@@ -128,8 +128,7 @@ class CellWikiMarkdownRenderer:
             knowledge_version=projection_metadata["version"],
         )
 
-        # README.md remains the compatibility index consumed by the existing
-        # CentralWriter and legacy lint paths.
+        # Keep README.md as the generated Markdown index for the projection.
         generate_index_page(wiki, destination=wiki_dir / "README.md")
         return sorted(
             [*valid_keys]

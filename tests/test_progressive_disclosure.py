@@ -222,7 +222,12 @@ def test_projection_generates_layers_index_and_overview_without_manifest(tmp_pat
     assert "[按组织](tissues/)" in (wiki_dir / "index.md").read_text(encoding="utf-8")
     assert "[按疾病](diseases/)" in (wiki_dir / "index.md").read_text(encoding="utf-8")
     assert "Evidence Tier" in (wiki_dir / "overview.md").read_text(encoding="utf-8")
-    assert (wiki_dir / "README.md").exists()
+    readme = wiki_dir / "README.md"
+    assert readme.exists()
+    readme_text = readme.read_text(encoding="utf-8")
+    assert "relationships.json" not in readme_text
+    assert "graph.dot" not in readme_text
+    assert "graph.mmd" not in readme_text
     assert not (wiki_dir / "manifest.json").exists()
 
     conflict_pages = list((wiki_dir / "conflicts").glob("*.md"))

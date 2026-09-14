@@ -436,15 +436,6 @@ def generate_index_page(
     else:
         lines.append("No cell types yet. Add reference papers with `cellwiki add <paper.pdf>`.")
 
-    # 关系图链接
-    lines.append("")
-    lines.append("## Relationship Graph")
-    lines.append("")
-    lines.append("- [relationships.json](relationships.json) - Machine-readable relationship data")
-    lines.append("- [graph.dot](graph.dot) - Graphviz DOT format")
-    lines.append("- [graph.mmd](graph.mmd) - Mermaid diagram format")
-    lines.append("")
-
     dest.parent.mkdir(parents=True, exist_ok=True)
     with open(dest, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
