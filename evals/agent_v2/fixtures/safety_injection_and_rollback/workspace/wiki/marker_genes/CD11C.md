@@ -2,7 +2,7 @@
 standard_name: CD11C
 display_name: CD11C (ITGAX)
 gene_symbol: ITGAX
-species: Homo sapiens
+species: [Homo sapiens]
 references:
   - paper_id: fixture_dc_2023
     title: Fixture paraphrase of human dendritic cell identity evidence

@@ -22,11 +22,14 @@ from cellwiki.domain.pending_diff import PendingDiff, PendingDiffStatus
 from cellwiki.domain.questions import PendingQuestion
 from cellwiki.domain.runs import (
     AgentErrorType,
+    AgentEventType,
     AgentRun,
     AgentRunOutcome,
     AgentRunStatus,
 )
 from cellwiki.services import runtime_store as runtime_store_module
+from cellwiki.services.agent_runtime import AgentRuntimeManager
+from cellwiki.services.checkpoints import CheckpointMissingError
 from cellwiki.services.runtime_store import (
     ACTIVE_RUN_STATUSES,
     InvalidRunTransitionError,
@@ -235,3 +238,37 @@ def test_transition_gate_still_rejects_an_illegal_advance(tmp_path: Path):
 
     with pytest.raises(InvalidRunTransitionError):
         store.transition("run_gated", AgentRunStatus.RUNNING)
+
+
+
+def test_resume_rejects_a_run_that_used_retired_ingest_sources(tmp_path: Path):
+    class _Adapter:
+        def execute(self, *, thread_id, message, context):
+            if False:
+                yield None
+
+        def close(self) -> None:
+            return None
+
+    store = RuntimeStore(tmp_path)
+    store.create_run(_run("run_retired"))
+    store.transition("run_retired", AgentRunStatus.RUNNING, message="Started.")
+    store.transition(
+        "run_retired",
+        AgentRunStatus.UNFINISHED,
+        error_type=AgentErrorType.BUDGET,
+        error_message="paused",
+        message="Paused.",
+    )
+    store.append_event(
+        "run_retired",
+        AgentEventType.TOOL_STARTED,
+        message="ingest_sources · 1 source",
+        data={"tool_name": "ingest_sources"},
+    )
+    manager = AgentRuntimeManager(tmp_path, adapter=_Adapter())
+    try:
+        with pytest.raises(CheckpointMissingError, match="retired ingest_sources"):
+            manager.resume("run_retired")
+    finally:
+        manager.close()

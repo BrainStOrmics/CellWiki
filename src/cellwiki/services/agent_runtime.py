@@ -74,7 +74,7 @@ from cellwiki.agent.executor import (
     set_promotion_handler,
 )
 from cellwiki.services.attachment_store import AttachmentFileStore
-from cellwiki.services.git_executor import GitCommandError, GitExecutor
+from cellwiki.services.git_executor import GitCommandError, GitDiff, GitExecutor
 from cellwiki.services.logging_context import log_context
 from cellwiki.services.quality import inspect_projection
 from cellwiki.services.runtime_store import (
@@ -96,6 +96,7 @@ logger = logging.getLogger(__name__)
 
 # 墙钟超时下限（秒）：避免测试中预算/超时语义被极小值绕过
 MAX_RUN_SECONDS_FLOOR = 10
+SCHEMA_GATE_ERROR_PREFIX = "schema_contract_failed: "
 
 _TOOL_ACTIVITY_CODES = {
     "read_file": "reading_page",
@@ -1266,11 +1267,30 @@ class AgentRuntimeManager:
             return bool(run.checkpoint_id)
         return has_run_checkpoint(self.project_root, run.thread_id, run.run_id)
 
+    def _run_uses_retired_ingest_tool(self, run_id: str) -> bool:
+        """Detect persisted runs whose transcript depends on the retired tool."""
+        for event in self.store.list_events(run_id):
+            if event.type not in {
+                AgentEventType.TOOL_STARTED,
+                AgentEventType.TOOL_COMPLETED,
+                AgentEventType.TOOL_FAILED,
+            }:
+                continue
+            if str(event.data.get("tool_name") or "") == "ingest_sources":
+                return True
+            if event.message.startswith("ingest_sources"):
+                return True
+        return False
+
     def resume(self, run_id: str, *, reason: str = "resume") -> AgentRun:
         """ADR-0010 决策 6：resume = 同一 run 回到 RUNNING、继承剩余预算，从 checkpoint 续跑。"""
         run = self.store.get_run(run_id)
         if run is None:
             raise KeyError(f"unknown run: {run_id}")
+        if self._run_uses_retired_ingest_tool(run_id):
+            raise CheckpointMissingError(
+                "this run used the retired ingest_sources tool; resend the ingest request"
+            )
         adapter = self.adapter or self._built_adapter
         # adapter 为空意味着稍后会构建产品图，因此同样按图路径判定。
         graph_path = adapter is None or not hasattr(adapter, "execute")
@@ -1875,6 +1895,8 @@ class AgentRuntimeManager:
                 # 不变式 1 收口失败：宁可 unfinished 也不让脏改动以 SUCCEEDED 收场。
                 self._finalize_unfinished(run_id, AgentErrorType.SYSTEM, str(error))
                 return
+            if not self._schema_gate_before_success(run_id):
+                return
             self.store.finalize_run(
                 run_id,
                 AgentRunOutcome(
@@ -1891,6 +1913,8 @@ class AgentRuntimeManager:
                 self._ensure_run_versioned(run_id)
             except RunVersioningError as error:
                 self._finalize_unfinished(run_id, AgentErrorType.SYSTEM, str(error))
+                return
+            if not self._schema_gate_before_success(run_id):
                 return
             self.store.finalize_run(
                 run_id,
@@ -2352,6 +2376,10 @@ class AgentRuntimeManager:
         if run.status != AgentRunStatus.WAITING_CONFIRMATION:
             raise InvalidRunTransitionError(
                 f"run {run_id} is not waiting for a question ({run.status.value})"
+            )
+        if self._run_uses_retired_ingest_tool(run_id):
+            raise CheckpointMissingError(
+                "this run used the retired ingest_sources tool; resend the ingest request"
             )
         question = self.store.get_open_question(run_id)
         if question is None:
@@ -2821,44 +2849,38 @@ class AgentRuntimeManager:
         except TerminalRunError:
             pass
 
-    def _maybe_publish_pending_diff(self, run_id: str) -> bool:
-        """Collect the run's newest commits into the current pending unit.
-
-        Returns True when a pending diff was published or refreshed. System
-        maintenance commits and earlier units' revert commits are excluded from
-        both the commit list and the review patch.
-        """
+    def _collect_run_agent_diff(
+        self, run_id: str
+    ) -> tuple[AgentRun, str, str | None, str, list[str], GitDiff] | None:
+        """Collect the current publish unit's agent commits and diff without saving it."""
         run = self.store.get_run(run_id)
         if run is None:
-            return False
+            return None
         git = self._git_executor()
         if git is None:
-            return False
+            return None
         diff_id, _index, baseline = self._resolve_publish_target(run)
         try:
-            # baseline 为 None = 工作区当时尚无提交：取该范围内产出的 commit(s)
             commits = git.commits_since(baseline)
         except GitCommandError:
-            return False
+            return None
         if not commits:
-            # 不变式 1 收口：模型写了文件却没 commit 时，系统代为版本化，让人审
-            # 闸门看得到这些改动。收口失败抛 RunVersioningError，由调用点决定
-            # 翻转 unfinished（SUCCEEDED 落点前）或降级为尽力而为（兜底/挂起）。
             self._ensure_run_versioned(run_id)
-            commits = git.commits_since(baseline)
+            run = self.store.get_run(run_id) or run
+            try:
+                commits = git.commits_since(baseline)
+            except GitCommandError:
+                return None
             if not commits:
-                return False
-        # 系统维护 commit（chore(system): maintenance ...）不属于任何 Agent
-        # run：commit 列表与审查补丁都要排除，避免接受/拒绝时误伤审计记录。
+                return None
         reverted = self._resolved_revert_commits(run.run_id)
         agent_commits = [
             sha
             for sha in commits
-            if sha not in reverted
-            and not self._is_system_maintenance_commit(git, sha)
+            if sha not in reverted and not self._is_system_maintenance_commit(git, sha)
         ]
         if not agent_commits:
-            return False
+            return None
         head = agent_commits[0]
         refs = frozenset({head})
         if baseline is not None:
@@ -2869,6 +2891,98 @@ class AgentRuntimeManager:
             enabled_refs=refs,
             exclude_paths=("overview.md", "statistics.md", "log.md", "audit_report.md"),
         )
+        return run, diff_id, baseline, head, agent_commits, diff
+
+    def _schema_gate_report(self, changed_paths: Iterable[str]) -> dict[str, Any] | None:
+        """Run schema lint only when the diff touches the schema or wiki pages."""
+        paths = [str(path).replace("\\", "/") for path in changed_paths]
+        gated = [
+            path
+            for path in paths
+            if path == "schema.md" or (path.startswith("wiki/") and path.endswith(".md"))
+        ]
+        if not gated:
+            return None
+        return inspect_projection(self.project_root, changed_paths=gated)
+
+    @staticmethod
+    def _schema_gate_message(report: dict[str, Any]) -> str:
+        first: dict[str, Any] = next(
+            (issue for issue in report.get("issues", []) if issue.get("severity") == "error"),
+            {},
+        )
+        location = first.get("page_path") or first.get("locator") or "schema"
+        detail = first.get("detail") or "schema contract violation"
+        return (
+            SCHEMA_GATE_ERROR_PREFIX
+            + f"{report.get('error_count', 0)} issue(s); first: {location}: {detail}"
+        )[:2000]
+
+    def _record_schema_gate_event(self, run_id: str, report: dict[str, Any]) -> None:
+        errors = [
+            issue
+            for issue in report.get("issues", [])
+            if issue.get("severity") == "error"
+        ]
+        self.store.append_event(
+            run_id,
+            AgentEventType.REVIEW_REQUIRED,
+            message="Schema lint blocked pending diff.",
+            data={
+                "status": report.get("status"),
+                "error_count": report.get("error_count", 0),
+                "warning_count": report.get("warning_count", 0),
+                "issues": [
+                    {
+                        "type": issue.get("type"),
+                        "page_path": issue.get("page_path"),
+                        "locator": issue.get("locator"),
+                        "detail": issue.get("detail"),
+                    }
+                    for issue in errors[:20]
+                ],
+            },
+        )
+
+    def _schema_gate_before_success(self, run_id: str) -> bool:
+        """Return False and park the run unfinished when changed pages violate schema."""
+        collected = self._collect_run_agent_diff(run_id)
+        if collected is None:
+            return True
+        _run, _diff_id, _baseline, _head, _commits, diff = collected
+        report = self._schema_gate_report(diff.files)
+        if report is None or int(report.get("error_count") or 0) == 0:
+            return True
+        self._record_schema_gate_event(run_id, report)
+        self._finalize_unfinished(
+            run_id,
+            AgentErrorType.STRUCTURED_OUTPUT,
+            self._schema_gate_message(report),
+        )
+        return False
+
+    def _maybe_publish_pending_diff(self, run_id: str) -> bool:
+        """Collect the run's newest commits into the current pending unit.
+
+        Returns True when a pending diff was published or refreshed. System
+        maintenance commits and earlier units' revert commits are excluded from
+        both the commit list and the review patch.
+        """
+        run = self.store.get_run(run_id)
+        if run is None:
+            return False
+        if run.status == AgentRunStatus.UNFINISHED and (
+            run.error_message or ""
+        ).startswith(SCHEMA_GATE_ERROR_PREFIX):
+            return False
+        collected = self._collect_run_agent_diff(run_id)
+        if collected is None:
+            return False
+        run, diff_id, baseline, head, agent_commits, diff = collected
+        report = self._schema_gate_report(diff.files)
+        if report is not None and int(report.get("error_count") or 0) > 0:
+            self._record_schema_gate_event(run_id, report)
+            return False
         existing: PendingDiff | None = None
         try:
             candidate = self.store.get_pending_diff(diff_id)
@@ -3260,6 +3374,22 @@ class AgentRuntimeManager:
                 raise ValueError("workspace is not a git repository")
             git.run("add", target.relative_to(self.project_root).as_posix())
             git.run("commit", "-m", f"workspace edit: {path}")
+            collected = self._collect_run_agent_diff(run.run_id)
+            if collected is not None:
+                report = self._schema_gate_report(collected[-1].files)
+                if report is not None and int(report.get("error_count") or 0) > 0:
+                    self._record_schema_gate_event(run.run_id, report)
+                    message = self._schema_gate_message(report)
+                    self.store.finalize_run(
+                        run.run_id,
+                        AgentRunOutcome(
+                            status=AgentRunStatus.FAILED,
+                            message=message,
+                            error_type=AgentErrorType.STRUCTURED_OUTPUT,
+                            error_message=message,
+                        ),
+                    )
+                    raise ValueError(message)
             if self._maybe_publish_pending_diff(run.run_id):
                 self._forced_lint_audit(run.run_id)
         except Exception as error:

@@ -103,8 +103,8 @@ class _HangingAdapter:
             # "挂起空闲界"这件事掩盖掉——那正是误杀的窗口。
             yield RuntimeSignal(
                 type=AgentEventType.TOOL_STARTED,
-                message="ingest_sources · 3 个附件",
-                data={"tool_name": "ingest_sources", "tool_call_id": "call_hang"},
+                message="read_file · raw/paper.extracted.txt",
+                data={"tool_name": "read_file", "tool_call_id": "call_hang"},
                 model_call_id="m1",
             )
         else:

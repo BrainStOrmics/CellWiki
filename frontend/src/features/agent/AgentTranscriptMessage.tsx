@@ -339,7 +339,8 @@ const TOOL_CARDS: Record<string, ToolCardSpec> = {
   lint_knowledge_base: { label: "Lint", icon: CircleCheck, Body: LintCard },
   read_attachment: { label: "Attachment", icon: FileText, Body: AttachmentCard },
   promote_attachment: { label: "Promote", icon: FileText, Body: AttachmentCard },
-  ingest_sources: { label: "Ingest", icon: FileText, Body: GenericCard },
+  // Retired tool: retained only so historical transcripts still render readably.
+  ingest_sources: { label: "Legacy ingest", icon: FileText, Body: GenericCard },
   ask_user_question: { label: "Ask", icon: FileText, Body: GenericCard },
   get_project_status: { label: "Status", icon: FileText, Body: GenericCard },
 };

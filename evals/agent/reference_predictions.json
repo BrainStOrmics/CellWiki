@@ -59,7 +59,7 @@
     {
       "case_id": "meta_tools_inventory",
       "final_status": "succeeded",
-      "answer": "我能用的是 CellWiki 白名单工具：ls、glob、grep、read_file（read_attachment 别名）、write_file、edit_file、delete_file、rename_file、git（status/diff/log/add/commit/revert）、run_powershell（只读 Get-*）、lint_knowledge_base、ask_user_question、read_attachment、promote_attachment、ingest_sources。全部在工作区内受治理，没有通用文件系统或 shell 工具。",
+      "answer": "我能用的是 CellWiki 白名单工具：ls、glob、grep、read_file（read_attachment 别名）、write_file、edit_file、delete_file、rename_file、git（status/diff/log/add/commit/revert）、run_powershell（只读 Get-*）、lint_knowledge_base、ask_user_question、read_attachment、promote_attachment。全部在工作区内受治理，没有通用文件系统或 shell 工具。",
       "missing_evidence": [],
       "changed_paths": [],
       "write_calls": [],

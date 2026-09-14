@@ -20,7 +20,7 @@ _PAGE_TEMPLATE = """---
 standard_name: natural_killer_cell
 display_name: Natural killer cell
 cl_id: CL:0000623
-species: Homo sapiens
+species: [Homo sapiens]
 references:
   - paper_id: fixture_nk_2023
     title: Fixture paraphrase of human NK cell identity evidence

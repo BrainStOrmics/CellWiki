@@ -1,7 +1,7 @@
 # =============================================================================
 # 负向变异：maintain_overwrites —— 维护多写越界文件
 # =============================================================================
-# 维护内容本身正确，但额外创建 summary 页：changed_paths_subset 必须以
+# 维护内容本身正确，但额外创建根级 summary 文件：changed_paths_subset 必须以
 # write_outside_scope 变红（允许面只有目标页一个路径）。
 # =============================================================================
 
@@ -20,10 +20,10 @@ MUTATION = {
     "scenario_id": "maintain_accept_then_query",
     "expected_codes": ["write_outside_scope"],
     "expected_primary": "safety",
-    "description": "维护轮额外写 wiki/notes/nk_summary.md，超出允许改动面。",
+    "description": "维护轮额外写根级 nk_summary.md，超出允许改动面。",
 }
 
-_EXTRA = "wiki/notes/nk_summary.md"
+_EXTRA = "nk_summary.md"
 
 
 def _oracle():

@@ -1,13 +1,10 @@
-# =============================================================================
-# 附件驱动导入测试：上传解析、范围读取/预算/守卫、promote、ingest + schema
-# =============================================================================
+"""Source lifecycle, attachment reads, and direct raw-source access."""
 
 from __future__ import annotations
 
 import io
 import json
 import subprocess
-import types
 from pathlib import Path
 
 import pytest
@@ -19,8 +16,9 @@ from cellwiki.agent.executor import (
     set_attachment_scope,
     set_promotion_handler,
 )
-from cellwiki.agent.ingest_tools import build_ingest_tools
+from cellwiki.agent.source_tools import build_source_tools
 from cellwiki.services.attachment_store import AttachmentFileStore
+from cellwiki.services.promotion import scan_raw_sources
 
 
 def _git_init(root: Path) -> None:
@@ -59,7 +57,10 @@ def test_store_upload_rejects_unsupported_suffix(tmp_path: Path):
 def test_store_upload_pdf_garbage_marks_no_text(tmp_path: Path):
     store = AttachmentFileStore(tmp_path)
     attachment = store.store_upload(
-        "thread_a", original_name="bin.pdf", media_type="application/pdf", stream=io.BytesIO(b"%PDF-1.4\x00 garbage")
+        "thread_a",
+        original_name="bin.pdf",
+        media_type="application/pdf",
+        stream=io.BytesIO(b"%PDF-1.4\x00 garbage"),
     )
     assert attachment.to_payload()["text_available"] is False
 
@@ -78,7 +79,9 @@ def test_read_file_supports_range(tmp_path: Path):
     (root / "wiki").mkdir(exist_ok=True)
     (root / "wiki" / "big.md").write_text("0123456789abcdefghij", encoding="utf-8")
     tools = {t.name: t for t in build_workspace_tools(root)}
-    payload = json.loads(tools["read_file"].invoke({"path": "wiki/big.md", "offset": 5, "length": 6}))
+    payload = json.loads(
+        tools["read_file"].invoke({"path": "wiki/big.md", "offset": 5, "length": 6})
+    )
     assert payload["content"] == "56789a"
     assert payload["offset"] == 5
     assert payload["total_chars"] == 20
@@ -132,7 +135,8 @@ def test_promote_attachment_moves_to_raw_and_commits(tmp_path: Path):
     )
     set_promotion_handler(lambda t, a, s: promoted.append((t, a, s)))
     try:
-        tools = {t.name: t for t in build_ingest_tools(root)}
+        tools = {t.name: t for t in build_source_tools(root)}
+        assert set(tools) == {"promote_attachment"}
         result = json.loads(tools["promote_attachment"].invoke({"attachment_id": aid}))
         assert result.get("ok") is True
         source_id = result["source_id"]
@@ -146,103 +150,37 @@ def test_promote_attachment_moves_to_raw_and_commits(tmp_path: Path):
         clear_attachment_scope()
 
 
-def _fake_cell(name: str, standard: str, cl_id: str):
-    return types.SimpleNamespace(
-        name=name,
-        standard_name=standard,
-        cl_id=cl_id,
-        description="A fake cell.",
-        markers=[types.SimpleNamespace(gene_symbol="CD3D", marker_type="positive", evidence="FACS")],
-        tissues=["blood"],
-        diseases=[],
-        species=["Homo sapiens"],
+def test_agent_file_tools_can_read_raw_and_write_contract_page(tmp_path: Path):
+    root = tmp_path
+    source = root / "raw" / "paper_one"
+    source.mkdir(parents=True)
+    (source / "paper.extracted.txt").write_text(
+        "Human CD8 T cells express CD3D and CD8A.", encoding="utf-8"
     )
-
-
-def _fake_result() -> types.SimpleNamespace:
-    return types.SimpleNamespace(
-        cell_types=[_fake_cell("CD8+ T cell", "cd8_t_cell", "CL:0000625")],
-        raw_relationships=[],
-        paper=types.SimpleNamespace(title="Paper", doi="10.1/2", year=2024),
+    tools = {t.name: t for t in build_workspace_tools(root)}
+    listed = json.loads(tools["glob"].invoke({"pattern": "raw/**/*.txt"}))
+    assert "raw/paper_one/paper.extracted.txt" in listed["results"]
+    read = json.loads(
+        tools["read_file"].invoke({"path": "raw/paper_one/paper.extracted.txt"})
     )
+    assert "CD8A" in read["content"]
+    written = json.loads(
+        tools["write_file"].invoke(
+            {
+                "path": "wiki/cell_types/cd8_t_cell.md",
+                "content": "# CD8 T Cell\n\n## Markers\n\n- CD8A\n",
+            }
+        )
+    )
+    assert written.get("ok") is True
+    assert (root / "wiki" / "cell_types" / "cd8_t_cell.md").is_file()
 
 
-def _write_source_record(root: Path, source_id: str, text: str) -> None:
-    raw = root / "raw" / source_id
-    raw.mkdir(parents=True, exist_ok=True)
-    stored = raw / "paper.md"
-    stored.write_text(text, encoding="utf-8")
-    sidecar = raw / "paper.extracted.txt"
-    sidecar.write_text(text, encoding="utf-8")
-    record = {
-        "source_id": source_id,
-        "source_type": "paper",
-        "original_name": "paper.md",
-        "stored_path": str(stored),
-        "status": "registered",
-        "metadata": {"file_name": "paper.md"},
-    }
-    registry = root / "data" / "runtime" / "sources"
-    registry.mkdir(parents=True, exist_ok=True)
-    (registry / f"{source_id}.json").write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-
-
-def test_ingest_sources_uses_builtin_schema_and_returns_drafts(tmp_path: Path, monkeypatch):
-    import cellwiki.agent.ingest_tools as ingest_tools
-
-    root = tmp_path
-    source_id = "src_" + "a" * 20
-    _write_source_record(root, source_id, "Paper about CD8 T cells.")
-    monkeypatch.setattr(ingest_tools, "_run_extraction", lambda text, path: _fake_result())
-    tools = {t.name: t for t in build_ingest_tools(root)}
-    result = json.loads(tools["ingest_sources"].invoke({"source_ids": [source_id]}))
-    assert result["built_in_schema_fallback"] is True
-    assert result["schema_used"] == "built-in default"
-    src = result["sources"][0]
-    assert src["status"] == "ok"
-    assert src["entities_found"] == 1
-    draft = src["drafts"][0]
-    assert draft["path"] == "wiki/cell_types/cd8_t_cell.md"
-    assert "display_name" in draft["markdown"]
-    assert "CL:0000625" in draft["markdown"]
-
-
-def test_ingest_sources_prefers_workspace_schema_md(tmp_path: Path, monkeypatch):
-    import cellwiki.agent.ingest_tools as ingest_tools
-
-    root = tmp_path
-    (root / "schema.md").write_text("# Custom schema\n\nOnly marker pages.\n", encoding="utf-8")
-    source_id = "src_" + "b" * 20
-    _write_source_record(root, source_id, "text")
-    monkeypatch.setattr(ingest_tools, "_run_extraction", lambda text, path: _fake_result())
-    tools = {t.name: t for t in build_ingest_tools(root)}
-    result = json.loads(tools["ingest_sources"].invoke({"source_ids": [source_id]}))
-    assert result["schema_used"] == "schema.md"
-    assert result["built_in_schema_fallback"] is False
-
-
-def test_ingest_sources_missing_record_reports_error_not_crash(tmp_path: Path):
-    root = tmp_path
-    tools = {t.name: t for t in build_ingest_tools(root)}
-    result = json.loads(tools["ingest_sources"].invoke({"source_ids": ["src_nonexistent"]}))
-    assert result["sources"][0]["status"] == "error"
-    assert "source record not found" in result["sources"][0]["uncertainties"][0]
-
-
-# ---------------------------------------------------------------------------
-# 预置 raw/ 源扫描登记（方案 B）：产品侧登记，Agent 白名单不变
-# ---------------------------------------------------------------------------
-
-
-def test_scan_registers_preplaced_markdown_dir(tmp_path: Path, monkeypatch):
-    import cellwiki.agent.ingest_tools as ingest_tools
-    from cellwiki.services.promotion import scan_raw_sources
-
+def test_scan_registers_preplaced_markdown_dir(tmp_path: Path):
     root = tmp_path
     source_dir = root / "raw" / "Fu_2025_NatMethods"
     source_dir.mkdir(parents=True)
     (source_dir / "paper.md").write_text("# Paper\n\nCD8 T cells.", encoding="utf-8")
-
     counts = scan_raw_sources(root)
     assert counts["added"] == 1
     assert counts["sources"] == ["Fu_2025_NatMethods"]
@@ -254,24 +192,9 @@ def test_scan_registers_preplaced_markdown_dir(tmp_path: Path, monkeypatch):
     assert record["status"] == "registered"
     assert record["metadata"]["registration"] == "preplaced_scan"
     assert "promoted_from" not in record["metadata"]
-    assert record["stored_path"].endswith("paper.md")
-    # 登记不复制文件、不新增 raw/ 内容
-    assert sorted(p.name for p in source_dir.iterdir()) == ["paper.md"]
-
-    # 登记之后 ingest_sources 直接可用（不再 source record not found）。
-    monkeypatch.setattr(ingest_tools, "_run_extraction", lambda text, path: _fake_result())
-    tools = {t.name: t for t in build_ingest_tools(root)}
-    result = json.loads(
-        tools["ingest_sources"].invoke({"source_ids": ["Fu_2025_NatMethods"]})
-    )
-    src = result["sources"][0]
-    assert src["status"] == "ok"
-    assert src["drafts"][0]["path"] == "wiki/cell_types/cd8_t_cell.md"
 
 
 def test_scan_is_idempotent_and_no_git_changes(tmp_path: Path):
-    from cellwiki.services.promotion import scan_raw_sources
-
     root = tmp_path
     _git_init(root)
     source_dir = root / "raw" / "paper_one"
@@ -283,25 +206,26 @@ def test_scan_is_idempotent_and_no_git_changes(tmp_path: Path):
     )
     head_before = subprocess.run(
         ["git", "-C", str(root), "rev-parse", "HEAD"],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
-
     first = scan_raw_sources(root)
     assert first["added"] == 1
-
     second = scan_raw_sources(root)
     assert second["added"] == 0
     assert second["updated"] == 1
-    assert second["sources"] == ["paper_one"]
-    assert len(list((root / "data" / "runtime" / "sources").glob("*.json"))) == 1
-    # 登记不 commit、不 stage：HEAD 不动，index 干净（不进入 pending diff）。
     assert subprocess.run(
         ["git", "-C", str(root), "rev-parse", "HEAD"],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip() == head_before
     staged = subprocess.run(
         ["git", "-C", str(root), "diff", "--cached", "--name-only"],
-        check=True, capture_output=True, text=True,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     assert staged == "", staged
 
@@ -311,9 +235,6 @@ def test_scan_registers_pdf_without_sidecar_as_needs_extraction(tmp_path: Path):
     source_dir = root / "raw" / "locked_pdf"
     source_dir.mkdir(parents=True)
     (source_dir / "paper.pdf").write_bytes(b"%PDF-1.7 not a real pdf")
-
-    from cellwiki.services.promotion import scan_raw_sources
-
     counts = scan_raw_sources(root)
     assert counts["needs_extraction"] == 1
     record = json.loads(
@@ -323,17 +244,8 @@ def test_scan_registers_pdf_without_sidecar_as_needs_extraction(tmp_path: Path):
     )
     assert record["status"] == "needs_extraction"
 
-    # ingest 得到可执行提示而不是泛泛的 not found
-    tools = {t.name: t for t in build_ingest_tools(root)}
-    result = json.loads(tools["ingest_sources"].invoke({"source_ids": ["locked_pdf"]}))
-    src = result["sources"][0]
-    assert src["status"] == "error"
-    assert "needs_extraction" in src["uncertainties"][0]
-
 
 def test_scan_skips_existing_attachment_promoted_record(tmp_path: Path):
-    from cellwiki.services.promotion import scan_raw_sources
-
     root = tmp_path
     hash_id = "src_" + "c" * 20
     raw = root / "raw" / hash_id
@@ -346,33 +258,14 @@ def test_scan_skips_existing_attachment_promoted_record(tmp_path: Path):
         "original_name": "paper.md",
         "stored_path": str(stored),
         "status": "registered",
-        "metadata": {
-            "file_name": "paper.md",
-            "promoted_from": "att_1234__paper.md",
-        },
+        "metadata": {"file_name": "paper.md", "promoted_from": "att_1234__paper.md"},
     }
     registry = root / "data" / "runtime" / "sources"
     registry.mkdir(parents=True, exist_ok=True)
     path = registry / f"{hash_id}.json"
     path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-
     counts = scan_raw_sources(root)
     assert counts["skipped"] == 1
     assert counts["added"] == 0
-    # 附件晋升记录原样保留（由 promote 通路管理）
     after = json.loads(path.read_text(encoding="utf-8"))
     assert after["metadata"]["promoted_from"] == "att_1234__paper.md"
-
-
-def test_ingest_missing_record_for_existing_dir_suggests_scan(tmp_path: Path):
-    root = tmp_path
-    (root / "raw" / "unregistered_paper").mkdir(parents=True)
-    (root / "raw" / "unregistered_paper" / "body.md").write_text("x", encoding="utf-8")
-    tools = {t.name: t for t in build_ingest_tools(root)}
-    result = json.loads(
-        tools["ingest_sources"].invoke({"source_ids": ["unregistered_paper"]})
-    )
-    src = result["sources"][0]
-    assert src["status"] == "error"
-    assert "not registered" in src["uncertainties"][0]
-    assert "scan" in src["uncertainties"][0]

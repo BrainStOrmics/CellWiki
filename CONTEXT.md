@@ -39,8 +39,8 @@
   列表的主体；一个会话含 0..N 个 run，零 run 会话同样可见、可回访。
 - **会话标题（thread title）**：会话的用户可见标签，预留给 LLM 总结命名；未命名时
   回退会话 ID 后缀，尚未开始的会话显示"新会话"占位。
-- **lint_knowledge_base**：确定性知识库检查器（frontmatter、链接完整性、
-  空引用、派生一致性），只报告不修复；run 结束时系统强制重跑。
+- **lint_knowledge_base**：schema 驱动的确定性页面检查器（路径、frontmatter、
+  章节、引用、链接与身份完整性），只报告不修复；runtime 在 pending diff 前调用同一入口。
 - **ask_user_question**：运行中向用户提问的工具，契约含 5+1 修订。
 - **附件（attachment）**：用户上传到线程的 pdf/md/txt（单文件 <100MB、单次 <=20、
   每线程 <=500MB），仅作为线程临时 Agent 上下文，上传时服务端提取文本（PDF pdfplumber，
@@ -52,7 +52,8 @@
 - **预置源登记（raw scan）**：用户从产品侧发起的"扫描并登记 raw/"动作，按目录名
   登记用户直接放进 `raw/<目录名>/` 的源（source_id = 目录名，幂等，不复制、不产生
   git 变更）；无提取文本的 PDF 登记为 needs_extraction。Agent 工具白名单不因此扩大。
-- **schema.md**：工作区根目录可插拔的提取契约；ingest 前 Agent 读取，缺失时回退内置默认。
+- **schema.md**：用户拥有的工作区页面提取契约；Agent 只读，lint 解析其中的
+  `yaml cellwiki-schema` 块。缺失或无效时不发布新的 `wiki/` 变更，不回退内置 schema。
 - **工作区编辑（workspace edit）**：APP 对 md/txt 的受控修改，走合成 run 提交与
   pending diff 审批，不绕过“Run -> 待确认 diff -> 用户接受”。
 - **系统维护 commit**：accept diff 后，系统把 overview/statistics 重建、index 统计注入与 log/audit 追加合并为一个确定性 commit（`chore(system): maintenance after run <id> (<verdict>)`），不在拒绝 revert 范围。
@@ -67,12 +68,13 @@
    用户接受`。
 2. git 历史永不改写；撤销只用 revert；禁止 `reset --hard` / `clean` / `rm` /
    `rebase` / `amend` / `push` / `fetch` / `checkout --`。
-3. Agent 可读写整个工作目录；`log.md` 与 `audit_report.md` 只读，
+3. Agent 可读写整个工作目录；`schema.md`、`log.md` 与 `audit_report.md` 只读，
    `overview.md` 与 `statistics.md` 系统重建。
 4. run 严格串行：同一时刻最多一个进行中的 run 与一个未判定审批单元。
 5. 查询 run 只读、不产生 diff。
-6. lint 门禁：run 结束系统强制重跑 `lint_knowledge_base`；失败不进入待确认、
-   不撤销 commit。
+6. lint 门禁：run 结束对本次变更页面按工作区 schema 执行确定性 lint；L0 失败
+   不发布待确认 diff、不撤销已有 commit，run 落 unfinished 供继续修复。未修改的
+   历史页面只产生迁移警告。
 7. 中断态 = `unfinished`：预算或时长耗尽、崩溃/重启恢复、以及**用户主动停止**都落
    这里，commit 保留、可续；"继续" = 同一 run 回到 RUNNING、从该 run 的 checkpoint
    续跑并继承剩余预算（ADR-0010 决策 6 取代了"带相同输入重新执行"的旧机制）。

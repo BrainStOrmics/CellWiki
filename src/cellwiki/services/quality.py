@@ -1,170 +1,202 @@
-# =============================================================================
-# 质量检查服务 —— Wiki 投影的确定性结构和引用 lint
-# =============================================================================
-
-"""Deterministic structural and referential lint for the Wiki projection."""
+"""Deterministic schema-driven lint for workspace Markdown pages."""
 
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from cellwiki.domain.linting import LintFinding, LintLevel, LintSeverity
-from cellwiki.domain.extraction import ExtractionResult
-from cellwiki.services.naming import is_cluster_identifier
+from cellwiki.domain.page_schema import PageContract
+from cellwiki.services.schema_contract import (
+    SCHEMA_FILE_NAME,
+    SchemaContractError,
+    field_rule_error,
+    load_workspace_schema,
+    matching_page_types,
+)
 
 
-# ---------------------------------------------------------------------------
-# ProjectionQualityError —— 投影质量异常
-# 当 L0 门控问题使投影不安全发布时抛出
-# ---------------------------------------------------------------------------
 class ProjectionQualityError(RuntimeError):
-    """Raised when a gating L0 issue makes a projection unsafe to publish."""
+    """Raised when a gating issue makes a wiki projection unsafe to publish."""
 
 
-# 常用正则表达式
-_CL_ID = re.compile(r"^CL:\d{7}$")                       # 细胞本体论 ID 格式
-_MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")    # Markdown 链接
-_MARKER_SYMBOL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")  # 标记物符号格式
+_MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
+_WIKILINK = re.compile(r"\[\[([^\]]+)\]\]")
+_H2 = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
 
 
-# ---------------------------------------------------------------------------
-# 检查已发布的 Markdown 投影，返回门控和建议性发现
-# 检查项包括：无效的前置元数据、空页面、断链引用、CL ID 格式等
-# 按严重级别分为 L0（阻塞）、L1（警告）、L2（信息）
-# ---------------------------------------------------------------------------
-def inspect_projection(project_root: Path) -> dict[str, Any]:
-    """Inspect published Markdown and return both gating and advisory findings."""
+def inspect_projection(
+    project_root: Path,
+    *,
+    changed_paths: Iterable[str] | None = None,
+) -> dict[str, Any]:
+    """Inspect Markdown pages and return gating and advisory findings.
+
+    ``changed_paths=None`` means the caller is linting the whole workspace and
+    contract violations are errors. Runtime pre-diff checks pass the run's
+    changed paths so unchanged historical pages remain advisory migration work.
+    """
+
     root = Path(project_root).resolve()
-    pages_dir = root / "wiki" / "cell_types"
+    changed = (
+        None
+        if changed_paths is None
+        else {
+            str(path).replace("\\", "/").removeprefix("./")
+            for path in changed_paths
+            if str(path).strip()
+        }
+    )
     issues: list[dict[str, Any]] = []
+    schema = None
+    schema_status = "valid"
+    schema_error: str | None = None
+    try:
+        schema = load_workspace_schema(root)
+    except SchemaContractError as error:
+        schema_status = "missing" if "is missing" in str(error) else "invalid"
+        schema_error = str(error)
+
+    wiki_root = root / "wiki"
+    all_pages = sorted(wiki_root.rglob("*.md")) if wiki_root.is_dir() else []
+    indexed_pages: dict[str, list[dict[str, Any]]] = {}
     page_count = 0
 
-    if pages_dir.exists():
-        for path in sorted(pages_dir.glob("*.md")):
+    records: list[tuple[Path, str, str, PageContract, str]] = []
+    for path in all_pages:
+        relative = path.relative_to(root).as_posix()
+        matches = matching_page_types(schema, relative) if schema is not None else []
+        if len(matches) > 1:
+            page_changed = _page_changed(relative, changed)
+            issues.append(
+                _issue(
+                    path,
+                    "ambiguous_page_type",
+                    "Page matches more than one schema page type.",
+                    root=root,
+                    level="L0" if page_changed else "L1",
+                    category="schema",
+                    severity="error" if page_changed else "warning",
+                    target_id=path.stem,
+                    locator=relative,
+                )
+            )
+            continue
+        if matches:
+            page_type, contract, page_id = matches[0]
+            records.append((path, relative, page_type, contract, page_id))
+            indexed_pages.setdefault(page_id, []).append(
+                {"path": relative, "page_type": page_type, "file": path}
+            )
             page_count += 1
-            raw = path.read_text(encoding="utf-8")
-            frontmatter, body, frontmatter_error = _split_frontmatter(raw)
-            if frontmatter_error:
-                issues.append(
-                    _issue(
-                        path,
-                        "invalid_frontmatter",
-                        frontmatter_error,
-                        level="L0",          # L0 阻塞级别
-                        category="structure",
-                        severity="error",
-                    )
+        else:
+            indexed_pages.setdefault(path.stem, []).append(
+                {"path": relative, "page_type": None, "file": path}
+            )
+            if len(path.relative_to(wiki_root).parts) >= 2:
+                page_changed = _page_changed(relative, changed)
+                detail = (
+                    f"Page path does not match any schema page type: {relative}."
+                    if schema is not None
+                    else f"Page cannot be matched because {SCHEMA_FILE_NAME} is unavailable."
                 )
-            if not body.strip():
                 issues.append(
                     _issue(
                         path,
-                        "empty_page",
-                        "Published page has no body.",
-                        level="L0",
-                        category="structure",
-                        severity="error",
-                    )
-                )
-            if not any(line.startswith("# ") for line in body.splitlines()):
-                issues.append(
-                    _issue(
-                        path,
-                        "missing_title",
-                        "Published page has no H1 title.",
-                        level="L0",
-                        category="structure",
-                        severity="error",
-                        auto_fixable=True,
-                    )
-                )
-            standard_name = frontmatter.get("standard_name")
-            if standard_name is None:
-                issues.append(
-                    _issue(
-                        path,
-                        "missing_standard_name",
-                        "Frontmatter has no standard_name.",
-                        level="L0",
-                        category="identity",
-                        severity="error",
-                        auto_fixable=True,
-                    )
-                )
-            elif standard_name != path.stem:
-                issues.append(
-                    _issue(
-                        path,
-                        "id_mismatch",
-                        f"standard_name is {standard_name!r}; expected {path.stem!r}.",
-                        level="L0",
-                        category="identity",
-                        severity="error",
+                        "unmatched_page",
+                        detail,
+                        root=root,
+                        level="L0" if page_changed else "L1",
+                        category="schema",
+                        severity="error" if page_changed else "warning",
+                        target_id=path.stem,
+                        locator=relative,
                     )
                 )
 
-            cl_id = frontmatter.get("cl_id")
-            if cl_id is not None and not _CL_ID.fullmatch(str(cl_id)):
-                issues.append(
-                    _issue(
-                        path,
-                        "invalid_cl_id",
-                        f"Cell Ontology identifier {cl_id!r} is not in CL:0000000 form.",
-                        level="L1",
-                        category="ontology",
-                        severity="warning",
-                    )
-                )
+    if schema_error is not None:
+        wiki_pages_exist = page_count > 0 or any(
+            len(path.relative_to(wiki_root).parts) >= 2 for path in all_pages
+        )
+        schema_changed = changed is None or SCHEMA_FILE_NAME in changed
+        changed_wiki = schema_changed or (
+            any(
+                _page_changed(path.relative_to(root).as_posix(), changed)
+                for path in all_pages
+                if len(path.relative_to(wiki_root).parts) >= 2
+            )
+            if changed is not None
+            else wiki_pages_exist
+        )
+        schema_path = root / SCHEMA_FILE_NAME
+        issues.append(
+            _issue(
+                schema_path,
+                "invalid_schema" if schema_status == "invalid" else "missing_schema",
+                schema_error,
+                root=root,
+                level="L0" if changed_wiki else "L1",
+                category="schema",
+                severity="error" if changed_wiki else "warning",
+                target_id=SCHEMA_FILE_NAME,
+                locator=SCHEMA_FILE_NAME,
+            )
+        )
 
-            references = frontmatter.get("references")
-            if not references:
-                issues.append(
-                    _issue(
-                        path,
-                        "missing_references",
-                        "Page has no source references in frontmatter.",
-                        level="L1",
-                        category="provenance",
-                        severity="warning",
-                    )
-                )
-            elif isinstance(references, list):
-                reference_ids = [_reference_id(reference) for reference in references]
-                populated_ids = [reference_id for reference_id in reference_ids if reference_id]
-                duplicates = sorted(
-                    {reference_id for reference_id in populated_ids if populated_ids.count(reference_id) > 1}
-                )
-                if duplicates:
-                    issues.append(
-                        _issue(
-                            path,
-                            "duplicate_references",
-                            f"Duplicate reference IDs: {', '.join(duplicates)}.",
-                            level="L1",
-                            category="provenance",
-                            severity="warning",
-                            auto_fixable=True,
-                        )
-                    )
-            else:
-                issues.append(
-                    _issue(
-                        path,
-                        "invalid_references",
-                        "Frontmatter references must be a list.",
-                        level="L1",
-                        category="provenance",
-                        severity="warning",
-                    )
-                )
+    for path, relative, page_type, contract, page_id in records:
+        page_changed = _page_changed(relative, changed)
+        issues.extend(
+            _inspect_page(
+                path,
+                relative,
+                page_type,
+                contract,
+                page_id,
+                root,
+                page_changed=page_changed,
+            )
+        )
 
-            issues.extend(_broken_local_links(path, body))
+    for page_id, entries in indexed_pages.items():
+        if len(entries) < 2:
+            continue
+        for entry in entries:
+            relative = str(entry["path"])
+            page_changed = _page_changed(relative, changed)
+            issues.append(
+                _issue(
+                    Path(entry["file"]),
+                    "duplicate_page_id",
+                    f"Page id {page_id!r} is used by: {', '.join(item['path'] for item in entries)}.",
+                    root=root,
+                    level="L0" if page_changed else "L1",
+                    category="identity",
+                    severity="error" if page_changed else "warning",
+                    target_id=page_id,
+                    locator=relative,
+                )
+            )
 
-    issues.extend(_inspect_extractions(root))
+    if schema is not None:
+        for path, relative, page_type, contract, page_id in records:
+            if not contract.links.check:
+                continue
+            page_changed = _page_changed(relative, changed)
+            issues.extend(
+                _broken_links(
+                    path,
+                    relative,
+                    contract,
+                    schema,
+                    indexed_pages,
+                    root,
+                    page_changed=page_changed,
+                )
+            )
 
     error_count = sum(issue["severity"] == "error" for issue in issues)
     warning_count = sum(issue["severity"] == "warning" for issue in issues)
@@ -175,16 +207,25 @@ def inspect_projection(project_root: Path) -> dict[str, Any]:
         "issue_count": len(issues),
         "error_count": error_count,
         "warning_count": warning_count,
+        "schema": {
+            "path": SCHEMA_FILE_NAME,
+            "status": schema_status,
+            "version": schema.schema_version if schema is not None else None,
+        },
+        "scope": {
+            "changed_pages_only": changed is not None,
+            "changed_path_count": len(changed or ()),
+        },
         "levels": {
             "L0": {
                 "status": "failed" if error_count else "passed",
                 "issue_count": error_count,
-                "description": "Gating structure and identity checks",
+                "description": "Gating path, structure, contract, and identity checks",
             },
             "L1": {
                 "status": "warning" if warning_count else "passed",
                 "issue_count": warning_count,
-                "description": "Advisory provenance, ontology, and link checks",
+                "description": "Advisory migration, provenance, and link checks",
             },
             "L2": {
                 "status": "not_run",
@@ -197,7 +238,8 @@ def inspect_projection(project_root: Path) -> dict[str, Any]:
 
 
 def verify_projection(project_root: Path) -> None:
-    """Reject a CentralWriter transaction only for deterministic gating errors."""
+    """Raise when a deterministic gating error makes a projection unsafe."""
+
     report = inspect_projection(project_root)
     gating_issues = [issue for issue in report["issues"] if issue["severity"] == "error"]
     if gating_issues:
@@ -206,6 +248,381 @@ def verify_projection(project_root: Path) -> None:
             f"projection lint failed with {len(gating_issues)} gating issue(s): "
             f"{first['page_id']} {first['detail']}"
         )
+
+
+def _page_changed(relative_path: str, changed: set[str] | None) -> bool:
+    return True if changed is None else relative_path in changed
+
+
+def _inspect_page(
+    path: Path,
+    relative: str,
+    page_type: str,
+    contract: PageContract,
+    page_id: str,
+    root: Path,
+    *,
+    page_changed: bool,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    level = "L0" if page_changed else "L1"
+    severity = "error" if page_changed else "warning"
+    raw = path.read_text(encoding="utf-8")
+    frontmatter, body, frontmatter_error = _split_frontmatter(raw)
+    if frontmatter_error:
+        issues.append(
+            _issue(
+                path,
+                "invalid_frontmatter",
+                frontmatter_error,
+                root=root,
+                level=level,
+                category="structure",
+                severity=severity,
+                target_id=page_id,
+                locator=relative,
+            )
+        )
+    if not body.strip():
+        issues.append(
+            _issue(
+                path,
+                "empty_page",
+                "Published page has no body.",
+                root=root,
+                level=level,
+                category="structure",
+                severity=severity,
+                target_id=page_id,
+                locator=relative,
+            )
+        )
+    if not any(line.startswith("# ") for line in body.splitlines()):
+        issues.append(
+            _issue(
+                path,
+                "missing_title",
+                "Published page has no H1 title.",
+                root=root,
+                level=level,
+                category="structure",
+                severity=severity,
+                target_id=page_id,
+                locator=relative,
+            )
+        )
+
+    for field_name, rule in contract.frontmatter.required.items():
+        if field_name not in frontmatter:
+            issues.append(
+                _issue(
+                    path,
+                    "missing_required_field",
+                    f"Page type {page_type!r} requires frontmatter field {field_name!r}.",
+                    root=root,
+                    level=level,
+                    category="frontmatter",
+                    severity=severity,
+                    target_id=page_id,
+                    locator=f"{relative}#field={field_name}",
+                )
+            )
+            continue
+        detail = field_rule_error(rule, frontmatter[field_name])
+        if detail is not None:
+            issues.append(
+                _issue(
+                    path,
+                    "invalid_field_value",
+                    f"Frontmatter field {field_name!r} {detail}.",
+                    root=root,
+                    level=level,
+                    category="frontmatter",
+                    severity=severity,
+                    target_id=page_id,
+                    locator=f"{relative}#field={field_name}",
+                )
+            )
+
+    for field_name, rule in contract.frontmatter.optional.items():
+        if field_name not in frontmatter:
+            continue
+        detail = field_rule_error(rule, frontmatter[field_name])
+        if detail is not None:
+            issues.append(
+                _issue(
+                    path,
+                    "invalid_field_value",
+                    f"Frontmatter field {field_name!r} {detail}.",
+                    root=root,
+                    level=level,
+                    category="frontmatter",
+                    severity=severity,
+                    target_id=page_id,
+                    locator=f"{relative}#field={field_name}",
+                )
+            )
+
+    identity_value = frontmatter.get(contract.identity)
+    if isinstance(identity_value, str) and identity_value != page_id:
+        issues.append(
+            _issue(
+                path,
+                "id_mismatch",
+                f"Frontmatter {contract.identity!r} is {identity_value!r}; expected {page_id!r}.",
+                root=root,
+                level=level,
+                category="identity",
+                severity=severity,
+                target_id=page_id,
+                locator=f"{relative}#field={contract.identity}",
+            )
+        )
+
+    headings = {
+        match.group(1).strip() for match in _H2.finditer(body)
+    }
+    for section in contract.sections.required:
+        if section not in headings:
+            issues.append(
+                _issue(
+                    path,
+                    "missing_required_section",
+                    f"Page type {page_type!r} requires section {section!r}.",
+                    root=root,
+                    level=level,
+                    category="structure",
+                    severity=severity,
+                    target_id=page_id,
+                    locator=f"{relative}#section={section}",
+                )
+            )
+
+    issues.extend(
+        _reference_issues(
+            path,
+            relative,
+            page_id,
+            contract,
+            frontmatter,
+            root,
+            level=level,
+            severity=severity,
+        )
+    )
+    return issues
+
+
+def _reference_issues(
+    path: Path,
+    relative: str,
+    page_id: str,
+    contract: PageContract,
+    frontmatter: dict[str, Any],
+    root: Path,
+    *,
+    level: str,
+    severity: str,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    references = frontmatter.get("references")
+    if not references:
+        if contract.references.required:
+            issues.append(
+                _issue(
+                    path,
+                    "missing_references",
+                    "Page has no source references in frontmatter.",
+                    root=root,
+                    level=level,
+                    category="provenance",
+                    severity=severity,
+                    target_id=page_id,
+                    locator=f"{relative}#field=references",
+                )
+            )
+        return issues
+    if not isinstance(references, list):
+        issues.append(
+            _issue(
+                path,
+                "invalid_references",
+                "Frontmatter references must be a list.",
+                root=root,
+                level=level,
+                category="provenance",
+                severity=severity,
+                target_id=page_id,
+                locator=f"{relative}#field=references",
+            )
+        )
+        return issues
+
+    identifiers: list[str] = []
+    for reference in references:
+        identifier = _reference_id(reference, contract.references.id_fields)
+        if not identifier:
+            issues.append(
+                _issue(
+                    path,
+                    "invalid_reference",
+                    "Reference has no usable source identifier.",
+                    root=root,
+                    level=level,
+                    category="provenance",
+                    severity=severity,
+                    target_id=page_id,
+                    locator=f"{relative}#field=references",
+                )
+            )
+            continue
+        identifiers.append(identifier)
+        if contract.references.require_source:
+            source_dir = root / contract.references.source_root / identifier
+            if not source_dir.is_dir():
+                issues.append(
+                    _issue(
+                        path,
+                        "missing_reference_source",
+                        f"Reference source {identifier!r} has no directory under "
+                        f"{contract.references.source_root}/.",
+                        root=root,
+                        level=level,
+                        category="provenance",
+                        severity=severity,
+                        target_id=page_id,
+                        locator=f"{relative}#source={identifier}",
+                    )
+                )
+    duplicates = sorted({value for value in identifiers if identifiers.count(value) > 1})
+    for duplicate in duplicates:
+        issues.append(
+            _issue(
+                path,
+                "duplicate_references",
+                f"Duplicate reference ID: {duplicate}.",
+                root=root,
+                level=level,
+                category="provenance",
+                severity=severity,
+                target_id=page_id,
+                locator=f"{relative}#source={duplicate}",
+            )
+        )
+    return issues
+
+
+def _broken_links(
+    path: Path,
+    relative: str,
+    contract: PageContract,
+    schema,
+    indexed_pages: dict[str, list[dict[str, Any]]],
+    root: Path,
+    *,
+    page_changed: bool,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    level = "L0" if page_changed else "L1"
+    severity = "error" if page_changed else "warning"
+    body = _split_frontmatter(path.read_text(encoding="utf-8"))[1]
+    for line_number, line in enumerate(body.splitlines(), start=1):
+        for target in _MARKDOWN_LINK.findall(line):
+            normalized = target.strip().strip("<>").split("#", 1)[0]
+            if not normalized.lower().endswith(".md"):
+                continue
+            if normalized.startswith(("http://", "https://", "/")):
+                continue
+            resolved = (path.parent / normalized).resolve()
+            if not resolved.is_file():
+                issues.append(
+                    _issue(
+                        path,
+                        "broken_local_link",
+                        f"Local Wiki link target does not exist: {normalized}.",
+                        root=root,
+                        level=level,
+                        category="links",
+                        severity=severity,
+                        line=line_number,
+                        locator=f"{relative}:{line_number}",
+                    )
+                )
+                continue
+            target_type = _page_type_for_path(schema, resolved, root)
+            if contract.links.targets and target_type not in contract.links.targets:
+                issues.append(
+                    _issue(
+                        path,
+                        "invalid_link_target_type",
+                        f"Link target {normalized!r} has type {target_type!r}; "
+                        f"allowed targets are {contract.links.targets!r}.",
+                        root=root,
+                        level=level,
+                        category="links",
+                        severity=severity,
+                        line=line_number,
+                        locator=f"{relative}:{line_number}",
+                    )
+                )
+        for wikilink in _WIKILINK.findall(line):
+            target = wikilink.split("|", 1)[0].split("#", 1)[0].strip()
+            if not target:
+                continue
+            key = Path(target).stem if target.lower().endswith(".md") else target.split("/")[-1]
+            entries = indexed_pages.get(key, [])
+            if len(entries) != 1:
+                issues.append(
+                    _issue(
+                        path,
+                        "broken_wikilink",
+                        f"Wikilink target is missing or ambiguous: {target!r}.",
+                        root=root,
+                        level=level,
+                        category="links",
+                        severity=severity,
+                        line=line_number,
+                        locator=f"{relative}:{line_number}",
+                    )
+                )
+                continue
+            target_type = entries[0].get("page_type")
+            if contract.links.targets and target_type not in contract.links.targets:
+                issues.append(
+                    _issue(
+                        path,
+                        "invalid_link_target_type",
+                        f"Wikilink target {target!r} has type {target_type!r}; "
+                        f"allowed targets are {contract.links.targets!r}.",
+                        root=root,
+                        level=level,
+                        category="links",
+                        severity=severity,
+                        line=line_number,
+                        locator=f"{relative}:{line_number}",
+                    )
+                )
+    return issues
+
+
+def _page_type_for_path(schema, path: Path, root: Path) -> str | None:
+    try:
+        relative = path.resolve().relative_to(root).as_posix()
+    except ValueError:
+        return None
+    matches = matching_page_types(schema, relative)
+    return matches[0][0] if len(matches) == 1 else None
+
+
+def _reference_id(reference: Any, id_fields: list[str]) -> str | None:
+    if isinstance(reference, str):
+        return reference or None
+    if isinstance(reference, dict):
+        for field_name in id_fields:
+            value = reference.get(field_name)
+            if value not in (None, ""):
+                return str(value)
+    return None
 
 
 def _split_frontmatter(raw: str) -> tuple[dict[str, Any], str, str | None]:
@@ -223,210 +640,12 @@ def _split_frontmatter(raw: str) -> tuple[dict[str, Any], str, str | None]:
     return parsed, parts[2].lstrip("\r\n"), None
 
 
-def _reference_id(reference: Any) -> str | None:
-    if isinstance(reference, str):
-        return reference
-    if isinstance(reference, dict):
-        value = reference.get("paper_id") or reference.get("source_id")
-        return str(value) if value else None
-    return None
-
-
-def _broken_local_links(path: Path, body: str) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
-    for line_number, line in enumerate(body.splitlines(), start=1):
-        for target in _MARKDOWN_LINK.findall(line):
-            target_path = target.split("#", 1)[0].strip()
-            if not target_path.lower().endswith(".md"):
-                continue
-            if target_path.startswith(("http://", "https://", "/")):
-                continue
-            if not (path.parent / target_path).resolve().is_file():
-                issues.append(
-                    _issue(
-                        path,
-                        "broken_local_link",
-                        f"Local Wiki link target does not exist: {target_path}.",
-                        level="L1",
-                        category="links",
-                        severity="warning",
-                        line=line_number,
-                    )
-                )
-    return issues
-
-
-def _inspect_extractions(root: Path) -> list[dict[str, Any]]:
-    """Apply L0/L1 rules to the formal fact layer without mutating it."""
-
-    issues: list[dict[str, Any]] = []
-    extraction_dir = root / "data" / "extraction"
-    if not extraction_dir.exists():
-        return issues
-    for path in sorted(extraction_dir.glob("*.json")):
-        locator = f"data/extraction/{path.name}"
-        try:
-            extraction = ExtractionResult.model_validate_json(path.read_text(encoding="utf-8"))
-        except Exception as error:
-            issues.append(
-                _issue(
-                    path,
-                    "invalid_extraction",
-                    f"Formal extraction does not match its schema: {error}",
-                    level="L0",
-                    category="rebuildability",
-                    severity="error",
-                    target_id=path.stem,
-                    locator=locator,
-                )
-            )
-            continue
-
-        if extraction.cell_types and not extraction.claims:
-            issues.append(
-                _issue(
-                    path,
-                    "missing_claim_evidence",
-                    "Extraction contains entities but no claim-level evidence.",
-                    level="L1",
-                    category="provenance",
-                    severity="warning",
-                    target_id=path.stem,
-                    locator=locator,
-                )
-            )
-        for claim in extraction.claims:
-            for evidence in claim.evidence:
-                missing = [
-                    name
-                    for name, value in {
-                        "source_id": evidence.source_id,
-                        "page_start": evidence.page_start,
-                        "block_id": evidence.block_id,
-                        "excerpt": evidence.excerpt,
-                    }.items()
-                    if value in (None, "")
-                ]
-                if missing:
-                    issues.append(
-                        _issue(
-                            path,
-                            "incomplete_evidence_locator",
-                            f"Claim {claim.claim_id} is missing: {', '.join(missing)}.",
-                            level="L1",
-                            category="provenance",
-                            severity="warning",
-                            target_id=claim.subject,
-                            locator=f"{locator}#claim={claim.claim_id}",
-                            evidence=[item.model_dump(mode="json") for item in claim.evidence],
-                        )
-                    )
-
-        for cell in extraction.cell_types:
-            if is_cluster_identifier(cell.standard_name) or (
-                cell.parent_type and is_cluster_identifier(cell.parent_type)
-            ):
-                issues.append(
-                    _issue(
-                        path,
-                        "cluster_id_standard_name",
-                        "standard_name or parent_type contains a paper-internal cluster identifier.",
-                        level="L0",
-                        category="identity",
-                        severity="error",
-                        target_id=cell.standard_name,
-                        locator=f"{locator}#cell={cell.standard_name}",
-                    )
-                )
-            if not cell.description and not cell.markers and not cell.functions and not cell.parent_type:
-                issues.append(
-                    _issue(
-                        path,
-                        "empty_cell_type",
-                        "Extraction entry is an empty shell without description, markers, functions, or parent.",
-                        level="L0",
-                        category="content",
-                        severity="error",
-                        target_id=cell.standard_name,
-                        locator=f"{locator}#cell={cell.standard_name}",
-                    )
-                )
-            directions: dict[str, set[str]] = {}
-            for marker in cell.markers:
-                gene = marker.gene_symbol.upper()
-                if not marker.evidence.strip():
-                    issues.append(
-                        _issue(
-                            path,
-                            "missing_verbatim_marker_evidence",
-                            f"Marker {marker.gene_symbol} has no verbatim evidence text.",
-                            level="L0",
-                            category="marker",
-                            severity="error",
-                            target_id=cell.standard_name,
-                            locator=f"{locator}#cell={cell.standard_name}&marker={gene}",
-                        )
-                    )
-                directions.setdefault(gene, set()).add(marker.marker_type.value)
-                if not _MARKER_SYMBOL.fullmatch(marker.gene_symbol):
-                    issues.append(
-                        _issue(
-                            path,
-                            "invalid_marker_symbol",
-                            f"Marker symbol {marker.gene_symbol!r} has an unsupported format.",
-                            level="L1",
-                            category="marker",
-                            severity="warning",
-                            target_id=cell.standard_name,
-                            locator=f"{locator}#cell={cell.standard_name}",
-                        )
-                    )
-            for gene, marker_types in directions.items():
-                if {"positive", "negative"} <= marker_types:
-                    issues.append(
-                        _issue(
-                            path,
-                            "marker_direction_conflict",
-                            f"Marker {gene} is both positive and negative without a resolved context.",
-                            level="L1",
-                            category="conflict",
-                            severity="warning",
-                            target_id=cell.standard_name,
-                            locator=f"{locator}#cell={cell.standard_name}&marker={gene}",
-                        )
-                    )
-
-        source_document = extraction.source_document
-        source_id = str(source_document.get("source_id", ""))
-        parse_hash = str(source_document.get("parse_hash", ""))
-        record_path = root / "data" / "runtime" / "sources" / f"{source_id}.json"
-        if re.fullmatch(r"src_[a-f0-9]{20}", source_id) and record_path.is_file():
-            try:
-                record = yaml.safe_load(record_path.read_text(encoding="utf-8")) or {}
-                current_hash = str(record.get("parse_hash", ""))
-            except (OSError, yaml.YAMLError):
-                current_hash = ""
-            if parse_hash and current_hash and parse_hash != current_hash:
-                issues.append(
-                    _issue(
-                        path,
-                        "stale_extraction_parse_version",
-                        "Extraction parse_hash differs from the current registered source parse.",
-                        level="L1",
-                        category="version",
-                        severity="warning",
-                        target_id=source_id,
-                        locator=locator,
-                    )
-                )
-    return issues
-
-
 def _issue(
     path: Path,
     issue_type: str,
     detail: str,
     *,
+    root: Path,
     level: str,
     category: str,
     severity: str,
@@ -437,7 +656,11 @@ def _issue(
     evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     target = target_id or path.stem
-    resolved_locator = locator or f"wiki/cell_types/{path.name}" + (f":{line}" if line else "")
+    try:
+        relative = path.relative_to(root).as_posix()
+    except ValueError:
+        relative = path.as_posix()
+    resolved_locator = locator or relative + (f":{line}" if line else "")
     lint_level = LintLevel(level)
     lint_severity = LintSeverity(severity)
     suggested_operation = (
@@ -471,10 +694,15 @@ def _issue(
         suggested_operation=suggested_operation,
     )
     payload = finding.model_dump(mode="json")
-    # Compatibility keys remain while frontend consumers migrate to the stable contract.
-    payload.update({
-        "page_id": path.stem,
-        "type": issue_type,
-        "detail": detail,
-    })
+    payload.update(
+        {
+            "page_id": path.stem,
+            "type": issue_type,
+            "detail": detail,
+            "page_path": relative,
+        }
+    )
     return payload
+
+
+__all__ = ["ProjectionQualityError", "inspect_projection", "verify_projection"]

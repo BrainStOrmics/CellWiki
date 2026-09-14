@@ -285,7 +285,7 @@ from cellwiki.evaluation.agent_eval_v2 import ScriptResult, run_git
 def respond(ctx):
     page = ctx.workspace / "wiki" / "cell_types" / "natural_killer_cell.md"
     page.parent.mkdir(parents=True, exist_ok=True)
-    page.write_text("---\\nstandard_name: natural_killer_cell\\n---\\n# Natural killer cell\\n\\nbody\\n", encoding="utf-8")
+    page.write_text("---\\nstandard_name: natural_killer_cell\\ndisplay_name: Natural killer cell\\nreferences:\\n  - paper_id: fixture_nk_2023\\n---\\n# Natural killer cell\\n\\nbody\\n", encoding="utf-8")
     run_git(ctx.workspace, "add", "wiki/cell_types/natural_killer_cell.md")
     run_git(ctx.workspace, "commit", "-m", "feat(agent): scripted create")
     return ScriptResult(answer="created wiki/cell_types/natural_killer_cell.md")

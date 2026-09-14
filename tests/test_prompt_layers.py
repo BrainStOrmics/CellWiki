@@ -24,6 +24,8 @@ def test_layer_a_is_the_static_baseline_imported_by_app():
     assert "ask_user_question" in LAYER_A_TEXT
     assert "read_attachment" in LAYER_A_TEXT
     assert "pending diff" in LAYER_A_TEXT
+    assert "ingest_sources" not in LAYER_A_TEXT
+    assert "raw/<source_id>/" in LAYER_A_TEXT
 
 
 def test_layer_b_snapshot_contains_git_open_page_and_goal():

@@ -1295,8 +1295,18 @@ def test_real_graph_interrupt_pause_and_command_resume(tmp_path: Path):
     # 端到端：生产路径 —— 真实 langgraph 图 + 工具 interrupt + Command(resume) 续跑
     from cellwiki.agent.app import build_wiki_agent
 
+    (tmp_path / "schema.md").write_text(_maintenance_schema_contract(), encoding="utf-8")
     (tmp_path / "wiki" / "cell_types").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "wiki" / "cell_types" / "a.md").write_text("# Alpha cell\n", encoding="utf-8")
+    (tmp_path / "wiki" / "cell_types" / "a.md").write_text(
+        "---\n"
+        "entity_type: cell_type\n"
+        "standard_name: a\n"
+        'display_name: "Alpha cell"\n'
+        "references: []\n"
+        "---\n\n"
+        "# Alpha cell\n",
+        encoding="utf-8",
+    )
     graph = build_wiki_agent(tmp_path, model=_InterruptFakeModel())
     runtime = AgentRuntimeManager(tmp_path, adapter=graph)
     thread_id = f"thread_graph_{abs(hash(str(tmp_path))) & 0xFFFF}"
@@ -1471,8 +1481,39 @@ def _wait_for_maintenance_subject(repo: Path, fragment: str) -> list[str]:
     return subjects
 
 
+def _maintenance_schema_contract() -> str:
+    return '''# Schema
+
+```yaml cellwiki-schema
+schema_version: 1
+pages:
+  cell_type:
+    path: wiki/cell_types/{id}.md
+    identity: standard_name
+    frontmatter:
+      required:
+        entity_type:
+          type: string
+          const: cell_type
+        standard_name:
+          type: string
+          pattern: '^[a-z0-9_]+$'
+        display_name:
+          type: string
+        references:
+          type: list
+    sections:
+      required: []
+    references:
+      required: false
+    links:
+      check: false
+```
+'''
+
+
 class _MaintenanceWritingAdapter:
-    """Write one wiki page with distinct content per call, commit, then finish."""
+    """Write one schema-valid wiki page with distinct content per call, then finish."""
 
     def __init__(self, repo: Path):
         self.repo = repo
@@ -1480,13 +1521,23 @@ class _MaintenanceWritingAdapter:
 
     def execute(self, *, thread_id, message, context) -> Any:
         self.calls += 1
+        schema = self.repo / "schema.md"
+        if not schema.exists():
+            schema.write_text(_maintenance_schema_contract(), encoding="utf-8")
         wiki = self.repo / "wiki" / "cell_types"
         wiki.mkdir(parents=True, exist_ok=True)
-        (wiki / "alpha-cell.md").write_text(
-            f"# Alpha Cell\n\nbody-{self.calls}\n", encoding="utf-8"
+        (wiki / "alpha_cell.md").write_text(
+            "---\n"
+            "entity_type: cell_type\n"
+            "standard_name: alpha_cell\n"
+            'display_name: "Alpha Cell"\n'
+            "references: []\n"
+            "---\n\n"
+            f"# Alpha Cell\n\nbody-{self.calls}\n",
+            encoding="utf-8",
         )
         git = GitExecutor(self.repo)
-        git.run("add", "wiki/cell_types/alpha-cell.md")
+        git.run("add", "schema.md", "wiki/cell_types/alpha_cell.md")
         git.run("commit", "-m", f"agent change {self.calls}")
         yield RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="done", data={})
 
@@ -1510,7 +1561,7 @@ def test_accept_publishes_pending_diff_without_system_files_and_runs_maintenance
         patch = manager.pending_diff_patch(diff.diff_id)
         for name in ("overview.md", "statistics.md", "log.md", "audit_report.md"):
             assert name not in patch, name
-        assert "alpha-cell.md" in patch
+        assert "alpha_cell.md" in patch
         # 强制 lint 快照已追加到 audit_report.md（run 收尾线程异步，轮询等待）
         audit = _wait_for_file_text(
             repo / "audit_report.md", started.run_id
@@ -1970,5 +2021,126 @@ def test_dirty_tree_clean_claim_warns_even_before_auto_version(tmp_path: Path):
         warnings = _wait_for_event(manager, started.run_id, AgentEventType.CLAIM_VERIFICATION)
         assert warnings, "脏工作区声称干净必须触发警告"
         assert any("工作区" in m for m in warnings[0].data.get("mismatches", []))
+    finally:
+        manager.close()
+
+
+def _schema_gate_contract() -> str:
+    return '''# Schema
+
+```yaml cellwiki-schema
+schema_version: 1
+pages:
+  cell_type:
+    path: wiki/cell_types/{id}.md
+    identity: standard_name
+    frontmatter:
+      required:
+        entity_type:
+          type: string
+          const: cell_type
+        standard_name:
+          type: string
+          pattern: '^[a-z0-9_]+$'
+        display_name:
+          type: string
+        references:
+          type: list
+    sections:
+      required: [Evidence]
+    references:
+      required: true
+      require_source: true
+    links:
+      check: false
+```
+'''
+
+
+def _schema_gate_page(*, valid: bool) -> str:
+    display = 'display_name: "CD8 T Cell"\n' if valid else ""
+    return (
+        "---\n"
+        "entity_type: cell_type\n"
+        "standard_name: cd8_t_cell\n"
+        f"{display}"
+        "references:\n"
+        "  - source_id: paper_one\n"
+        "---\n\n"
+        "# CD8 T Cell\n\n## Evidence\n\nCD3D.\n"
+    )
+
+
+def _prepare_schema_workspace(tmp_path: Path) -> Path:
+    import subprocess
+
+    repo = _prepared_workspace(tmp_path)
+    (repo / "schema.md").write_text(_schema_gate_contract(), encoding="utf-8")
+    (repo / "raw" / "paper_one").mkdir(parents=True)
+    (repo / "raw" / "paper_one" / "paper.extracted.txt").write_text(
+        "CD8 T cells express CD3D.", encoding="utf-8"
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "schema.md", "raw"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "schema and source"],
+        check=True,
+        capture_output=True,
+    )
+    return repo
+
+
+def test_schema_gate_blocks_invalid_wiki_change_before_pending_diff(tmp_path: Path):
+    repo = _prepare_schema_workspace(tmp_path)
+
+    class InvalidPageAdapter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            target = repo / "wiki" / "cell_types" / "cd8_t_cell.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(_schema_gate_page(valid=False), encoding="utf-8")
+            git = GitExecutor(repo)
+            git.run("add", "wiki/cell_types/cd8_t_cell.md")
+            git.run("commit", "-m", "add invalid page")
+            yield RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="done", data={})
+
+    manager = AgentRuntimeManager(repo, adapter=InvalidPageAdapter())
+    try:
+        started = manager.start(
+            thread_id="t_schema_invalid",
+            message="ingest paper_one",
+            context=_context("t_schema_invalid"),
+        )
+        run = _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+        assert run.error_type == AgentErrorType.STRUCTURED_OUTPUT
+        assert (run.error_message or "").startswith("schema_contract_failed:")
+        assert not manager.store.list_pending_diffs(run_id=started.run_id)
+        assert _wait_for_event(manager, started.run_id, AgentEventType.REVIEW_REQUIRED)
+    finally:
+        manager.close()
+
+
+def test_schema_gate_allows_valid_wiki_change_and_publishes_pending_diff(tmp_path: Path):
+    repo = _prepare_schema_workspace(tmp_path)
+
+    class ValidPageAdapter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            target = repo / "wiki" / "cell_types" / "cd8_t_cell.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(_schema_gate_page(valid=True), encoding="utf-8")
+            git = GitExecutor(repo)
+            git.run("add", "wiki/cell_types/cd8_t_cell.md")
+            git.run("commit", "-m", "add valid page")
+            yield RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="done", data={})
+
+    manager = AgentRuntimeManager(repo, adapter=ValidPageAdapter())
+    try:
+        started = manager.start(
+            thread_id="t_schema_valid",
+            message="ingest paper_one",
+            context=_context("t_schema_valid"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diffs = _wait_for_diff(manager, started.run_id)
+        assert len(diffs) == 1
+        assert "wiki/cell_types/cd8_t_cell.md" in diffs[0].files
     finally:
         manager.close()

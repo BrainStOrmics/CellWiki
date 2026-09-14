@@ -322,7 +322,7 @@ describe("工具卡片注册表", () => {
       ["glob", "Glob"],
       ["ls", "LS"],
       ["search_wiki", "Search"],
-      ["ingest_sources", "Ingest"],
+      ["ingest_sources", "Legacy ingest"],
       ["ask_user_question", "Ask"],
       ["get_project_status", "Status"],
       ["read_attachment", "Attachment"],

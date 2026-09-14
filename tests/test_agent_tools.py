@@ -181,7 +181,6 @@ def test_runtime_tool_schema_is_exactly_the_whitelist(tmp_path: Path):
         "ask_user_question",
         "read_attachment",
         "promote_attachment",
-        "ingest_sources",
     }
 
 def test_ls_with_empty_folder_defaults_to_root(tmp_path: Path):
@@ -220,3 +219,21 @@ def test_system_owned_files_reject_write_edit_delete_rename(tmp_path: Path):
     assert payload["ok"] is True
     payload = json.loads(tools["write_file"].invoke({"path": "index.md", "content": "nav"}))
     assert payload["ok"] is True
+
+def test_agent_cannot_write_schema_contract_directly(tmp_path: Path):
+    root = _workspace(tmp_path)
+    (root / "schema.md").write_text("user-owned", encoding="utf-8")
+    tools = _tools(root)
+    write = json.loads(
+        tools["write_file"].invoke({"path": "schema.md", "content": "agent-owned"})
+    )
+    edit = json.loads(
+        tools["edit_file"].invoke(
+            {"path": "schema.md", "old_string": "user-owned", "new_string": "changed"}
+        )
+    )
+    deleted = json.loads(tools["delete_file"].invoke({"path": "schema.md"}))
+    assert write.get("error") == "system-owned file is not writable"
+    assert edit.get("error") == "system-owned file is not writable"
+    assert deleted.get("error") == "system-owned file is not writable"
+    assert (root / "schema.md").read_text(encoding="utf-8") == "user-owned"

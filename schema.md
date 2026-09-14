@@ -1,160 +1,228 @@
-# CellWiki Schema v2.0
+# CellWiki 页面提取契约
 
-> This document defines the structure, conventions, and workflows for CellWiki.
-> It is read by the LLM during every ingest, query, and lint operation.
+> 本文件只定义页面提取契约。Agent 在 ingest 前读取本文件；lint 解析其中的
+> `yaml cellwiki-schema` 块。块外的说明仅供人和 Agent 理解，不参与机械校验。
+> 该文件是用户拥有的契约，Agent 不得静默修改。
 
-## Purpose
-
-CellWiki is a self-maintaining single-cell multi-omics knowledge base. It extracts, integrates, and reasons about cell biology knowledge from curated papers, forming a queryable, traceable state-space图谱.
-
-## Entity Types
-
-| Type | Path | Naming | Example |
-|------|------|--------|---------|
-| cell_type | wiki/cell_types/{lineage}/{name}.md | snake_case | regulatory_t_cell |
-| marker_gene | wiki/marker_genes/{symbol}.md | Standard gene symbol (UPPERCASE) | FOXP3, CD3D |
-| tissue | wiki/tissues/{name}.md | snake_case | lymph_node |
-| disease | wiki/diseases/{category}/{name}.md | snake_case | NSCLC |
-| method | wiki/methods/{name}.md | snake_case | scRNA-seq_10x |
-| trajectory | wiki/trajectories/{name}.md | snake_case | T_naive_to_exhausted |
-
-## Naming Conventions
-
-- **cell_type**: snake_case, no spaces (e.g., `regulatory_t_cell`, not `Regulatory T Cell`)
-- **marker_gene**: Standard gene symbol, UPPERCASE for human (e.g., `CD3D`, `FOXP3`)
-- **tissue/disease/method/trajectory**: snake_case
-- **All page filenames**: No spaces, use underscores
-- **Display names**: Use proper biological nomenclature (e.g., "CD8+ T cell", "Treg")
-
-## Page Structure
-
-Every wiki page MUST have YAML frontmatter with entity-type-specific required fields.
-
-### Cell Type frontmatter
-```yaml
-entity_type: "cell_type"
-identity: "T_cell"
-state: "regulatory"
-display_name: "Regulatory T Cell (Treg)"
-cl_id: "CL:0000815"
-lineage: "T_cells"
-species: ["homo_sapiens"]
-tissues: ["blood", "lymph_node"]
-evidence_tier: 2
-source_count: 15
-last_updated: "2026-05-04"
+```yaml cellwiki-schema
+schema_version: 1
+pages:
+  cell_type:
+    path: wiki/cell_types/{id}.md
+    identity: standard_name
+    frontmatter:
+      required:
+        standard_name:
+          type: string
+          pattern: '^[a-z0-9_]+$'
+        display_name:
+          type: string
+      optional:
+        entity_type:
+          type: string
+        references:
+          type: list
+        cl_id:
+          type: string
+          nullable: true
+        parent_type:
+          type: string
+          nullable: true
+        aliases:
+          type: list
+        evidence_tier:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+        source_count:
+          type: integer
+        last_updated:
+          type: string
+        positive_markers:
+          type: list
+        negative_markers:
+          type: list
+        tissues:
+          type: list
+        species:
+          type: list
+        conflicts:
+          type: list
+    sections:
+      required: []
+    references:
+      required: false
+      require_source: false
+    links:
+      check: false
+      targets: [cell_type, marker_gene, tissue, disease]
+  marker_gene:
+    path: wiki/marker_genes/{id}.md
+    identity: gene_symbol
+    frontmatter:
+      required:
+        entity_type:
+          type: string
+          const: marker_gene
+        gene_symbol:
+          type: string
+          pattern: '^[A-Za-z0-9][A-Za-z0-9_.-]*$'
+        evidence_tier:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+      optional:
+        gene_name:
+          type: string
+        gene_id_ensembl:
+          type: string
+        specificity:
+          type: string
+        source_count:
+          type: integer
+        last_updated:
+          type: string
+        sources:
+          type: list
+    sections:
+      required: []
+    references:
+      required: false
+    links:
+      check: false
+      targets: [cell_type]
+  tissue:
+    path: wiki/tissues/{id}.md
+    identity: name
+    frontmatter:
+      required:
+        entity_type:
+          type: string
+          const: tissue
+        name:
+          type: string
+        display_name:
+          type: string
+        sources:
+          type: list
+      optional:
+        source_count:
+          type: integer
+        last_updated:
+          type: string
+    sections:
+      required: []
+    references:
+      required: false
+    links:
+      check: false
+      targets: [cell_type]
+  disease:
+    path: wiki/diseases/{id}.md
+    identity: name
+    frontmatter:
+      required:
+        entity_type:
+          type: string
+          const: disease
+        name:
+          type: string
+        display_name:
+          type: string
+        sources:
+          type: list
+      optional:
+        source_count:
+          type: integer
+        last_updated:
+          type: string
+    sections:
+      required: []
+    references:
+      required: false
+    links:
+      check: false
+      targets: [cell_type]
+  method:
+    path: wiki/methods/{id}.md
+    identity: name
+    frontmatter:
+      required:
+        entity_type:
+          type: string
+          const: method
+        name:
+          type: string
+        display_name:
+          type: string
+      optional:
+        description:
+          type: string
+        category:
+          type: string
+        source_count:
+          type: integer
+        last_updated:
+          type: string
+    sections:
+      required: []
+    references:
+      required: false
+    links:
+      check: false
+      targets: [cell_type, disease, tissue]
+  trajectory:
+    path: wiki/trajectories/{id}.md
+    identity: name
+    frontmatter:
+      required:
+        entity_type:
+          type: string
+          const: trajectory
+        name:
+          type: string
+        display_name:
+          type: string
+      optional:
+        description:
+          type: string
+        start_state:
+          type: string
+        end_state:
+          type: string
+        intermediate_states:
+          type: list
+        evidence_tier:
+          type: integer
+          enum: [1, 2, 3, 4, 5]
+        source_count:
+          type: integer
+        last_updated:
+          type: string
+    sections:
+      required: []
+    references:
+      required: false
+    links:
+      check: false
+      targets: [cell_type]
+  conflict:
+    path: wiki/conflicts/{id}.md
+    identity: conflict_id
+    frontmatter:
+      required:
+        conflict_id:
+          type: string
+        affected_cell_types:
+          type: list
+        severity:
+          type: string
+          enum: [low, medium, high]
+        sources:
+          type: list
+    sections:
+      required: []
+    references:
+      required: false
+    links:
+      check: false
+      targets: [cell_type, marker_gene]
 ```
-
-### Marker Gene frontmatter
-```yaml
-entity_type: "marker_gene"
-gene_symbol: "FOXP3"
-gene_name: "Forkhead box P3"
-gene_id_ensembl: "ENSG00000048998"
-specificity: "Treg (canonical)"
-evidence_tier: 1
-source_count: 20
-last_updated: "2026-05-04"
-```
-
-### Trajectory frontmatter
-```yaml
-entity_type: "trajectory"
-display_name: "T Cell Exhaustion Trajectory"
-start_state: "naive_cd8_t_cell"
-end_state: "terminally_exhausted_cd8_t_cell"
-intermediate_states: ["stem_like_exhausted", "progenitor_exhausted"]
-evidence_tier: 2
-source_count: 8
-last_updated: "2026-05-04"
-```
-
-## Ingest Workflow (Two-Step Chain)
-
-### Step 1: Analysis
-1. Read the source paper (PDF/Markdown text)
-2. Extract all entities: cell types, marker genes, tissues, diseases, methods
-3. Identify relationships between entities
-4. Compare with existing wiki pages — which need updating? which are new?
-5. Detect contradictions with existing knowledge
-6. Mark uncertainties that need human review
-7. Output: Structured IngestAnalysis (NOT wiki pages yet)
-
-### Step 2: Generation
-1. Take the IngestAnalysis as input
-2. For each entity:
-   - New entity → Create page with template
-   - Existing entity → Merge new information (union, never overwrite)
-3. Update index.md with new/updated entries
-4. Append to log.md with parseable format
-5. Update statistics.md
-6. If contradictions detected → update contradictions.md
-7. Generate review items for human judgment
-
-**Key principle**: A single source may touch 10-15 wiki pages. Knowledge compounds.
-
-## Lint Workflow
-
-Periodically run health checks on the wiki:
-
-1. **Index consistency**: Does index.md match actual wiki/ directory contents?
-2. **Link validity**: Do all [[wikilinks]] point to existing pages?
-3. **Frontmatter completeness**: Does every page have required YAML fields?
-4. **Stale pages**: Flag pages not updated in >30 days
-5. **Contradiction review**: Check if new literature has resolved existing contradictions
-6. **Orphan detection**: Find pages with no inbound links
-7. **Missing entities**: Find entity names mentioned in pages but lacking their own page
-
-Auto-fixable issues (index, broken links, frontmatter) are repaired automatically.
-Non-fixable issues (contradictions, missing knowledge) go to review queue.
-
-## Query Workflow
-
-1. **Entity Match**: Parse query, identify entity types (gene? cell type? tissue?), exact + fuzzy match
-2. **Graph Expansion**: From matched pages, follow relationships (cell_type → markers → related cell_types)
-3. **Context Assembly**: Select pages within token budget, prioritized by relevance
-4. **Synthesis**: LLM generates answer with citations [1], [2], etc.
-5. **File back**: Good answers saved to wiki/queries/ as new pages (explorations compound)
-
-## Evidence Tiers
-
-Every claim MUST be tagged with an evidence tier:
-
-| Tier | Definition | Example |
-|------|-----------|---------|
-| 1 | Direct experimental validation (KO, functional assay, spatial colocalization) | FOXP3 KO abolishes Treg function |
-| 2 | Multi-omics concordance (RNA + protein + epigenetics agree) | scRNA-seq + CITE-seq + ATAC-seq consistent |
-| 3 | Single-omics + multiple independent papers (>=3) | 3+ papers report same marker |
-| 4 | Single paper report | First observation |
-| 5 | LLM inference / hypothesis / unvalidated | Inferred from co-expression |
-
-## Contradiction Handling
-
-When the same entity has conflicting information across sources:
-
-1. **Detect**: During ingest, compare new extraction with existing wiki data
-2. **Classify**: Is it a technical artifact (different platform/batch) or biological difference (different tissue/disease)?
-3. **Record**: Log to contradictions.md with sources, status, and involved pages
-4. **Resolve**:
-   - Technical → Annotate as platform-specific difference
-   - Biological → Refine entity definition (split into subtypes if needed)
-   - Unknown → Mark as unresolved; trigger Deep Research if needed
-5. **Track**: Each contradiction has a lifecycle: detected → classified → resolving → resolved/unresolved
-
-## Raw Sources
-
-- Stored in `raw/sources/` (papers), `raw/datasets/` (metadata), `raw/ontologies/` (CL, GO)
-- **Immutable**: The LLM reads from sources but NEVER modifies them
-- Each source has a unique ID (DOI, PMID, GEO accession)
-
-## Wiki Pages
-
-- Stored in `wiki/{entity_type}/`
-- **LLM-owned**: The LLM creates, updates, and maintains all wiki pages
-- Human reads, reviews, and guides — does NOT write pages directly
-
-## Cross-References
-
-- Use `[[wikilink]]` syntax: `[[regulatory_t_cell]]`, `[[FOXP3]]`
-- Every related entity should be wikilinked
-- Lint checks for broken wikilinks periodically

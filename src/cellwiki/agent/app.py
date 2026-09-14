@@ -47,7 +47,7 @@ from cellwiki.agent.question_tool import build_question_tool
 from cellwiki.services.checkpoints import build_checkpointer
 from cellwiki.services.prompt_layers import LAYER_A_TEXT
 from cellwiki.services.subagents import SubagentRegistry, build_delegation_tools
-from cellwiki.agent.ingest_tools import build_ingest_tools
+from cellwiki.agent.source_tools import build_source_tools
 from cellwiki.agent.tools import build_lint_tools
 
 
@@ -275,7 +275,7 @@ def build_wiki_agent(
         *build_workspace_tools(root),
         *build_lint_tools(root),
         *build_attachment_tools(),
-        *build_ingest_tools(root),
+        *build_source_tools(root),
         *build_question_tool(),
         *build_delegation_tools(registry or SubagentRegistry()),
     ]

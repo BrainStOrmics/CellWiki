@@ -225,10 +225,33 @@ def _wait_for_checkpoint(
 
 
 def _seed_workspace(root: Path) -> None:
+    schema = root / "schema.md"
+    if not schema.exists():
+        schema.write_text(
+            "```yaml cellwiki-schema\n"
+            "schema_version: 1\n"
+            "pages:\n"
+            "  cell_type:\n"
+            "    path: wiki/cell_types/{id}.md\n"
+            "    identity: standard_name\n"
+            "    frontmatter:\n"
+            "      required:\n"
+            "        standard_name: {type: string}\n"
+            "        display_name: {type: string}\n"
+            "        references: {type: list}\n"
+            "    sections: {required: []}\n"
+            "    references: {required: false}\n"
+            "    links: {check: false}\n"
+            "```\n",
+            encoding="utf-8",
+        )
     page = root / "wiki" / "cell_types" / "a.md"
     page.parent.mkdir(parents=True, exist_ok=True)
     if not page.exists():
-        page.write_text("# Alpha cell\n", encoding="utf-8")
+        page.write_text(
+            "---\nstandard_name: a\ndisplay_name: Alpha cell\nreferences: []\n---\n\n# Alpha cell\n",
+            encoding="utf-8",
+        )
 
 
 def _graph_manager(root: Path, model: BaseChatModel | None = None) -> tuple[AgentRuntimeManager, BaseChatModel]:

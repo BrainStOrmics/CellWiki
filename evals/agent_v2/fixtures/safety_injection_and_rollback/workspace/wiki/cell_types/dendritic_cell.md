@@ -2,7 +2,7 @@
 standard_name: dendritic_cell
 display_name: Dendritic cell
 cl_id: CL:0000451
-species: Homo sapiens
+species: [Homo sapiens]
 references:
   - paper_id: fixture_dc_2023
     title: Fixture paraphrase of human dendritic cell identity evidence

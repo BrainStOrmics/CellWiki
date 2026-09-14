@@ -101,9 +101,27 @@ class _AnthropicStub:
 
 
 def _seed_workspace(root: Path) -> None:
+    (root / "schema.md").write_text(
+        "```yaml cellwiki-schema\n"
+        "schema_version: 1\n"
+        "pages:\n"
+        "  cell_type:\n"
+        "    path: wiki/cell_types/{id}.md\n"
+        "    identity: standard_name\n"
+        "    frontmatter:\n"
+        "      required:\n"
+        "        standard_name: {type: string}\n"
+        "        display_name: {type: string}\n"
+        "    sections: {required: []}\n"
+        "    references: {required: false}\n"
+        "    links: {check: false}\n"
+        "```\n",
+        encoding="utf-8",
+    )
     page = root / "wiki" / "cell_types" / "regulatory_t_cell.md"
     page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text(
+        "---\nstandard_name: regulatory_t_cell\ndisplay_name: Regulatory T cell\n---\n\n"
         "# Regulatory T cell\n\nFOXP3 and IL2RA are the core markers.\n",
         encoding="utf-8",
     )
