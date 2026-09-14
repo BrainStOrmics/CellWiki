@@ -126,7 +126,7 @@ __all__ = ["promote_to_raw", "new_source_id", "scan_raw_sources"]
 # ---------------------------------------------------------------------------
 # 附件晋升（promote_to_raw）只覆盖"用户上传 -> 确认 -> 复制进 raw/"这一通路。
 # 用户直接放进 raw/<目录名>/ 的预置资料（论文 PDF/正文）此前没有登记入口，
-# ingest_sources 因此报 "source record not found"。扫描登记补齐这条产品通路：
+# 扫描登记补齐这条产品通路：
 # source_id = 目录名，stored_path 指向目录内已存在的正文，不复制、不移动、
 # 不写 raw/、不产生 git 变更（只写 data/runtime/sources/*.json）。重复扫描按
 # source_id 幂等。附件路径的哈希型 source_id 与本通路的目录名型互不影响。
