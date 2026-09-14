@@ -47,16 +47,17 @@ type TemplateKey = "bailian" | "openrouter" | "deepseek" | "siliconflow" | "olla
 const TEMPLATES: {
   key: TemplateKey;
   nameKey: MessageKey;
-  baseUrl: string;
+  // 该供应商在各协议下的官方端点；未列出的协议不切换（避免猜错）。
+  baseUrls: Partial<Record<WireProtocol, string>>;
   // 仅原生协议模板带 protocol：OpenAI 兼容模板沿用当前下拉值（既有行为）。
   protocol?: WireProtocol;
 }[] = [
-  { key: "bailian", nameKey: "settings.templateBailian", baseUrl: "https://dashscope.aliyuncs.com/compatible-mode/v1" },
-  { key: "openrouter", nameKey: "settings.templateOpenRouter", baseUrl: "https://openrouter.ai/api/v1" },
-  { key: "deepseek", nameKey: "settings.templateDeepSeek", baseUrl: "https://api.deepseek.com/v1" },
-  { key: "siliconflow", nameKey: "settings.templateSiliconFlow", baseUrl: "https://api.siliconflow.cn/v1" },
-  { key: "ollama", nameKey: "settings.templateOllama", baseUrl: "http://127.0.0.1:11434/v1" },
-  { key: "anthropic", nameKey: "settings.templateAnthropic", baseUrl: "https://api.anthropic.com", protocol: "anthropic" },
+  { key: "bailian", nameKey: "settings.templateBailian", baseUrls: { chat_completions: "https://dashscope.aliyuncs.com/compatible-mode/v1" } },
+  { key: "openrouter", nameKey: "settings.templateOpenRouter", baseUrls: { chat_completions: "https://openrouter.ai/api/v1" } },
+  { key: "deepseek", nameKey: "settings.templateDeepSeek", baseUrls: { chat_completions: "https://api.deepseek.com/v1", anthropic: "https://api.deepseek.com/anthropic" } },
+  { key: "siliconflow", nameKey: "settings.templateSiliconFlow", baseUrls: { chat_completions: "https://api.siliconflow.cn/v1" } },
+  { key: "ollama", nameKey: "settings.templateOllama", baseUrls: { chat_completions: "http://127.0.0.1:11434/v1" } },
+  { key: "anthropic", nameKey: "settings.templateAnthropic", baseUrls: { anthropic: "https://api.anthropic.com" }, protocol: "anthropic" },
 ];
 
 function draftFromProvider(provider: ModelProviderInfo): ProviderDraft {
@@ -98,6 +99,8 @@ export function ProviderManager({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [draft, setDraft] = useState<ProviderDraft>(emptyDraft());
+  // 快速填充所选模板：改协议时据此跟随切换 base_url（手改过 URL 则不覆盖）。
+  const [appliedTemplate, setAppliedTemplate] = useState<TemplateKey | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [openPanelIndex, setOpenPanelIndex] = useState<number | null>(null);
   const [panelQuery, setPanelQuery] = useState("");
@@ -185,6 +188,7 @@ export function ProviderManager({
     setOpenPanelIndex(null);
     setPanelQuery("");
     onNotice(undefined);
+    setAppliedTemplate(null);
     if (asNew) {
       // 新草稿不继承上一个草稿拉取到的候选清单。
       queryClient.removeQueries({ queryKey: ["provider-available-models", "draft"] });
@@ -238,11 +242,31 @@ export function ProviderManager({
 
   function applyTemplate(template: (typeof TEMPLATES)[number]) {
     if (!creating) return; // 快速填充只用于新建
+    // 模板自带协议（Anthropic 官方）时按该协议取端点；否则按当前协议取。
+    const protocol = template.protocol ?? draft.protocol;
     updateDraft({
       name: t(template.nameKey),
-      base_url: template.baseUrl,
+      base_url: template.baseUrls[protocol] ?? draft.base_url,
       ...(template.protocol ? { protocol: template.protocol } : {}),
     });
+    setAppliedTemplate(template.key);
+  }
+
+  function changeProtocol(protocol: WireProtocol) {
+    // 快速填充的草稿改协议时跟随模板切换端点；URL 已被手改（不在模板端点
+    // 集合里）则保持不动，避免覆盖用户输入。
+    const template = TEMPLATES.find((item) => item.key === appliedTemplate);
+    const nextUrl = template?.baseUrls[protocol];
+    const patch: Partial<ProviderDraft> = { protocol };
+    if (
+      creating
+      && nextUrl
+      && template
+      && Object.values(template.baseUrls).includes(draft.base_url.trim())
+    ) {
+      patch.base_url = nextUrl;
+    }
+    updateDraft(patch);
   }
 
   function parseOverrides(): Record<string, unknown> | null {
@@ -295,6 +319,7 @@ export function ProviderManager({
       const nextProvider = payload.providers.find((provider) => provider.id === nextId);
       setSelectedId(nextId);
       setCreating(false);
+      setAppliedTemplate(null);
       setOpenPanelIndex(null);
       setPanelQuery("");
       setDraft(nextProvider ? draftFromProvider(nextProvider) : emptyDraft());
@@ -431,7 +456,7 @@ export function ProviderManager({
               <input value={draft.base_url} onChange={(event) => updateDraft({ base_url: event.target.value })} placeholder="https://api.openai.com/v1" />
             </label>
             <label className="settings-field"><span>{t("settings.protocol")}</span>
-              <select value={draft.protocol} onChange={(event) => updateDraft({ protocol: event.target.value as ProviderDraft["protocol"] })}>
+              <select value={draft.protocol} onChange={(event) => changeProtocol(event.target.value as WireProtocol)}>
                 <option value="chat_completions">{t("settings.protocolChatCompletions")}</option>
                 <option value="responses">{t("settings.protocolResponses")}</option>
                 <option value="anthropic">{t("settings.protocolAnthropic")}</option>

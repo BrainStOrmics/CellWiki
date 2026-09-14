@@ -300,4 +300,37 @@ describe("ProviderManager", () => {
       }),
     ));
   });
+
+  it("switches the template endpoint when the protocol changes unless the url was edited", async () => {
+    renderManager();
+    await waitFor(() => expect(screen.getByText("新建供应商")).toBeVisible());
+    fireEvent.click(screen.getByText("新建供应商"));
+
+    // 快填 DeepSeek：默认协议 chat_completions → /v1 端点
+    fireEvent.click(screen.getByText("DeepSeek"));
+    expect(screen.getByDisplayValue("https://api.deepseek.com/v1")).toBeVisible();
+
+    // 改协议为 Anthropic → 端点跟随切到 /anthropic
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "anthropic" } });
+    expect(screen.getByDisplayValue("https://api.deepseek.com/anthropic")).toBeVisible();
+
+    // 切回 Chat Completions → 回到 /v1
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "chat_completions" } });
+    expect(screen.getByDisplayValue("https://api.deepseek.com/v1")).toBeVisible();
+
+    // 手改 URL 后切协议不再覆盖用户输入
+    fireEvent.change(screen.getByDisplayValue("https://api.deepseek.com/v1"), {
+      target: { value: "https://my-gateway.example/deepseek" },
+    });
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "anthropic" } });
+    expect(screen.getByDisplayValue("https://my-gateway.example/deepseek")).toBeVisible();
+  });
+
+  it("keeps the saved provider base url when the protocol changes while editing", async () => {
+    renderManager();
+    await waitFor(() => expect(screen.getByDisplayValue("Gateway A")).toBeVisible());
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "responses" } });
+    expect(screen.getByDisplayValue("https://a.example.com/v1")).toBeVisible();
+  });
 });
