@@ -8,10 +8,12 @@ from cellwiki.services.prompt_layers import (
     LAYER_A_TEXT,
     build_layer_b_snapshot,
     build_r1_r5_block,
+    build_turn_context,
     classify_intent_hint,
     compact_transcript,
     estimate_tokens,
     resolve_declared_window,
+    schema_prompt_block,
     warn_if_narrow_window,
 )
 
@@ -26,6 +28,34 @@ def test_layer_a_is_the_static_baseline_imported_by_app():
     assert "pending diff" in LAYER_A_TEXT
     assert "ingest_sources" not in LAYER_A_TEXT
     assert "raw/<source_id>/" in LAYER_A_TEXT
+
+
+def test_v2_schema_block_and_turn_context_are_stable_and_tail_only():
+    assert schema_prompt_block(2, "abc123") == (
+        "## Workspace schema\nversion: 2\ncontract_hash: abc123"
+    )
+    context = build_turn_context(
+        current_message="之前聊过什么？",
+        git_status="M wiki/cell_types/a.md",
+        open_page={
+            "page_id": "a",
+            "markdown": "# A\n\n## Markers\n\n## References\n",
+        },
+        selected_text="FOXP3",
+        attachments=[
+            {"attachment_id": "att_1", "original_name": "p.pdf", "preview": "x"}
+        ],
+    )
+    assert "## Run context" in context
+    assert "M wiki/cell_types/a.md" in context
+    assert "user is viewing: a" in context
+    assert "user selected this text on the page:" in context
+    assert "current attachments" in context
+    assert "intent hint: conversation meta" in context
+    assert "recent transcript" not in context
+    assert "current run goal" not in context
+    assert "之前聊过什么？" not in context
+    assert len(context) <= 8_000
 
 
 def test_layer_b_snapshot_contains_git_open_page_and_goal():

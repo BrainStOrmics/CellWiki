@@ -22,7 +22,7 @@ import threading
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from cellwiki.domain.runs import (
     AgentErrorType,
@@ -371,6 +371,291 @@ class RuntimeStore:
             for row in rows
             if str(row[2]).strip()
         ]
+
+    @staticmethod
+    def _model_content_text(content: Any) -> str:
+        if isinstance(content, dict):
+            text = content.get("text")
+            if isinstance(text, str):
+                return text
+        if isinstance(content, str):
+            return content
+        return json.dumps(content, ensure_ascii=False, default=str)
+
+    @staticmethod
+    def _ensure_transcript_state_locked(
+        connection: sqlite3.Connection, thread_id: str
+    ) -> tuple[int, str | None]:
+        row = connection.execute(
+            "SELECT current_epoch, bootstrapped_at FROM agent_transcript_state "
+            "WHERE thread_id = ?",
+            (thread_id,),
+        ).fetchone()
+        if row is not None:
+            return int(row[0]), cast(str | None, row[1])
+        now = datetime.now(UTC).isoformat()
+        connection.execute(
+            "INSERT INTO agent_transcript_state"
+            "(thread_id, current_epoch, bootstrapped_at, updated_at) "
+            "VALUES (?, 0, NULL, ?)",
+            (thread_id, now),
+        )
+        return 0, None
+
+    def bootstrap_model_transcript(
+        self, thread_id: str, *, exclude_run_id: str | None = None
+    ) -> int:
+        """Seed a v2 transcript from existing UI messages once per thread."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            epoch, bootstrapped_at = self._ensure_transcript_state_locked(
+                connection, thread_id
+            )
+            if bootstrapped_at:
+                return epoch
+            query = (
+                "SELECT message_id, run_id, role, content, data, created_at "
+                "FROM agent_messages WHERE thread_id = ?"
+            )
+            parameters: list[Any] = [thread_id]
+            if exclude_run_id is not None:
+                query += " AND run_id != ?"
+                parameters.append(exclude_run_id)
+            query += " ORDER BY sequence"
+            rows = connection.execute(query, tuple(parameters)).fetchall()
+            sequence = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) FROM agent_model_messages "
+                "WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()[0]
+            for row in rows:
+                sequence += 1
+                content = {"text": str(row[3])}
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO agent_model_messages(
+                        message_id, thread_id, run_id, cache_epoch, sequence,
+                        message_key, kind, role, content_json, content_text,
+                        tool_call_id, name, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                    """,
+                    (
+                        f"model_{uuid.uuid4().hex}",
+                        thread_id,
+                        str(row[1]),
+                        epoch,
+                        sequence,
+                        f"legacy:{row[0]}",
+                        str(row[2]),
+                        str(row[2]),
+                        json.dumps(content, ensure_ascii=False, default=str),
+                        str(row[3]),
+                        str(row[5]),
+                    ),
+                )
+            now = datetime.now(UTC).isoformat()
+            connection.execute(
+                "UPDATE agent_transcript_state SET bootstrapped_at = ?, updated_at = ? "
+                "WHERE thread_id = ?",
+                (now, now, thread_id),
+            )
+        return epoch
+
+    def current_transcript_epoch(self, thread_id: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT current_epoch FROM agent_transcript_state WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        return int(row[0]) if row is not None else 0
+
+    def append_model_message(
+        self,
+        *,
+        thread_id: str,
+        run_id: str,
+        kind: str,
+        role: str,
+        content: Any,
+        message_key: str,
+        tool_call_id: str | None = None,
+        name: str | None = None,
+        new_epoch: bool = False,
+    ) -> dict[str, Any]:
+        """Append or idempotently replace one model-visible message."""
+
+        content_text = self._model_content_text(content)
+        content_json = json.dumps(content, ensure_ascii=False, default=str)
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            epoch, _ = self._ensure_transcript_state_locked(connection, thread_id)
+            if new_epoch:
+                epoch += 1
+                connection.execute(
+                    "UPDATE agent_transcript_state SET current_epoch = ?, updated_at = ? "
+                    "WHERE thread_id = ?",
+                    (epoch, datetime.now(UTC).isoformat(), thread_id),
+                )
+            existing = connection.execute(
+                "SELECT message_id, sequence, created_at FROM agent_model_messages "
+                "WHERE run_id = ? AND message_key = ?",
+                (run_id, message_key),
+            ).fetchone()
+            if existing is not None:
+                connection.execute(
+                    """
+                    UPDATE agent_model_messages
+                    SET cache_epoch = ?, kind = ?, role = ?, content_json = ?,
+                        content_text = ?, tool_call_id = ?, name = ?
+                    WHERE message_id = ?
+                    """,
+                    (
+                        epoch,
+                        kind,
+                        role,
+                        content_json,
+                        content_text,
+                        tool_call_id,
+                        name,
+                        existing[0],
+                    ),
+                )
+                return {
+                    "message_id": str(existing[0]),
+                    "sequence": int(existing[1]),
+                    "cache_epoch": epoch,
+                }
+            sequence = connection.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_model_messages "
+                "WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()[0]
+            message_id = f"model_{uuid.uuid4().hex}"
+            connection.execute(
+                """
+                INSERT INTO agent_model_messages(
+                    message_id, thread_id, run_id, cache_epoch, sequence,
+                    message_key, kind, role, content_json, content_text,
+                    tool_call_id, name, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    thread_id,
+                    run_id,
+                    epoch,
+                    sequence,
+                    message_key,
+                    kind,
+                    role,
+                    content_json,
+                    content_text,
+                    tool_call_id,
+                    name,
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+        return {
+            "message_id": message_id,
+            "sequence": int(sequence),
+            "cache_epoch": epoch,
+        }
+
+    def list_model_messages(self, thread_id: str) -> list[dict[str, Any]]:
+        """Return the active append-only transcript for one thread."""
+
+        with self._connect() as connection:
+            state = connection.execute(
+                "SELECT current_epoch FROM agent_transcript_state WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+            if state is None:
+                return []
+            boundary = connection.execute(
+                "SELECT sequence FROM agent_model_messages "
+                "WHERE thread_id = ? AND kind = 'compaction' "
+                "ORDER BY sequence DESC LIMIT 1",
+                (thread_id,),
+            ).fetchone()
+            if boundary is None:
+                rows = connection.execute(
+                    """
+                    SELECT message_id, run_id, cache_epoch, sequence, message_key,
+                           kind, role, content_json, content_text, tool_call_id,
+                           name, created_at
+                    FROM agent_model_messages
+                    WHERE thread_id = ?
+                    ORDER BY sequence
+                    """,
+                    (thread_id,),
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    """
+                    SELECT message_id, run_id, cache_epoch, sequence, message_key,
+                           kind, role, content_json, content_text, tool_call_id,
+                           name, created_at
+                    FROM agent_model_messages
+                    WHERE thread_id = ? AND sequence >= ?
+                    ORDER BY sequence
+                    """,
+                    (thread_id, int(boundary[0])),
+                ).fetchall()
+        records: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                content = json.loads(row[7])
+            except (TypeError, ValueError):
+                content = {"text": str(row[8])}
+            records.append(
+                {
+                    "message_id": str(row[0]),
+                    "run_id": str(row[1]),
+                    "cache_epoch": int(row[2]),
+                    "sequence": int(row[3]),
+                    "message_key": str(row[4]),
+                    "kind": str(row[5]),
+                    "role": str(row[6]),
+                    "content": content,
+                    "content_text": str(row[8]),
+                    "tool_call_id": str(row[9]) if row[9] is not None else None,
+                    "name": str(row[10]) if row[10] is not None else None,
+                    "created_at": str(row[11]),
+                }
+            )
+        return records
+
+    def delete_run_model_messages(self, run_id: str) -> int:
+        """Remove one run's model transcript rows before retry replay."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT thread_id FROM agent_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return 0
+            thread_id = str(row[0])
+            deleted = connection.execute(
+                "DELETE FROM agent_model_messages WHERE run_id = ?", (run_id,)
+            ).rowcount
+            latest = connection.execute(
+                "SELECT MAX(cache_epoch) FROM agent_model_messages "
+                "WHERE thread_id = ? AND kind = 'compaction'",
+                (thread_id,),
+            ).fetchone()[0]
+            if latest is None:
+                latest = connection.execute(
+                    "SELECT MAX(cache_epoch) FROM agent_model_messages WHERE thread_id = ?",
+                    (thread_id,),
+                ).fetchone()[0]
+            connection.execute(
+                "UPDATE agent_transcript_state SET current_epoch = ?, updated_at = ? "
+                "WHERE thread_id = ?",
+                (int(latest or 0), datetime.now(UTC).isoformat(), thread_id),
+            )
+        return int(deleted)
 
     def list_thread_attachment_ids(self, thread_id: str) -> list[str]:
         """Recover the attachments available to later runs in this thread.
@@ -836,6 +1121,12 @@ class RuntimeStore:
             run_count = len(run_rows)
             connection.execute("DELETE FROM agent_messages WHERE thread_id = ?", (thread_id,))
             connection.execute(
+                "DELETE FROM agent_model_messages WHERE thread_id = ?", (thread_id,)
+            )
+            connection.execute(
+                "DELETE FROM agent_transcript_state WHERE thread_id = ?", (thread_id,)
+            )
+            connection.execute(
                 "DELETE FROM agent_events WHERE run_id IN "
                 "(SELECT run_id FROM agent_runs WHERE thread_id = ?)",
                 (thread_id,),
@@ -1240,6 +1531,38 @@ class RuntimeStore:
             )
         return updated
 
+    def update_run_cache_metadata(
+        self,
+        run_id: str,
+        *,
+        cache_prefix_hash: str,
+        transcript_epoch: int,
+        cache_mode: str,
+    ) -> AgentRun:
+        """Atomically update cache metadata without clobbering lifecycle fields."""
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = AgentRun.model_validate_json(row[0])
+            updated = current.model_copy(
+                update={
+                    "cache_prefix_hash": cache_prefix_hash,
+                    "transcript_epoch": transcript_epoch,
+                    "cache_mode": cache_mode,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            connection.execute(
+                "UPDATE agent_runs SET payload = ?, updated_at = ? WHERE run_id = ?",
+                (updated.model_dump_json(), updated.updated_at.isoformat(), run_id),
+            )
+        return updated
+
     def increment_retry(self, run_id: str) -> AgentRun:
         """Advance retry accounting atomically before scheduling the resumed checkpoint."""
 
@@ -1604,6 +1927,32 @@ class RuntimeStore:
                 );
                 CREATE INDEX IF NOT EXISTS ix_agent_messages_thread
                     ON agent_messages(thread_id, sequence);
+                CREATE TABLE IF NOT EXISTS agent_model_messages (
+                    message_id TEXT PRIMARY KEY,
+                    thread_id TEXT NOT NULL,
+                    run_id TEXT NOT NULL,
+                    cache_epoch INTEGER NOT NULL,
+                    sequence INTEGER NOT NULL,
+                    message_key TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    content_json TEXT NOT NULL,
+                    content_text TEXT NOT NULL,
+                    tool_call_id TEXT,
+                    name TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(thread_id, sequence),
+                    UNIQUE(run_id, message_key),
+                    FOREIGN KEY(run_id) REFERENCES agent_runs(run_id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS ix_agent_model_messages_thread
+                    ON agent_model_messages(thread_id, cache_epoch, sequence);
+                CREATE TABLE IF NOT EXISTS agent_transcript_state (
+                    thread_id TEXT PRIMARY KEY,
+                    current_epoch INTEGER NOT NULL,
+                    bootstrapped_at TEXT,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS agent_spans (
                     span_id TEXT PRIMARY KEY,
                     run_id TEXT NOT NULL,
@@ -1645,7 +1994,7 @@ class RuntimeStore:
     );
     CREATE INDEX IF NOT EXISTS ix_agent_questions_run
         ON agent_questions(run_id, status, created_at);
-    PRAGMA user_version=7;
+    PRAGMA user_version=8;
                 """
             )
             self._ensure_thread_registry(connection)

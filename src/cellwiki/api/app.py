@@ -995,6 +995,19 @@ def create_app(
             "usage": run.usage.model_dump(mode="json"),
             "spans": [span.model_dump(mode="json") for span in spans],
             "thread_summary": runtime.store.thread_usage_summary(run.thread_id),
+            "cache": {
+                "mode": run.cache_mode or None,
+                "prefix_hash": run.cache_prefix_hash,
+                "transcript_version": run.transcript_version,
+                "transcript_epoch": run.transcript_epoch,
+                "cached_input_tokens": run.usage.cached_input_tokens,
+                "cache_creation_input_tokens": run.usage.cache_creation_input_tokens,
+                "cache_hit_rate": (
+                    round(run.usage.cached_input_tokens / run.usage.input_tokens, 4)
+                    if run.usage.input_tokens > 0
+                    else 0.0
+                ),
+            },
             # 决策 12：载体不设 TTL/体积上限，膨胀只由删会话治理，所以把体积报出来，
             # 后续才能按实测数据重新评估要不要加上限。
             "checkpoint": {

@@ -15,7 +15,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from langchain_anthropic import ChatAnthropic
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from cellwiki.adapters.anthropic_model import (
     ANTHROPIC_DEFAULT_BASE_URL,
@@ -91,6 +91,53 @@ def test_anthropic_overrides_split_fields_and_request_body_extras() -> None:
         payload = model._get_request_payload([HumanMessage(content="hi")])
         assert payload["max_tokens"] == 2048
         assert payload["thinking"] == {"type": "enabled", "budget_tokens": 1024}
+    finally:
+        model.root_client.close()
+
+
+def test_anthropic_cache_mode_override_is_not_forwarded() -> None:
+    model = build_anthropic_model_from_spec(
+        _spec(request_overrides={"cache_mode": "off", "enable_thinking": False})
+    )
+    try:
+        assert model.model_kwargs == {"enable_thinking": False}
+        assert "cache_mode" not in model.model_kwargs
+    finally:
+        model.root_client.close()
+
+
+def test_anthropic_serializes_cache_control_on_system_and_tool_result() -> None:
+    model = build_anthropic_model_from_spec(_spec())
+    try:
+        payload = model._get_request_payload(
+            [
+                SystemMessage(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": "stable prefix",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
+                ),
+                HumanMessage(content="hi"),
+                ToolMessage(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": "tool output",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                    tool_call_id="call_1",
+                    name="ls",
+                ),
+            ]
+        )
+        assert payload["system"][0]["cache_control"] == {"type": "ephemeral"}
+        tool_result = payload["messages"][0]["content"][-1]
+        assert tool_result["type"] == "tool_result"
+        assert tool_result["cache_control"] == {"type": "ephemeral"}
     finally:
         model.root_client.close()
 

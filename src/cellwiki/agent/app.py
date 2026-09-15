@@ -42,10 +42,21 @@ from cellwiki.agent.executor import (
     WHITELISTED_TOOL_NAMES,
     build_attachment_tools,
     build_workspace_tools,
+    canonical_tool_sort_key,
+    tool_schema_fingerprint,
 )
 from cellwiki.agent.question_tool import build_question_tool
 from cellwiki.services.checkpoints import build_checkpointer
-from cellwiki.services.prompt_layers import LAYER_A_TEXT
+from cellwiki.services.prompt_cache import (
+    PromptCachePolicy,
+    resolve_prompt_cache_policy,
+)
+from cellwiki.services.prompt_layers import (
+    LAYER_A_TEXT,
+    resolve_declared_window,
+    schema_prompt_block,
+)
+from cellwiki.services.prompt_runtime import current_prompt_run_context
 from cellwiki.services.subagents import SubagentRegistry, build_delegation_tools
 from cellwiki.agent.source_tools import build_source_tools
 from cellwiki.agent.tools import build_lint_tools
@@ -67,6 +78,94 @@ approval boundary. Never use generic filesystem, shell, or publication tools.
 Return concise results appropriate to your assigned role.
 """
 
+CELLWIKI_BOUNDARY_REMINDER = (
+    "CellWiki tool boundary: only the whitelisted CellWiki tools are "
+    "available (ls, read_file, write_file, edit_file, glob, grep, git, "
+    "run_powershell, delete_file, rename_file, lint_knowledge_base, "
+    "ask_user_question, read_attachment). Generic "
+    "deep-agent tools such as execute, bash, task, write_todos, and "
+    "move_folder are unavailable. Emit calls only for tool schemas "
+    "visible in this request."
+)
+
+
+def stable_system_prompt_text(schema_version: int, schema_contract_hash: str) -> str:
+    """Return the exact stable prefix used for cache hash and diagnostics."""
+
+    return (
+        f"{LAYER_A_TEXT}\n\n{HARNESS_PROMPT}\n\n{CELLWIKI_BOUNDARY_REMINDER}"
+        f"\n\n{schema_prompt_block(schema_version, schema_contract_hash)}"
+    )
+
+
+def prompt_cache_policy_for_spec(spec: ResolvedModelSpec) -> PromptCachePolicy:
+    return resolve_prompt_cache_policy(
+        protocol=spec.protocol,
+        model_id=spec.model_id,
+        base_url=spec.base_url,
+        request_overrides=spec.request_overrides,
+        declared_window=resolve_declared_window(spec.model_id),
+        context_max_tokens=settings.agent_context_max_tokens,
+        output_reserve_tokens=settings.agent_context_output_reserve_tokens,
+        auto_compact_ratio=settings.agent_context_auto_compact_ratio,
+    )
+
+
+def prompt_cache_policy_for_settings(
+    configuration: Settings = settings,
+) -> PromptCachePolicy:
+    return resolve_prompt_cache_policy(
+        protocol=configuration.openai_api_protocol,
+        model_id=configuration.openai_model,
+        base_url=configuration.openai_base_url,
+        request_overrides={},
+        declared_window=resolve_declared_window(configuration.openai_model),
+        context_max_tokens=configuration.agent_context_max_tokens,
+        output_reserve_tokens=configuration.agent_context_output_reserve_tokens,
+        auto_compact_ratio=configuration.agent_context_auto_compact_ratio,
+    )
+
+
+def _cache_model_options(
+    policy: PromptCachePolicy,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]] | None]:
+    cache_options = (
+        {"mode": "explicit"}
+        if policy.protocol == WIRE_PROTOCOL_RESPONSES and policy.mode == "explicit"
+        else None
+    )
+    context_management = (
+        [{"type": "compaction", "compact_threshold": policy.compact_threshold}]
+        if policy.provider_native_compaction and policy.compact_threshold
+        else None
+    )
+    return cache_options, context_management
+
+
+def build_coordinator_tools(
+    root: Path,
+    registry: SubagentRegistry | None = None,
+) -> list[Any]:
+    tools: list[Any] = [
+        *build_workspace_tools(root),
+        *build_lint_tools(root),
+        *build_attachment_tools(),
+        *build_source_tools(root),
+        *build_question_tool(),
+        *build_delegation_tools(registry or SubagentRegistry()),
+    ]
+    return sorted(
+        tools,
+        key=lambda tool: canonical_tool_sort_key(str(getattr(tool, "name", "") or "")),
+    )
+
+
+def coordinator_tool_schema_hash(
+    root: Path,
+    registry: SubagentRegistry | None = None,
+) -> str:
+    return tool_schema_fingerprint(build_coordinator_tools(root, registry))
+
 # 哨兵对象，用于区分"未传入检查点器"和"传入了 None"
 _DEFAULT_CHECKPOINTER = object()
 
@@ -85,18 +184,79 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
     # 白名单（allowlist）：只有这些 CellWiki 自有工具名能进入模型请求；其余
     # 框架通用工具（execute/bash/task/write_todos/move_folder 等）一律过滤。
     _allowed_tools = WHITELISTED_TOOL_NAMES
-    _boundary_reminder = (
-        "CellWiki tool boundary: only the whitelisted CellWiki tools are "
-        "available (ls, read_file, write_file, edit_file, glob, grep, git, "
-        "run_powershell, delete_file, rename_file, lint_knowledge_base, "
-        "ask_user_question, read_attachment). Generic "
-        "deep-agent tools such as execute, bash, task, write_todos, and "
-        "move_folder are unavailable. Emit calls only for tool schemas "
-        "visible in this request."
-    )
-
-    def __init__(self, *, append_reminder: bool = False):
+    def __init__(
+        self,
+        *,
+        append_reminder: bool = False,
+        cache_policy: PromptCachePolicy | None = None,
+    ):
         self.append_reminder = append_reminder
+        self.cache_policy = cache_policy
+
+    @staticmethod
+    def _content_blocks(content: Any) -> list[dict[str, Any]]:
+        if isinstance(content, list):
+            blocks: list[dict[str, Any]] = []
+            for block in content:
+                if isinstance(block, dict):
+                    blocks.append(dict(block))
+                else:
+                    blocks.append({"type": "text", "text": str(block)})
+            return blocks
+        return [{"type": "text", "text": str(content or "")}]
+
+    def _explicit_marker(self) -> tuple[str, dict[str, str]] | None:
+        if self.cache_policy is None or not self.cache_policy.allows_explicit_breakpoints():
+            return None
+        if self.cache_policy.breakpoint_key == "prompt_cache_breakpoint":
+            return "prompt_cache_breakpoint", {"mode": "explicit"}
+        if self.cache_policy.breakpoint_key == "cache_control":
+            return "cache_control", {"type": "ephemeral"}
+        return None
+
+    def _apply_cache_markers(self, request: Any) -> Any:
+        system_message = request.system_message
+        prompt_context = current_prompt_run_context()
+        marker = self._explicit_marker()
+        if isinstance(system_message, SystemMessage) and (prompt_context or marker):
+            blocks = self._content_blocks(system_message.content)
+            for block in blocks:
+                block.pop("prompt_cache_breakpoint", None)
+                block.pop("cache_control", None)
+            if prompt_context:
+                blocks.append(
+                    {
+                        "type": "text",
+                        "text": schema_prompt_block(
+                            prompt_context.schema_version,
+                            prompt_context.schema_contract_hash,
+                        ),
+                    }
+                )
+            if marker and blocks:
+                blocks[-1][marker[0]] = marker[1]
+            system_message = system_message.model_copy(update={"content": blocks})
+
+        messages = list(request.messages)
+        if marker and self.cache_policy is not None and messages:
+            count = self.cache_policy.tool_result_breakpoints
+            tool_indices = [
+                index
+                for index, message in enumerate(messages)
+                if isinstance(message, ToolMessage)
+            ]
+            selected = set(tool_indices[-count:]) if count else set()
+            for index in selected:
+                message = messages[index]
+                blocks = self._content_blocks(message.content)
+                if blocks:
+                    blocks[-1][marker[0]] = marker[1]
+                messages[index] = message.model_copy(update={"content": blocks})
+        return request.override(
+            tools=request.tools,
+            system_message=system_message,
+            messages=messages,
+        )
 
     @staticmethod
     def _tool_name(tool: Any) -> str | None:
@@ -108,23 +268,27 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
         return cast(str | None, getattr(tool, "name", None))
 
     def _filter_request(self, request: Any) -> Any:
-        filtered_tools = [
-            tool
-            for tool in request.tools
-            if self._tool_name(tool) in self._allowed_tools
-        ]
+        filtered_tools = sorted(
+            (
+                tool
+                for tool in request.tools
+                if self._tool_name(tool) in self._allowed_tools
+            ),
+            key=lambda tool: canonical_tool_sort_key(self._tool_name(tool) or ""),
+        )
         system_message = request.system_message
         if self.append_reminder and isinstance(system_message, SystemMessage):
             content = system_message.content
             if isinstance(content, str):
-                content = f"{content}\n\n{self._boundary_reminder}"
+                content = f"{content}\n\n{CELLWIKI_BOUNDARY_REMINDER}"
             else:
                 content = [
                     *content,
-                    {"type": "text", "text": self._boundary_reminder},
+                    {"type": "text", "text": CELLWIKI_BOUNDARY_REMINDER},
                 ]
             system_message = system_message.model_copy(update={"content": content})
-        return request.override(tools=filtered_tools, system_message=system_message)
+        request = request.override(tools=filtered_tools, system_message=system_message)
+        return self._apply_cache_markers(request)
 
     def wrap_model_call(self, request: Any, handler: Any) -> Any:
         return handler(self._filter_request(request))
@@ -217,11 +381,15 @@ def build_model(configuration: Settings = settings) -> BaseChatModel:
     _register_cellwiki_harness_profile(configuration.openai_model)
     # 三种线协议都流式构建；AGENT_STREAMING=0 是唯一的回退开关。
     streaming = bool(configuration.agent_streaming)
+    policy = prompt_cache_policy_for_settings(configuration)
+    prompt_cache_options, context_management = _cache_model_options(policy)
     model = build_openai_chat_model(
         configuration,
         purpose="coordinator",
         disable_streaming=False if streaming else "tool_calling",
         stream_usage=True if streaming else None,
+        prompt_cache_options=prompt_cache_options,
+        context_management=context_management,
     )
     if streaming and normalize_wire_protocol(
         configuration.openai_api_protocol
@@ -240,11 +408,15 @@ def build_coordinator_model(spec: ResolvedModelSpec) -> BaseChatModel:
     _register_cellwiki_harness_profile(spec.model_id)
     # 语义与 build_model 一致；流式开关只看 AGENT_STREAMING。
     streaming = bool(settings.agent_streaming)
+    policy = prompt_cache_policy_for_spec(spec)
+    prompt_cache_options, context_management = _cache_model_options(policy)
     model = build_model_from_spec(
         spec,
         purpose="coordinator",
         disable_streaming=False if streaming else "tool_calling",
         stream_usage=True if streaming else None,
+        prompt_cache_options=prompt_cache_options,
+        context_management=context_management,
     )
     if streaming and normalize_wire_protocol(spec.protocol) == WIRE_PROTOCOL_RESPONSES:
         # 推理事件桥只认 Responses 的 SSE 形状；该分支的工厂返回必为 ChatOpenAI。
@@ -262,6 +434,7 @@ def build_wiki_agent(
     model: BaseChatModel | str | None = None,
     checkpointer=_DEFAULT_CHECKPOINTER,
     registry: SubagentRegistry | None = None,
+    cache_policy: PromptCachePolicy | None = None,
 ):
     # 解析项目根目录
     root = Path(project_root or settings.workspace_root).resolve()
@@ -269,14 +442,7 @@ def build_wiki_agent(
     # 如果未指定模型，使用默认构建
     coordinator_model = model or build_model()
     # 构建工具集：工作区工具 + 确定性 lint 报告 + 交互工具
-    coordinator_tools: list[Any] = [
-        *build_workspace_tools(root),
-        *build_lint_tools(root),
-        *build_attachment_tools(),
-        *build_source_tools(root),
-        *build_question_tool(),
-        *build_delegation_tools(registry or SubagentRegistry()),
-    ]
+    coordinator_tools = build_coordinator_tools(root, registry)
     # ADR-0010 决策 1/14：产品图默认落 SqliteSaver（data/runtime/checkpoints.sqlite），
     # 与 cellwiki.db 分文件；AGENT_CHECKPOINTER=inmemory 只是短期回滚闸。
     # 显式传入的 checkpointer 原样生效。
@@ -289,7 +455,12 @@ def build_wiki_agent(
         model=coordinator_model,
         system_prompt=SYSTEM_PROMPT,
         tools=coordinator_tools,
-        middleware=[_CellWikiToolBoundaryMiddleware(append_reminder=True)],
+        middleware=[
+            _CellWikiToolBoundaryMiddleware(
+                append_reminder=True,
+                cache_policy=cache_policy,
+            )
+        ],
         backend=StateBackend(),
         checkpointer=active_checkpointer,
         context_schema=WikiAgentContext,

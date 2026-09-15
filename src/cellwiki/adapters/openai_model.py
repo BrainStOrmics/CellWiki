@@ -86,6 +86,8 @@ def build_model_from_spec(
     max_retries: int = 1,
     disable_streaming: bool | Literal["tool_calling"] = "tool_calling",
     stream_usage: bool | None = None,
+    prompt_cache_options: dict[str, Any] | None = None,
+    context_management: list[dict[str, Any]] | None = None,
     purpose: Literal[
         "agent",
         "structured",
@@ -116,10 +118,14 @@ def build_model_from_spec(
             stream_usage=stream_usage,
         )
 
+    overrides = dict(spec.request_overrides)
+    # cache_mode is consumed by the runtime policy resolver and must never be
+    # forwarded to a provider as an unknown request parameter.
+    overrides.pop("cache_mode", None)
     extra_body: dict[str, Any] = dict(
         provider_request_options(spec.base_url, spec.model_id, purpose=purpose) or {}
     )
-    for key, value in spec.request_overrides.items():
+    for key, value in overrides.items():
         extra_body[key] = value
     # langchain-openai caches its default httpx client when the timeout is
     # hashable. Each extraction chunk closes its model client after completion,
@@ -143,6 +149,8 @@ def build_model_from_spec(
         disable_streaming=disable_streaming,
         stream_usage=stream_usage,
         extra_body=extra_body or None,
+        prompt_cache_options=prompt_cache_options,
+        context_management=context_management,
         # Explicit booleans prevent model-name heuristics from silently switching
         # a third-party compatible endpoint to the Responses API.
         use_responses_api=protocol == WIRE_PROTOCOL_RESPONSES,
@@ -159,6 +167,8 @@ def build_openai_chat_model(
     max_retries: int = 1,
     disable_streaming: bool | Literal["tool_calling"] = "tool_calling",
     stream_usage: bool | None = None,
+    prompt_cache_options: dict[str, Any] | None = None,
+    context_management: list[dict[str, Any]] | None = None,
     purpose: Literal[
         "agent",
         "structured",
@@ -193,6 +203,8 @@ def build_openai_chat_model(
         max_retries=max_retries,
         disable_streaming=disable_streaming,
         stream_usage=stream_usage,
+        prompt_cache_options=prompt_cache_options,
+        context_management=context_management,
         purpose=purpose,
     )
 

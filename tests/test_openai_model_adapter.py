@@ -2,7 +2,7 @@
 
 
 import httpx
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from cellwiki.adapters.openai_model import (
     WIRE_PROTOCOL_CHAT_COMPLETIONS,
@@ -175,6 +175,65 @@ def test_spec_build_honors_explicit_protocol_and_overrides() -> None:
     try:
         assert model.use_responses_api is True
         assert model.extra_body == {"thinking_budget": 512}
+    finally:
+        model.root_client.close()
+
+
+def test_spec_build_sets_prompt_cache_and_compaction_options() -> None:
+    model = build_model_from_spec(
+        _spec(WIRE_PROTOCOL_RESPONSES),
+        purpose="coordinator",
+        prompt_cache_options={"mode": "explicit"},
+        context_management=[{"type": "compaction", "compact_threshold": 200_000}],
+    )
+    try:
+        assert model.prompt_cache_options == {"mode": "explicit"}
+        assert model.context_management == [
+            {"type": "compaction", "compact_threshold": 200_000}
+        ]
+    finally:
+        model.root_client.close()
+
+
+def test_cache_mode_override_is_consumed_not_forwarded() -> None:
+    model = build_model_from_spec(
+        _spec(
+            WIRE_PROTOCOL_RESPONSES,
+            request_overrides={"cache_mode": "off", "thinking_budget": 512},
+        ),
+        purpose="coordinator",
+    )
+    try:
+        assert model.extra_body == {"thinking_budget": 512}
+        assert "cache_mode" not in (model.extra_body or {})
+    finally:
+        model.root_client.close()
+
+
+def test_responses_serializes_prompt_cache_breakpoint() -> None:
+    model = build_model_from_spec(
+        _spec(WIRE_PROTOCOL_RESPONSES),
+        purpose="coordinator",
+        prompt_cache_options={"mode": "explicit"},
+    )
+    try:
+        payload = model._get_request_payload(
+            [
+                SystemMessage(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": "stable prefix",
+                            "prompt_cache_breakpoint": {"mode": "explicit"},
+                        }
+                    ]
+                ),
+                HumanMessage(content="hi"),
+            ]
+        )
+        block = payload["input"][0]["content"][0]
+        assert block["prompt_cache_breakpoint"] == {"mode": "explicit"}
+        assert payload["prompt_cache_options"] == {"mode": "explicit"}
     finally:
         model.root_client.close()
 

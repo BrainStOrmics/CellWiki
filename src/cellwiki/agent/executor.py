@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 import subprocess
@@ -124,6 +125,64 @@ WHITELISTED_TOOL_NAMES = frozenset(
         "promote_attachment",
     }
 )
+
+CANONICAL_TOOL_ORDER: tuple[str, ...] = (
+    "ls",
+    "glob",
+    "grep",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "delete_file",
+    "rename_file",
+    "git",
+    "run_powershell",
+    "lint_knowledge_base",
+    "ask_user_question",
+    "read_attachment",
+    "promote_attachment",
+)
+
+
+def canonical_tool_sort_key(tool_name: str) -> tuple[int, str]:
+    try:
+        return (CANONICAL_TOOL_ORDER.index(tool_name), tool_name)
+    except ValueError:
+        return (len(CANONICAL_TOOL_ORDER), tool_name)
+
+
+def tool_schema_fingerprint(tools: list[Any]) -> str:
+    """Hash tool names, descriptions, schemas, and canonical ordering."""
+
+    payload: list[dict[str, Any]] = []
+    for tool_item in sorted(
+        tools,
+        key=lambda item: canonical_tool_sort_key(
+            str(getattr(item, "name", "") or "")
+        ),
+    ):
+        name = str(getattr(tool_item, "name", "") or "")
+        description = str(getattr(tool_item, "description", "") or "")
+        args_schema = getattr(tool_item, "args_schema", None)
+        if args_schema is not None and hasattr(args_schema, "model_json_schema"):
+            schema = args_schema.model_json_schema()
+        else:
+            schema = {}
+        payload.append(
+            {
+                "name": name,
+                "description": description,
+                "schema": schema,
+            }
+        )
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 # read_attachment 的线程作用域解析器与附件读取预算：由 AgentRuntimeManager 在每次 run 前安装
 # （严格串行执行，因此单一槽位即可；run 结束或异常后必须清除）。

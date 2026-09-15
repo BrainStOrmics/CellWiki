@@ -114,6 +114,8 @@ def build_anthropic_model_from_spec(
         raise RuntimeError(f"provider {spec.provider_id} has no API key configured")
 
     overrides = dict(spec.request_overrides)
+    # cache_mode is a CellWiki policy switch, not an Anthropic request field.
+    overrides.pop("cache_mode", None)
     reserved = sorted(_RESERVED_OVERRIDE_KEYS & overrides.keys())
     if reserved:
         raise ValueError(

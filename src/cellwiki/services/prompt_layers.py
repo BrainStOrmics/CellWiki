@@ -357,6 +357,55 @@ def build_layer_b_snapshot(
     return f"{body[: max(0, _LAYER_B_SNAPSHOT_MAX - len(goal) - 1)]}\n{goal}"
 
 
+def schema_prompt_block(schema_version: int, schema_contract_hash: str) -> str:
+    """Stable workspace contract marker placed before the cache breakpoint."""
+
+    return (
+        "## Workspace schema\n"
+        f"version: {int(schema_version)}\n"
+        f"contract_hash: {schema_contract_hash}"
+    )
+
+
+def build_turn_context(
+    *,
+    current_message: str,
+    intent_hint: str | None = None,
+    git_status: str | None = None,
+    open_page: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+    selected_text: str | None = None,
+) -> str:
+    """Build the v2 dynamic tail merged into the current user turn.
+
+    This intentionally excludes recent transcript, the duplicated current
+    message, pending questions, and snapshot commit. Those either belong to
+    append-only history or are runtime metadata that the model does not need.
+    """
+
+    parts: list[str] = ["## Run context"]
+    if git_status:
+        parts.append(f"- git status:\n{git_status[:1_500]}")
+    if open_page is not None:
+        page_id = open_page.get("page_id") or open_page.get("title") or "?"
+        parts.append(f"- user is viewing: {page_id}")
+        outline = _page_outline(str(open_page.get("markdown") or ""))
+        if outline:
+            parts.append("- page outline:\n" + "\n".join(outline[:16]))
+    if selected_text is not None and selected_text.strip():
+        parts.append(
+            "- user selected this text on the page:\n" + _bounded_selection(selected_text)
+        )
+    if attachments:
+        block = _render_attachment_block(attachments)
+        if block:
+            parts.append(block)
+    hint = intent_hint if intent_hint is not None else classify_intent_hint(current_message)
+    if hint:
+        parts.append(f"- intent hint: {hint}")
+    return "\n".join(parts)[:_LAYER_B_SNAPSHOT_MAX]
+
+
 # 归类的优先级：模糊关键词重叠时（如“继续”同时是 unfinished 标记）优先更具体的类别
 _CATEGORY_PRIORITY: tuple[str, ...] = (
     "pending_questions",
@@ -387,6 +436,12 @@ def _six_category_summary(excerpts: list[str]) -> str:
     if not blocks:
         return ""
     return "## Compacted history summary\n" + "\n".join(blocks)
+
+
+def summarize_excerpts(excerpts: list[str]) -> str:
+    """Public deterministic compaction summary used by the v2 transcript."""
+
+    return _six_category_summary(excerpts)
 
 
 @dataclass
@@ -451,9 +506,12 @@ __all__ = [
     "LAYER_A_TEXT",
     "build_layer_b_snapshot",
     "build_r1_r5_block",
+    "build_turn_context",
     "classify_intent_hint",
     "compact_transcript",
     "estimate_tokens",
     "resolve_declared_window",
+    "schema_prompt_block",
+    "summarize_excerpts",
     "warn_if_narrow_window",
 ]

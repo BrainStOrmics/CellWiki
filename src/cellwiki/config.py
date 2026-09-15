@@ -116,6 +116,10 @@ class Settings(BaseSettings):
     agent_context_max_tokens: int = Field(default=512_000, ge=8_000, le=2_000_000)
     agent_context_auto_compact_ratio: float = Field(default=0.8, ge=0.5, le=0.95)
     agent_context_retained_tokens: int = Field(default=32_768, ge=4_000, le=200_000)
+    # ADR-0014：为输出和 provider 渲染预留的上下文 token。
+    agent_context_output_reserve_tokens: int = Field(default=16_384, ge=1_024, le=200_000)
+    # ADR-0014：v2 使用 append-only 模型 transcript；legacy 仅用于旧 run 和回滚。
+    agent_prompt_transcript: Literal["legacy", "v2"] = "v2"
     # ---- 附件感知与读取预算（附件驱动导入）----
     agent_attachment_preview_chars: int = Field(default=2000, ge=0, le=20_000)
     agent_attachment_read_budget_chars: int = Field(default=400_000, ge=0, le=20_000_000)  # 0 = 不限制

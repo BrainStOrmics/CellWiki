@@ -216,6 +216,22 @@ def test_stream_item_reads_langchain_normalized_cache_read():
     assert text.cached_input_tokens == 80
 
 
+def test_stream_item_reads_langchain_normalized_cache_creation():
+    chunk = AIMessageChunk(
+        content="hi",
+        id="call_cw",
+        usage_metadata={
+            "input_tokens": 120,
+            "output_tokens": 40,
+            "total_tokens": 160,
+            "input_token_details": {"cache_creation": 50},
+        },
+    )
+    signals = list(_signals_from_stream_item(("messages", (chunk, {}))))
+    text = next(signal for signal in signals if signal.type == AgentEventType.MESSAGE_DELTA)
+    assert text.cache_creation_input_tokens == 50
+
+
 def test_stream_item_reads_deepseek_cache_from_response_metadata():
     chunk = AIMessageChunk(
         content="hi",
@@ -288,6 +304,24 @@ def test_stream_item_emits_reasoning_delta_from_responses_content_blocks():
     assert not any(
         signal.type == AgentEventType.MESSAGE_DELTA for signal in signals
     )
+
+
+def test_stream_item_emits_compaction_model_message():
+    chunk = AIMessageChunk(
+        content=[
+            {
+                "type": "compaction",
+                "id": "cmp_1",
+                "encrypted_content": "opaque",
+            }
+        ],
+        id="call_compaction",
+    )
+    signals = list(_signals_from_stream_item(("messages", (chunk, {}))))
+    message = next(signal.model_message for signal in signals if signal.model_message)
+    assert message["kind"] == "compaction"
+    assert message["content"]["provider"] == "openai"
+    assert message["content"]["item"]["id"] == "cmp_1"
 
 
 def test_reasoning_delta_keeps_word_boundaries_across_chunks():

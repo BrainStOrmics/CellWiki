@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -190,6 +192,19 @@ def load_workspace_schema(root: Path) -> WorkspacePageSchema:
         ) from error
 
 
+def workspace_schema_hash(root: Path) -> str:
+    """Return a deterministic hash of the parsed v2 contract and templates."""
+
+    schema = load_workspace_schema(root)
+    canonical = json.dumps(
+        schema.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _compiled_path(path_template: str) -> re.Pattern[str]:
     prefix, suffix = path_template.split("{id}", 1)
     return re.compile(
@@ -270,4 +285,5 @@ __all__ = [
     "load_workspace_schema",
     "matching_page_types",
     "source_ids_from_frontmatter",
+    "workspace_schema_hash",
 ]

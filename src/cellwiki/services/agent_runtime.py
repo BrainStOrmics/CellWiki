@@ -33,7 +33,15 @@ from typing import Any, Callable, Generator, Iterable, cast
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
-from cellwiki.agent.app import build_model, build_coordinator_model, build_wiki_agent
+from cellwiki.agent.app import (
+    build_coordinator_model,
+    build_model,
+    build_wiki_agent,
+    coordinator_tool_schema_hash,
+    prompt_cache_policy_for_settings,
+    prompt_cache_policy_for_spec,
+    stable_system_prompt_text,
+)
 from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.model_providers import ModelSelection, ResolvedModelSpec
@@ -57,13 +65,25 @@ from cellwiki.services.checkpoints import (
     latest_checkpoint_id,
 )
 from cellwiki.services.conversation_context import ConversationContextView
+from cellwiki.services.model_transcript import (
+    estimate_transcript_tokens,
+    render_model_messages,
+    split_for_compaction,
+    summarize_transcript,
+)
 from cellwiki.services.model_catalog import ModelCatalogService
 from cellwiki.services.prompt_layers import (
     LAYER_A_TEXT,
     build_layer_b_snapshot,
     build_r1_r5_block,
+    build_turn_context,
     compact_transcript,
     warn_if_narrow_window,
+)
+from cellwiki.services.prompt_runtime import (
+    PromptRunContext,
+    reset_prompt_run_context,
+    set_prompt_run_context,
 )
 from cellwiki.agent.executor import (
     attachment_read_stats,
@@ -76,6 +96,10 @@ from cellwiki.services.attachment_store import AttachmentFileStore
 from cellwiki.services.git_executor import GitCommandError, GitDiff, GitExecutor
 from cellwiki.services.logging_context import log_context
 from cellwiki.services.quality import inspect_projection
+from cellwiki.services.schema_contract import (
+    SchemaContractError,
+    workspace_schema_hash,
+)
 from cellwiki.services.runtime_store import (
     InvalidRunTransitionError,
     RuntimeStore,
@@ -291,6 +315,8 @@ class RuntimeSignal:
     input_tokens: int = 0
     output_tokens: int = 0
     cached_input_tokens: int = 0
+    cache_creation_input_tokens: int = 0
+    model_message: dict[str, Any] | None = None
     tool_calls: int = 0
 
 
@@ -314,7 +340,7 @@ def _message_text(content: Any) -> str:
     return str(content or "")
 
 
-def _usage_from_message(message: Any) -> tuple[int, int, int]:
+def _usage_from_message(message: Any) -> tuple[int, int, int, int]:
     """Read input/output/cached token counts from AIMessage usage metadata.
 
     LangChain normalizes provider usage into `usage_metadata` and renames cache
@@ -329,6 +355,7 @@ def _usage_from_message(message: Any) -> tuple[int, int, int]:
     input_tokens = _first_int(metadata, "input_tokens", "prompt_tokens")
     output_tokens = _first_int(metadata, "output_tokens", "completion_tokens")
     cached = _read_cached_tokens(metadata)
+    cache_creation = _read_cache_creation_tokens(metadata)
     if not cached:
         for ignored_key in ("token_usage", "usage"):
             nested = _dig(response_metadata, ignored_key)
@@ -336,11 +363,22 @@ def _usage_from_message(message: Any) -> tuple[int, int, int]:
                 cached = _read_cached_tokens(nested)
                 if cached:
                     break
+    if not cache_creation:
+        for ignored_key in ("token_usage", "usage"):
+            nested = _dig(response_metadata, ignored_key)
+            if isinstance(nested, dict):
+                cache_creation = _read_cache_creation_tokens(nested)
+                if cache_creation:
+                    break
     if not cached:
         cached = _read_cached_tokens(response_metadata)
     if not cached:
         cached = _read_cached_tokens(extra)
-    return input_tokens, output_tokens, cached
+    if not cache_creation:
+        cache_creation = _read_cache_creation_tokens(response_metadata)
+    if not cache_creation:
+        cache_creation = _read_cache_creation_tokens(extra)
+    return input_tokens, output_tokens, cached, cache_creation
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -385,6 +423,28 @@ def _read_cached_tokens(usage: dict[str, Any]) -> int:
         usage.get("prompt_cache_hit_tokens"),
         usage.get("cached_tokens"),
         usage.get("cache_read"),
+    )
+    for value in candidates:
+        if value is None:
+            continue
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return 0
+
+
+def _read_cache_creation_tokens(usage: dict[str, Any]) -> int:
+    """Best-effort cache-write lookup across OpenAI/Anthropic usage shapes."""
+
+    candidates = (
+        _dig(usage, "input_token_details", "cache_creation"),
+        _dig(usage, "input_token_details", "cache_write"),
+        usage.get("cache_creation_input_tokens"),
+        usage.get("cache_write_input_tokens"),
+        usage.get("cache_creation_tokens"),
     )
     for value in candidates:
         if value is None:
@@ -817,7 +877,9 @@ def _signals_from_stream_item(
         metadata = payload[1] if len(payload) > 1 and isinstance(payload[1], dict) else {}
         if isinstance(message, (AIMessage, AIMessageChunk)):
             model_call_id = str(getattr(message, "id", "") or "") or None
-            input_tokens, output_tokens, cached_tokens = _usage_from_message(message)
+            input_tokens, output_tokens, cached_tokens, cache_creation_tokens = (
+                _usage_from_message(message)
+            )
             reasoning = _reasoning_text(message)
             if reasoning:
                 responses.append(
@@ -828,6 +890,25 @@ def _signals_from_stream_item(
                         model_call_id=model_call_id,
                     )
                 )
+            content_blocks = getattr(message, "content", None)
+            if isinstance(content_blocks, list):
+                for block in content_blocks:
+                    if not isinstance(block, dict) or block.get("type") != "compaction":
+                        continue
+                    responses.append(
+                        RuntimeSignal(
+                            type=AgentEventType.MESSAGE_DELTA,
+                            message="",
+                            data={"source": "compaction"},
+                            model_call_id=model_call_id,
+                            model_message={
+                                "kind": "compaction",
+                                "role": "assistant",
+                                "content": {"provider": "openai", "item": block},
+                                "message_key": f"compaction:{block.get('id') or uuid.uuid4().hex}",
+                            },
+                        )
+                    )
             tool_calls = getattr(message, "tool_calls", []) or []
             if not tool_calls:
                 tool_calls = getattr(message, "tool_call_chunks", []) or []
@@ -864,6 +945,7 @@ def _signals_from_stream_item(
                             input_tokens=input_tokens,
                             output_tokens=output_tokens,
                             cached_input_tokens=cached_tokens,
+                            cache_creation_input_tokens=cache_creation_tokens,
                         )
                     )
             text = _message_text(getattr(message, "content", ""))
@@ -880,6 +962,7 @@ def _signals_from_stream_item(
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
                         cached_input_tokens=cached_tokens,
+                        cache_creation_input_tokens=cache_creation_tokens,
                     )
                 )
         elif isinstance(message, ToolMessage):
@@ -898,6 +981,18 @@ def _signals_from_stream_item(
                     type=AgentEventType.TOOL_COMPLETED,
                     message=_tool_result_summary(tool_name, result_text),
                     data=completed_data,
+                    model_message={
+                        "kind": "tool_result",
+                        "role": "tool",
+                        "content": {
+                            "text": result_text,
+                            "tool_call_id": tool_call_id or None,
+                            "name": tool_name,
+                        },
+                        "tool_call_id": tool_call_id or None,
+                        "name": tool_name,
+                        "message_key": f"tool_result:{tool_call_id or uuid.uuid4().hex}",
+                    },
                 )
             )
     elif name == "updates" and isinstance(payload, dict):
@@ -916,7 +1011,35 @@ def _signals_from_stream_item(
                         for node_message in node_messages:
                             if not isinstance(node_message, AIMessage):
                                 continue
-                            for tool_call in getattr(node_message, "tool_calls", []) or []:
+                            node_tool_calls = getattr(node_message, "tool_calls", []) or []
+                            model_tool_calls = [
+                                {
+                                    "name": str(call.get("name") or ""),
+                                    "args": call.get("args") or {},
+                                    "id": str(call.get("id") or ""),
+                                }
+                                for call in node_tool_calls
+                                if isinstance(call, dict)
+                            ]
+                            model_message = (
+                                {
+                                    "kind": "assistant",
+                                    "role": "assistant",
+                                    "content": {
+                                        "text": _message_text(
+                                            getattr(node_message, "content", "")
+                                        ),
+                                        "tool_calls": model_tool_calls,
+                                    },
+                                    "message_key": (
+                                        f"assistant:{getattr(node_message, 'id', '') or uuid.uuid4().hex}"
+                                    ),
+                                }
+                                if model_tool_calls
+                                else None
+                            )
+                            emitted_model_message = False
+                            for tool_call in node_tool_calls:
                                 tool_name = str(tool_call.get("name") or "").strip()
                                 if not tool_name:
                                     continue
@@ -943,6 +1066,11 @@ def _signals_from_stream_item(
                                         type=AgentEventType.TOOL_STARTED,
                                         message=display,
                                         data=assembled_data,
+                                        model_message=(
+                                            model_message
+                                            if not emitted_model_message
+                                            else None
+                                        ),
                                         # No model_call_id here: the assembled
                                         # message id (resp_*) differs from the
                                         # streamed chunk id (lc_run_*), and
@@ -950,6 +1078,8 @@ def _signals_from_stream_item(
                                         # spans and the per-round call count.
                                     )
                                 )
+                                if model_message is not None:
+                                    emitted_model_message = True
                 continue
             value = update
             if isinstance(value, (list, tuple)):
@@ -1092,6 +1222,7 @@ class AgentRuntimeManager:
         )
         self._thread_lock = RLock()
         self._built_adapter: Any | None = None
+        self._built_cache_policy: Any | None = None
         # 当前 _built_adapter 用的模型键：(provider_id, model_id)；legacy 链为
         # ("", settings.openai_model)。run 请求换模型时据此重建编译图。
         self._built_adapter_key: tuple[str, str] | None = None
@@ -1210,6 +1341,7 @@ class AgentRuntimeManager:
             # 决策 8：执行配置快照，使历史 run 不受 .env 漂移影响。
             # 公式不变；模型项取本次 run 的生效模型（目录选中或 legacy 全局）。
             prompt_hash=prompt_configuration_hash(budget, effective_model_name),
+            transcript_version=2 if settings.agent_prompt_transcript == "v2" else 1,
             request_id=request_id,
         )
         try:
@@ -1235,6 +1367,8 @@ class AgentRuntimeManager:
         run = self.store.get_run(run_id)
         if run is not None:
             delete_run_checkpoints(self.project_root, run.thread_id, run_id)
+            if run.transcript_version >= 2:
+                self.store.delete_run_model_messages(run_id)
         return self._claim_and_submit(run_id, AgentRunStatus.RETRYING, reason)
 
     def _run_checkpoint_is_resumable(self, run: AgentRun) -> bool:
@@ -1610,10 +1744,142 @@ class AgentRuntimeManager:
         """
         if model_spec is not None:
             model = build_coordinator_model(model_spec)
+            cache_policy = prompt_cache_policy_for_spec(model_spec)
         else:
             model = build_model()
+            cache_policy = prompt_cache_policy_for_settings()
         self._agent_model = model
-        return build_wiki_agent(self.project_root, model=model)
+        self._built_cache_policy = cache_policy
+        return build_wiki_agent(
+            self.project_root,
+            model=model,
+            cache_policy=cache_policy,
+        )
+
+    def _cache_policy_for_run(self, run: AgentRun) -> Any:
+        if self._built_cache_policy is not None:
+            return self._built_cache_policy
+        spec = self._model_spec_for_run(run)
+        return (
+            prompt_cache_policy_for_spec(spec)
+            if spec is not None
+            else prompt_cache_policy_for_settings()
+        )
+
+    def _workspace_schema_metadata(self) -> tuple[int, str]:
+        try:
+            return 2, workspace_schema_hash(self.project_root)
+        except (SchemaContractError, OSError):
+            return 2, "unavailable"
+
+    def _cache_prefix_hash(self, schema_contract_hash: str) -> str:
+        digest = hashlib.sha256()
+        digest.update(
+            stable_system_prompt_text(2, schema_contract_hash).encode("utf-8")
+        )
+        digest.update(
+            coordinator_tool_schema_hash(self.project_root).encode("utf-8")
+        )
+        return digest.hexdigest()[:16]
+
+    def _prepare_v2_transcript(
+        self,
+        run: AgentRun,
+        message: str,
+        context: WikiAgentContext,
+        adapter: Any,
+    ) -> tuple[list[dict[str, Any]], PromptRunContext]:
+        del adapter  # the adapter only matters for the legacy graph path
+        self.store.bootstrap_model_transcript(
+            run.thread_id, exclude_run_id=run.run_id
+        )
+        policy = self._cache_policy_for_run(run)
+        records = self.store.list_model_messages(run.thread_id)
+        threshold = policy.compact_threshold or int(
+            settings.agent_context_max_tokens
+            * settings.agent_context_auto_compact_ratio
+        )
+        if (
+            not policy.provider_native_compaction
+            and records
+            and estimate_transcript_tokens(records) > threshold
+        ):
+            prefix, tail = split_for_compaction(
+                records,
+                retained_tokens=settings.agent_context_retained_tokens,
+            )
+            summary = summarize_transcript(prefix)
+            if summary:
+                self.store.append_model_message(
+                    thread_id=run.thread_id,
+                    run_id=run.run_id,
+                    kind="compaction",
+                    role="user",
+                    content={"text": summary, "provider": "local"},
+                    message_key=f"local_compaction:{uuid.uuid4().hex}",
+                    new_epoch=True,
+                )
+                for record in tail:
+                    self.store.append_model_message(
+                        thread_id=run.thread_id,
+                        run_id=run.run_id,
+                        kind=str(record.get("kind") or "user"),
+                        role=str(record.get("role") or "user"),
+                        content=record.get("content") or {"text": record.get("content_text", "")},
+                        message_key=(
+                            f"retained:{record.get('message_key')}:{uuid.uuid4().hex}"
+                        ),
+                        tool_call_id=record.get("tool_call_id"),
+                        name=record.get("name"),
+                    )
+
+        self.store.append_message(
+            thread_id=run.thread_id,
+            run_id=run.run_id,
+            role="user",
+            content=message,
+            data={"source": "agent_runtime"},
+        )
+        self.store.append_model_message(
+            thread_id=run.thread_id,
+            run_id=run.run_id,
+            kind="user",
+            role="user",
+            content={"text": message},
+            message_key="user",
+        )
+        turn_context = build_turn_context(
+            current_message=message,
+            git_status=self._git_status_text(),
+            open_page=self._open_page_snapshot(context.page_id),
+            attachments=self._attachment_manifest(run),
+            selected_text=context.selected_text,
+        )
+        self.store.append_model_message(
+            thread_id=run.thread_id,
+            run_id=run.run_id,
+            kind="run_context",
+            role="user",
+            content={"text": turn_context},
+            message_key="run_context",
+        )
+        schema_version, schema_hash = self._workspace_schema_metadata()
+        cache_prefix_hash = self._cache_prefix_hash(schema_hash)
+        epoch = self.store.current_transcript_epoch(run.thread_id)
+        self.store.update_run_cache_metadata(
+            run.run_id,
+            cache_prefix_hash=cache_prefix_hash,
+            transcript_epoch=epoch,
+            cache_mode=policy.mode,
+        )
+        prompt_context = PromptRunContext(
+            schema_version=schema_version,
+            schema_contract_hash=schema_hash,
+            transcript_epoch=epoch,
+            cache_prefix_hash=cache_prefix_hash,
+            cache_mode=policy.mode,
+        )
+        return render_model_messages(self.store.list_model_messages(run.thread_id)), prompt_context
 
     def _model_spec_for_run(self, run: AgentRun) -> ResolvedModelSpec | None:
         """按 run 记录解析模型；legacy 链（无 provider id）返回 None。
@@ -1713,12 +1979,21 @@ class AgentRuntimeManager:
             run.usage.elapsed_seconds if continue_from_checkpoint else 0.0
         )
         seen: set[tuple[str, AgentEventType]] = set()
+        prompt_token = None
         try:
             if continue_from_checkpoint:
                 # ADR-0010 决策 3/6：续跑段从该 run 自己的 checkpoint 继续，
                 # 不重放 transcript，也不再落一条重复的用户消息。
                 stream = self._open_stream_continue(
                     adapter, thread_id, message, context, run_id=run_id
+                )
+            elif run.transcript_version >= 2:
+                messages_in, prompt_context = self._prepare_v2_transcript(
+                    run, message, context, adapter
+                )
+                prompt_token = set_prompt_run_context(prompt_context)
+                stream = self._open_stream(
+                    adapter, thread_id, messages_in, context, run_id=run_id
                 )
             else:
                 view = ConversationContextView(self.store)
@@ -1823,6 +2098,9 @@ class AgentRuntimeManager:
                 self._finish_forced_close(run_id, forced)
             else:
                 self._finish_failed(run_id, error)
+        finally:
+            if prompt_token is not None:
+                reset_prompt_run_context(prompt_token)
 
     def _replayed_answer(self, run_id: str) -> str:
         """Concat the run's message_delta events in sequence order: the full answer text."""
@@ -1874,6 +2152,16 @@ class AgentRuntimeManager:
                 content=answer,
                 data=message_data,
             )
+            run_record = self.store.get_run(run_id)
+            if run_record is not None and run_record.transcript_version >= 2:
+                self.store.append_model_message(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    kind="assistant",
+                    role="assistant",
+                    content={"text": answer},
+                    message_key="assistant_final",
+                )
         if outcome.cancelled:
             # 落到安全事件边界了：图流已关、checkpoint 已回写（见 _consume_stream 的
             # finally），所以这是一次可续跑的暂停，不是一个终态。
@@ -1930,6 +2218,38 @@ class AgentRuntimeManager:
             ),
         )
 
+    def _persist_model_message(
+        self,
+        run_id: str,
+        thread_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        """Persist one normalized model-visible message without touching UI rows."""
+
+        kind = str(payload.get("kind") or "").strip()
+        if not kind:
+            return
+        content = payload.get("content")
+        if content is None:
+            content = {"text": str(payload.get("text") or "")}
+        role = str(
+            payload.get("role")
+            or ("assistant" if kind in {"assistant", "compaction"} else "tool")
+        )
+        self.store.append_model_message(
+            thread_id=thread_id,
+            run_id=run_id,
+            kind=kind,
+            role=role,
+            content=content,
+            message_key=str(
+                payload.get("message_key") or f"{kind}:{uuid.uuid4().hex}"
+            ),
+            tool_call_id=payload.get("tool_call_id"),
+            name=payload.get("name"),
+            new_epoch=kind == "compaction",
+        )
+
     def _consume_stream(
         self,
         run_id: str,
@@ -1954,12 +2274,15 @@ class AgentRuntimeManager:
         input_tokens = 0
         output_tokens = 0
         cached_input_tokens = 0
+        cache_creation_input_tokens = 0
         tool_calls_started = 0
         tool_calls_completed = 0
         steps_at_end = 0
         question_pending = False
         accounting_flushed = False
         saw_any_signal = False
+        run_record = self.store.get_run(run_id)
+        transcript_version = run_record.transcript_version if run_record else 1
 
         def _flush_accounting() -> None:
             """落盘本段 spans + usage，恰好一次，中止也不例外。
@@ -1993,6 +2316,8 @@ class AgentRuntimeManager:
                     + sum(value[1] for value in call_usage.values()),
                     cached_input_tokens=cached_input_tokens
                     + sum(value[2] for value in call_usage.values()),
+                    cache_creation_input_tokens=cache_creation_input_tokens
+                    + sum(value[3] for value in call_usage.values()),
                     tool_calls=tool_calls_started,
                     tool_calls_started=tool_calls_started,
                     tool_calls_completed=tool_calls_completed,
@@ -2040,18 +2365,28 @@ class AgentRuntimeManager:
                 saw_any_signal = True
                 for signal in signals:
                     steps_at_end = steps
+                    if signal.model_message and transcript_version >= 2:
+                        self._persist_model_message(
+                            run_id, thread_id, signal.model_message
+                        )
                     if signal.model_call_id:
                         now = time.monotonic()
                         call_started.setdefault(signal.model_call_id, now)
                         call_seen_last[signal.model_call_id] = now
-                        usage = call_usage.setdefault(signal.model_call_id, [0, 0, 0])
+                        usage = call_usage.setdefault(signal.model_call_id, [0, 0, 0, 0])
                         usage[0] = max(usage[0], signal.input_tokens)
                         usage[1] = max(usage[1], signal.output_tokens)
                         usage[2] = max(usage[2], signal.cached_input_tokens)
+                        usage[3] = max(
+                            usage[3], signal.cache_creation_input_tokens
+                        )
                     else:
                         input_tokens += signal.input_tokens
                         output_tokens += signal.output_tokens
                         cached_input_tokens += signal.cached_input_tokens
+                        cache_creation_input_tokens += (
+                            signal.cache_creation_input_tokens
+                        )
                     if signal.type == AgentEventType.TOOL_STARTED:
                         # Streaming and non-streaming paths can both surface the same
                         # call id (messages chunk + assembled updates AIMessage); the
@@ -2285,7 +2620,7 @@ class AgentRuntimeManager:
                     input_tokens=tokens[0],
                     output_tokens=tokens[1],
                     cached_input_tokens=tokens[2],
-                    cache_creation_input_tokens=0,
+                    cache_creation_input_tokens=tokens[3] if len(tokens) > 3 else 0,
                     data={"model_call_id": call_id},
                 )
             )

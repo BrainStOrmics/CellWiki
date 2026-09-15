@@ -18,6 +18,7 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from pydantic import Field
 
 from cellwiki.agent.app import build_wiki_agent
+from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.runs import AgentRunStatus
 from cellwiki.services.agent_runtime import AgentRuntimeManager
@@ -102,7 +103,8 @@ def _run_with_selection(root: Path, selected_text: str | None) -> str:
     return _layer_b_seen_by_model(model)
 
 
-def test_selected_text_reaches_the_model_inside_layer_b(tmp_path: Path):
+def test_selected_text_reaches_the_model_inside_layer_b(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(settings, "agent_prompt_transcript", "legacy")
     layer_b = _run_with_selection(tmp_path, "FOXP3 marks regulatory T cells.")
 
     assert "user selected this text on the page:" in layer_b
@@ -110,7 +112,8 @@ def test_selected_text_reaches_the_model_inside_layer_b(tmp_path: Path):
     assert "current run goal (question): 这段说得对吗" in layer_b
 
 
-def test_overlong_selection_arrives_bounded_with_its_marker(tmp_path: Path):
+def test_overlong_selection_arrives_bounded_with_its_marker(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(settings, "agent_prompt_transcript", "legacy")
     # 片段必须唯一：周期性文本会让"上界之外"的切片也出现在保留的前缀里。
     selection = "".join(f"[{index:05d}]" for index in range(700))   # 4900 字符
     layer_b = _run_with_selection(tmp_path, selection)
@@ -121,14 +124,18 @@ def test_overlong_selection_arrives_bounded_with_its_marker(tmp_path: Path):
     assert "current run goal (question): 这段说得对吗" in layer_b
 
 
-def test_run_without_a_selection_injects_no_selection_block(tmp_path: Path):
+def test_run_without_a_selection_injects_no_selection_block(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr(settings, "agent_prompt_transcript", "legacy")
     layer_b = _run_with_selection(tmp_path, None)
 
     assert "user selected this text on the page" not in layer_b
     assert "current run goal (question): 这段说得对吗" in layer_b
 
 
-def test_layer_b_sits_after_history_and_before_the_current_user_message(tmp_path: Path):
+def test_layer_b_sits_after_history_and_before_the_current_user_message(
+    tmp_path: Path, monkeypatch
+):
+    monkeypatch.setattr(settings, "agent_prompt_transcript", "legacy")
     # 位置锁（2026-09-15）：快照每轮 run 都变，必须排在历史之后。排在历史前会让
     # provider 的逐字节前缀缓存从快照处断掉，其后的整段历史每轮重算（真机对照：
     # 跨 run 只剩静态头 ≈2K token 命中）。跑同一个 thread 两轮，对第二轮 run 的

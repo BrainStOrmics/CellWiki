@@ -124,6 +124,14 @@ class AgentRun(ContractModel):
     request_id: str | None = None
     # 决策 8：执行配置快照（Layer A + model + budget 短哈希），使历史 run 不受 .env 漂移影响。
     prompt_hash: str | None = None
+    # ADR-0014：模型 transcript 版本。旧 run 没有该字段，默认 1；新 run 显式写 2。
+    transcript_version: int = Field(default=1, ge=1)
+    # ADR-0014：完整稳定前缀与 canonical tool schema 的短哈希，用于缓存诊断。
+    cache_prefix_hash: str | None = None
+    # ADR-0014：当前 run 所在模型 transcript epoch。
+    transcript_epoch: int = Field(default=0, ge=0)
+    # ADR-0014：本次 run 采用的缓存模式（off/implicit/explicit）。
+    cache_mode: str = ""
     model_role: str = "coordinator"                           # 模型角色
     model_name: str = ""                                      # 模型名称
     # 供应商目录选中链路记录 provider id；legacy .env 链为空串。

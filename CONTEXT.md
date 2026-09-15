@@ -46,8 +46,16 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
 - **附件（attachment）**：用户上传到线程的 pdf/md/txt（单文件 <100MB、单次 <=20、
   每线程 <=500MB），仅作为线程临时 Agent 上下文，上传时服务端提取文本（PDF pdfplumber，
   v1 无 OCR），24h 兜底清理 + promote 即删。
-- **附件清单（attachment manifest）**：run 启动时注入 Layer B 的附件元数据与预览，
-  模型据此决定读取哪些附件。
+- **附件清单（attachment manifest）**：run 启动时注入当前 Turn Context 的附件
+  元数据与预览，模型据此决定读取哪些附件。
+- **Turn Context**：当前 run 的 git status、打开页面元数据+大纲、选中文本、
+  附件清单与 intent hint；作为当前 user 消息的尾部 context 注入，不再使用
+  第二个 system message。
+- **模型 transcript（model transcript）**：`agent_model_messages` 中按顺序追加的
+  模型可见消息（user、run_context、assistant、tool_call、tool_result、
+  compaction）；与 UI `agent_messages` 分离，是 v2 prompt 的唯一历史来源。
+- **compaction boundary**：最新一条 `kind=compaction` 的模型消息；prompt loader
+  只加载该 boundary 及其后的消息，之前的记录保留用于审计但不进入当前 prompt。
 - **promote**：用户经 ask_user_question 同意后，把附件提升为 raw/<source_id>/ 正式源
   （原件 + 提取文本 + meta.json），登记 data/runtime/sources/<source_id>.json，并提交 git。
 - **预置源登记（raw scan）**：用户从产品侧发起的"扫描并登记 raw/"动作，按目录名

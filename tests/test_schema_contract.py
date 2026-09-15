@@ -13,6 +13,7 @@ from cellwiki.services.schema_contract import (
     field_rule_error,
     load_workspace_schema,
     matching_page_types,
+    workspace_schema_hash,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,22 @@ def test_schema_rejects_v1_with_migration_message(tmp_path: Path):
     )
     with pytest.raises(SchemaContractError, match="schema_version 1 is no longer supported"):
         load_workspace_schema(tmp_path)
+
+
+def test_schema_hash_uses_parsed_contract_and_templates(tmp_path: Path):
+    _write_root_schema(tmp_path)
+    schema_path = tmp_path / "schema.md"
+    baseline = workspace_schema_hash(tmp_path)
+
+    schema_path.write_text(
+        schema_path.read_text(encoding="utf-8") + "\n<!-- formatting only -->\n",
+        encoding="utf-8",
+    )
+    assert workspace_schema_hash(tmp_path) == baseline
+
+    text = schema_path.read_text(encoding="utf-8")
+    schema_path.write_text(text.replace("## Markers", "## Markers Renamed", 1), encoding="utf-8")
+    assert workspace_schema_hash(tmp_path) != baseline
 
 
 def test_schema_requires_one_machine_readable_block(tmp_path: Path):
