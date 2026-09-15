@@ -1786,9 +1786,13 @@ class AgentRuntimeManager:
                     selected_text=context.selected_text,
                 )
                 if layer_b:
+                    # 快照每轮 run 都变，必须排在历史之后（当前用户消息之前）：provider
+                    # 前缀缓存逐字节匹配，排在历史前会把它之后的整段历史一并作废，
+                    # 跨 run 只剩静态头 ≈2K token 能命中（2026-09-15 真机对照）。
                     messages_in = [
+                        *messages_in[:-1],
                         {"role": "system", "content": layer_b},
-                        *messages_in,
+                        messages_in[-1],
                     ]
                 stream = self._open_stream(
                     adapter, thread_id, messages_in, context, run_id=run_id
