@@ -178,12 +178,12 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   }
 
   const page = section === "model"
-    ? { eyebrow: t("settings.providersEyebrow"), title: t("settings.modelTitle"), description: t("settings.providersDescription") }
+    ? { eyebrow: t("settings.providersEyebrow"), title: t("settings.modelTitle") }
     : section === "interface"
-      ? { eyebrow: t("settings.interfaceEyebrow"), title: t("settings.interfaceTitle"), description: t("settings.interfaceDescription") }
+      ? { eyebrow: t("settings.interfaceEyebrow"), title: t("settings.interfaceTitle") }
       : section === "workspace"
-        ? { eyebrow: t("settings.workspace"), title: t("settings.workspaceTitle"), description: t("settings.workspaceDescription") }
-        : { eyebrow: t("settings.localServices"), title: t("settings.runtimeTitle"), description: t("settings.runtimeDescription") };
+        ? { eyebrow: t("settings.workspace"), title: t("settings.workspaceTitle") }
+        : { eyebrow: t("settings.localServices"), title: t("settings.runtimeTitle") };
 
   return (
     <section className="settings-workspace">
@@ -191,20 +191,19 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         <div className="settings-nav-heading">
           <span>{t("settings.eyebrow")}</span>
           <h1>{t("settings.title")}</h1>
-          <p>{t("settings.description")}</p>
         </div>
         <nav>
           <button className={section === "model" ? "active" : ""} onClick={() => setSection("model")}>
-            <Bot size={15} /><span><b>{t("settings.model")}</b><small>{t("settings.modelHint")}</small></span>
+            <Bot size={15} /><span><b>{t("settings.model")}</b></span>
           </button>
           <button className={section === "interface" ? "active" : ""} onClick={() => setSection("interface")}>
-            <Languages size={15} /><span><b>{t("settings.interface")}</b><small>{t("settings.interfaceHint")}</small></span>
+            <Languages size={15} /><span><b>{t("settings.interface")}</b></span>
           </button>
           <button className={section === "runtime" ? "active" : ""} onClick={() => setSection("runtime")}>
-            <Activity size={15} /><span><b>{t("settings.runtime")}</b><small>{t("settings.runtimeHint")}</small></span>
+            <Activity size={15} /><span><b>{t("settings.runtime")}</b></span>
           </button>
           <button data-testid="settings-workspace-nav" className={section === "workspace" ? "active" : ""} onClick={() => setSection("workspace")}>
-            <FolderOpen size={15} /><span><b>{t("settings.workspace")}</b><small>{t("settings.workspaceHint")}</small></span>
+            <FolderOpen size={15} /><span><b>{t("settings.workspace")}</b></span>
           </button>
         </nav>
         <button className="settings-back" onClick={onClose}><ArrowLeft size={14} />{t("settings.back")}</button>
@@ -212,7 +211,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
 
       <div className="settings-scroll">
         <header className="settings-page-header">
-          <div><span>{page.eyebrow}</span><h2>{page.title}</h2><p>{page.description}</p></div>
+          <div><span>{page.eyebrow}</span><h2>{page.title}</h2></div>
           <button className="settings-save" onClick={() => void saveSettings()} disabled={saving || loading}>
             {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{t("settings.save")}
           </button>
@@ -225,10 +224,9 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         ) : section === "workspace" ? (
           <div className="settings-content">
             <section className="settings-card workspace-card">
-              <div className="settings-card-title"><Server size={16} /><div><h3>{t("settings.workspaceTitle")}</h3><p>{t("settings.workspaceDescription")}</p></div></div>
+              <div className="settings-card-title"><Server size={16} /><div><h3>{t("settings.workspaceTitle")}</h3></div></div>
               <label className="settings-field"><span>{t("settings.workspacePath")}</span><input data-testid="workspace-path" value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} placeholder="D:\KB\my-kb" /></label>
               <div className="workspace-actions">{isDesktopRuntime && <button className="workspace-browse" type="button" onClick={() => void pickWorkspaceDirectory()}>{t("settings.workspaceBrowse")}</button>}<button className="workspace-select" type="button" onClick={() => void selectWorkspace()} disabled={workspaceSaving || !workspacePath.trim()}>{workspaceSaving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{t("settings.workspaceSelect")}</button></div>
-              <small>{t("settings.workspaceRestartHint")}</small>
             </section>
           </div>
         ) : section === "model" ? (
@@ -245,17 +243,17 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         ) : section === "interface" ? (
           <div className="settings-content">
             <section className="settings-card language-card">
-              <div className="settings-card-title"><Languages size={16} /><div><h3>{t("settings.languageTitle")}</h3><p>{t("settings.languageHint")}</p></div></div>
+              <div className="settings-card-title"><Languages size={16} /><div><h3>{t("settings.languageTitle")}</h3></div></div>
               <div className="language-options">
-                <button className={draft.app_language === "zh-CN" ? "active" : ""} onClick={() => updateDraft({ app_language: "zh-CN" })}><span className="language-monogram">中</span><span><b>{t("settings.chinese")}</b><small>{t("settings.chineseHint")}</small></span><i /></button>
-                <button className={draft.app_language === "en" ? "active" : ""} onClick={() => updateDraft({ app_language: "en" })}><span className="language-monogram">EN</span><span><b>{t("settings.english")}</b><small>{t("settings.englishHint")}</small></span><i /></button>
+                <button className={draft.app_language === "zh-CN" ? "active" : ""} onClick={() => updateDraft({ app_language: "zh-CN" })}><span className="language-monogram">中</span><span><b>{t("settings.chinese")}</b></span><i /></button>
+                <button className={draft.app_language === "en" ? "active" : ""} onClick={() => updateDraft({ app_language: "en" })}><span className="language-monogram">EN</span><span><b>{t("settings.english")}</b></span><i /></button>
               </div>
             </section>
             <section className="settings-card experimental-card">
-              <div className="settings-card-title"><BrainCircuit size={16} /><div><h3>{t("settings.experimentalTitle")}</h3><p>{t("settings.experimentalHint")}</p></div><span>{t("settings.defaultOff")}</span></div>
+              <div className="settings-card-title"><BrainCircuit size={16} /><div><h3>{t("settings.experimentalTitle")}</h3></div><span>{t("settings.defaultOff")}</span></div>
               <label className="clear-secret"><input type="checkbox" checked={draft.enable_agent_memory} onChange={(event) => updateDraft({ enable_agent_memory: event.target.checked })} /><span><BrainCircuit size={13} />{t("settings.agentMemory")}</span></label>
               <label className="clear-secret"><input type="checkbox" checked={draft.enable_external_research} onChange={(event) => updateDraft({ enable_external_research: event.target.checked })} /><span><FlaskConical size={13} />{t("settings.externalResearch")}</span></label>
-              <label className="settings-field"><span>{t("settings.memoryBudget")}</span><input type="number" min={128} max={4000} value={draft.memory_recall_token_budget} onChange={(event) => updateDraft({ memory_recall_token_budget: Number(event.target.value) })} /><small>{t("settings.memoryBudgetHint")}</small></label>
+              <label className="settings-field"><span>{t("settings.memoryBudget")}</span><input type="number" min={128} max={4000} value={draft.memory_recall_token_budget} onChange={(event) => updateDraft({ memory_recall_token_budget: Number(event.target.value) })} /></label>
             </section>
           </div>
         ) : (
@@ -265,7 +263,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
               <RuntimeStatus label="Runtime mode" endpoint={runtime.mode} online={runtime.ready} />
             </section>
             <section className="settings-card">
-              <div className="settings-card-title"><Activity size={16} /><div><h3>{t("settings.logging")}</h3><p>{t("settings.loggingHint")}</p></div></div>
+              <div className="settings-card-title"><Activity size={16} /><div><h3>{t("settings.logging")}</h3></div></div>
               <label className="settings-field"><span>{t("settings.logLevel")}</span><select value={draft.log_level} onChange={(event) => updateDraft({ log_level: event.target.value as AppSettings["log_level"] })}>{["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"].map((level) => <option key={level}>{level}</option>)}</select></label>
             </section>
             <section className="settings-card runtime-actions">
@@ -273,7 +271,6 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
               <button onClick={() => void openLogsDirectory().catch((error) => setNotice({ kind: "error", text: String(error) }))}><FolderOpen size={14} />{t("settings.openLogs")}</button>
               <small>{runtime.logsDir}</small>
             </section>
-            <section className="settings-card restart-explanation"><RotateCcw size={17} /><div><h3>{t("settings.restartWhy")}</h3><p>{t("settings.restartBody")}</p></div></section>
           </div>
         )}
       </div>
