@@ -39,6 +39,8 @@ from cellwiki.domain.runs import (
     RunUsage,
 )
 from cellwiki.services import agent_runtime as agent_runtime_module
+from tests.schema_helpers import minimal_schema_contract, valid_cell_type_page
+
 from cellwiki.services.agent_runtime import (
     AgentRuntimeManager,
     RuntimeSignal,
@@ -227,32 +229,14 @@ def _wait_for_checkpoint(
 def _seed_workspace(root: Path) -> None:
     schema = root / "schema.md"
     if not schema.exists():
-        schema.write_text(
-            "```yaml cellwiki-schema\n"
-            "schema_version: 1\n"
-            "pages:\n"
-            "  cell_type:\n"
-            "    path: wiki/cell_types/{id}.md\n"
-            "    identity: standard_name\n"
-            "    frontmatter:\n"
-            "      required:\n"
-            "        standard_name: {type: string}\n"
-            "        display_name: {type: string}\n"
-            "        references: {type: list}\n"
-            "    sections: {required: []}\n"
-            "    references: {required: false}\n"
-            "    links: {check: false}\n"
-            "```\n",
-            encoding="utf-8",
-        )
+        schema.write_text(minimal_schema_contract(), encoding="utf-8")
     page = root / "wiki" / "cell_types" / "a.md"
     page.parent.mkdir(parents=True, exist_ok=True)
     if not page.exists():
         page.write_text(
-            "---\nstandard_name: a\ndisplay_name: Alpha cell\nreferences: []\n---\n\n# Alpha cell\n",
+            valid_cell_type_page(standard_name="a", display_name="Alpha cell"),
             encoding="utf-8",
         )
-
 
 def _graph_manager(root: Path, model: BaseChatModel | None = None) -> tuple[AgentRuntimeManager, BaseChatModel]:
     """真实产品图 + 假模型：这是 checkpoint 唯一真正的生产路径。"""

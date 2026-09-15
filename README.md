@@ -26,7 +26,8 @@ Agentic CellWiki 是一个本地优先的 Windows 桌面科学 Wiki：**你选�
 
 - **来源与导入**：附件（pdf/md/txt）上传后由服务端提取文本，run 内按范围读取并受 run 级读取
   预算约束；经用户确认后 `promote_attachment` 晋升为 `raw/<source_id>/` 正式源。Agent 读取工作区
-  `schema.md` 后直接用文件工具读取 `raw/<source_id>/` 并生成页面。用户直接放进 `raw/` 的预置源由
+  `schema.md` 的页面模板后直接用文件工具读取 `raw/<source_id>/` 并生成页面；每条 claim 必须带
+  `Evidence: Tier 1` 到 `Tier 5` 和可解析来源，实体引用使用 `[[page_id]]`。用户直接放进 `raw/` 的预置源由
   产品侧「扫描并登记」幂等登记，不复制文件、不产生 git 变更。
 - **工作区浏览与受控编辑**：Obsidian 式文件树、md/txt/PDF 只读预览、页面全文搜索（当前实现是
   对 `wiki/` 的扫描）；界面编辑合成 `workspace_edit` run，同样经待确认 diff 生效。

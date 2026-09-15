@@ -17,7 +17,13 @@ from cellwiki.evaluation.agent_eval_v2 import (
 
 _NOTE = "wiki/notes/evidence_note.md"
 
-_NOTE_TEMPLATE = """# 证据笔记（评审冒烟）
+_NOTE_TEMPLATE = """---
+name: evidence_note
+sources: []
+---
+# 证据笔记（评审冒烟）
+
+## Notes
 
 - 记录时间：2026-09-13
 - 内容：这是版本化纪律诊断场景的参考笔记，不代表真实知识条目。

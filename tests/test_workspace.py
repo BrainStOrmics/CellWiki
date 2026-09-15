@@ -24,7 +24,7 @@ def test_ensure_workspace_creates_directories_and_six_files(tmp_path: Path):
     layout = ensure_workspace(root)
     assert layout.wiki_dir.is_dir()
     assert layout.raw_dir.is_dir()
-    for name in ("index.md", "contradiction.md", "overview.md", "statistics.md", "log.md", "audit_report.md"):
+    for name in ("index.md", "contradictions.md", "overview.md", "statistics.md", "log.md", "audit_report.md"):
         assert (root / name).is_file(), name
         assert layout.file_for(name) == (root / name).resolve()
 

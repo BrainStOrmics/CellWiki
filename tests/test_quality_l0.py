@@ -1,173 +1,250 @@
-"""Schema-driven lint and L0 gate tests."""
+"""Template-driven schema lint and L0 gate tests."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from shutil import copyfile
 
 from cellwiki.services.quality import inspect_projection
 
+ROOT = Path(__file__).resolve().parents[1]
+
 
 def _write_schema(root: Path) -> None:
-    (root / "schema.md").write_text(
-        '''# Schema
-
-```yaml cellwiki-schema
-schema_version: 1
-pages:
-  cell_type:
-    path: wiki/cell_types/{id}.md
-    identity: standard_name
-    frontmatter:
-      required:
-        entity_type:
-          type: string
-          const: cell_type
-        standard_name:
-          type: string
-          pattern: '^[a-z0-9_]+$'
-        display_name:
-          type: string
-        references:
-          type: list
-      optional:
-        cl_id:
-          type: string
-          nullable: true
-    sections:
-      required: [Evidence]
-    references:
-      required: true
-      require_source: true
-    links:
-      check: true
-      targets: [cell_type, marker_gene]
-  marker_gene:
-    path: wiki/marker_genes/{id}.md
-    identity: gene_symbol
-    frontmatter:
-      required:
-        entity_type:
-          type: string
-          const: marker_gene
-        gene_symbol:
-          type: string
-    sections:
-      required: []
-    references:
-      required: false
-    links:
-      check: false
-```
-''',
-        encoding="utf-8",
-    )
+    copyfile(ROOT / "schema.md", root / "schema.md")
 
 
-def _write_cell_page(root: Path, *, include_display_name: bool = True, link: str = "") -> Path:
-    path = root / "wiki" / "cell_types" / "cd8_t_cell.md"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    display = 'display_name: "CD8 T Cell"\n' if include_display_name else ""
-    body = "# CD8 T Cell\n\n## Evidence\n\nCD3D.\n"
-    if link:
-        body += f"\n[Related]({link})\n"
-    path.write_text(
+def _write_support_pages(root: Path, source_id: str = "source_cd8") -> None:
+    for rel in ("raw", "wiki/marker_genes", "wiki/tissues", "wiki/diseases"):
+        (root / rel).mkdir(parents=True, exist_ok=True)
+    (root / "raw" / source_id).mkdir(parents=True, exist_ok=True)
+    (root / "wiki/marker_genes/CD8A.md").write_text(
         "---\n"
-        "entity_type: cell_type\n"
-        "standard_name: cd8_t_cell\n"
-        f"{display}"
-        "references:\n"
-        "  - source_id: paper_one\n"
-        "---\n\n"
-        f"{body}",
+        "entity_type: marker_gene\n"
+        "gene_symbol: CD8A\n"
+        "evidence_tier: 2\n"
+        f"sources: [{source_id}]\n"
+        "---\n"
+        "# CD8A\n\n"
+        "## Expression\n\n"
+        "| Cell Type | Detection | Level | Evidence | Source |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        f"| [[cd8_t_cell]] | positive | high | Tier 2 | [{source_id}](#references) |\n\n"
+        "## References\n\n"
+        f"- {source_id}\n",
         encoding="utf-8",
     )
+    (root / "wiki/tissues/blood.md").write_text(
+        "---\n"
+        "entity_type: tissue\n"
+        "name: blood\n"
+        "display_name: Blood\n"
+        "evidence_tier: 2\n"
+        f"sources: [{source_id}]\n"
+        "---\n"
+        "# Blood\n\n"
+        "## Cell Types\n\n"
+        "| Cell Type | Status | Evidence | Source |\n"
+        "| --- | --- | --- | --- |\n"
+        f"| [[cd8_t_cell]] | confirmed | Tier 2 | [{source_id}](#references) |\n\n"
+        "## References\n\n"
+        f"- {source_id}\n",
+        encoding="utf-8",
+    )
+    (root / "wiki/diseases/cancer.md").write_text(
+        "---\n"
+        "entity_type: disease\n"
+        "name: cancer\n"
+        "display_name: Cancer\n"
+        "evidence_tier: 2\n"
+        f"sources: [{source_id}]\n"
+        "---\n"
+        "# Cancer\n\n"
+        "## Associated Cell Types\n\n"
+        "| Cell Type | Evidence | Source |\n"
+        "| --- | --- | --- |\n"
+        f"| [[cd8_t_cell]] | Tier 2 | [{source_id}](#references) |\n\n"
+        "## References\n\n"
+        f"- {source_id}\n",
+        encoding="utf-8",
+    )
+
+
+def _valid_cell_page(
+    *,
+    evidence: str = "Tier 2",
+    source: str = "[source_cd8](#references)",
+    marker: str = "[[CD8A]]",
+    marker_type: str = "positive",
+    frontmatter_tier: int = 2,
+    include_markers: bool = True,
+    extra_paragraph: str = "",
+) -> str:
+    markers = ""
+    if include_markers:
+        markers = (
+            "## Markers\n\n"
+            "| Marker | Type | Evidence | Source |\n"
+            "| --- | --- | --- | --- |\n"
+            f"| {marker} | {marker_type} | {evidence} | {source} |\n\n"
+        )
+    return (
+        "---\n"
+        "standard_name: cd8_t_cell\n"
+        "display_name: CD8 T Cell\n"
+        "aliases: []\n"
+        "cl_id: null\n"
+        "parent_type: null\n"
+        "references:\n"
+        "  - paper_id: source_cd8\n"
+        "    title: Source paper\n"
+        f"evidence_tier: {frontmatter_tier}\n"
+        "source_count: 1\n"
+        "positive_markers: [CD8A]\n"
+        "negative_markers: []\n"
+        "tissues: [blood]\n"
+        "species: [Homo sapiens]\n"
+        "conflicts: []\n"
+        "---\n"
+        "# CD8 T Cell\n\n"
+        "> Cytotoxic T cells.\n\n"
+        f"{extra_paragraph}"
+        f"{markers}"
+        "## Contexts\n\n"
+        "### Homo sapiens\n\n"
+        "**Tissues:** [[blood]]\n\n"
+        "**Diseases:** [[cancer]]\n\n"
+        f"**Evidence:** {evidence}\n\n"
+        f"**Source:** {source}\n\n"
+        "## References\n\n"
+        "- Source paper (2024) [10.1/test](https://doi.org/10.1/test)\n"
+    )
+
+
+def _write_cell_page(root: Path, **kwargs) -> Path:
+    path = root / "wiki/cell_types/cd8_t_cell.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_valid_cell_page(**kwargs), encoding="utf-8")
     return path
 
 
 def test_valid_changed_page_passes(tmp_path: Path):
     _write_schema(tmp_path)
-    (tmp_path / "raw" / "paper_one").mkdir(parents=True)
-    marker = tmp_path / "wiki" / "marker_genes" / "CD8A.md"
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(
-        "---\nentity_type: marker_gene\ngene_symbol: CD8A\n---\n\n# CD8A\n",
-        encoding="utf-8",
-    )
-    _write_cell_page(tmp_path, link="../marker_genes/CD8A.md")
+    _write_support_pages(tmp_path)
+    _write_cell_page(tmp_path)
     report = inspect_projection(
         tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"]
     )
     assert report["status"] == "passed", report["issues"]
-    assert report["schema"]["status"] == "valid"
 
 
-def test_changed_missing_field_is_l0_but_unchanged_is_l1(tmp_path: Path):
+def test_legacy_pages_are_ignored_until_changed(tmp_path: Path):
     _write_schema(tmp_path)
-    (tmp_path / "raw" / "paper_one").mkdir(parents=True)
-    _write_cell_page(tmp_path, include_display_name=False)
-
-    strict = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
-    assert strict["status"] == "failed"
-    assert any(issue["type"] == "missing_required_field" for issue in strict["issues"])
-
-    historical = inspect_projection(tmp_path, changed_paths=["README.md"])
-    assert historical["status"] == "passed_with_warnings"
-    assert any(issue["type"] == "missing_required_field" for issue in historical["issues"])
-    assert all(issue["severity"] == "warning" for issue in historical["issues"])
-
-
-def test_required_section_and_source_are_enforced(tmp_path: Path):
-    _write_schema(tmp_path)
-    path = _write_cell_page(tmp_path)
+    path = tmp_path / "wiki/cell_types/legacy.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "---\n"
-        "entity_type: cell_type\n"
-        "standard_name: cd8_t_cell\n"
-        'display_name: "CD8 T Cell"\n'
-        "references:\n"
-        "  - source_id: missing_source\n"
-        "---\n\n# CD8 T Cell\n",
+        "---\nstandard_name: legacy\ndisplay_name: Legacy\n---\n# Legacy\n",
         encoding="utf-8",
     )
-    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
+    assert inspect_projection(tmp_path)["status"] == "passed"
+    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/legacy.md"])
+    assert report["status"] == "failed"
+    assert any(issue["type"] == "missing_required_field" for issue in report["issues"])
+
+
+def test_missing_markers_is_l0(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_cell_page(tmp_path, include_markers=False)
+    report = inspect_projection(
+        tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"]
+    )
     types = {issue["type"] for issue in report["issues"]}
     assert "missing_required_section" in types
-    assert "missing_reference_source" in types
-    assert report["status"] == "failed"
 
 
-def test_broken_link_and_wrong_target_type_are_errors(tmp_path: Path):
+def test_controlled_vocabulary_and_columns_are_enforced(tmp_path: Path):
     _write_schema(tmp_path)
-    (tmp_path / "raw" / "paper_one").mkdir(parents=True)
-    _write_cell_page(tmp_path, link="../marker_genes/MISSING.md")
-    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
-    assert any(issue["type"] == "broken_local_link" for issue in report["issues"])
-    assert report["status"] == "failed"
+    _write_support_pages(tmp_path)
+    _write_cell_page(tmp_path, marker_type="bogus")
+    report = inspect_projection(
+        tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"]
+    )
+    assert any(issue["type"] == "invalid_controlled_value" for issue in report["issues"])
+
+
+def test_source_binding_and_raw_directory_are_enforced(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_cell_page(tmp_path, source="[missing](#references)")
+    report = inspect_projection(
+        tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"]
+    )
+    types = {issue["type"] for issue in report["issues"]}
+    assert "undeclared_source" in types
+    assert "missing_reference_source" in types
+
+
+def test_tier5_allows_inference_without_raw(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_cell_page(
+        tmp_path,
+        evidence="Tier 5",
+        source="inference",
+        frontmatter_tier=5,
+    )
+    report = inspect_projection(
+        tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"]
+    )
+    assert report["status"] == "passed", report["issues"]
+
+
+def test_page_evidence_tier_is_the_weakest_claim(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_cell_page(tmp_path, evidence="Tier 3", frontmatter_tier=2)
+    report = inspect_projection(
+        tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"]
+    )
+    assert any(
+        issue["type"] == "page_evidence_tier_mismatch" for issue in report["issues"]
+    )
+
+
+def test_structured_wikilinks_are_l0_and_prose_mentions_are_l1(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_cell_page(
+        tmp_path,
+        marker="CD8A",
+        extra_paragraph="CD8A is discussed here without a wikilink.\n\n",
+    )
+    report = inspect_projection(
+        tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"]
+    )
+    types = {issue["type"] for issue in report["issues"]}
+    assert "missing_wikilink" in types
+    assert any(
+        issue["type"] == "missing_wikilink" and issue["severity"] == "warning"
+        for issue in report["issues"]
+    )
 
 
 def test_duplicate_page_id_is_error(tmp_path: Path):
     _write_schema(tmp_path)
-    (tmp_path / "raw" / "paper_one").mkdir(parents=True)
+    _write_support_pages(tmp_path)
     _write_cell_page(tmp_path)
-    duplicate = tmp_path / "wiki" / "other" / "cd8_t_cell.md"
+    duplicate = tmp_path / "wiki/other/cd8_t_cell.md"
     duplicate.parent.mkdir(parents=True, exist_ok=True)
     duplicate.write_text("# Duplicate\n", encoding="utf-8")
     report = inspect_projection(tmp_path, changed_paths=["wiki/other/cd8_t_cell.md"])
     assert any(issue["type"] == "duplicate_page_id" for issue in report["issues"])
-    assert report["status"] == "failed"
 
 
-def test_missing_schema_blocks_changed_wiki_page(tmp_path: Path):
-    _write_cell_page(tmp_path)
-    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
-    assert any(issue["type"] == "missing_schema" for issue in report["issues"])
-    assert report["status"] == "failed"
-
-def test_invalid_schema_change_is_l0_even_without_wiki_page_change(tmp_path: Path):
+def test_invalid_schema_change_is_l0(tmp_path: Path):
     _write_schema(tmp_path)
-    report = inspect_projection(tmp_path, changed_paths=["schema.md"])
-    assert report["status"] == "passed"
     (tmp_path / "schema.md").write_text("# missing contract\n", encoding="utf-8")
-    invalid = inspect_projection(tmp_path, changed_paths=["schema.md"])
-    assert invalid["status"] == "failed"
-    assert any(issue["type"] == "invalid_schema" for issue in invalid["issues"])
+    report = inspect_projection(tmp_path, changed_paths=["schema.md"])
+    assert report["status"] == "failed"
+    assert any(issue["type"] == "invalid_schema" for issue in report["issues"])

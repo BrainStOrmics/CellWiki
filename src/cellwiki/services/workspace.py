@@ -21,7 +21,7 @@ from pathlib import Path
 WORKSPACE_DIR_NAMES = ("wiki", "raw")
 WORKSPACE_FILE_NAMES = (
     "index.md",
-    "contradiction.md",
+    "contradictions.md",
     "overview.md",
     "statistics.md",
     "log.md",
@@ -46,7 +46,7 @@ WORKSPACE_IGNORE_CONTENT = (
     "data/runtime/\n"
 )
 # Agent 维护的文件：导航正文与矛盾台账。
-AGENT_OWNED_FILES = frozenset({"index.md", "contradiction.md"})
+AGENT_OWNED_FILES = frozenset({"index.md", "contradictions.md"})
 
 
 class WorkspaceNotInitializedError(RuntimeError):
@@ -79,9 +79,19 @@ def _file_template(name: str) -> str:
             "# 知识库导航\n\n"
             "(系统注入统计与目录；正文由 Agent 维护)\n"
         ),
-        "contradiction.md": (
-            "# 矛盾台账\n\n"
-            "(Agent 维护：记录知识条目之间的冲突、证据缺口与跟踪状态)\n"
+        "contradictions.md": (
+            "# CellWiki Contradictions Log\n\n"
+            "## 活跃矛盾\n_(暂无活跃矛盾)_\n\n"
+            "## 已解决矛盾\n_(暂无记录)_\n\n"
+            "## 格式\n\n"
+            "- **矛盾点**: 描述具体的不一致之处\n"
+            "- **涉及页面**: [[page1]], [[page2]]\n"
+            "- **来源**: [paper1], [paper2]\n"
+            "- **Evidence**: Tier 1 到 Tier 5\n"
+            "- **状态**: active / resolved / partially_resolved\n"
+            "- **分类**: technical / biological / unknown\n"
+            "- **创建时间**: YYYY-MM-DD\n"
+            "- **消解路径**: 细化实体定义 / 触发研究 / 等待新数据\n"
         ),
         "overview.md": "# 知识库概览\n\n(系统重建，Agent 不可手写)\n",
         "statistics.md": "# 统计\n\n(系统重建，Agent 不可手写)\n",

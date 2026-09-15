@@ -1,22 +1,25 @@
-"""Deterministic schema-driven lint for workspace Markdown pages."""
+"""Deterministic template-driven lint for workspace Markdown pages."""
 
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
 
 import yaml
+from markdown_it import MarkdownIt
 
 from cellwiki.domain.linting import LintFinding, LintLevel, LintSeverity
-from cellwiki.domain.page_schema import PageContract
+from cellwiki.domain.page_schema import ColumnRule, PageContract, SectionRule
 from cellwiki.services.schema_contract import (
     SCHEMA_FILE_NAME,
     SchemaContractError,
     field_rule_error,
     load_workspace_schema,
     matching_page_types,
+    source_ids_from_frontmatter,
 )
 
 
@@ -25,8 +28,18 @@ class ProjectionQualityError(RuntimeError):
 
 
 _MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
-_WIKILINK = re.compile(r"\[\[([^\]]+)\]\]")
-_H2 = re.compile(r"^##\s+(.+?)\s*$", re.MULTILINE)
+_WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
+_WIKILINK_FULL = re.compile(r"^\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]$")
+_SOURCE_LINK = re.compile(r"\[([^\]]+)\]\(#references\)")
+_EVIDENCE_TIER = re.compile(r"^Tier ([1-5])$")
+_EVIDENCE_LINE = re.compile(r"^\*{0,2}Evidence:?\*{0,2}\s*Tier\s*([1-5])$", re.IGNORECASE)
+_SOURCE_LINE = re.compile(r"^\*{0,2}Source:?\*{0,2}\s*(.+)$", re.IGNORECASE)
+_TABLE_DIVIDER = re.compile(r"^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$")
+_HEADING_H1 = re.compile(r"^#\s+(.+?)\s*$")
+_HEADING_H2 = re.compile(r"^##\s+(.+?)\s*$")
+_HEADING_H3 = re.compile(r"^###\s+(.+?)\s*$")
+_BULLET = re.compile(r"^(?:[-*]|\d+\.)\s+(.+?)\s*$")
+_MD = MarkdownIt("gfm-like", {"linkify": False})
 
 
 def inspect_projection(
@@ -34,12 +47,7 @@ def inspect_projection(
     *,
     changed_paths: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    """Inspect Markdown pages and return gating and advisory findings.
-
-    ``changed_paths=None`` means the caller is linting the whole workspace and
-    contract violations are errors. Runtime pre-diff checks pass the run's
-    changed paths so unchanged historical pages remain advisory migration work.
-    """
+    """Inspect changed Markdown pages against the workspace template contract."""
 
     root = Path(project_root).resolve()
     changed = (
@@ -60,144 +68,109 @@ def inspect_projection(
     except SchemaContractError as error:
         schema_status = "missing" if "is missing" in str(error) else "invalid"
         schema_error = str(error)
-
-    wiki_root = root / "wiki"
-    all_pages = sorted(wiki_root.rglob("*.md")) if wiki_root.is_dir() else []
-    indexed_pages: dict[str, list[dict[str, Any]]] = {}
-    page_count = 0
-
-    records: list[tuple[Path, str, str, PageContract, str]] = []
-    for path in all_pages:
-        relative = path.relative_to(root).as_posix()
-        matches = matching_page_types(schema, relative) if schema is not None else []
-        if len(matches) > 1:
-            page_changed = _page_changed(relative, changed)
-            issues.append(
-                _issue(
-                    path,
-                    "ambiguous_page_type",
-                    "Page matches more than one schema page type.",
-                    root=root,
-                    level="L0" if page_changed else "L1",
-                    category="schema",
-                    severity="error" if page_changed else "warning",
-                    target_id=path.stem,
-                    locator=relative,
-                )
-            )
-            continue
-        if matches:
-            page_type, contract, page_id = matches[0]
-            records.append((path, relative, page_type, contract, page_id))
-            indexed_pages.setdefault(page_id, []).append(
-                {"path": relative, "page_type": page_type, "file": path}
-            )
-            page_count += 1
-        else:
-            indexed_pages.setdefault(path.stem, []).append(
-                {"path": relative, "page_type": None, "file": path}
-            )
-            if len(path.relative_to(wiki_root).parts) >= 2:
-                page_changed = _page_changed(relative, changed)
-                detail = (
-                    f"Page path does not match any schema page type: {relative}."
-                    if schema is not None
-                    else f"Page cannot be matched because {SCHEMA_FILE_NAME} is unavailable."
-                )
-                issues.append(
-                    _issue(
-                        path,
-                        "unmatched_page",
-                        detail,
-                        root=root,
-                        level="L0" if page_changed else "L1",
-                        category="schema",
-                        severity="error" if page_changed else "warning",
-                        target_id=path.stem,
-                        locator=relative,
-                    )
-                )
-
-    if schema_error is not None:
-        wiki_pages_exist = page_count > 0 or any(
-            len(path.relative_to(wiki_root).parts) >= 2 for path in all_pages
-        )
-        schema_changed = changed is None or SCHEMA_FILE_NAME in changed
-        changed_wiki = schema_changed or (
-            any(
-                _page_changed(path.relative_to(root).as_posix(), changed)
-                for path in all_pages
-                if len(path.relative_to(wiki_root).parts) >= 2
-            )
-            if changed is not None
-            else wiki_pages_exist
-        )
-        schema_path = root / SCHEMA_FILE_NAME
         issues.append(
             _issue(
-                schema_path,
+                root / SCHEMA_FILE_NAME,
                 "invalid_schema" if schema_status == "invalid" else "missing_schema",
                 schema_error,
                 root=root,
-                level="L0" if changed_wiki else "L1",
+                level="L0",
                 category="schema",
-                severity="error" if changed_wiki else "warning",
+                severity="error",
                 target_id=SCHEMA_FILE_NAME,
                 locator=SCHEMA_FILE_NAME,
             )
         )
 
-    for path, relative, page_type, contract, page_id in records:
-        page_changed = _page_changed(relative, changed)
-        issues.extend(
-            _inspect_page(
-                path,
-                relative,
-                page_type,
-                contract,
-                page_id,
-                root,
-                page_changed=page_changed,
+    wiki_root = root / "wiki"
+    all_pages = sorted(wiki_root.rglob("*.md")) if wiki_root.is_dir() else []
+    page_count = 0
+    if schema is not None and changed is not None:
+        index, terms = _index_pages(root, schema, all_pages)
+        page_count = len(index)
+        for page_id, entries in index.items():
+            if len(entries) < 2 or not any(_page_changed(entry["path"], changed) for entry in entries):
+                continue
+            for entry in entries:
+                issues.append(
+                    _issue(
+                        Path(entry["file"]),
+                        "duplicate_page_id",
+                        f"Page id {page_id!r} is used by multiple pages.",
+                        root=root,
+                        level="L0",
+                        category="identity",
+                        severity="error",
+                        target_id=page_id,
+                        locator=str(entry["path"]),
+                    )
+                )
+        for path in all_pages:
+            relative = path.relative_to(root).as_posix()
+            if not _page_changed(relative, changed):
+                continue
+            matches = matching_page_types(schema, relative)
+            if len(matches) > 1:
+                issues.append(
+                    _issue(
+                        path,
+                        "ambiguous_page_type",
+                        "Page matches more than one schema page type.",
+                        root=root,
+                        level="L0",
+                        category="schema",
+                        severity="error",
+                        target_id=path.stem,
+                        locator=relative,
+                    )
+                )
+                continue
+            if not matches:
+                if len(path.relative_to(wiki_root).parts) >= 2:
+                    issues.append(
+                        _issue(
+                            path,
+                            "unmatched_page",
+                            f"Page path does not match any schema page type: {relative}.",
+                            root=root,
+                            level="L0",
+                            category="schema",
+                            severity="error",
+                            target_id=path.stem,
+                            locator=relative,
+                        )
+                    )
+                continue
+            page_type, contract, page_id = matches[0]
+            issues.extend(
+                _inspect_page(
+                    path, relative, page_type, contract, page_id, root, index, terms
+                )
             )
+    return _report(issues, page_count=page_count, schema=schema, schema_status=schema_status, changed=changed)
+
+
+def verify_projection(project_root: Path) -> None:
+    """Raise when a deterministic gating error makes a projection unsafe."""
+
+    report = inspect_projection(project_root)
+    gating_issues = [issue for issue in report["issues"] if issue["severity"] == "error"]
+    if gating_issues:
+        first = gating_issues[0]
+        raise ProjectionQualityError(
+            f"projection lint failed with {len(gating_issues)} gating issue(s): "
+            f"{first['page_id']} {first['detail']}"
         )
 
-    for page_id, entries in indexed_pages.items():
-        if len(entries) < 2:
-            continue
-        for entry in entries:
-            relative = str(entry["path"])
-            page_changed = _page_changed(relative, changed)
-            issues.append(
-                _issue(
-                    Path(entry["file"]),
-                    "duplicate_page_id",
-                    f"Page id {page_id!r} is used by: {', '.join(item['path'] for item in entries)}.",
-                    root=root,
-                    level="L0" if page_changed else "L1",
-                    category="identity",
-                    severity="error" if page_changed else "warning",
-                    target_id=page_id,
-                    locator=relative,
-                )
-            )
 
-    if schema is not None:
-        for path, relative, page_type, contract, page_id in records:
-            if not contract.links.check:
-                continue
-            page_changed = _page_changed(relative, changed)
-            issues.extend(
-                _broken_links(
-                    path,
-                    relative,
-                    contract,
-                    schema,
-                    indexed_pages,
-                    root,
-                    page_changed=page_changed,
-                )
-            )
-
+def _report(
+    issues: list[dict[str, Any]],
+    *,
+    page_count: int,
+    schema: Any,
+    schema_status: str,
+    changed: set[str] | None,
+) -> dict[str, Any]:
     error_count = sum(issue["severity"] == "error" for issue in issues)
     warning_count = sum(issue["severity"] == "warning" for issue in issues)
     status = "failed" if error_count else "passed_with_warnings" if warning_count else "passed"
@@ -215,17 +188,18 @@ def inspect_projection(
         "scope": {
             "changed_pages_only": changed is not None,
             "changed_path_count": len(changed or ()),
+            "legacy_pages_ignored": changed is None,
         },
         "levels": {
             "L0": {
                 "status": "failed" if error_count else "passed",
                 "issue_count": error_count,
-                "description": "Gating path, structure, contract, and identity checks",
+                "description": "Gating template, evidence, source, and identity checks",
             },
             "L1": {
                 "status": "warning" if warning_count else "passed",
                 "issue_count": warning_count,
-                "description": "Advisory migration, provenance, and link checks",
+                "description": "Advisory free-prose wikilink checks",
             },
             "L2": {
                 "status": "not_run",
@@ -237,22 +211,42 @@ def inspect_projection(
     }
 
 
-def verify_projection(project_root: Path) -> None:
-    """Raise when a deterministic gating error makes a projection unsafe."""
-
-    report = inspect_projection(project_root)
-    gating_issues = [issue for issue in report["issues"] if issue["severity"] == "error"]
-    if gating_issues:
-        first = gating_issues[0]
-        raise ProjectionQualityError(
-            f"projection lint failed with {len(gating_issues)} gating issue(s): "
-            f"{first['page_id']} {first['detail']}"
-        )
-
-
 def _page_changed(relative_path: str, changed: set[str] | None) -> bool:
     return True if changed is None else relative_path in changed
 
+
+def _index_pages(
+    root: Path,
+    schema: Any,
+    all_pages: list[Path],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[tuple[str, str]]]]:
+    index: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    terms: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for path in all_pages:
+        relative = path.relative_to(root).as_posix()
+        matches = matching_page_types(schema, relative)
+        page_type = matches[0][0] if len(matches) == 1 else None
+        page_id = matches[0][2] if len(matches) == 1 else path.stem
+        index[page_id].append({"path": relative, "page_type": page_type, "file": path})
+        terms[page_id.casefold()].append((page_id, page_type or ""))
+        for term in _frontmatter_terms(path):
+            terms[term.casefold()].append((page_id, page_type or ""))
+    return index, terms
+
+
+def _frontmatter_terms(path: Path) -> list[str]:
+    frontmatter, _body, error = _split_frontmatter(path.read_text(encoding="utf-8"))
+    if error:
+        return []
+    values: list[str] = []
+    for key in ("display_name", "standard_name", "gene_symbol", "gene_name", "name", "title"):
+        value = frontmatter.get(key)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+    aliases = frontmatter.get("aliases")
+    if isinstance(aliases, list):
+        values.extend(str(alias).strip() for alias in aliases if str(alias).strip())
+    return values
 
 def _inspect_page(
     path: Path,
@@ -261,12 +255,10 @@ def _inspect_page(
     contract: PageContract,
     page_id: str,
     root: Path,
-    *,
-    page_changed: bool,
+    index: dict[str, list[dict[str, Any]]],
+    terms: dict[str, list[tuple[str, str]]],
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    level = "L0" if page_changed else "L1"
-    severity = "error" if page_changed else "warning"
     raw = path.read_text(encoding="utf-8")
     frontmatter, body, frontmatter_error = _split_frontmatter(raw)
     if frontmatter_error:
@@ -276,9 +268,9 @@ def _inspect_page(
                 "invalid_frontmatter",
                 frontmatter_error,
                 root=root,
-                level=level,
+                level="L0",
                 category="structure",
-                severity=severity,
+                severity="error",
                 target_id=page_id,
                 locator=relative,
             )
@@ -290,28 +282,13 @@ def _inspect_page(
                 "empty_page",
                 "Published page has no body.",
                 root=root,
-                level=level,
+                level="L0",
                 category="structure",
-                severity=severity,
+                severity="error",
                 target_id=page_id,
                 locator=relative,
             )
         )
-    if not any(line.startswith("# ") for line in body.splitlines()):
-        issues.append(
-            _issue(
-                path,
-                "missing_title",
-                "Published page has no H1 title.",
-                root=root,
-                level=level,
-                category="structure",
-                severity=severity,
-                target_id=page_id,
-                locator=relative,
-            )
-        )
-
     for field_name, rule in contract.frontmatter.required.items():
         if field_name not in frontmatter:
             issues.append(
@@ -320,9 +297,9 @@ def _inspect_page(
                     "missing_required_field",
                     f"Page type {page_type!r} requires frontmatter field {field_name!r}.",
                     root=root,
-                    level=level,
+                    level="L0",
                     category="frontmatter",
-                    severity=severity,
+                    severity="error",
                     target_id=page_id,
                     locator=f"{relative}#field={field_name}",
                 )
@@ -336,14 +313,13 @@ def _inspect_page(
                     "invalid_field_value",
                     f"Frontmatter field {field_name!r} {detail}.",
                     root=root,
-                    level=level,
+                    level="L0",
                     category="frontmatter",
-                    severity=severity,
+                    severity="error",
                     target_id=page_id,
                     locator=f"{relative}#field={field_name}",
                 )
             )
-
     for field_name, rule in contract.frontmatter.optional.items():
         if field_name not in frontmatter:
             continue
@@ -355,9 +331,9 @@ def _inspect_page(
                     "invalid_field_value",
                     f"Frontmatter field {field_name!r} {detail}.",
                     root=root,
-                    level=level,
+                    level="L0",
                     category="frontmatter",
-                    severity=severity,
+                    severity="error",
                     target_id=page_id,
                     locator=f"{relative}#field={field_name}",
                 )
@@ -371,258 +347,1135 @@ def _inspect_page(
                 "id_mismatch",
                 f"Frontmatter {contract.identity!r} is {identity_value!r}; expected {page_id!r}.",
                 root=root,
-                level=level,
+                level="L0",
                 category="identity",
-                severity=severity,
+                severity="error",
                 target_id=page_id,
                 locator=f"{relative}#field={contract.identity}",
             )
         )
 
-    headings = {
-        match.group(1).strip() for match in _H2.finditer(body)
-    }
-    for section in contract.sections.required:
-        if section not in headings:
-            issues.append(
-                _issue(
-                    path,
-                    "missing_required_section",
-                    f"Page type {page_type!r} requires section {section!r}.",
-                    root=root,
-                    level=level,
-                    category="structure",
-                    severity=severity,
-                    target_id=page_id,
-                    locator=f"{relative}#section={section}",
-                )
-            )
-
-    issues.extend(
-        _reference_issues(
-            path,
-            relative,
-            page_id,
-            contract,
-            frontmatter,
-            root,
-            level=level,
-            severity=severity,
-        )
-    )
-    return issues
-
-
-def _reference_issues(
-    path: Path,
-    relative: str,
-    page_id: str,
-    contract: PageContract,
-    frontmatter: dict[str, Any],
-    root: Path,
-    *,
-    level: str,
-    severity: str,
-) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
-    references = frontmatter.get("references")
-    if not references:
-        if contract.references.required:
-            issues.append(
-                _issue(
-                    path,
-                    "missing_references",
-                    "Page has no source references in frontmatter.",
-                    root=root,
-                    level=level,
-                    category="provenance",
-                    severity=severity,
-                    target_id=page_id,
-                    locator=f"{relative}#field=references",
-                )
-            )
-        return issues
-    if not isinstance(references, list):
+    template = contract.template
+    if template is None:
         issues.append(
             _issue(
                 path,
-                "invalid_references",
-                "Frontmatter references must be a list.",
+                "missing_template",
+                f"Page type {page_type!r} has no Markdown template.",
                 root=root,
-                level=level,
-                category="provenance",
-                severity=severity,
+                level="L0",
+                category="schema",
+                severity="error",
                 target_id=page_id,
-                locator=f"{relative}#field=references",
+                locator=relative,
             )
         )
         return issues
 
-    identifiers: list[str] = []
-    for reference in references:
-        identifier = _reference_id(reference, contract.references.id_fields)
-        if not identifier:
-            issues.append(
-                _issue(
-                    path,
-                    "invalid_reference",
-                    "Reference has no usable source identifier.",
-                    root=root,
-                    level=level,
-                    category="provenance",
-                    severity=severity,
-                    target_id=page_id,
-                    locator=f"{relative}#field=references",
-                )
+    title_value = frontmatter.get(template.title_field)
+    h1 = next(iter(_h1_titles(body)), None)
+    if h1 is None:
+        issues.append(
+            _issue(
+                path,
+                "missing_title",
+                "Published page has no H1 title.",
+                root=root,
+                level="L0",
+                category="structure",
+                severity="error",
+                target_id=page_id,
+                locator=relative,
             )
-            continue
-        identifiers.append(identifier)
-        if contract.references.require_source:
-            source_dir = root / contract.references.source_root / identifier
-            if not source_dir.is_dir():
-                issues.append(
-                    _issue(
-                        path,
-                        "missing_reference_source",
-                        f"Reference source {identifier!r} has no directory under "
-                        f"{contract.references.source_root}/.",
-                        root=root,
-                        level=level,
-                        category="provenance",
-                        severity=severity,
-                        target_id=page_id,
-                        locator=f"{relative}#source={identifier}",
-                    )
-                )
-    duplicates = sorted({value for value in identifiers if identifiers.count(value) > 1})
-    for duplicate in duplicates:
+        )
+    elif isinstance(title_value, str) and h1 != title_value:
+        issues.append(
+            _issue(
+                path,
+                "title_mismatch",
+                f"H1 {h1!r} does not match {template.title_field!r} value {title_value!r}.",
+                root=root,
+                level="L0",
+                category="structure",
+                severity="error",
+                target_id=page_id,
+                locator=relative,
+            )
+        )
+
+    source_ids = source_ids_from_frontmatter(contract, frontmatter)
+    duplicates = sorted({source for source in source_ids if source_ids.count(source) > 1})
+    if duplicates:
         issues.append(
             _issue(
                 path,
                 "duplicate_references",
-                f"Duplicate reference ID: {duplicate}.",
+                f"Duplicate source IDs: {duplicates}.",
                 root=root,
-                level=level,
+                level="L0",
                 category="provenance",
-                severity=severity,
+                severity="error",
                 target_id=page_id,
-                locator=f"{relative}#source={duplicate}",
+                locator=f"{relative}#field={contract.source_field}",
+            )
+        )
+    source_count = frontmatter.get("source_count")
+    if isinstance(source_count, int) and source_count != len(set(source_ids)):
+        issues.append(
+            _issue(
+                path,
+                "source_count_mismatch",
+                f"source_count is {source_count}; declared sources are {len(set(source_ids))}.",
+                root=root,
+                level="L0",
+                category="provenance",
+                severity="error",
+                target_id=page_id,
+                locator=f"{relative}#field=source_count",
+            )
+        )
+
+    headings = _headings(body)
+    actual_names = [name for name, _start, _end in headings]
+    template_names = [section.name for section in template.sections]
+    unknown = [name for name in actual_names if name not in template_names]
+    if unknown:
+        issues.append(
+            _issue(
+                path,
+                "unknown_section",
+                f"Page contains sections not declared by the template: {unknown}.",
+                root=root,
+                level="L0",
+                category="structure",
+                severity="error",
+                target_id=page_id,
+                locator=relative,
+            )
+        )
+    duplicates = sorted({name for name in actual_names if actual_names.count(name) > 1})
+    if duplicates:
+        issues.append(
+            _issue(
+                path,
+                "duplicate_section",
+                f"Page contains duplicate sections: {duplicates}.",
+                root=root,
+                level="L0",
+                category="structure",
+                severity="error",
+                target_id=page_id,
+                locator=relative,
+            )
+        )
+    required_missing = [
+        section.name
+        for section in template.sections
+        if section.required and section.name not in actual_names
+    ]
+    if required_missing:
+        issues.append(
+            _issue(
+                path,
+                "missing_required_section",
+                f"Missing required sections: {required_missing}.",
+                root=root,
+                level="L0",
+                category="structure",
+                severity="error",
+                target_id=page_id,
+                locator=relative,
+            )
+        )
+    if template.required_any and not any(name in actual_names for name in template.required_any):
+        issues.append(
+            _issue(
+                path,
+                "missing_required_any",
+                f"At least one of these sections is required: {template.required_any}.",
+                root=root,
+                level="L0",
+                category="structure",
+                severity="error",
+                target_id=page_id,
+                locator=relative,
+            )
+        )
+    ordered_actual = [name for name in template_names if name in actual_names]
+    if [name for name in actual_names if name in template_names] != ordered_actual:
+        issues.append(
+            _issue(
+                path,
+                "section_order",
+                "Page sections are not in template order.",
+                root=root,
+                level="L0",
+                category="structure",
+                severity="error",
+                target_id=page_id,
+                locator=relative,
+            )
+        )
+
+    tiers: list[int] = []
+    for name, start, end in headings:
+        section_rule = template.section(name)
+        if section_rule is None:
+            continue
+        section_lines = body.splitlines()[start + 1 : end]
+        section_tiers, section_issues = _inspect_section(
+            path,
+            relative,
+            page_id,
+            name,
+            section_rule,
+            section_lines,
+            frontmatter,
+            source_ids,
+            root,
+            index,
+        )
+        tiers.extend(section_tiers)
+        issues.extend(section_issues)
+
+    page_tier = frontmatter.get("evidence_tier")
+    if not tiers and _template_requires_evidence(template):
+        issues.append(
+            _issue(
+                path,
+                "missing_evidence",
+                "Page has no claim rows with an Evidence tier.",
+                root=root,
+                level="L0",
+                category="evidence",
+                severity="error",
+                target_id=page_id,
+                locator=relative,
+            )
+        )
+    elif tiers and isinstance(page_tier, int) and page_tier != max(tiers):
+        issues.append(
+            _issue(
+                path,
+                "page_evidence_tier_mismatch",
+                f"Frontmatter evidence_tier is {page_tier}; weakest claim is Tier {max(tiers)}.",
+                root=root,
+                level="L0",
+                category="evidence",
+                severity="error",
+                target_id=page_id,
+                locator=f"{relative}#field=evidence_tier",
+            )
+        )
+
+    issues.extend(
+        _missing_wikilink_issues(
+            path, relative, page_id, body, terms, root=root
+        )
+    )
+    return issues
+
+def _template_requires_evidence(template: Any) -> bool:
+    for section in template.sections:
+        if section.citation in {"required", "per-item"} or section.source == "raw":
+            return True
+        if section.evidence_items or "Evidence" in section.columns:
+            return True
+        if any(rule.evidence for rule in section.column_rules.values()):
+            return True
+        if any(rule.evidence_line for rule in section.line_rules):
+            return True
+    return False
+
+
+def _inspect_section(
+    path: Path,
+    relative: str,
+    page_id: str,
+    section_name: str,
+    rule: SectionRule,
+    lines: list[str],
+    frontmatter: dict[str, Any],
+    source_ids: list[str],
+    root: Path,
+    index: dict[str, list[dict[str, Any]]],
+) -> tuple[list[int], list[dict[str, Any]]]:
+    issues: list[dict[str, Any]] = []
+    tiers: list[int] = []
+    text = "\n".join(lines)
+    h3_count = sum(1 for line in lines if _HEADING_H3.match(line))
+    if h3_count and rule.children == "none":
+        issues.append(
+            _section_issue(
+                path,
+                relative,
+                page_id,
+                section_name,
+                "unexpected_subsection",
+                "Section contains undeclared H3 subsections.",
+                root,
+            )
+        )
+    table = _parse_table(lines)
+    list_items = _parse_list_items(lines)
+    if rule.block == "table":
+        if table is None:
+            issues.append(
+                _section_issue(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    "missing_table",
+                    "Section requires a Markdown table.",
+                    root,
+                )
+            )
+        else:
+            tiers.extend(_evidence_from_table(table))
+            issues.extend(
+                _validate_table(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    rule,
+                    table,
+                    source_ids,
+                    root,
+                    index,
+                )
+            )
+    elif rule.block == "bullets":
+        if len(list_items) < max(rule.min, 1):
+            issues.append(
+                _section_issue(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    "missing_list_items",
+                    "Section requires more list items.",
+                    root,
+                )
+            )
+        issues.extend(
+            _validate_items(
+                path, relative, page_id, section_name, rule, list_items, index, root
+            )
+        )
+        if rule.evidence_items:
+            for item in list_items:
+                tier = _tier_from_lines(item)
+                if tier is None:
+                    issues.append(
+                        _section_issue(
+                            path,
+                            relative,
+                            page_id,
+                            section_name,
+                            "missing_item_evidence",
+                            "List item is missing Evidence: Tier N.",
+                            root,
+                        )
+                    )
+                else:
+                    tiers.append(tier)
+                if not any(_SOURCE_LINE.match(line.strip()) for line in item):
+                    issues.append(
+                        _section_issue(
+                            path,
+                            relative,
+                            page_id,
+                            section_name,
+                            "missing_item_source",
+                            "List item is missing a Source line.",
+                            root,
+                        )
+                    )
+                else:
+                    issues.extend(
+                        _validate_source_lines(
+                            path,
+                            relative,
+                            page_id,
+                            section_name,
+                            item,
+                            source_ids,
+                            root,
+                        )
+                    )
+    elif rule.block == "paragraphs":
+        paragraphs = _paragraphs(lines)
+        if len(paragraphs) < max(rule.min, 1):
+            issues.append(
+                _section_issue(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    "missing_paragraphs",
+                    "Section requires more paragraphs.",
+                    root,
+                )
+            )
+        for paragraph in paragraphs:
+            tier = _tier_from_lines(paragraph)
+            if tier is not None:
+                tiers.append(tier)
+    else:
+        if not text.strip() or not (table or list_items or h3_count or _paragraphs(lines)):
+            issues.append(
+                _section_issue(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    "empty_section",
+                    "Section has no substantive content.",
+                    root,
+                )
+            )
+        if h3_count:
+            tiers.extend(
+                _validate_context_h3(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    lines,
+                    rule,
+                    source_ids,
+                    root,
+                    index,
+                    issues,
+                )
+            )
+
+    if rule.citation == "required" and not _SOURCE_LINK.search(text):
+        issues.append(
+            _section_issue(
+                path,
+                relative,
+                page_id,
+                section_name,
+                "missing_citation",
+                "Section requires at least one source citation.",
+                root,
+            )
+        )
+    if rule.source == "raw":
+        issues.extend(
+            _validate_source_links(
+                path,
+                relative,
+                page_id,
+                section_name,
+                _SOURCE_LINK.findall(text),
+                source_ids,
+                root,
+            )
+        )
+    return tiers, issues
+
+
+def _validate_table(
+    path: Path,
+    relative: str,
+    page_id: str,
+    section_name: str,
+    rule: SectionRule,
+    table: dict[str, Any],
+    source_ids: list[str],
+    root: Path,
+    index: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    columns = table["columns"]
+    if columns != rule.columns:
+        return [
+            _section_issue(
+                path,
+                relative,
+                page_id,
+                section_name,
+                "invalid_table_columns",
+                f"Expected columns {rule.columns}; found {columns}.",
+                root,
+            )
+        ]
+    rows = table["rows"]
+    if len(rows) < max(rule.min, 1):
+        issues.append(
+            _section_issue(
+                path,
+                relative,
+                page_id,
+                section_name,
+                "empty_table",
+                "Table must contain at least one data row.",
+                root,
+            )
+        )
+    for row in rows:
+        if len(row) != len(columns):
+            issues.append(
+                _section_issue(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    "invalid_table_row",
+                    "Table row has the wrong number of cells.",
+                    root,
+                )
+            )
+            continue
+        record = dict(zip(columns, row, strict=False))
+        evidence_tier: int | None = None
+        evidence_value = record.get("Evidence")
+        if evidence_value is not None:
+            match = _EVIDENCE_TIER.match(evidence_value.strip())
+            if match is None:
+                issues.append(
+                    _section_issue(
+                        path,
+                        relative,
+                        page_id,
+                        section_name,
+                        "invalid_evidence_tier",
+                        f"Evidence {evidence_value!r} must be Tier 1 through Tier 5.",
+                        root,
+                    )
+                )
+            else:
+                evidence_tier = int(match.group(1))
+        for column, value in record.items():
+            column_rule = rule.column_rules.get(column)
+            if column_rule is not None:
+                issues.extend(
+                    _validate_cell(
+                        path,
+                        relative,
+                        page_id,
+                        section_name,
+                        column,
+                        value,
+                        column_rule,
+                        index,
+                        root,
+                    )
+                )
+        if "Source" in record:
+            issues.extend(
+                _validate_source_cell(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    record["Source"],
+                    evidence_tier,
+                    source_ids,
+                    root,
+                    index,
+                )
+            )
+        elif evidence_tier in {1, 2, 3, 4}:
+            issues.append(
+                _section_issue(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    "missing_source",
+                    "Tier 1 through Tier 4 rows require a Source column.",
+                    root,
+                )
+            )
+    return issues
+
+
+def _validate_cell(
+    path: Path,
+    relative: str,
+    page_id: str,
+    section_name: str,
+    column: str,
+    value: str,
+    rule: ColumnRule,
+    index: dict[str, list[dict[str, Any]]],
+    root: Path,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    stripped = value.strip().strip("`")
+    if rule.enum is not None and stripped not in rule.enum:
+        issues.append(
+            _section_issue(
+                path,
+                relative,
+                page_id,
+                section_name,
+                "invalid_controlled_value",
+                f"{column}={stripped!r} is not in {rule.enum}.",
+                root,
+            )
+        )
+    if rule.number is not None:
+        if stripped == "unknown":
+            if not rule.allow_unknown:
+                issues.append(
+                    _section_issue(
+                        path,
+                        relative,
+                        page_id,
+                        section_name,
+                        "invalid_controlled_value",
+                        f"{column}=unknown is not allowed.",
+                        root,
+                    )
+                )
+        else:
+            try:
+                number = float(stripped)
+            except ValueError:
+                issues.append(
+                    _section_issue(
+                        path,
+                        relative,
+                        page_id,
+                        section_name,
+                        "invalid_controlled_value",
+                        f"{column}={stripped!r} must be numeric or unknown.",
+                        root,
+                    )
+                )
+            else:
+                if rule.number.min is not None and number < rule.number.min:
+                    issues.append(
+                        _section_issue(
+                            path,
+                            relative,
+                            page_id,
+                            section_name,
+                            "invalid_controlled_value",
+                            f"{column}={number} is below {rule.number.min}.",
+                            root,
+                        )
+                    )
+                if rule.number.max is not None and number > rule.number.max:
+                    issues.append(
+                        _section_issue(
+                            path,
+                            relative,
+                            page_id,
+                            section_name,
+                            "invalid_controlled_value",
+                            f"{column}={number} is above {rule.number.max}.",
+                            root,
+                        )
+                    )
+    if rule.wikilink is not None:
+        issues.extend(
+            _validate_wikilink_cell(
+                path,
+                relative,
+                page_id,
+                section_name,
+                column,
+                stripped,
+                rule.wikilink,
+                index,
+                root,
+            )
+        )
+    return issues
+
+def _validate_wikilink_cell(
+    path: Path,
+    relative: str,
+    page_id: str,
+    section_name: str,
+    column: str,
+    value: str,
+    target_type: str,
+    index: dict[str, list[dict[str, Any]]],
+    root: Path,
+) -> list[dict[str, Any]]:
+    match = _WIKILINK_FULL.match(value)
+    if match is None:
+        return [
+            _section_issue(
+                path,
+                relative,
+                page_id,
+                section_name,
+                "missing_wikilink",
+                f"{column} must be a [[page_id]] wikilink.",
+                root,
+            )
+        ]
+    target = match.group(1).strip()
+    entries = index.get(target, [])
+    if len(entries) != 1:
+        return [
+            _section_issue(
+                path,
+                relative,
+                page_id,
+                section_name,
+                "broken_wikilink",
+                f"Wikilink target {target!r} is missing or ambiguous.",
+                root,
+            )
+        ]
+    actual_type = entries[0].get("page_type")
+    if actual_type != target_type:
+        return [
+            _section_issue(
+                path,
+                relative,
+                page_id,
+                section_name,
+                "invalid_link_target_type",
+                f"Wikilink {target!r} has type {actual_type!r}; expected {target_type!r}.",
+                root,
+            )
+        ]
+    return []
+
+
+def _validate_source_cell(
+    path: Path,
+    relative: str,
+    page_id: str,
+    section_name: str,
+    value: str,
+    tier: int | None,
+    declared_sources: list[str],
+    root: Path,
+    index: dict[str, list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    stripped = value.strip()
+    if tier == 5:
+        if not stripped.lower().startswith(("inference", "hypothesis")):
+            return [
+                _section_issue(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    "invalid_tier5_source",
+                    "Tier 5 Source must start with inference or hypothesis.",
+                    root,
+                )
+            ]
+        issues: list[dict[str, Any]] = []
+        for target in _WIKILINK.findall(stripped):
+            entries = index.get(target.strip(), [])
+            if len(entries) != 1:
+                issues.append(
+                    _section_issue(
+                        path,
+                        relative,
+                        page_id,
+                        section_name,
+                        "broken_wikilink",
+                        f"Tier 5 internal source {target!r} is missing or ambiguous.",
+                        root,
+                    )
+                )
+        return issues
+    match = _SOURCE_LINK.search(stripped)
+    if match is None:
+        return [
+            _section_issue(
+                path,
+                relative,
+                page_id,
+                section_name,
+                "missing_source",
+                "Source must be [paper_id](#references).",
+                root,
+            )
+        ]
+    return _validate_source_links(
+        path, relative, page_id, section_name, [match.group(1)], declared_sources, root
+    )
+
+
+def _validate_source_links(
+    path: Path,
+    relative: str,
+    page_id: str,
+    section_name: str,
+    cited_sources: list[str],
+    declared_sources: list[str],
+    root: Path,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for source_id in cited_sources:
+        if source_id not in declared_sources:
+            issues.append(
+                _section_issue(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    "undeclared_source",
+                    f"Citation source {source_id!r} is not declared in frontmatter.",
+                    root,
+                )
+            )
+        if not (root / "raw" / source_id).is_dir():
+            issues.append(
+                _section_issue(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    "missing_reference_source",
+                    f"Reference source {source_id!r} has no directory under raw/.",
+                    root,
+                )
+            )
+    return issues
+
+
+def _validate_source_lines(
+    path: Path,
+    relative: str,
+    page_id: str,
+    section_name: str,
+    lines: list[str],
+    source_ids: list[str],
+    root: Path,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for line in lines:
+        match = _SOURCE_LINE.match(line.strip())
+        if not match:
+            continue
+        value = match.group(1).strip()
+        if value.lower().startswith(("inference", "hypothesis")):
+            continue
+        source = _SOURCE_LINK.search(value)
+        if not source:
+            issues.append(
+                _section_issue(
+                    path,
+                    relative,
+                    page_id,
+                    section_name,
+                    "missing_source",
+                    "Source line must be [paper_id](#references).",
+                    root,
+                )
+            )
+            continue
+        issues.extend(
+            _validate_source_links(
+                path, relative, page_id, section_name, [source.group(1)], source_ids, root
             )
         )
     return issues
 
 
-def _broken_links(
+def _validate_context_h3(
     path: Path,
     relative: str,
-    contract: PageContract,
-    schema,
-    indexed_pages: dict[str, list[dict[str, Any]]],
+    page_id: str,
+    section_name: str,
+    lines: list[str],
+    rule: SectionRule,
+    source_ids: list[str],
     root: Path,
-    *,
-    page_changed: bool,
+    index: dict[str, list[dict[str, Any]]],
+    issues: list[dict[str, Any]],
+) -> list[int]:
+    tiers: list[int] = []
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in lines:
+        if _HEADING_H3.match(line):
+            if current is not None:
+                blocks.append(current)
+            current = [line]
+        elif current is not None:
+            current.append(line)
+    if current is not None:
+        blocks.append(current)
+    for block in blocks:
+        block_text = "\n".join(block)
+        for line_rule in rule.line_rules:
+            if line_rule.evidence_line:
+                found = re.search(
+                    r"\*{0,2}Evidence:?\*{0,2}\s*Tier\s*([1-5])",
+                    block_text,
+                    re.IGNORECASE,
+                )
+                if found is None:
+                    issues.append(
+                        _section_issue(
+                            path,
+                            relative,
+                            page_id,
+                            section_name,
+                            "missing_context_evidence",
+                            "Context block is missing Evidence: Tier N.",
+                            root,
+                        )
+                    )
+                else:
+                    tiers.append(int(found.group(1)))
+            elif line_rule.source_line:
+                found = re.search(
+                    r"\*{0,2}Source:?\*{0,2}\s*(.+)", block_text, re.IGNORECASE
+                )
+                if found is None:
+                    issues.append(
+                        _section_issue(
+                            path,
+                            relative,
+                            page_id,
+                            section_name,
+                            "missing_context_source",
+                            "Context block is missing a Source line.",
+                            root,
+                        )
+                    )
+                else:
+                    issues.extend(
+                        _validate_source_lines(
+                            path,
+                            relative,
+                            page_id,
+                            section_name,
+                            [found.group(0)],
+                            source_ids,
+                            root,
+                        )
+                    )
+            elif line_rule.wikilink:
+                found = re.search(re.escape(line_rule.label) + r"\s*(.+)", block_text)
+                if found is None:
+                    issues.append(
+                        _section_issue(
+                            path,
+                            relative,
+                            page_id,
+                            section_name,
+                            "missing_context_line",
+                            f"Context block is missing {line_rule.label}.",
+                            root,
+                        )
+                    )
+                    continue
+                values = [
+                    item.strip()
+                    for item in found.group(1).split(line_rule.separator)
+                    if item.strip()
+                ]
+                for value in values:
+                    issues.extend(
+                        _validate_wikilink_cell(
+                            path,
+                            relative,
+                            page_id,
+                            section_name,
+                            line_rule.label,
+                            value,
+                            line_rule.wikilink,
+                            index,
+                            root,
+                        )
+                    )
+    return tiers
+
+
+def _validate_items(
+    path: Path,
+    relative: str,
+    page_id: str,
+    section_name: str,
+    rule: SectionRule,
+    items: list[list[str]],
+    index: dict[str, list[dict[str, Any]]],
+    root: Path,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    level = "L0" if page_changed else "L1"
-    severity = "error" if page_changed else "warning"
-    body = _split_frontmatter(path.read_text(encoding="utf-8"))[1]
-    for line_number, line in enumerate(body.splitlines(), start=1):
-        for target in _MARKDOWN_LINK.findall(line):
-            normalized = target.strip().strip("<>").split("#", 1)[0]
-            if not normalized.lower().endswith(".md"):
-                continue
-            if normalized.startswith(("http://", "https://", "/")):
-                continue
-            resolved = (path.parent / normalized).resolve()
-            if not resolved.is_file():
-                issues.append(
-                    _issue(
+    for item in items:
+        text = " ".join(line.strip() for line in item)
+        for item_rule in rule.item_rules:
+            if item_rule.wikilink:
+                candidate = text
+                for prefix in item_rule.allow_prefixes:
+                    if candidate.startswith(prefix):
+                        candidate = candidate[len(prefix) :].strip()
+                issues.extend(
+                    _validate_wikilink_cell(
                         path,
-                        "broken_local_link",
-                        f"Local Wiki link target does not exist: {normalized}.",
-                        root=root,
-                        level=level,
-                        category="links",
-                        severity=severity,
-                        line=line_number,
-                        locator=f"{relative}:{line_number}",
-                    )
-                )
-                continue
-            target_type = _page_type_for_path(schema, resolved, root)
-            if contract.links.targets and target_type not in contract.links.targets:
-                issues.append(
-                    _issue(
-                        path,
-                        "invalid_link_target_type",
-                        f"Link target {normalized!r} has type {target_type!r}; "
-                        f"allowed targets are {contract.links.targets!r}.",
-                        root=root,
-                        level=level,
-                        category="links",
-                        severity=severity,
-                        line=line_number,
-                        locator=f"{relative}:{line_number}",
-                    )
-                )
-        for wikilink in _WIKILINK.findall(line):
-            target = wikilink.split("|", 1)[0].split("#", 1)[0].strip()
-            if not target:
-                continue
-            key = Path(target).stem if target.lower().endswith(".md") else target.split("/")[-1]
-            entries = indexed_pages.get(key, [])
-            if len(entries) != 1:
-                issues.append(
-                    _issue(
-                        path,
-                        "broken_wikilink",
-                        f"Wikilink target is missing or ambiguous: {target!r}.",
-                        root=root,
-                        level=level,
-                        category="links",
-                        severity=severity,
-                        line=line_number,
-                        locator=f"{relative}:{line_number}",
-                    )
-                )
-                continue
-            target_type = entries[0].get("page_type")
-            if contract.links.targets and target_type not in contract.links.targets:
-                issues.append(
-                    _issue(
-                        path,
-                        "invalid_link_target_type",
-                        f"Wikilink target {target!r} has type {target_type!r}; "
-                        f"allowed targets are {contract.links.targets!r}.",
-                        root=root,
-                        level=level,
-                        category="links",
-                        severity=severity,
-                        line=line_number,
-                        locator=f"{relative}:{line_number}",
+                        relative,
+                        page_id,
+                        section_name,
+                        "list item",
+                        candidate,
+                        item_rule.wikilink,
+                        index,
+                        root,
                     )
                 )
     return issues
 
+def _evidence_from_table(table: dict[str, Any] | None) -> list[int]:
+    if not table:
+        return []
+    columns = table.get("columns") or []
+    if "Evidence" not in columns:
+        return []
+    index = columns.index("Evidence")
+    tiers: list[int] = []
+    for row in table.get("rows") or []:
+        if len(row) <= index:
+            continue
+        match = _EVIDENCE_TIER.match(row[index].strip())
+        if match:
+            tiers.append(int(match.group(1)))
+    return tiers
 
-def _page_type_for_path(schema, path: Path, root: Path) -> str | None:
-    try:
-        relative = path.resolve().relative_to(root).as_posix()
-    except ValueError:
-        return None
-    matches = matching_page_types(schema, relative)
-    return matches[0][0] if len(matches) == 1 else None
 
-
-def _reference_id(reference: Any, id_fields: list[str]) -> str | None:
-    if isinstance(reference, str):
-        return reference or None
-    if isinstance(reference, dict):
-        for field_name in id_fields:
-            value = reference.get(field_name)
-            if value not in (None, ""):
-                return str(value)
+def _tier_from_lines(lines: list[str]) -> int | None:
+    for line in lines:
+        match = _EVIDENCE_LINE.match(line.strip())
+        if match:
+            return int(match.group(1))
     return None
+
+
+def _parse_table(lines: list[str]) -> dict[str, Any] | None:
+    for index in range(len(lines) - 1):
+        header = lines[index].strip()
+        divider = lines[index + 1].strip()
+        if not header.startswith("|") or not _TABLE_DIVIDER.match(divider):
+            continue
+        columns = _table_cells(header)
+        rows: list[list[str]] = []
+        cursor = index + 2
+        while cursor < len(lines) and lines[cursor].strip().startswith("|"):
+            rows.append(_table_cells(lines[cursor]))
+            cursor += 1
+        return {"columns": columns, "rows": rows}
+    return None
+
+
+def _table_cells(line: str) -> list[str]:
+    return [cell.strip() for cell in line.strip().strip("|").split("|")]
+
+
+def _parse_list_items(lines: list[str]) -> list[list[str]]:
+    items: list[list[str]] = []
+    current: list[str] | None = None
+    for line in lines:
+        if _BULLET.match(line):
+            if current is not None:
+                items.append(current)
+            current = [line]
+        elif current is not None and (line.startswith(" ") or line.startswith("\t")):
+            current.append(line)
+        elif current is not None and line.strip():
+            items.append(current)
+            current = None
+    if current is not None:
+        items.append(current)
+    return items
+
+
+def _paragraphs(lines: list[str]) -> list[list[str]]:
+    paragraphs: list[list[str]] = []
+    current: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith(("#", "|", "-", "*")):
+            if current:
+                paragraphs.append(current)
+                current = []
+            continue
+        if _BULLET.match(line):
+            continue
+        current.append(line)
+    if current:
+        paragraphs.append(current)
+    return paragraphs
+
+
+def _headings(body: str) -> list[tuple[str, int, int]]:
+    lines = body.splitlines()
+    tokens = _MD.parse(body)
+    headings: list[tuple[str, int, int]] = []
+    for index, token in enumerate(tokens):
+        if token.type != "heading_open" or token.tag != "h2":
+            continue
+        content = tokens[index + 1].content if index + 1 < len(tokens) else ""
+        start = token.map[0] if token.map else len(lines)
+        headings.append((content.strip(), start, len(lines)))
+    for position, (name, start, _end) in enumerate(headings):
+        next_start = headings[position + 1][1] if position + 1 < len(headings) else len(lines)
+        headings[position] = (name, start, next_start)
+    return headings
+
+
+def _h1_titles(body: str) -> list[str]:
+    tokens = _MD.parse(body)
+    titles: list[str] = []
+    for index, token in enumerate(tokens):
+        if token.type == "heading_open" and token.tag == "h1":
+            content = tokens[index + 1].content if index + 1 < len(tokens) else ""
+            titles.append(content.strip())
+    return titles
+
+def _missing_wikilink_issues(
+    path: Path,
+    relative: str,
+    page_id: str,
+    body: str,
+    terms: dict[str, list[tuple[str, str]]],
+    *,
+    root: Path,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    in_references = False
+    for line_number, line in enumerate(body.splitlines(), start=1):
+        if _HEADING_H2.match(line):
+            in_references = line.strip() == "## References"
+            continue
+        if in_references or not line.strip() or line.lstrip().startswith(("#", "|", "```")):
+            continue
+        if line.strip().startswith(("**", "Source:", "Evidence:")):
+            continue
+        candidate = _BULLET.match(line)
+        scan_line = candidate.group(1) if candidate else line
+        without_links = _WIKILINK.sub("", scan_line)
+        lowered = without_links.casefold()
+        for term, entries in terms.items():
+            if not term or term not in lowered:
+                continue
+            target_ids = {entry[0] for entry in entries}
+            if page_id in target_ids:
+                continue
+            issues.append(
+                _issue(
+                    path,
+                    "missing_wikilink",
+                    f"Known entity {term!r} is mentioned without a wikilink.",
+                    root=root,
+                    level="L1",
+                    category="links",
+                    severity="warning",
+                    target_id=page_id,
+                    locator=f"{relative}:{line_number}",
+                )
+            )
+            break
+    return issues
 
 
 def _split_frontmatter(raw: str) -> tuple[dict[str, Any], str, str | None]:
@@ -640,6 +1493,28 @@ def _split_frontmatter(raw: str) -> tuple[dict[str, Any], str, str | None]:
     return parsed, parts[2].lstrip("\r\n"), None
 
 
+def _section_issue(
+    path: Path,
+    relative: str,
+    page_id: str,
+    section_name: str,
+    issue_type: str,
+    detail: str,
+    root: Path,
+) -> dict[str, Any]:
+    return _issue(
+        path,
+        issue_type,
+        f"[{section_name}] {detail}",
+        root=root,
+        level="L0",
+        category="template",
+        severity="error",
+        target_id=page_id,
+        locator=f"{relative}#section={section_name}",
+    )
+
+
 def _issue(
     path: Path,
     issue_type: str,
@@ -649,11 +1524,9 @@ def _issue(
     level: str,
     category: str,
     severity: str,
-    auto_fixable: bool = False,
     line: int | None = None,
     target_id: str | None = None,
     locator: str | None = None,
-    evidence: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     target = target_id or path.stem
     try:
@@ -663,18 +1536,6 @@ def _issue(
     resolved_locator = locator or relative + (f":{line}" if line else "")
     lint_level = LintLevel(level)
     lint_severity = LintSeverity(severity)
-    suggested_operation = (
-        {
-            "type": "apply_lint_fix",
-            "target_id": path.stem,
-            "payload": {
-                "action": "rebuild_projection",
-                "finding_type": issue_type,
-            },
-        }
-        if auto_fixable
-        else None
-    )
     finding = LintFinding(
         finding_id=LintFinding.stable_id(
             level=lint_level,
@@ -688,10 +1549,8 @@ def _issue(
         target_id=target,
         locator=resolved_locator,
         message=detail,
-        evidence=evidence or [],
+        evidence=[],
         blocking=lint_severity == LintSeverity.ERROR,
-        auto_fixable=auto_fixable,
-        suggested_operation=suggested_operation,
     )
     payload = finding.model_dump(mode="json")
     payload.update(

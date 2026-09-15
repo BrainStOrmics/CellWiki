@@ -14,10 +14,7 @@ from cellwiki.evaluation.agent_eval_v2 import (
 )
 
 _PAGE = "wiki/cell_types/dendritic_cell.md"
-_CD83_BULLET = (
-    "- Activated conventional dendritic cells additionally express CD83 on\n"
-    "  their surface.\n"
-)
+_CD83_ROW = "| CD83 | positive | Tier 5 | inference |\n"
 
 
 def _commit(workspace, *paths: str) -> None:
@@ -30,9 +27,9 @@ def _append_cd83_marker(ctx: ScriptContext) -> None:
     current = page.read_text(encoding="utf-8")
     if "CD83" in current:
         return
-    anchor = "Related marker pages:"
+    anchor = "## Notes"
     index = current.index(anchor)
-    updated = current[:index] + _CD83_BULLET + "\n" + current[index:]
+    updated = current[:index] + _CD83_ROW + "\n" + current[index:]
     page.write_text(updated, encoding="utf-8")
 
 

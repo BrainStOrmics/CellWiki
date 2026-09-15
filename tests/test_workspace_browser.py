@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from cellwiki.api.app import create_app
+from tests.schema_helpers import minimal_schema_contract, valid_cell_type_page
 
 
 def _git_init(root: Path) -> None:
@@ -21,39 +22,23 @@ def _git_init(root: Path) -> None:
 def _workspace(root: Path) -> None:
     (root / "wiki" / "cell_types").mkdir(parents=True, exist_ok=True)
     (root / "wiki" / "cell_types" / "alpha.md").write_text(
-        "---\n"
-        "standard_name: alpha\n"
-        'display_name: "Alpha Cell"\n'
-        "references:\n"
-        "  - source_id: src_aaaaaaaaaaaaaaaaaaaa\n"
-        "---\n\n"
-        "# Alpha Cell\n\nFOXP3.\n",
+        valid_cell_type_page(
+            standard_name="alpha",
+            display_name="Alpha Cell",
+            body_suffix="FOXP3.\n",
+        ),
         encoding="utf-8",
     )
     (root / "raw" / "src_aaaaaaaaaaaaaaaaaaaa").mkdir(parents=True, exist_ok=True)
-    (root / "raw" / "src_aaaaaaaaaaaaaaaaaaaa" / "paper.md").write_text("# Paper\n", encoding="utf-8")
-    (root / "raw" / "src_aaaaaaaaaaaaaaaaaaaa" / "meta.json").write_text("{}", encoding="utf-8")
-    (root / "schema.md").write_text(
-        "```yaml cellwiki-schema\n"
-        "schema_version: 1\n"
-        "pages:\n"
-        "  cell_type:\n"
-        "    path: wiki/cell_types/{id}.md\n"
-        "    identity: standard_name\n"
-        "    frontmatter:\n"
-        "      required:\n"
-        "        standard_name: {type: string}\n"
-        "        display_name: {type: string}\n"
-        "        references: {type: list}\n"
-        "    sections: {required: []}\n"
-        "    references: {required: true}\n"
-        "    links: {check: false}\n"
-        "```\n",
-        encoding="utf-8",
+    (root / "raw" / "src_aaaaaaaaaaaaaaaaaaaa" / "paper.md").write_text(
+        "# Paper\n", encoding="utf-8"
     )
+    (root / "raw" / "src_aaaaaaaaaaaaaaaaaaaa" / "meta.json").write_text(
+        "{}", encoding="utf-8"
+    )
+    (root / "schema.md").write_text(minimal_schema_contract(), encoding="utf-8")
     (root / "index.md").write_text("# Index\n", encoding="utf-8")
     _git_init(root)
-
 
 def test_workspace_tree_lists_wiki_raw_root_and_schema(tmp_path: Path):
     _workspace(tmp_path)
@@ -91,9 +76,10 @@ def test_workspace_edit_stages_pending_diff_then_gates(tmp_path: Path):
         "/api/workspace/edit",
         json={
                 "path": "wiki/cell_types/alpha.md",
-                "content": (
-                    "---\nstandard_name: alpha\ndisplay_name: \"Alpha Cell\"\n"
-                    "references:\n  - source_id: src_aaaaaaaaaaaaaaaaaaaa\n---\n\n# Alpha Cell\n\nCD8+ T cells.\n"
+                "content": valid_cell_type_page(
+                    standard_name="alpha",
+                    display_name="Alpha Cell",
+                    body_suffix="CD8+ T cells.\n",
                 ),
             },
     )

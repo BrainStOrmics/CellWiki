@@ -28,12 +28,8 @@ _PAGE = "wiki/cell_types/natural_killer_cell.md"
 _DEFICIENT_PAGE = """---
 standard_name: natural_killer_cell
 display_name: Natural killer cell
-cl_id: CL:0000623
-species: [Homo sapiens]
-references:
-  - paper_id: fixture_nk_2023
-    title: Fixture paraphrase of human NK cell identity evidence
-    year: 2023
+evidence_tier: 5
+references: []
 ---
 # Natural killer cell
 
@@ -44,11 +40,17 @@ infected cells without prior sensitization.
 
 ## Markers
 
-- The lineage-defining combination is NCR1 (also called NKp46).
+| Marker | Type | Evidence | Source |
+| --- | --- | --- | --- |
+| NCR1 | positive | Tier 5 | inference |
 
 ## Notes
 
 Paraphrased from a public-access fixture source; see raw/fixture_nk_cell_source.md.
+
+## References
+
+- inference
 """
 
 

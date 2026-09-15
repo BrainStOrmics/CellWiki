@@ -25,6 +25,11 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.pending_diff import PendingDiffStatus
+from tests.schema_helpers import (
+    invalid_cell_type_page,
+    minimal_schema_contract,
+    valid_cell_type_page,
+)
 from cellwiki.services.git_executor import GitExecutor
 from cellwiki.domain.runs import (
     AgentErrorType,
@@ -1298,13 +1303,7 @@ def test_real_graph_interrupt_pause_and_command_resume(tmp_path: Path):
     (tmp_path / "schema.md").write_text(_maintenance_schema_contract(), encoding="utf-8")
     (tmp_path / "wiki" / "cell_types").mkdir(parents=True, exist_ok=True)
     (tmp_path / "wiki" / "cell_types" / "a.md").write_text(
-        "---\n"
-        "entity_type: cell_type\n"
-        "standard_name: a\n"
-        'display_name: "Alpha cell"\n'
-        "references: []\n"
-        "---\n\n"
-        "# Alpha cell\n",
+        valid_cell_type_page(standard_name="a", display_name="Alpha cell"),
         encoding="utf-8",
     )
     graph = build_wiki_agent(tmp_path, model=_InterruptFakeModel())
@@ -1482,34 +1481,7 @@ def _wait_for_maintenance_subject(repo: Path, fragment: str) -> list[str]:
 
 
 def _maintenance_schema_contract() -> str:
-    return '''# Schema
-
-```yaml cellwiki-schema
-schema_version: 1
-pages:
-  cell_type:
-    path: wiki/cell_types/{id}.md
-    identity: standard_name
-    frontmatter:
-      required:
-        entity_type:
-          type: string
-          const: cell_type
-        standard_name:
-          type: string
-          pattern: '^[a-z0-9_]+$'
-        display_name:
-          type: string
-        references:
-          type: list
-    sections:
-      required: []
-    references:
-      required: false
-    links:
-      check: false
-```
-'''
+    return minimal_schema_contract()
 
 
 class _MaintenanceWritingAdapter:
@@ -1527,13 +1499,11 @@ class _MaintenanceWritingAdapter:
         wiki = self.repo / "wiki" / "cell_types"
         wiki.mkdir(parents=True, exist_ok=True)
         (wiki / "alpha_cell.md").write_text(
-            "---\n"
-            "entity_type: cell_type\n"
-            "standard_name: alpha_cell\n"
-            'display_name: "Alpha Cell"\n'
-            "references: []\n"
-            "---\n\n"
-            f"# Alpha Cell\n\nbody-{self.calls}\n",
+            valid_cell_type_page(
+                standard_name="alpha_cell",
+                display_name="Alpha Cell",
+                body_suffix=f"body-{self.calls}\n",
+            ),
             encoding="utf-8",
         )
         git = GitExecutor(self.repo)
@@ -1938,49 +1908,15 @@ def test_auto_version_failure_marks_run_unfinished(tmp_path: Path):
 
 
 def _schema_gate_contract() -> str:
-    return '''# Schema
-
-```yaml cellwiki-schema
-schema_version: 1
-pages:
-  cell_type:
-    path: wiki/cell_types/{id}.md
-    identity: standard_name
-    frontmatter:
-      required:
-        entity_type:
-          type: string
-          const: cell_type
-        standard_name:
-          type: string
-          pattern: '^[a-z0-9_]+$'
-        display_name:
-          type: string
-        references:
-          type: list
-    sections:
-      required: [Evidence]
-    references:
-      required: true
-      require_source: true
-    links:
-      check: false
-```
-'''
+    return minimal_schema_contract()
 
 
 def _schema_gate_page(*, valid: bool) -> str:
-    display = 'display_name: "CD8 T Cell"\n' if valid else ""
-    return (
-        "---\n"
-        "entity_type: cell_type\n"
-        "standard_name: cd8_t_cell\n"
-        f"{display}"
-        "references:\n"
-        "  - source_id: paper_one\n"
-        "---\n\n"
-        "# CD8 T Cell\n\n## Evidence\n\nCD3D.\n"
-    )
+    if valid:
+        return valid_cell_type_page(
+            standard_name="cd8_t_cell", display_name="CD8 T Cell"
+        )
+    return invalid_cell_type_page()
 
 
 def _prepare_schema_workspace(tmp_path: Path) -> Path:

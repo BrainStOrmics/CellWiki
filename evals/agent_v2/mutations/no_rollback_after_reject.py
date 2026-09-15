@@ -25,10 +25,7 @@ MUTATION = {
 }
 
 _PAGE = "wiki/cell_types/dendritic_cell.md"
-_CD83_BULLET = (
-    "- Activated conventional dendritic cells additionally express CD83 on\n"
-    "  their surface.\n"
-)
+_CD83_ROW = "| CD83 | positive | Tier 5 | inference |\n"
 
 
 def _oracle():
@@ -42,9 +39,9 @@ def _reapply_cd83(ctx: ScriptContext) -> None:
     current = page.read_text(encoding="utf-8")
     if "CD83" in current:
         return
-    anchor = "Related marker pages:"
+    anchor = "## Notes"
     index = current.index(anchor)
-    page.write_text(current[:index] + _CD83_BULLET + "\n" + current[index:], encoding="utf-8")
+    page.write_text(current[:index] + _CD83_ROW + "\n" + current[index:], encoding="utf-8")
     run_git(ctx.workspace, "add", _PAGE)
     run_git(ctx.workspace, "commit", "-m", "feat(agent): reapply rejected edit (mutation)")
 

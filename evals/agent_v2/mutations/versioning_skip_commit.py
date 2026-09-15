@@ -38,7 +38,8 @@ def respond(ctx: ScriptContext) -> ScriptResult:
         note = ctx.workspace / "wiki" / "notes" / "evidence_note.md"
         note.parent.mkdir(parents=True, exist_ok=True)
         note.write_text(
-            "# 证据笔记（评审冒烟）\n\n- 内容：写入但从不提交。\n",
+            "---\nname: evidence_note\nsources: []\n---\n"
+            "# 证据笔记（评审冒烟）\n\n## Notes\n\n- 内容：写入但从不提交。\n",
             encoding="utf-8",
         )
         return ScriptResult(

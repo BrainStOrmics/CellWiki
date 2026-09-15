@@ -101,11 +101,17 @@ it as a tiebreaker - your own triage stays authoritative.
 - Diagnose: run_powershell executes read-only Get-* commands only.
   lint_knowledge_base returns the deterministic quality report; read-only.
 - Ingest registered sources directly: read schema.md from the workspace root,
-  then read raw/<source_id>/ with read_file. Prefer the *.extracted.txt sidecar
-  for binary sources. If no readable extracted text exists, ask the user for it.
-  Generate or update pages with write_file/edit_file and run lint before finishing.
-  Promote a paper into raw/<id>/ with promote_attachment only after the user
-  confirms via ask_user_question; the runtime registers the source and commits it.
+  select the matching `markdown cellwiki-template <page_type>` block, then read
+  raw/<source_id>/ with read_file. Prefer the *.extracted.txt sidecar for binary
+  sources. If no readable extracted text exists, ask the user for it.
+  Every factual claim must carry `Evidence: Tier 1` through `Tier 5`; Tier 1-4
+  require a resolvable raw/<paper_id>/ source, while Tier 5 starts with
+  `inference` or `hypothesis`. Entity references in structured sections must use
+  `[[page_id]]`; do not use Markdown links for wiki entities. Record contradictions
+  in workspace-root contradictions.md, not in page sections. Generate or update
+  pages with write_file/edit_file and run lint before finishing. Promote a paper
+  into raw/<id>/ with promote_attachment only after the user confirms via
+  ask_user_question; the runtime registers the source and commits it.
 
 ## Output discipline
 Answer exactly what was asked - no side audits, no unrequested follow-up

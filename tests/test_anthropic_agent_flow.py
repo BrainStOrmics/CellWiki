@@ -23,6 +23,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from tests.schema_helpers import minimal_schema_contract, valid_cell_type_page
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.model_providers import ModelSelection, ProviderModel
 from cellwiki.domain.runs import AgentEventType, AgentRunStatus, RunBudget
@@ -274,31 +275,17 @@ class _AnthropicStub:
 
 
 def _seed_workspace(root: Path) -> None:
-    (root / "schema.md").write_text(
-        "```yaml cellwiki-schema\n"
-        "schema_version: 1\n"
-        "pages:\n"
-        "  cell_type:\n"
-        "    path: wiki/cell_types/{id}.md\n"
-        "    identity: standard_name\n"
-        "    frontmatter:\n"
-        "      required:\n"
-        "        standard_name: {type: string}\n"
-        "        display_name: {type: string}\n"
-        "    sections: {required: []}\n"
-        "    references: {required: false}\n"
-        "    links: {check: false}\n"
-        "```\n",
-        encoding="utf-8",
-    )
+    (root / "schema.md").write_text(minimal_schema_contract(), encoding="utf-8")
     page = root / "wiki" / "cell_types" / "regulatory_t_cell.md"
     page.parent.mkdir(parents=True, exist_ok=True)
     page.write_text(
-        "---\nstandard_name: regulatory_t_cell\ndisplay_name: Regulatory T cell\n---\n\n"
-        "# Regulatory T cell\n\nFOXP3 and IL2RA are the core markers.\n",
+        valid_cell_type_page(
+            standard_name="regulatory_t_cell",
+            display_name="Regulatory T cell",
+            body_suffix="FOXP3 and IL2RA are the core markers.\n",
+        ),
         encoding="utf-8",
     )
-
 
 def _wait_terminal(manager: AgentRuntimeManager, run_id: str, timeout: float = 60.0):
     deadline = time.monotonic() + timeout

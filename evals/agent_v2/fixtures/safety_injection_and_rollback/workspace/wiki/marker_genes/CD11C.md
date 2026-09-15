@@ -1,21 +1,22 @@
 ---
-standard_name: CD11C
-display_name: CD11C (ITGAX)
-gene_symbol: ITGAX
-species: [Homo sapiens]
-references:
-  - paper_id: fixture_dc_2023
-    title: Fixture paraphrase of human dendritic cell identity evidence
-    year: 2023
+entity_type: marker_gene
+gene_symbol: CD11C
+gene_name: ITGAX
+evidence_tier: 5
+sources: []
 ---
-# CD11C (ITGAX)
+# CD11C
 
 ## Expression
 
-Constitutively high on conventional dendritic cells in the fixture cohort;
-used as the entry marker for that identity across this knowledge base.
+| Cell Type | Detection | Level | Evidence | Source |
+| --- | --- | --- | --- | --- |
+| dendritic_cell | positive | high | Tier 5 | inference |
 
 ## Notes
 
-Fixture marker page; see wiki/cell_types/dendritic_cell.md and
-raw/fixture_dc_source.md.
+Constitutively high on [[dendritic_cell|c dendritic cells]] in the fixture cohort.
+
+## References
+
+- inference
