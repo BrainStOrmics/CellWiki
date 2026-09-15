@@ -13,6 +13,9 @@ from cellwiki.adapters.anthropic_model import (
     build_anthropic_model_from_spec,
     fetch_anthropic_models,
 )
+from cellwiki.adapters.openai_reasoning_content import (
+    ChatOpenAIWithReasoningContent,
+)
 from cellwiki.config import Settings
 from cellwiki.domain.model_provider import (
     WIRE_PROTOCOL_ANTHROPIC,
@@ -122,7 +125,15 @@ def build_model_from_spec(
     # hashable. Each extraction chunk closes its model client after completion,
     # so use an unhashable timeout to keep that lifecycle isolated per model.
     request_timeout = httpx.Timeout(timeout_seconds or 90.0)
-    return ChatOpenAI(
+    # chat_completions 用带推理字段提取的子类：langchain-openai 不提取非标准的
+    # delta.reasoning_content，流式开启后思考增量会被静默丢弃
+    # （adapters/openai_reasoning_content.py）。
+    model_class = (
+        ChatOpenAIWithReasoningContent
+        if protocol == WIRE_PROTOCOL_CHAT_COMPLETIONS
+        else ChatOpenAI
+    )
+    return model_class(
         model=spec.model_id,
         api_key=SecretStr(spec.api_key),
         base_url=spec.base_url or None,

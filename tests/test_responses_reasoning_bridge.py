@@ -279,11 +279,24 @@ def test_build_model_respects_kill_switch(_no_proxy_env):
     assert not reasoning_stream_proxy_attached(model)
 
 
-def test_build_model_keeps_blocking_on_chat_protocol(_no_proxy_env):
+def test_build_model_streams_chat_protocol_without_reasoning_bridge(_no_proxy_env):
     from cellwiki.agent.app import build_model
 
     model = build_model(
         _settings(agent_streaming=True, openai_api_protocol="chat_completions")
     )
-    assert model.disable_streaming == "tool_calling"
+    # 2026-09-15 起 chat_completions 也逐 token 流式；推理增量由
+    # adapters/openai_reasoning_content.py 的子类补，responses 的事件桥不挂。
+    assert model.disable_streaming is False
+    assert model.stream_usage is True
     assert not reasoning_stream_proxy_attached(model)
+
+
+def test_build_model_streams_anthropic_protocol(_no_proxy_env):
+    from cellwiki.agent.app import build_model
+
+    model = build_model(
+        _settings(agent_streaming=True, openai_api_protocol="anthropic")
+    )
+    assert model.disable_streaming is False
+    assert model.stream_usage is True

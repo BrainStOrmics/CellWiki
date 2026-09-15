@@ -430,7 +430,12 @@ def _reasoning_text(message: Any) -> str | None:
     if isinstance(content, list):
         parts: list[str] = []
         for block in content:
-            if not isinstance(block, dict) or block.get("type") != "reasoning":
+            if not isinstance(block, dict):
+                continue
+            # responses 的标准推理摘要是 "reasoning" 块；anthropic 的原生 thinking
+            # 块（langchain-anthropic 逐 thinking_delta 产出）是 "thinking" 块，
+            # 文本在 "thinking" 字段而不是 "text"。
+            if block.get("type") not in {"reasoning", "thinking"}:
                 continue
             summary = block.get("summary")
             if isinstance(summary, list):
@@ -439,9 +444,11 @@ def _reasoning_text(message: Any) -> str | None:
                 )
             elif isinstance(summary, str):
                 parts.append(summary)
-            raw = block.get("text")
-            if isinstance(raw, str):
-                parts.append(raw)
+            for key in ("text", "thinking"):
+                raw = block.get(key)
+                if isinstance(raw, str):
+                    parts.append(raw)
+                    break
         # 逐 delta 调用，因此不能 strip：那会吃掉英文的词间空格（"I need " + "to run"
         # 拼成 "Ineedto run"），纯空白 delta 还会被整条丢弃。前端是逐字拼接的。
         joined = "".join(parts)

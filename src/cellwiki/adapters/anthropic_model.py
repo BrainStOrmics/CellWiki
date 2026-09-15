@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from functools import cached_property
 from typing import Any, Literal
 
+import anthropic
 import httpx
 from langchain_anthropic import ChatAnthropic
 from pydantic import SecretStr
@@ -19,6 +21,8 @@ __all__ = [
 ]
 
 ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
+# 未显式配置超时时的兜底值（与 build_anthropic_model_from_spec 的默认一致）。
+ANTHROPIC_DEFAULT_TIMEOUT_SECONDS = 90.0
 # ChatAnthropic 的 SDK 会自行发送该头；只有裸 httpx 拉取 /v1/models 需要手写。
 ANTHROPIC_VERSION = "2023-06-01"
 
@@ -50,7 +54,40 @@ class ChatAnthropicWithRootClient(ChatAnthropic):
     ``model.root_client.close()`` 为契约（ChatOpenAI 自带该属性）。
     ChatAnthropic 没有，这里用 SDK 客户端补上；``getattr`` 兜底逻辑因此
     对两种协议行为一致，而 agent_runtime.py 无需改动。
+
+    连接池必须每个实例独占：``langchain_anthropic._client_utils`` 用
+    ``lru_cache`` 按 (base_url, timeout, proxy) 缓存 httpx 客户端，默认所有
+    ChatAnthropic 实例共用同一个连接池。运行时的取消与空闲看门狗正是靠
+    ``root_client.close()`` 断开挂起的流，一旦共享，一次强制断连会让同进程里
+    后续每个 ChatAnthropic 实例的请求都立刻抛
+    ``Cannot send a request, as the client has been closed``（2026-09-15
+    三协议流式验证实测：一次断连之后所有 anthropic run 全部失败）。这里用
+    相同参数自建连接池，断连语义回到"只断开这一个 run"。
     """
+
+    @cached_property
+    def _client(self) -> anthropic.Client:
+        params = dict(self._client_params)
+        timeout = params.pop("timeout", None)
+        http_client = anthropic.DefaultHttpxClient(
+            base_url=params["base_url"] or ANTHROPIC_DEFAULT_BASE_URL,
+            timeout=(
+                timeout if timeout is not None else ANTHROPIC_DEFAULT_TIMEOUT_SECONDS
+            ),
+        )
+        return anthropic.Client(http_client=http_client, **params)
+
+    @cached_property
+    def _async_client(self) -> anthropic.AsyncClient:
+        params = dict(self._client_params)
+        timeout = params.pop("timeout", None)
+        http_client = anthropic.DefaultAsyncHttpxClient(
+            base_url=params["base_url"] or ANTHROPIC_DEFAULT_BASE_URL,
+            timeout=(
+                timeout if timeout is not None else ANTHROPIC_DEFAULT_TIMEOUT_SECONDS
+            ),
+        )
+        return anthropic.AsyncClient(http_client=http_client, **params)
 
     @property
     def root_client(self) -> Any:

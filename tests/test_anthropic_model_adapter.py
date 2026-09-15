@@ -2,10 +2,10 @@
 # 原生 Anthropic 协议适配测试 —— Messages API 形状与目录链路合同
 # =============================================================================
 # 覆盖：spec 构建与协议分发、base_url 默认、overrides 映射（字段键/请求体
-# 扩展键/保留键）、root_client 生命周期句柄、/v1/models 拉取头与清洗、
-# 探测分支（JSON 指令 + 宽松解析）、harness profile 注册。
+# 扩展键/保留键）、root_client 生命周期句柄与每实例连接池隔离、/v1/models
+# 拉取头与清洗、探测分支（JSON 指令 + 宽松解析）、harness profile 注册。
 # 真实供应商行为（tool_use 往返、thinking）不在本文件：需要 key 的沙箱
-# smoke，见 design/active/2026-09-13-anthropic-protocol-adapter.md。
+# smoke，见 design/archive/2026-09-15-three-protocol-token-streaming.md。
 # =============================================================================
 
 from __future__ import annotations
@@ -276,3 +276,19 @@ def test_extract_json_object_accepts_wrapped_json(text: str) -> None:
 def test_extract_json_object_rejects_non_object() -> None:
     with pytest.raises(ValueError):
         _extract_json_object("[1, 2, 3]")
+
+
+def test_anthropic_instances_do_not_share_one_http_client() -> None:
+    """强制断连只断开本实例：共享连接池会让同进程后续 run 全部失败。"""
+
+    first = build_anthropic_model_from_spec(_spec(), timeout_seconds=45.0)
+    second = build_anthropic_model_from_spec(_spec(), timeout_seconds=45.0)
+    try:
+        assert first.root_client is not second.root_client
+        first.root_client.close()
+        assert first.root_client.is_closed() is True
+        # 运行时的看门狗就是靠 root_client.close() 断开挂起的流；共享客户端的
+        # 话这里会是 True，后续每个 run 都会立刻抛 "client has been closed"。
+        assert second.root_client.is_closed() is False
+    finally:
+        second.root_client.close()

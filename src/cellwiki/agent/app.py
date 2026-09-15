@@ -201,32 +201,32 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
 # 构建 LLM 模型实例
 # OpenAI 形状用 ChatOpenAI（兼容 Ollama、vLLM 等），原生 Anthropic 协议
 # 用 ChatAnthropic（adapters/anthropic_model.py）。temperature=0 保证确定性。
-# Responses 协议下默认开启逐 token 流式（AGENT_STREAMING=0 一键回退）：
-# coordinator 请求永远携带工具，此前 disable_streaming="tool_calling" 会在
-# HTTP 层直接退化为阻塞式单响应，正文与思考整块到达
-# （design/active/2026-08-27-agent-token-streaming.md）。
-# 流式同时挂上 reasoning bridge，把该网关非标准的
-# response.reasoning_text.delta 事件翻译成 langchain 可识别的标准摘要事件。
-# Chat Completions 协议保持阻塞现状：langchain-core 不提取流式
-# reasoning_content，放开即思考回退，需 provider 子类另行提案。
-# Anthropic 协议 v1 同样保持阻塞（原因同 Chat Completions：thinking 块的
-# 流式映射未验证、默认关闭；见 design/active/2026-09-13-anthropic-protocol-adapter.md）。
+# 三种线协议（responses / chat_completions / anthropic）默认都开启逐 token
+# 流式，AGENT_STREAMING=0 一键回退为整块返回：coordinator 请求永远携带工具，
+# disable_streaming="tool_calling" 会在 HTTP 层直接退化为阻塞式单响应，正文与
+# 思考整块到达（design/archive/2026-09-15-three-protocol-token-streaming.md）。
+# 推理增量按协议分工，但最终都落到运行时的 reasoning_delta：
+# - responses：网关的非标准 response.reasoning_text.delta 由 reasoning bridge
+#   翻译成 langchain 可识别的标准摘要事件；
+# - chat_completions：langchain-openai 不提取 delta.reasoning_content，由
+#   adapters/openai_reasoning_content.py 的 provider 子类补进 additional_kwargs；
+# - anthropic：langchain-anthropic 已把 thinking_delta 还原为原生
+#   {"type": "thinking"} 内容块，运行时 _reasoning_text 直接映射。
 # ---------------------------------------------------------------------------
 def build_model(configuration: Settings = settings) -> BaseChatModel:
     _register_cellwiki_harness_profile(configuration.openai_model)
-    streaming = bool(
-        configuration.agent_streaming
-        and normalize_wire_protocol(configuration.openai_api_protocol)
-        == WIRE_PROTOCOL_RESPONSES
-    )
+    # 三种线协议都流式构建；AGENT_STREAMING=0 是唯一的回退开关。
+    streaming = bool(configuration.agent_streaming)
     model = build_openai_chat_model(
         configuration,
         purpose="coordinator",
         disable_streaming=False if streaming else "tool_calling",
         stream_usage=True if streaming else None,
     )
-    if streaming:
-        # streaming 仅在 responses 协议成立，该分支的工厂返回必为 ChatOpenAI。
+    if streaming and normalize_wire_protocol(
+        configuration.openai_api_protocol
+    ) == WIRE_PROTOCOL_RESPONSES:
+        # 推理事件桥只认 Responses 的 SSE 形状；该分支的工厂返回必为 ChatOpenAI。
         attach_reasoning_stream_bridge(cast(ChatOpenAI, model))
     return model
 
@@ -238,18 +238,16 @@ def build_model(configuration: Settings = settings) -> BaseChatModel:
 # ---------------------------------------------------------------------------
 def build_coordinator_model(spec: ResolvedModelSpec) -> BaseChatModel:
     _register_cellwiki_harness_profile(spec.model_id)
-    streaming = bool(
-        settings.agent_streaming
-        and normalize_wire_protocol(spec.protocol) == WIRE_PROTOCOL_RESPONSES
-    )
+    # 语义与 build_model 一致；流式开关只看 AGENT_STREAMING。
+    streaming = bool(settings.agent_streaming)
     model = build_model_from_spec(
         spec,
         purpose="coordinator",
         disable_streaming=False if streaming else "tool_calling",
         stream_usage=True if streaming else None,
     )
-    if streaming:
-        # streaming 仅在 responses 协议成立，该分支的工厂返回必为 ChatOpenAI。
+    if streaming and normalize_wire_protocol(spec.protocol) == WIRE_PROTOCOL_RESPONSES:
+        # 推理事件桥只认 Responses 的 SSE 形状；该分支的工厂返回必为 ChatOpenAI。
         attach_reasoning_stream_bridge(cast(ChatOpenAI, model))
     return model
 
