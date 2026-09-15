@@ -24,6 +24,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from pydantic import ValidationError
+
 from cellwiki.domain.runs import (
     AgentErrorType,
     AgentEvent,
@@ -1853,7 +1855,21 @@ class RuntimeStore:
                 "SELECT payload FROM agent_events WHERE run_id = ? AND sequence > ? ORDER BY sequence",
                 (run_id, after),
             ).fetchall()
-        return [AgentEvent.model_validate_json(row[0]) for row in rows]
+        events: list[AgentEvent] = []
+        for row in rows:
+            event = self._parse_known_event(row[0])
+            if event is not None:
+                events.append(event)
+        return events
+
+    @staticmethod
+    def _parse_known_event(payload: str) -> AgentEvent | None:
+        """Ignore retired event types while preserving their raw audit rows."""
+
+        try:
+            return AgentEvent.model_validate_json(payload)
+        except ValidationError:
+            return None
 
     def upsert_span(self, span: AgentSpan) -> AgentSpan:
         """Persist redacted diagnostics without storing prompts or credentials."""
@@ -2076,7 +2092,9 @@ class RuntimeStore:
                     (run.run_id,),
                 ).fetchall()
                 for event_row in event_rows:
-                    event = AgentEvent.model_validate_json(event_row[0])
+                    event = self._parse_known_event(event_row[0])
+                    if event is None:
+                        continue
                     if event.type != AgentEventType.FINAL_RESPONSE:
                         continue
                     answer = event.message or str(event.data.get("answer", ""))
@@ -2135,7 +2153,9 @@ class RuntimeStore:
             "SELECT payload FROM agent_events WHERE run_id = ? ORDER BY sequence",
             (run_id,),
         ):
-            event = AgentEvent.model_validate_json(payload)
+            event = RuntimeStore._parse_known_event(payload)
+            if event is None:
+                continue
             if event.type == AgentEventType.REASONING_DELTA:
                 parts.append(event.message or "")
         return "".join(parts)
@@ -2273,7 +2293,9 @@ class RuntimeStore:
         ).fetchall()
         steps: list[dict] = []
         for row in rows:
-            event = AgentEvent.model_validate_json(row[0])
+            event = RuntimeStore._parse_known_event(row[0])
+            if event is None:
+                continue
             if event.type not in displayable_types:
                 continue
             phase = (

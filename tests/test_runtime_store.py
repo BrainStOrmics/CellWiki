@@ -394,6 +394,61 @@ def test_reopening_the_store_backfills_streamed_reasoning_into_the_answer(tmp_pa
     )
 
 
+def test_runtime_store_skips_retired_event_types_on_read(tmp_path: Path):
+    """Retired audit event types must not prevent the runtime from opening."""
+
+    store = RuntimeStore(tmp_path)
+    run = AgentRun(
+        run_id="run_retired_event",
+        thread_id="thread_retired_event",
+        input_message="q",
+    )
+    store.create_run(run)
+    store.append_message(
+        thread_id=run.thread_id,
+        run_id=run.run_id,
+        role="assistant",
+        content="answer",
+        data={"source": "agent_runtime"},
+    )
+    with store._connect() as connection:
+        sequence = connection.execute(
+            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM agent_events WHERE run_id = ?",
+            (run.run_id,),
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO agent_events(run_id, sequence, event_id, payload) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                run.run_id,
+                sequence,
+                "aevt_retired_claim_verification",
+                json.dumps(
+                    {
+                        "event_id": "aevt_retired_claim_verification",
+                        "run_id": run.run_id,
+                        "thread_id": run.thread_id,
+                        "sequence": sequence,
+                        "type": "claim_verification",
+                        "message": "retired",
+                        "progress": None,
+                        "data": {},
+                        "created_at": datetime.now(UTC).isoformat(),
+                    }
+                ),
+            ),
+        )
+    store.append_event(run.run_id, AgentEventType.REASONING_DELTA, message="thinking")
+
+    upgraded = RuntimeStore(tmp_path)
+    event_types = [event.type for event in upgraded.list_events(run.run_id)]
+    assert AgentEventType.REASONING_DELTA in event_types
+    assert "claim_verification" not in {event.value for event in event_types}
+    assert (
+        upgraded.list_messages(run.thread_id)[1]["data"]["reasoning"] == "thinking"
+    )
+
+
 def test_runtime_store_projects_displayable_events_into_assistant_history(tmp_path: Path):
     store = RuntimeStore(tmp_path)
     run = AgentRun(run_id="run_process", thread_id="thread_process", input_message="question")
