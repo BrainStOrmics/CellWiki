@@ -21,7 +21,6 @@ import difflib
 import hashlib
 import json
 import logging
-import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -185,22 +184,6 @@ def _porcelain_dirty_paths(porcelain: str) -> list[str]:
         else:
             dirty.append(path)
     return dirty
-
-
-# ---- 未证实仓库断言检测（claim verification）----
-# 设计原则：零误报优先。只校验三类确定性断言（提交 SHA 存在、"已提交"、"工作区
-# 干净"），模式不匹配一律不发事件；校验时点是**回答产生时**——收尾的自动收口
-# 发生在其后，不能让系统的兜底提交反过来"证实"模型在说这话时的假话。
-_COMMIT_SHA_RE = re.compile(r"(?<![0-9a-fA-F])([0-9a-fA-F]{7,40})(?![0-9a-fA-F])")
-_COMMIT_CONTEXT_RE = re.compile(r"(commit|提交)", re.IGNORECASE)
-_COMMITTED_CLAIM_RE = re.compile(
-    r"(已提交|已经提交|has\s+been\s+committed|committed\s+(?:the|this|it|to))",
-    re.IGNORECASE,
-)
-_CLEAN_CLAIM_RE = re.compile(
-    r"(工作区(?:现已|已|现在)?干净|clean(?:\s+working)?\s+tree|working\s+(?:directory|tree)\s+is\s+clean)",
-    re.IGNORECASE,
-)
 
 
 # 兼容别名：API 仍在使用旧名（严格串行门禁语义）
@@ -1121,9 +1104,6 @@ class AgentRuntimeManager:
         # 归成 SYSTEM，读起来像我们的 bug，而它其实是超时或用户取消。
         self._forced_closes: dict[str, str] = {}
         self._running_run_id: str | None = None
-        # 已做过仓库断言校验的 run：同一 run 续跑段可能重放同一条最终答案，
-        # 警告事件只发一次。
-        self._claim_verified_runs: set[str] = set()
         self._watchdog = _StreamWatchdog(self._on_stream_watchdog_expire)
         self._watchdog.start()
         self._git: GitExecutor | None = None
@@ -2090,9 +2070,6 @@ class AgentRuntimeManager:
                         last_model_call_id = signal.model_call_id
                     if signal.type == AgentEventType.FINAL_RESPONSE and signal.message.strip() and final_answer is None:
                         final_answer = signal.message
-                        # 脚本/协议路径的最终答案以 FINAL_RESPONSE 信号抵达：
-                        # 在这条事件落库**之前**校验，警告行才会出现在回答上方。
-                        self._emit_claim_verification(run_id, final_answer)
                     if signal.type == AgentEventType.TASK_CONFIRMATION_REQUIRED:
                         self._persist_question(run_id, thread_id, signal)
                         question_key: tuple[str, AgentEventType] = (segment, signal.type)
@@ -2192,9 +2169,6 @@ class AgentRuntimeManager:
         assistant_text = "".join(assistant_text_parts).strip()
         if final_answer is None and assistant_text and not question_pending:
             final_answer = assistant_text
-            # 仓库断言校验必须在 final_response 之前发射，时间线上警告行才会
-            # 出现在回答正文上方；此时点早于收尾自动收口，是断言为真的时点。
-            self._emit_claim_verification(run_id, final_answer)
             self.store.append_event(
                 run_id,
                 AgentEventType.FINAL_RESPONSE,
@@ -2787,75 +2761,6 @@ class AgentRuntimeManager:
                     "diff 审批（不变式 1 收口）"
                 ),
                 data={"auto_versioned_paths": versionable},
-            )
-        except TerminalRunError:
-            pass
-
-    def _repository_claim_mismatches(self, run: AgentRun, answer: str) -> list[str]:
-        """Cross-check repository-state claims in the answer against actual git.
-
-        只校验三类确定性断言，零误报优先：行内出现提交上下文的 hex 串必须在
-        git 历史中存在；"已提交"断言要求本 run（截至回答时）有新 commit；
-        "工作区干净"断言要求 porcelain 为空。任何 git 读失败都按"无法证伪"
-        处理（返回空），不做 LLM 参与的语义判断。
-        """
-        mismatches: list[str] = []
-        git = self._git_executor()
-        if git is None:
-            return mismatches
-        try:
-            history: list[str] | None = None
-            for line in answer.splitlines():
-                if _COMMIT_CONTEXT_RE.search(line):
-                    for token in _COMMIT_SHA_RE.findall(line):
-                        if history is None:
-                            history = git.commits_since(None)
-                        lowered = token.lower()
-                        if any(sha.startswith(lowered) for sha in history):
-                            continue
-                        mismatches.append(
-                            f"声称的提交 {token} 不在 git 历史中"
-                        )
-                if _COMMITTED_CLAIM_RE.search(line):
-                    new_commits = [
-                        sha
-                        for sha in git.commits_since(run.snapshot_commit)
-                        if not self._is_system_maintenance_commit(git, sha)
-                    ]
-                    if not new_commits:
-                        mismatches.append(
-                            "回答声称已提交，但本次 run 截至回答时没有任何新 commit"
-                        )
-                if _CLEAN_CLAIM_RE.search(line):
-                    if self._workspace_dirty_paths(git):
-                        mismatches.append(
-                            "回答声称工作区干净，但工作区存在未提交改动"
-                        )
-        except GitCommandError:
-            return []
-        return mismatches
-
-    def _emit_claim_verification(self, run_id: str, answer: str) -> None:
-        """Emit a claim_verification event when the answer misstates git state.
-
-        在 final_response 之前发射，时间线上警告行出现在回答正文上方；运行时
-        随后的自动收口不回溯"证实"模型说这话时的假话。
-        """
-        run = self.store.get_run(run_id)
-        if run is None:
-            return
-        if run_id in self._claim_verified_runs:
-            return
-        self._claim_verified_runs.add(run_id)
-        mismatches = self._repository_claim_mismatches(run, answer)
-        if not mismatches:
-            return
-        try:
-            self.store.append_event(
-                run_id,
-                AgentEventType.CLAIM_VERIFICATION,
-                message=f"回答包含未经证实的仓库断言：{'；'.join(mismatches)}",
-                data={"mismatches": mismatches},
             )
         except TerminalRunError:
             pass

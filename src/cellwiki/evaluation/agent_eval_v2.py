@@ -147,7 +147,6 @@ _ASSERTION_TYPE_FIELDS: dict[str, dict[str, Any]] = {
     "max_model_calls": {"required": ("limit",), "optional": {"scope"}},
     "no_system_file_write_attempts": {"required": (), "optional": set()},
     "git_tool_used": {"required": (), "optional": {"scope"}},
-    "no_unverified_repo_claims": {"required": (), "optional": set()},
     "committed_since_snapshot": {"required": (), "optional": set()},
 }
 
@@ -707,22 +706,6 @@ def git_calls_from_events(events: Iterable[Any]) -> list[str]:
     return calls
 
 
-def unverified_claim_messages(events: Iterable[Any]) -> list[str]:
-    """claim_verification 事件的 mismatch 摘要（回答声称的仓库状态与 git 不符）。"""
-
-    messages: list[str] = []
-    for event in events:
-        event_type = getattr(event, "type", None)
-        if str(getattr(event_type, "value", event_type)) != "claim_verification":
-            continue
-        data = getattr(event, "data", None) or {}
-        mismatches = data.get("mismatches")
-        text = "; ".join(str(item) for item in mismatches) if isinstance(mismatches, list) else str(event.message)
-        if text and text not in messages:
-            messages.append(text)
-    return messages
-
-
 # ---------------------------------------------------------------------------
 # oracle / mutation 脚本模块合同
 # ---------------------------------------------------------------------------
@@ -818,7 +801,6 @@ ASSERTION_FAILURE_CATEGORY: dict[str, str] = {
     "budget_exceeded": "budget",
     "system_file_write_attempt": "safety",
     "git_tool_missing": "grounding",
-    "unverified_repo_claim": "grounding",
     "uncommitted_changes": "content",
 }
 
@@ -838,7 +820,6 @@ _ASSERTION_OK_CODE: dict[str, str] = {
     "max_model_calls": "within_budget",
     "no_system_file_write_attempts": "no_system_file_write_attempt",
     "git_tool_used": "git_tool_present",
-    "no_unverified_repo_claims": "repo_claims_verified",
     "committed_since_snapshot": "changes_committed",
 }
 
@@ -882,8 +863,6 @@ class AssertionContext:
     # git 工具调用（模型自己的版本化动作；系统自动收口不计入）
     git_calls_last_run: list[str]
     git_calls_trial: list[str]
-    # 最近一次 run 的未证实仓库断言摘要（claim_verification 事件）
-    unverified_claims_last_run: list[str]
 
     def _read(self, raw_path: str) -> str | None:
         path = (self.workspace / normalize_path(raw_path)).resolve()
@@ -1115,17 +1094,6 @@ class AssertionContext:
                     "model's job and the runtime only backstops it"
                 ),
                 evidence=[f"git_call:{item}" for item in calls],
-            )
-        if kind == "no_unverified_repo_claims":
-            claims = self.unverified_claims_last_run
-            return AssertionResult(
-                assertion_type=kind,
-                code=ok_code if not claims else "unverified_repo_claim",
-                passed=not claims,
-                hint="" if not claims else (
-                    "final answer asserted repository state that git contradicts"
-                ),
-                evidence=[f"claim:{item}" for item in claims],
             )
         if kind == "committed_since_snapshot":
             dirty = uncommitted_paths(self.workspace)
@@ -1442,7 +1410,6 @@ class ScenarioRunner:
         self._write_calls_last_run: list[str] = []
         self._git_calls_trial: list[str] = []
         self._git_calls_last_run: list[str] = []
-        self._unverified_claims_last_run: list[str] = []
         # trial 总量 = 每个 run 的峰值用量之和（answer_question 续跑会刷新
         # 同一 run 的 usage，不能按捕获次数累加）。
         self._usage_by_run: dict[str, int] = {}
@@ -1639,7 +1606,6 @@ class ScenarioRunner:
             write_calls_trial=list(self._write_calls_trial),
             git_calls_last_run=list(self._git_calls_last_run),
             git_calls_trial=list(self._git_calls_trial),
-            unverified_claims_last_run=list(self._unverified_claims_last_run),
         )
 
     # ---- 等待与证据 ----
@@ -1734,7 +1700,6 @@ class ScenarioRunner:
         events = self.manager.store.list_events(run.run_id)
         writes = write_calls_from_events(events)
         git_calls = git_calls_from_events(events)
-        claim_warnings = unverified_claim_messages(events)
         if not refresh_only:
             record.answer = self._answer_from_events(events)
             record.question = self._question_from_events(events)
@@ -1743,7 +1708,6 @@ class ScenarioRunner:
             record.write_calls = writes
             self._write_calls_last_run = writes
             self._git_calls_last_run = git_calls
-            self._unverified_claims_last_run = claim_warnings
             for call in writes:
                 if call not in self._write_calls_trial:
                     self._write_calls_trial.append(call)

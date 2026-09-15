@@ -1,10 +1,8 @@
 # =============================================================================
 # Oracle：versioning_commit_discipline fixture 的确定性参考解
 # =============================================================================
-# 覆盖两个场景的"完美 Agent"行为：
-# - write_task_versions_with_git：写文件并自己用 git add + commit 版本化；
-#   回答如实声称"已提交"（有真实 commit 背书）。
-# - commit_claim_requires_tool：把工作区改动提交，回答如实声称"已提交"。
+# 覆盖 write_task_versions_with_git 场景的"完美 Agent"行为：写文件并自己用
+# git add + commit 版本化；回答如实声称"已提交"（有真实 commit 背书）。
 # 版本化是模型职责、运行时只兜底（2026-09-13 收口提案），所以"模型自己
 # 调 git 工具"是必须钉住的纪律；证据以 tool_calls 里的 git 工具卡呈现。
 # =============================================================================
@@ -49,29 +47,10 @@ def _write_and_commit(ctx: ScriptContext) -> ScriptResult:
     )
 
 
-def _commit_existing(ctx: ScriptContext) -> ScriptResult:
-    ledger = ctx.workspace / "contradiction.md"
-    current = ledger.read_text(encoding="utf-8")
-    marker = "\n\n## C-990 · 评审冒烟测试\n\n- 这是 2026-09-13 诊断场景的提交对象，不代表真实矛盾。\n"
-    if "C-990" not in current:
-        ledger.write_text(current + marker, encoding="utf-8")
-    _commit(ctx.workspace, "contradiction.md")
-    return ScriptResult(
-        answer="已把 contradiction.md 的 C-990 评审冒烟条目用 git 提交，工作区现已干净。",
-        tool_calls=[
-            {"tool_name": "edit_file", "args_display": {"path": "contradiction.md"}},
-            {"tool_name": "git", "args_display": {"args": "add contradiction.md"}},
-            {"tool_name": "git", "args_display": {"args": "commit -m chore(agent): add C-990 smoke entry"}},
-        ],
-    )
-
-
 def respond(ctx: ScriptContext) -> ScriptResult:
     if ctx.resume_answers is not None:
         raise RuntimeError("oracle does not ask questions; unexpected resume")
     message = ctx.message
     if "evidence_note" in message:
         return _write_and_commit(ctx)
-    if "C-990" in message or "当前改动" in message:
-        return _commit_existing(ctx)
     raise RuntimeError(f"oracle has no reference action for message: {message[:80]}")

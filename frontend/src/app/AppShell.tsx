@@ -84,7 +84,6 @@ export const agentEventTypes: AgentEventType[] = [
   "review_required",
   "changeset_ready",
   "verification",
-  "claim_verification",
   "usage_updated",
   "error",
 ];

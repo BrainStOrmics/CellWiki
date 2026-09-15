@@ -1796,7 +1796,7 @@ def test_real_graph_streams_multiple_message_deltas(tmp_path: Path):
         runtime.close()
 
 
-# ---- 不变式 1 收口（run 收尾强制版本化）与仓库断言校验 ----
+# ---- 不变式 1 收口（run 收尾强制版本化） ----
 
 
 def _wait_for_event(manager: AgentRuntimeManager, run_id: str, event_type: AgentEventType):
@@ -1933,94 +1933,6 @@ def test_auto_version_failure_marks_run_unfinished(tmp_path: Path):
         assert (repo / "locked.md").exists(), "改动保留在工作区等待续跑"
         diffs = manager.store.list_pending_diffs(run_id=started.run_id)
         assert not diffs, "收口失败时不得发布审批单元"
-    finally:
-        manager.close()
-
-
-def test_hallucinated_commit_claims_emit_claim_verification(tmp_path: Path):
-    """回归（P0-2）：零工具调用却声称"已提交 <sha>"时发 claim_verification 事件。"""
-    repo = _prepared_workspace(tmp_path)
-    answer = "已提交：`c5b3890`，仅含 contradiction.md 的 +11 行，工作区现已干净。"
-
-    class TalkOnlyAdapter:
-        def execute(self, *, thread_id, message, context) -> Any:
-            yield RuntimeSignal(type=AgentEventType.MESSAGE_DELTA, message=answer, data={})
-
-    manager = AgentRuntimeManager(repo, adapter=TalkOnlyAdapter())
-    try:
-        started = manager.start(
-            thread_id="t_hallucinate",
-            message="提交一下",
-            context=_context("t_hallucinate"),
-        )
-        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
-        warnings = _wait_for_event(manager, started.run_id, AgentEventType.CLAIM_VERIFICATION)
-        assert warnings, "幻觉提交断言必须触发警告事件"
-        event = warnings[0]
-        joined = " ".join(event.data.get("mismatches", []))
-        assert "c5b3890" in joined
-        assert "没有任何新 commit" in joined
-        # 工作区确实干净，该断言为真，不应出现在 mismatch 里
-        assert "工作区干净" not in joined
-        # 警告必须先于 final_response，时间线上出现在回答上方
-        events = manager.store.list_events(started.run_id)
-        by_type = {event.type: event.sequence for event in events}
-        assert by_type[AgentEventType.CLAIM_VERIFICATION] < by_type[AgentEventType.FINAL_RESPONSE]
-    finally:
-        manager.close()
-
-
-def test_truthful_commit_claim_does_not_warn(tmp_path: Path):
-    """真实 commit + 如实声称：不发 claim_verification（零误报）。"""
-    repo = _prepared_workspace(tmp_path)
-
-    class HonestWriter:
-        def execute(self, *, thread_id, message, context) -> Any:
-            (repo / "honest.md").write_text("honest note", encoding="utf-8")
-            git = GitExecutor(repo)
-            git.run("add", "honest.md")
-            git.run("commit", "-m", "honest change")
-            yield RuntimeSignal(
-                type=AgentEventType.MESSAGE_DELTA, message="已提交 honest.md", data={}
-            )
-
-    manager = AgentRuntimeManager(repo, adapter=HonestWriter())
-    try:
-        started = manager.start(
-            thread_id="t_honest",
-            message="写并提交",
-            context=_context("t_honest"),
-        )
-        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
-        time.sleep(0.2)
-        warnings = _wait_for_event(manager, started.run_id, AgentEventType.CLAIM_VERIFICATION)
-        assert not warnings
-    finally:
-        manager.close()
-
-
-def test_dirty_tree_clean_claim_warns_even_before_auto_version(tmp_path: Path):
-    """脏工作区声称"干净"：警告在回答时点发出（自动收口发生在其后）。"""
-    repo = _prepared_workspace(tmp_path)
-
-    class DirtyTalker:
-        def execute(self, *, thread_id, message, context) -> Any:
-            (repo / "dirty.md").write_text("dirty", encoding="utf-8")
-            yield RuntimeSignal(
-                type=AgentEventType.MESSAGE_DELTA, message="已完成，工作区现已干净。", data={}
-            )
-
-    manager = AgentRuntimeManager(repo, adapter=DirtyTalker())
-    try:
-        started = manager.start(
-            thread_id="t_dirtyclaim",
-            message="写完说干净",
-            context=_context("t_dirtyclaim"),
-        )
-        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
-        warnings = _wait_for_event(manager, started.run_id, AgentEventType.CLAIM_VERIFICATION)
-        assert warnings, "脏工作区声称干净必须触发警告"
-        assert any("工作区" in m for m in warnings[0].data.get("mismatches", []))
     finally:
         manager.close()
 

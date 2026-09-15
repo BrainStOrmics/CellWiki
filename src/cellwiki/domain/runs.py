@@ -70,7 +70,6 @@ class AgentEventType(str, Enum):
     REVIEW_REQUIRED = "review_required"     # 需要人工审查
     CHANGESET_READY = "changeset_ready"     # ChangeSet 已就绪
     VERIFICATION = "verification"           # 验证结果
-    CLAIM_VERIFICATION = "claim_verification"  # 回答中的仓库断言与 git 实况不符
     USAGE_UPDATED = "usage_updated"         # 每 run 用量（本段 + 累计）；只在诊断面板展示，不进聊天气泡
     ERROR = "error"                         # 错误
 

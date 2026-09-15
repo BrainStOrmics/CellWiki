@@ -68,11 +68,9 @@ def test_diagnostic_suite_includes_gate_scenarios():
     gate_ids = [scenario.scenario_id for scenario in gate.scenarios]
     diagnostic_ids = [scenario.scenario_id for scenario in diagnostic.scenarios]
     # includes 合并后 diagnostic 覆盖全部 gate 场景；自 2026-09-13 起它还携带
-    # 自己的版本化纪律诊断场景（收口/幻觉提交），所以是严格的超集。
+    # 自己的版本化纪律诊断场景（收口），所以是严格的超集。
     assert set(gate_ids) <= set(diagnostic_ids)
-    assert {"write_task_versions_with_git", "commit_claim_requires_tool"} <= set(
-        diagnostic_ids
-    )
+    assert "write_task_versions_with_git" in set(diagnostic_ids)
 
 
 def test_suite_fixture_hash_is_stable_and_input_sensitive(tmp_path: Path):
@@ -935,7 +933,6 @@ def _assertion_context(tmp_path: Path, **overrides):
         write_calls_trial=[],
         git_calls_last_run=[],
         git_calls_trial=[],
-        unverified_claims_last_run=[],
     )
     defaults.update(overrides)
     return AssertionContext(**defaults)
@@ -953,21 +950,6 @@ def test_git_tool_used_assertion_fails_without_git_calls(tmp_path: Path):
     passed = context._evaluate_one({"type": "git_tool_used"})
     assert passed.passed
     assert passed.code == "git_tool_present"
-
-
-def test_no_unverified_repo_claims_reads_claim_events(tmp_path: Path):
-    context = _assertion_context(tmp_path, unverified_claims_last_run=[])
-    ok = context._evaluate_one({"type": "no_unverified_repo_claims"})
-    assert ok.passed
-
-    context = _assertion_context(
-        tmp_path,
-        unverified_claims_last_run=["声称的提交 c5b3890 不在 git 历史中"],
-    )
-    failed = context._evaluate_one({"type": "no_unverified_repo_claims"})
-    assert not failed.passed
-    assert failed.code == "unverified_repo_claim"
-    assert any("c5b3890" in item for item in failed.evidence)
 
 
 def test_committed_since_snapshot_detects_dirty_worktree(tmp_path: Path):
@@ -1004,7 +986,6 @@ def test_diagnostic_versioning_scenarios_are_wired():
     suite = load_suite(DIAGNOSTIC_SUITE)
     by_id = {scenario.scenario_id: scenario for scenario in suite.scenarios}
     assert "write_task_versions_with_git" in by_id
-    assert "commit_claim_requires_tool" in by_id
     write_scenario = by_id["write_task_versions_with_git"]
     assertion_types = {
         assertion["type"]
@@ -1012,5 +993,4 @@ def test_diagnostic_versioning_scenarios_are_wired():
         if step["action"] == "assert"
         for assertion in step["assertions"]
     }
-    assert {"git_tool_used", "committed_since_snapshot",
-            "no_unverified_repo_claims"} <= assertion_types
+    assert {"git_tool_used", "committed_since_snapshot"} <= assertion_types
