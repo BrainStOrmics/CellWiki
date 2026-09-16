@@ -2073,3 +2073,38 @@ def test_previous_gate_issues_are_exposed_to_the_next_run(tmp_path: Path):
         assert any("cd8_t_cell" in line for line in issues)
     finally:
         manager.close()
+
+
+def test_schema_gate_blocks_pages_with_directive_comments(tmp_path: Path):
+    repo = _prepare_schema_workspace(tmp_path)
+
+    class DirectiveCommentAdapter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            target = repo / "wiki" / "cell_types" / "cd8_t_cell.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            page = valid_cell_type_page(
+                standard_name="cd8_t_cell", display_name="CD8 T Cell"
+            ).replace(
+                "## Markers\n",
+                "<!-- cellwiki\nrequired: true\n-->\n\n## Markers\n",
+                1,
+            )
+            target.write_text(page, encoding="utf-8")
+            git = GitExecutor(repo)
+            git.run("add", "wiki/cell_types/cd8_t_cell.md")
+            git.run("commit", "-m", "add page with directive comment")
+            yield RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="done", data={})
+
+    manager = AgentRuntimeManager(repo, adapter=DirectiveCommentAdapter())
+    try:
+        started = manager.start(
+            thread_id="t_gate_directive",
+            message="ingest paper_one",
+            context=_context("t_gate_directive"),
+        )
+        run = _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+        assert (run.error_message or "").startswith("schema_contract_failed:")
+        assert "directive comment" in (run.error_message or "")
+        assert not manager.store.list_pending_diffs(run_id=started.run_id)
+    finally:
+        manager.close()

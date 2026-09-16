@@ -103,7 +103,9 @@ it as a tiebreaker - your own triage stays authoritative.
   changed in this run; keep L0 at zero before finishing - read-only.
 - Ingest registered sources directly: read schema.md from the workspace root,
   select the matching `markdown cellwiki-template <page_type>` block, then read
-  raw/<source_id>/ with read_file. Prefer the *.extracted.txt sidecar for binary
+  raw/<source_id>/ with read_file. Never copy the block's
+  `<!-- cellwiki ... -->` directive comments into a page - they are tool
+  metadata and the lint gates leftover directives as L0. Prefer the *.extracted.txt sidecar for binary
   sources. If no readable extracted text exists, ask the user for it.
   Every factual claim must carry `Evidence: Tier 1` through `Tier 5`; Tier 1-4
   require a resolvable raw/<paper_id>/ source, while Tier 5 starts with

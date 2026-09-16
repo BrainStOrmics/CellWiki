@@ -3,6 +3,9 @@
 > 本文件只定义页面提取契约。Agent 在 ingest 前读取本文件；lint 解析其中的
 > `yaml cellwiki-schema` 块和 `markdown cellwiki-template` 模板块。
 > 块外的普通说明不参与机械校验。该文件是用户拥有的契约，Agent 不得静默修改。
+>
+> 模板中的 `<!-- cellwiki ... -->` 指令块只供 lint 与工具读取，不属于页面内容；
+> 用模板生成页面时必须删除这些注释，页面里残留指令注释会被 lint 报 L0。
 
 ```yaml cellwiki-schema
 schema_version: 2

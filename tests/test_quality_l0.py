@@ -420,3 +420,21 @@ def test_term_matching_is_word_bounded():
     assert quality_module._term_pattern("tex").search("this context") is None
     assert quality_module._term_pattern("tan").search("resistance") is None
     assert quality_module._term_pattern("tex").search("tex cells") is not None
+
+
+def test_tool_directive_comment_is_l0(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_related_cell(tmp_path)
+    page = tmp_path / "wiki/cell_types/cd8_t_cell.md"
+    text = _template_shaped_cell_page().replace(
+        "## Markers\n",
+        "<!-- cellwiki\nrequired: true\nblock: table\n-->\n\n## Markers\n",
+        1,
+    )
+    page.write_text(text, encoding="utf-8")
+    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
+    assert any(
+        issue["type"] == "tool_directive_residue" and issue["level"] == "L0"
+        for issue in report["issues"]
+    )

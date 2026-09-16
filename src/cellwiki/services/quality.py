@@ -53,7 +53,18 @@ _HEADING_H1 = re.compile(r"^#\s+(.+?)\s*$")
 _HEADING_H2 = re.compile(r"^##\s+(.+?)\s*$")
 _HEADING_H3 = re.compile(r"^###\s+(.+?)\s*$")
 _BULLET = re.compile(r"^(?:[-*]|\d+\.)\s+(.+?)\s*$")
+_DIRECTIVE_COMMENT = re.compile(r"<!--(.*?)-->", re.DOTALL)
 _MD = MarkdownIt("gfm-like", {"linkify": False})
+
+
+def _directive_comment_lines(body: str) -> list[int]:
+    """Line numbers of ``<!-- cellwiki ... -->`` tool directives inside a page."""
+
+    lines: list[int] = []
+    for match in _DIRECTIVE_COMMENT.finditer(body):
+        if match.group(1).lstrip().lower().startswith("cellwiki"):
+            lines.append(body.count("\n", 0, match.start()) + 1)
+    return lines
 
 
 def _strip_list_marker(text: str) -> str:
@@ -319,6 +330,22 @@ def _inspect_page(
                 severity="error",
                 target_id=page_id,
                 locator=relative,
+            )
+        )
+    directive_lines = _directive_comment_lines(body)
+    if directive_lines:
+        issues.append(
+            _issue(
+                path,
+                "tool_directive_residue",
+                f"Page contains {len(directive_lines)} cellwiki directive comment(s); "
+                "templates are tool metadata, not page content.",
+                root=root,
+                level="L0",
+                category="template",
+                severity="error",
+                target_id=page_id,
+                locator=f"{relative}:{directive_lines[0]}",
             )
         )
     for field_name, rule in contract.frontmatter.required.items():
