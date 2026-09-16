@@ -15,6 +15,7 @@ from cellwiki.agent.app import build_wiki_agent
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.runs import AgentRun, AgentRunStatus
 from cellwiki.services.agent_runtime import AgentRuntimeManager
+from cellwiki.services.model_transcript import render_model_messages
 from cellwiki.services.prompt_cache import PromptCachePolicy, resolve_prompt_cache_policy
 from cellwiki.services.runtime_store import RuntimeStore
 
@@ -302,3 +303,87 @@ def test_transcript_compaction_boundary_hides_earlier_messages(tmp_path: Path):
     assert [record["kind"] for record in records] == ["compaction", "user"]
     assert [record["content_text"] for record in records] == ["summary", "new"]
     assert store.current_transcript_epoch("thread_boundary") == 1
+
+
+def test_render_reorders_late_tool_result_after_its_assistant_call():
+    records = [
+        {
+            "message_id": "assistant-1",
+            "kind": "assistant",
+            "role": "assistant",
+            "content": {
+                "text": "",
+                "tool_calls": [
+                    {
+                        "name": "ask_user_question",
+                        "args": {"question": "继续吗？"},
+                        "id": "call_1",
+                    }
+                ],
+            },
+            "content_text": "",
+            "tool_call_id": None,
+            "name": None,
+        },
+        {
+            "message_id": "user-1",
+            "kind": "user",
+            "role": "user",
+            "content": {"text": "你准备怎么改？"},
+            "content_text": "你准备怎么改？",
+            "tool_call_id": None,
+            "name": None,
+        },
+        {
+            "message_id": "tool-1",
+            "kind": "tool_result",
+            "role": "tool",
+            "content": {
+                "text": "Tool call ask_user_question was cancelled.",
+                "tool_call_id": "call_1",
+                "name": "ask_user_question",
+            },
+            "content_text": "Tool call ask_user_question was cancelled.",
+            "tool_call_id": "call_1",
+            "name": "ask_user_question",
+        },
+    ]
+
+    rendered = render_model_messages(records)
+
+    assert [message["role"] for message in rendered] == [
+        "assistant",
+        "tool",
+        "user",
+    ]
+    assert rendered[0]["tool_calls"][0]["id"] == "call_1"
+    assert rendered[1]["tool_call_id"] == "call_1"
+
+
+def test_render_synthesizes_a_missing_tool_result():
+    rendered = render_model_messages(
+        [
+            {
+                "message_id": "assistant-1",
+                "kind": "assistant",
+                "role": "assistant",
+                "content": {
+                    "text": "",
+                    "tool_calls": [
+                        {
+                            "name": "ask_user_question",
+                            "args": {"question": "继续吗？"},
+                            "id": "call_orphan",
+                        }
+                    ],
+                },
+                "content_text": "",
+                "tool_call_id": None,
+                "name": None,
+            }
+        ]
+    )
+
+    assert [message["role"] for message in rendered] == ["assistant", "tool"]
+    assert rendered[1]["tool_call_id"] == "call_orphan"
+    assert "was cancelled" in rendered[1]["content"]
