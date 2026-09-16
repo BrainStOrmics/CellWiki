@@ -314,6 +314,12 @@ def _rel_or_name(root: Path | None, target: Path) -> str:
     return target.name
 
 
+def _normalize_newlines(text: str) -> str:
+    """Collapse CRLF and lone CR line endings to LF so tool I/O stays stable."""
+
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def _read_workspace_text(
     root: Path | None,
     target: Path,
@@ -335,7 +341,7 @@ def _read_workspace_text(
         }
     if b"\x00" in data[:4096]:
         return {"error": "file is not valid UTF-8 text", "path": _rel_or_name(root, target)}
-    text = data.decode("utf-8", errors="replace")
+    text = _normalize_newlines(data.decode("utf-8", errors="replace"))
     total = len(text)
     start = min(total, max(0, int(offset or 0)))
     end = total
@@ -413,9 +419,10 @@ def _read_text_safely(path: Path, max_bytes: int) -> str:
     if len(data) > max_bytes:
         raise ValueError(f"file exceeds the {max_bytes}-byte read limit")
     try:
-        return data.decode("utf-8", errors="replace")
+        text = data.decode("utf-8", errors="replace")
     except UnicodeDecodeError:
         raise ValueError("file is not valid UTF-8 text") from None
+    return _normalize_newlines(text)
 
 
 def build_workspace_tools(project_root: Path) -> list[BaseTool]:
@@ -490,7 +497,7 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
         updated = content.replace(old_string, new_string, 1)
         if len(updated.encode("utf-8")) > MAX_WRITE_BYTES:
             return _tool_json({"error": f"result exceeds the {MAX_WRITE_BYTES}-byte limit"})
-        target.write_text(updated, encoding="utf-8")
+        target.write_text(updated, encoding="utf-8", newline="")
         return _tool_json({"ok": True, "path": target.relative_to(root).as_posix(), "bytes": len(updated.encode("utf-8"))})
 
     @tool("ls")

@@ -16,6 +16,7 @@ from typing import Any
 
 from langchain_core.tools import BaseTool, tool
 from cellwiki.services.quality import inspect_projection
+from cellwiki.services.run_scope import changed_paths_for_scope
 
 
 def _workspace_markdown_paths(root: Path) -> list[Path]:
@@ -118,9 +119,13 @@ def build_lint_tools(project_root: Path) -> list[BaseTool]:
 
     @tool("lint_knowledge_base")
     def lint_knowledge_base() -> str:
-        """Run the deterministic knowledge-base lint over the workspace (report only, never writes)."""
+        """Run the deterministic knowledge-base lint over the workspace (report only, never writes).
+
+        Inside a run the report covers the pages this run changed, matching the
+        publish gate; outside a run only the schema contract is validated.
+        """
         try:
-            report = inspect_projection(root)
+            report = inspect_projection(root, changed_paths=changed_paths_for_scope(root))
             return json.dumps(report, ensure_ascii=False, default=str)
         except Exception as error:  # lint must never crash an agent run
             return json.dumps(

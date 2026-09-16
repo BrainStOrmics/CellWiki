@@ -248,3 +248,175 @@ def test_invalid_schema_change_is_l0(tmp_path: Path):
     report = inspect_projection(tmp_path, changed_paths=["schema.md"])
     assert report["status"] == "failed"
     assert any(issue["type"] == "invalid_schema" for issue in report["issues"])
+
+
+def _write_related_cell(root: Path) -> None:
+    path = root / "wiki/cell_types/alpha_cell.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "---\n"
+        "standard_name: alpha_cell\n"
+        "display_name: Alpha Cell\n"
+        "---\n\n"
+        "# Alpha Cell\n",
+        encoding="utf-8",
+    )
+
+
+def _template_shaped_cell_page(
+    *,
+    function_evidence: str | None = "  - Evidence: Tier 2",
+    function_source: str | None = "  - Source: [source_cd8](#references)",
+    related_item: str = "- [[alpha_cell]]",
+    table_gaps: bool = False,
+) -> str:
+    function_lines = [
+        line for line in (function_evidence, function_source) if line is not None
+    ]
+    if table_gaps:
+        markers = (
+            "| Marker | Type | Evidence | Source |\n"
+            "\n"
+            "| --- | --- | --- | --- |\n"
+            "\n"
+            "| [[CD8A]] | positive | Tier 2 | [source_cd8](#references) |\n"
+        )
+    else:
+        markers = (
+            "| Marker | Type | Evidence | Source |\n"
+            "| --- | --- | --- | --- |\n"
+            "| [[CD8A]] | positive | Tier 2 | [source_cd8](#references) |\n"
+        )
+    return (
+        "---\n"
+        "standard_name: cd8_t_cell\n"
+        "display_name: CD8 T Cell\n"
+        "aliases: []\n"
+        "cl_id: null\n"
+        "parent_type: null\n"
+        "references:\n"
+        "  - paper_id: source_cd8\n"
+        "evidence_tier: 2\n"
+        "source_count: 1\n"
+        "positive_markers: [CD8A]\n"
+        "negative_markers: []\n"
+        "tissues: [blood]\n"
+        "species: [Homo sapiens]\n"
+        "conflicts: []\n"
+        "---\n\n"
+        "# CD8 T Cell\n\n"
+        "> Cytotoxic T cells.\n\n"
+        "## Markers\n\n"
+        f"{markers}\n"
+        "## Functional Characteristics\n\n"
+        "- **Kills infected cells**\n"
+        + "".join(f"{line}\n" for line in function_lines)
+        + "\n"
+        "## Subpopulations\n\n"
+        "- [[alpha_cell]]\n\n"
+        "## Related Cell Types\n\n"
+        f"{related_item}\n\n"
+        "## References\n\n"
+        "- Source paper (2024) [10.1/test](https://doi.org/10.1/test)\n"
+    )
+
+
+def test_template_shaped_page_passes(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_related_cell(tmp_path)
+    page = tmp_path / "wiki/cell_types/cd8_t_cell.md"
+    page.write_text(_template_shaped_cell_page(), encoding="utf-8")
+    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
+    assert report["status"] == "passed", report["issues"]
+
+
+def test_function_item_without_evidence_is_l0(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_related_cell(tmp_path)
+    page = tmp_path / "wiki/cell_types/cd8_t_cell.md"
+    page.write_text(_template_shaped_cell_page(function_evidence=None), encoding="utf-8")
+    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
+    assert any(issue["type"] == "missing_item_evidence" for issue in report["issues"])
+
+
+def test_related_cell_item_without_wikilink_is_l0(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_related_cell(tmp_path)
+    page = tmp_path / "wiki/cell_types/cd8_t_cell.md"
+    page.write_text(
+        _template_shaped_cell_page(related_item="- alpha cell"), encoding="utf-8"
+    )
+    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
+    assert any(issue["type"] == "missing_wikilink" for issue in report["issues"])
+
+
+def test_markers_table_tolerates_blank_lines(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_related_cell(tmp_path)
+    page = tmp_path / "wiki/cell_types/cd8_t_cell.md"
+    page.write_text(_template_shaped_cell_page(table_gaps=True), encoding="utf-8")
+    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
+    assert report["status"] == "passed", report["issues"]
+
+
+def test_duplicate_frontmatter_key_is_l0(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_related_cell(tmp_path)
+    page = tmp_path / "wiki/cell_types/cd8_t_cell.md"
+    text = _template_shaped_cell_page().replace(
+        "source_count: 1\n", "source_count: 1\nsource_count: 1\n"
+    )
+    page.write_text(text, encoding="utf-8")
+    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
+    assert any(
+        issue["type"] == "invalid_frontmatter"
+        and "duplicate mapping keys" in issue["detail"]
+        for issue in report["issues"]
+    )
+
+
+def test_references_item_must_be_paper_id_mapping(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_related_cell(tmp_path)
+    page = tmp_path / "wiki/cell_types/cd8_t_cell.md"
+    text = _template_shaped_cell_page().replace(
+        "references:\n  - paper_id: source_cd8\n", "references:\n  - source_cd8\n"
+    )
+    page.write_text(text, encoding="utf-8")
+    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
+    assert any(
+        issue["type"] == "invalid_field_value" and "list of mappings" in issue["detail"]
+        for issue in report["issues"]
+    )
+
+
+def test_l1_skips_summary_but_flags_prose_mentions(tmp_path: Path):
+    _write_schema(tmp_path)
+    _write_support_pages(tmp_path)
+    _write_related_cell(tmp_path)
+    page = tmp_path / "wiki/cell_types/cd8_t_cell.md"
+    text = _valid_cell_page(extra_paragraph="Alpha cell migration is tissue dependent.\n\n")
+    text = text.replace("> Cytotoxic T cells.", "> Alpha cell, a cytotoxic lineage.")
+    page.write_text(text, encoding="utf-8")
+    report = inspect_projection(tmp_path, changed_paths=["wiki/cell_types/cd8_t_cell.md"])
+    warnings = [
+        issue
+        for issue in report["issues"]
+        if issue["type"] == "missing_wikilink" and issue["severity"] == "warning"
+    ]
+    assert any(issue["locator"].endswith(":5") for issue in warnings)
+    assert not any(issue["locator"].endswith(":3") for issue in warnings)
+
+
+def test_term_matching_is_word_bounded():
+    from cellwiki.services import quality as quality_module
+
+    assert quality_module._term_pattern("tex").search("this context") is None
+    assert quality_module._term_pattern("tan").search("resistance") is None
+    assert quality_module._term_pattern("tex").search("tex cells") is not None

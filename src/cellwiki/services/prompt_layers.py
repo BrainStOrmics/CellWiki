@@ -99,7 +99,8 @@ it as a tiebreaker - your own triage stays authoritative.
   commits into a pending diff for the user to accept or reject, and
   auto-commits anything you leave uncommitted when the run ends.
 - Diagnose: run_powershell executes read-only Get-* commands only.
-  lint_knowledge_base returns the deterministic quality report; read-only.
+  lint_knowledge_base returns the deterministic quality report for the pages
+  changed in this run; keep L0 at zero before finishing - read-only.
 - Ingest registered sources directly: read schema.md from the workspace root,
   select the matching `markdown cellwiki-template <page_type>` block, then read
   raw/<source_id>/ with read_file. Prefer the *.extracted.txt sidecar for binary
@@ -320,12 +321,19 @@ def build_layer_b_snapshot(
     recent_transcript: list[dict[str, str]] | None = None,
     attachments: list[dict[str, Any]] | None = None,
     selected_text: str | None = None,
+    gate_issues: list[str] | None = None,
     limit_transcript: int = 6,
 ) -> str:
     """Layer B：run 启动时快照的 run 动态上下文（纯文本、紧凑、不泄露原始内容）。"""
     parts: list[str] = ["## Run context snapshot"]
     if git_status is not None:
         parts.append(f"- git status:\n{git_status[:1_500]}")
+    if gate_issues:
+        lines = "\n".join(f"  - {line}" for line in gate_issues[:30])
+        parts.append(
+            "- previous run was blocked by the schema gate; the changed pages"
+            f" must fix these before finishing:\n{lines}"
+        )
     if open_page is not None:
         page_id = open_page.get("page_id") or open_page.get("title") or "?"
         parts.append(f"- user is viewing: {page_id}")
@@ -375,6 +383,7 @@ def build_turn_context(
     open_page: dict[str, Any] | None = None,
     attachments: list[dict[str, Any]] | None = None,
     selected_text: str | None = None,
+    gate_issues: list[str] | None = None,
 ) -> str:
     """Build the v2 dynamic tail merged into the current user turn.
 
@@ -386,6 +395,12 @@ def build_turn_context(
     parts: list[str] = ["## Run context"]
     if git_status:
         parts.append(f"- git status:\n{git_status[:1_500]}")
+    if gate_issues:
+        lines = "\n".join(f"  - {line}" for line in gate_issues[:30])
+        parts.append(
+            "- previous run was blocked by the schema gate; the changed pages"
+            f" must fix these before finishing:\n{lines}"
+        )
     if open_page is not None:
         page_id = open_page.get("page_id") or open_page.get("title") or "?"
         parts.append(f"- user is viewing: {page_id}")

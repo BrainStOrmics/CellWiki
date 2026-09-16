@@ -26,6 +26,13 @@ class FieldRule(ContractModel):
     pattern: str | None = None
     nullable: bool = False
     min_length: int | None = Field(default=None, ge=0)
+    items: dict[str, "FieldRule"] | None = None
+
+    @model_validator(mode="after")
+    def validate_items(self) -> "FieldRule":
+        if self.items is not None and self.type != "list":
+            raise ValueError("items are only valid for list fields")
+        return self
 
     @field_validator("pattern")
     @classmethod
@@ -151,6 +158,7 @@ class PageTemplate(ContractModel):
     title_field: str
     required_any: list[str] = Field(default_factory=list)
     sections: list[SectionRule] = Field(default_factory=list)
+    frontmatter_fields: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_template(self) -> "PageTemplate":

@@ -237,3 +237,70 @@ def test_agent_cannot_write_schema_contract_directly(tmp_path: Path):
     assert edit.get("error") == "system-owned file is not writable"
     assert deleted.get("error") == "system-owned file is not writable"
     assert (root / "schema.md").read_text(encoding="utf-8") == "user-owned"
+
+
+def test_edit_file_keeps_lf_across_repeated_edits(tmp_path: Path):
+    root = _workspace(tmp_path)
+    tools = _tools(root)
+    target = root / "wiki" / "lines.md"
+    tools["write_file"].invoke(
+        {"path": "wiki/lines.md", "content": "line1\nline2\nline3\n"}
+    )
+    tools["edit_file"].invoke(
+        {"path": "wiki/lines.md", "old_string": "line2", "new_string": "line2x"}
+    )
+    tools["edit_file"].invoke(
+        {"path": "wiki/lines.md", "old_string": "line3", "new_string": "line3x"}
+    )
+    assert target.read_bytes() == b"line1\nline2x\nline3x\n"
+
+
+def test_edit_file_normalizes_crlf_and_matches_multiline(tmp_path: Path):
+    root = _workspace(tmp_path)
+    tools = _tools(root)
+    target = root / "wiki" / "crlf.md"
+    target.write_bytes("alpha\r\nbeta\r\ngamma\r\n".encode("utf-8"))
+    edited = json.loads(
+        tools["edit_file"].invoke(
+            {
+                "path": "wiki/crlf.md",
+                "old_string": "alpha\nbeta",
+                "new_string": "alpha\nBETA",
+            }
+        )
+    )
+    assert edited["ok"] is True
+    assert target.read_bytes() == b"alpha\nBETA\ngamma\n"
+    read = json.loads(tools["read_file"].invoke({"path": "wiki/crlf.md"}))
+    assert read["content"] == "alpha\nBETA\ngamma\n"
+
+
+def test_lint_knowledge_base_scopes_to_run_changed_pages(tmp_path: Path):
+    from cellwiki.services.git_executor import GitExecutor
+    from cellwiki.services.run_scope import clear_run_scope, set_run_scope
+    from cellwiki.services.workspace import ensure_workspace
+    from tests.schema_helpers import invalid_cell_type_page, minimal_schema_contract
+
+    root = _workspace(tmp_path)
+    ensure_workspace(root)
+    (root / "schema.md").write_text(minimal_schema_contract(), encoding="utf-8")
+    git = GitExecutor(root)
+    git.run("add", ".")
+    git.run("commit", "-m", "baseline")
+    baseline = git.current_head()
+
+    tools = {tool.name: tool for tool in build_lint_tools(root)}
+    outside = json.loads(tools["lint_knowledge_base"].invoke({}))
+    assert outside["page_count"] == 0
+
+    set_run_scope("run_lint_scope", baseline)
+    try:
+        target = root / "wiki" / "cell_types" / "cd8_t_cell.md"
+        target.write_text(invalid_cell_type_page(), encoding="utf-8")
+        report = json.loads(tools["lint_knowledge_base"].invoke({}))
+    finally:
+        clear_run_scope()
+
+    assert report["status"] == "failed"
+    assert report["scope"]["changed_pages_only"] is True
+    assert report["error_count"] >= 1

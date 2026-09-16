@@ -29,6 +29,9 @@ pages:
           nullable: true
         references:
           type: list
+          items:
+            paper_id:
+              type: string
         evidence_tier:
           type: integer
           enum: [1, 2, 3, 4, 5]
@@ -185,6 +188,23 @@ pages:
 ```
 
 ```markdown cellwiki-template cell_type
+---
+standard_name: {{ standard_name }}
+display_name: {{ display_name }}
+aliases: []
+cl_id: null
+parent_type: null
+references:
+  - paper_id: {{ paper_id }}
+evidence_tier: {{ evidence_tier }}
+source_count: 1
+positive_markers: [{{ marker }}]
+negative_markers: []
+tissues: [{{ tissue_id }}]
+species: [Homo sapiens]
+conflicts: []
+---
+
 <!-- cellwiki
 title_field: display_name
 required_any: []
@@ -289,6 +309,14 @@ min: 1
 ```
 
 ```markdown cellwiki-template marker_gene
+---
+entity_type: marker_gene
+gene_symbol: {{ gene_symbol }}
+evidence_tier: {{ evidence_tier }}
+sources:
+  - {{ paper_id }}
+---
+
 <!-- cellwiki
 title_field: gene_symbol
 required_any: [Expression, Negative Evidence, Co-expression]
@@ -382,6 +410,15 @@ min: 1
 ```
 
 ```markdown cellwiki-template tissue
+---
+entity_type: tissue
+name: {{ name }}
+display_name: {{ display_name }}
+evidence_tier: {{ evidence_tier }}
+sources:
+  - {{ paper_id }}
+---
+
 <!-- cellwiki
 title_field: display_name
 required_any: [Cell Types, Diseases, Markers]
@@ -456,6 +493,15 @@ min: 1
 ```
 
 ```markdown cellwiki-template disease
+---
+entity_type: disease
+name: {{ name }}
+display_name: {{ display_name }}
+evidence_tier: {{ evidence_tier }}
+sources:
+  - {{ paper_id }}
+---
+
 <!-- cellwiki
 title_field: display_name
 required_any: [Associated Cell Types, Tissues, Markers]
@@ -528,6 +574,15 @@ min: 1
 ```
 
 ```markdown cellwiki-template method
+---
+entity_type: method
+name: {{ name }}
+display_name: {{ display_name }}
+evidence_tier: {{ evidence_tier }}
+sources:
+  - {{ paper_id }}
+---
+
 <!-- cellwiki
 title_field: display_name
 required_any: [Inputs, Outputs, Workflow, Assumptions]
@@ -619,6 +674,17 @@ min: 1
 ```
 
 ```markdown cellwiki-template trajectory
+---
+entity_type: trajectory
+name: {{ name }}
+display_name: {{ display_name }}
+start_state: {{ start_state }}  # cell_type page id
+end_state: {{ end_state }}  # cell_type page id
+evidence_tier: {{ evidence_tier }}
+sources:
+  - {{ paper_id }}
+---
+
 <!-- cellwiki
 title_field: display_name
 required_any: [States, Transitions]

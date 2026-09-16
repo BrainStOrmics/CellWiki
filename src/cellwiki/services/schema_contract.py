@@ -54,8 +54,30 @@ def _comment_payload(lines: list[str]) -> dict[str, Any]:
     return payload
 
 
+_TOP_LEVEL_FIELD = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*):")
+
+
+def _template_frontmatter_fields(lines: list[str]) -> list[str]:
+    """Field names from the optional leading YAML skeleton inside a template."""
+
+    index = 0
+    while index < len(lines) and not lines[index].strip():
+        index += 1
+    if index >= len(lines) or lines[index].strip() != "---":
+        return []
+    fields: list[str] = []
+    for line in lines[index + 1 :]:
+        if line.strip() == "---":
+            return fields
+        match = _TOP_LEVEL_FIELD.match(line)
+        if match is not None:
+            fields.append(match.group(1))
+    return []
+
+
 def _parse_template(page_type: str, body: str) -> PageTemplate:
     lines = body.splitlines()
+    frontmatter_fields = _template_frontmatter_fields(lines)
     sections: list[SectionRule] = []
     page_payload: dict[str, Any] | None = None
     pending: dict[str, Any] | None = None
@@ -112,7 +134,10 @@ def _parse_template(page_type: str, body: str) -> PageTemplate:
     page_payload.setdefault("title_field", "")
     page_payload["page_type"] = page_type
     try:
-        return PageTemplate.model_validate(page_payload | {"sections": sections})
+        return PageTemplate.model_validate(
+            page_payload
+            | {"sections": sections, "frontmatter_fields": frontmatter_fields}
+        )
     except ValidationError as error:
         first = error.errors()[0]
         location = ".".join(str(part) for part in first.get("loc", ()))
@@ -264,6 +289,19 @@ def field_rule_error(rule: FieldRule, value: Any) -> str | None:
     if not valid_type:
         return f"must be {expected}"
 
+    if rule.items is not None and isinstance(value, list):
+        for index, item in enumerate(value):
+            if not isinstance(item, dict):
+                return (
+                    "must be a list of mappings with "
+                    f"{sorted(rule.items)}; item {index} is {type(item).__name__}"
+                )
+            for key, field_rule in rule.items.items():
+                if key not in item:
+                    return f"item {index} is missing key {key!r}"
+                detail = field_rule_error(field_rule, item[key])
+                if detail is not None:
+                    return f"item {index} key {key!r} {detail}"
     if rule.const is not None and value != rule.const:
         return f"must equal {rule.const!r}"
     if rule.enum is not None and value not in rule.enum:

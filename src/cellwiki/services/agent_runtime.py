@@ -72,6 +72,11 @@ from cellwiki.services.model_transcript import (
     summarize_transcript,
 )
 from cellwiki.services.model_catalog import ModelCatalogService
+from cellwiki.services.run_scope import (
+    clear_run_scope,
+    porcelain_paths as _porcelain_dirty_paths,
+    set_run_scope,
+)
 from cellwiki.services.prompt_layers import (
     LAYER_A_TEXT,
     build_layer_b_snapshot,
@@ -186,28 +191,6 @@ class RunVersioningError(AgentRuntimeError):
 _SYSTEM_MAINTAINED_FILES = frozenset(
     {"overview.md", "statistics.md", "log.md", "audit_report.md"}
 )
-
-
-def _porcelain_dirty_paths(porcelain: str) -> list[str]:
-    """Parse ``git status --porcelain`` v1 output into workspace-relative paths.
-
-    每行 ``XY<space>path``，任何非空状态字母都算改动；rename 行的
-    ``old -> new`` 两侧都要 add（旧路径的删除与新路径的内容）。
-    """
-    dirty: list[str] = []
-    for line in porcelain.splitlines():
-        if len(line) < 4:
-            continue
-        if line[0] == " " and line[1] == " ":
-            continue
-        path = line[3:]
-        if path.startswith('"') and path.endswith('"'):
-            path = path[1:-1]
-        if " -> " in path:
-            dirty.extend(part for part in path.split(" -> ") if part)
-        else:
-            dirty.append(path)
-    return dirty
 
 
 # 兼容别名：API 仍在使用旧名（严格串行门禁语义）
@@ -1616,6 +1599,7 @@ class AgentRuntimeManager:
         续跑段此前只装 resolver、不装 scope：``workspace_root`` / ``thread_dir``
         与读预算都是空的，于是附件读不出来、预算也不生效。
         """
+        set_run_scope(run.run_id, run.snapshot_commit)
         thread_id = run.thread_id
         files = AttachmentFileStore(self.project_root)
         set_attachment_scope(
@@ -1643,6 +1627,7 @@ class AgentRuntimeManager:
         self._persist_run_checkpoint(run_id, thread_id)
         clear_attachment_resolver()
         clear_attachment_scope()
+        clear_run_scope()
         with self._thread_lock:
             if self._running_run_id == run_id:
                 self._running_run_id = None
@@ -1854,6 +1839,7 @@ class AgentRuntimeManager:
             open_page=self._open_page_snapshot(context.page_id),
             attachments=self._attachment_manifest(run),
             selected_text=context.selected_text,
+            gate_issues=self._previous_gate_issues(run),
         )
         self.store.append_model_message(
             thread_id=run.thread_id,
@@ -2039,6 +2025,7 @@ class AgentRuntimeManager:
                     recent_transcript=self.store.list_context_messages(thread_id)[-4:],
                     attachments=self._attachment_manifest(run),
                     selected_text=context.selected_text,
+                    gate_issues=self._previous_gate_issues(run),
                 )
                 if layer_b:
                     # 快照每轮 run 都变，必须排在历史之后（当前用户消息之前）：provider
@@ -2902,7 +2889,12 @@ class AgentRuntimeManager:
 
     # ---- 终结 ----
     def _finalize_unfinished(
-        self, run_id: str, error_type: AgentErrorType, message: str
+        self,
+        run_id: str,
+        error_type: AgentErrorType,
+        message: str,
+        *,
+        data: dict[str, Any] | None = None,
     ) -> AgentRun:
 
         # transition 一次写入状态 + 错误字段 + finished_at：任何时刻读到
@@ -2914,7 +2906,7 @@ class AgentRuntimeManager:
             error_type=error_type,
             error_message=message[:2000],
             message=f"Run paused: {message}. Resume to continue.",
-            data={"reason": "budget_or_timeout"},
+            data={"reason": "budget_or_timeout", **(data or {})},
             finished_at=datetime.now(UTC),
         )
         self._maintain_unfinished(run)
@@ -3157,17 +3149,39 @@ class AgentRuntimeManager:
         return inspect_projection(self.project_root, changed_paths=gated)
 
     @staticmethod
+    def _gate_error_items(report: dict[str, Any], limit: int = 50) -> list[dict[str, Any]]:
+        """Serializable error rows for run data and next-run repair context."""
+
+        return [
+            {
+                "type": issue.get("type"),
+                "page_path": issue.get("page_path"),
+                "locator": issue.get("locator"),
+                "detail": issue.get("detail"),
+            }
+            for issue in report.get("issues", [])
+            if issue.get("severity") == "error"
+        ][:limit]
+
+    @staticmethod
     def _schema_gate_message(report: dict[str, Any]) -> str:
-        first: dict[str, Any] = next(
-            (issue for issue in report.get("issues", []) if issue.get("severity") == "error"),
-            {},
-        )
+        errors = AgentRuntimeManager._gate_error_items(report, 50)
+        first: dict[str, Any] = errors[0] if errors else {}
         location = first.get("page_path") or first.get("locator") or "schema"
         detail = first.get("detail") or "schema contract violation"
-        return (
+        message = (
             SCHEMA_GATE_ERROR_PREFIX
             + f"{report.get('error_count', 0)} issue(s); first: {location}: {detail}"
-        )[:2000]
+        )
+        for issue in errors[1:9]:
+            extra_location = issue.get("page_path") or issue.get("locator") or "schema"
+            extra_detail = str(issue.get("detail") or "violation")
+            message += f"; next: {extra_location}: {extra_detail}"
+        message += (
+            "; fix the listed pages and resume to re-check, or send the list"
+            " back to the agent to repair"
+        )
+        return message[:2000]
 
     def _record_schema_gate_event(self, run_id: str, report: dict[str, Any]) -> None:
         errors = [
@@ -3195,6 +3209,44 @@ class AgentRuntimeManager:
             },
         )
 
+    def _previous_gate_issues(self, run: AgentRun) -> list[str]:
+        """Issue lines from the thread's most recent schema-gate failure.
+
+        The publish gate parks a run instead of failing it, so the next run in
+        the same thread must be able to see why its predecessor was blocked.
+        """
+
+        try:
+            runs = self.store.list_runs(thread_id=run.thread_id, limit=10)
+        except Exception:  # noqa: BLE001 - context enrichment must never break a run
+            return []
+        for previous in runs:
+            if previous.run_id == run.run_id:
+                continue
+            if previous.status != AgentRunStatus.UNFINISHED:
+                continue
+            if not (previous.error_message or "").startswith(SCHEMA_GATE_ERROR_PREFIX):
+                continue
+            try:
+                events = self.store.list_events(previous.run_id)
+            except Exception:  # noqa: BLE001 - context enrichment must never break a run
+                return []
+            for event in reversed(events):
+                data = event.data if isinstance(event.data, dict) else {}
+                items = data.get("schema_gate_errors") or data.get("issues")
+                if not isinstance(items, list) or not items:
+                    continue
+                lines: list[str] = []
+                for item in items[:30]:
+                    if not isinstance(item, dict):
+                        continue
+                    location = item.get("page_path") or item.get("locator") or "schema"
+                    lines.append(f"{location}: {item.get('detail') or 'violation'}")
+                if lines:
+                    return lines
+            return []
+        return []
+
     def _schema_gate_before_success(self, run_id: str) -> bool:
         """Return False and park the run unfinished when changed pages violate schema."""
         collected = self._collect_run_agent_diff(run_id)
@@ -3209,6 +3261,7 @@ class AgentRuntimeManager:
             run_id,
             AgentErrorType.STRUCTURED_OUTPUT,
             self._schema_gate_message(report),
+            data={"schema_gate_errors": self._gate_error_items(report)},
         )
         return False
 

@@ -1962,6 +1962,12 @@ def test_schema_gate_blocks_invalid_wiki_change_before_pending_diff(tmp_path: Pa
         assert (run.error_message or "").startswith("schema_contract_failed:")
         assert not manager.store.list_pending_diffs(run_id=started.run_id)
         assert _wait_for_event(manager, started.run_id, AgentEventType.REVIEW_REQUIRED)
+        gate_rows = [
+            event.data.get("schema_gate_errors")
+            for event in manager.store.list_events(started.run_id)
+            if isinstance(event.data.get("schema_gate_errors"), list)
+        ]
+        assert gate_rows and gate_rows[0], "run data must carry the gate error list"
     finally:
         manager.close()
 
@@ -1990,5 +1996,80 @@ def test_schema_gate_allows_valid_wiki_change_and_publishes_pending_diff(tmp_pat
         diffs = _wait_for_diff(manager, started.run_id)
         assert len(diffs) == 1
         assert "wiki/cell_types/cd8_t_cell.md" in diffs[0].files
+    finally:
+        manager.close()
+
+
+def test_schema_gate_failure_can_be_repaired_then_resumed(tmp_path: Path):
+    """After an engineering-side repair, resume re-checks the gate and publishes."""
+    repo = _prepare_schema_workspace(tmp_path)
+    calls = {"count": 0}
+
+    class RepairThenResumeAdapter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                target = repo / "wiki" / "cell_types" / "cd8_t_cell.md"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(_schema_gate_page(valid=False), encoding="utf-8")
+                git = GitExecutor(repo)
+                git.run("add", "wiki/cell_types/cd8_t_cell.md")
+                git.run("commit", "-m", "add invalid page")
+            yield RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="done", data={})
+
+    manager = AgentRuntimeManager(repo, adapter=RepairThenResumeAdapter())
+    try:
+        started = manager.start(
+            thread_id="t_gate_repair",
+            message="ingest paper_one",
+            context=_context("t_gate_repair"),
+        )
+        parked = _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+        assert (parked.error_message or "").startswith("schema_contract_failed:")
+        assert not manager.store.list_pending_diffs(run_id=started.run_id)
+        _wait_for_segment_finish(manager, started.run_id)
+
+        target = repo / "wiki" / "cell_types" / "cd8_t_cell.md"
+        target.write_text(_schema_gate_page(valid=True), encoding="utf-8")
+        git = GitExecutor(repo)
+        git.run("add", "wiki/cell_types/cd8_t_cell.md")
+        git.run("commit", "-m", "repair page")
+
+        resumed = manager.resume(started.run_id)
+        assert resumed.run_id == started.run_id
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        _wait_for_segment_finish(manager, started.run_id)
+        diffs = _wait_for_diff(manager, started.run_id)
+        assert len(diffs) == 1
+        assert "wiki/cell_types/cd8_t_cell.md" in diffs[0].files
+    finally:
+        manager.close()
+
+
+def test_previous_gate_issues_are_exposed_to_the_next_run(tmp_path: Path):
+    repo = _prepare_schema_workspace(tmp_path)
+
+    class InvalidPageAdapter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            target = repo / "wiki" / "cell_types" / "cd8_t_cell.md"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(_schema_gate_page(valid=False), encoding="utf-8")
+            git = GitExecutor(repo)
+            git.run("add", "wiki/cell_types/cd8_t_cell.md")
+            git.run("commit", "-m", "add invalid page")
+            yield RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="done", data={})
+
+    manager = AgentRuntimeManager(repo, adapter=InvalidPageAdapter())
+    try:
+        started = manager.start(
+            thread_id="t_gate_context",
+            message="ingest paper_one",
+            context=_context("t_gate_context"),
+        )
+        run = _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
+        follow_up = run.model_copy(update={"run_id": "run_follow_up"})
+        issues = manager._previous_gate_issues(follow_up)
+        assert issues, "next run must see the previous gate issues"
+        assert any("cd8_t_cell" in line for line in issues)
     finally:
         manager.close()

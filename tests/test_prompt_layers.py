@@ -186,3 +186,19 @@ def test_declared_window_and_token_estimate():
     assert resolve_declared_window("mystery") is None
     assert estimate_tokens("abcd") == 1
     assert estimate_tokens("a" * 100) == 25
+
+
+def test_turn_context_renders_previous_gate_issues():
+    context = build_turn_context(
+        current_message="repair the pages",
+        gate_issues=["wiki/cell_types/a.md: missing Evidence: Tier N"],
+    )
+    assert "previous run was blocked by the schema gate" in context
+    assert "wiki/cell_types/a.md: missing Evidence: Tier N" in context
+
+    snapshot = build_layer_b_snapshot(
+        current_message="repair the pages",
+        git_status=" M wiki/cell_types/a.md",
+        gate_issues=["wiki/cell_types/a.md: missing Evidence: Tier N"],
+    )
+    assert "previous run was blocked by the schema gate" in snapshot

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from functools import lru_cache
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,19 @@ class ProjectionQualityError(RuntimeError):
     """Raised when a gating issue makes a wiki projection unsafe to publish."""
 
 
+class _StrictFrontmatterLoader(yaml.SafeLoader):
+    """SafeLoader that rejects duplicate mapping keys instead of last-wins."""
+
+    def construct_mapping(self, node: Any, deep: bool = False) -> Any:
+        keys = [key_node.value for key_node, _value in node.value]
+        duplicates = sorted({key for key in keys if keys.count(key) > 1})
+        if duplicates:
+            raise yaml.constructor.ConstructorError(
+                None, None, f"duplicate mapping keys: {duplicates}", node.start_mark
+            )
+        return super().construct_mapping(node, deep=deep)
+
+
 _MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
 _WIKILINK = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
 _WIKILINK_FULL = re.compile(r"^\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]$")
@@ -40,6 +54,21 @@ _HEADING_H2 = re.compile(r"^##\s+(.+?)\s*$")
 _HEADING_H3 = re.compile(r"^###\s+(.+?)\s*$")
 _BULLET = re.compile(r"^(?:[-*]|\d+\.)\s+(.+?)\s*$")
 _MD = MarkdownIt("gfm-like", {"linkify": False})
+
+
+def _strip_list_marker(text: str) -> str:
+    """Return a bullet or ordered-list line without its leading marker."""
+
+    stripped = text.strip()
+    match = _BULLET.match(stripped)
+    return match.group(1) if match else stripped
+
+
+@lru_cache(maxsize=None)
+def _term_pattern(term: str) -> re.Pattern[str]:
+    """Word-bounded, casefolded term matcher for free-prose scans."""
+
+    return re.compile(rf"(?<![0-9a-z]){re.escape(term)}(?![0-9a-z])")
 
 
 def inspect_projection(
@@ -275,6 +304,9 @@ def _inspect_page(
                 locator=relative,
             )
         )
+        # Unparseable frontmatter cascades into every downstream rule; the
+        # parse error alone is the actionable root cause.
+        return issues
     if not body.strip():
         issues.append(
             _issue(
@@ -681,7 +713,7 @@ def _inspect_section(
                     )
                 else:
                     tiers.append(tier)
-                if not any(_SOURCE_LINE.match(line.strip()) for line in item):
+                if not any(_SOURCE_LINE.match(_strip_list_marker(line)) for line in item):
                     issues.append(
                         _section_issue(
                             path,
@@ -1152,7 +1184,7 @@ def _validate_source_lines(
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
     for line in lines:
-        match = _SOURCE_LINE.match(line.strip())
+        match = _SOURCE_LINE.match(_strip_list_marker(line))
         if not match:
             continue
         value = match.group(1).strip()
@@ -1345,7 +1377,7 @@ def _evidence_from_table(table: dict[str, Any] | None) -> list[int]:
 
 def _tier_from_lines(lines: list[str]) -> int | None:
     for line in lines:
-        match = _EVIDENCE_LINE.match(line.strip())
+        match = _EVIDENCE_LINE.match(_strip_list_marker(line))
         if match:
             return int(match.group(1))
     return None
@@ -1354,13 +1386,25 @@ def _tier_from_lines(lines: list[str]) -> int | None:
 def _parse_table(lines: list[str]) -> dict[str, Any] | None:
     for index in range(len(lines) - 1):
         header = lines[index].strip()
-        divider = lines[index + 1].strip()
-        if not header.startswith("|") or not _TABLE_DIVIDER.match(divider):
+        if not header.startswith("|"):
+            continue
+        divider_index = index + 1
+        while divider_index < len(lines) and not lines[divider_index].strip():
+            divider_index += 1
+        if divider_index >= len(lines):
+            continue
+        if not _TABLE_DIVIDER.match(lines[divider_index].strip()):
             continue
         columns = _table_cells(header)
         rows: list[list[str]] = []
-        cursor = index + 2
-        while cursor < len(lines) and lines[cursor].strip().startswith("|"):
+        cursor = divider_index + 1
+        while cursor < len(lines):
+            stripped = lines[cursor].strip()
+            if not stripped:
+                cursor += 1
+                continue
+            if not stripped.startswith("|"):
+                break
             rows.append(_table_cells(lines[cursor]))
             cursor += 1
         return {"columns": columns, "rows": rows}
@@ -1378,7 +1422,7 @@ def _parse_list_items(lines: list[str]) -> list[list[str]]:
         if _BULLET.match(line):
             if current is not None:
                 items.append(current)
-            current = [line]
+            current = [_strip_list_marker(line)]
         elif current is not None and (line.startswith(" ") or line.startswith("\t")):
             current.append(line)
         elif current is not None and line.strip():
@@ -1447,16 +1491,19 @@ def _missing_wikilink_issues(
         if _HEADING_H2.match(line):
             in_references = line.strip() == "## References"
             continue
-        if in_references or not line.strip() or line.lstrip().startswith(("#", "|", "```")):
+        if in_references or not line.strip():
             continue
-        if line.strip().startswith(("**", "Source:", "Evidence:")):
+        if line.lstrip().startswith(("#", "|", "```", ">")):
             continue
-        candidate = _BULLET.match(line)
-        scan_line = candidate.group(1) if candidate else line
+        scan_line = _strip_list_marker(line)
+        if scan_line.startswith(("**", "Source:", "Evidence:")):
+            continue
         without_links = _WIKILINK.sub("", scan_line)
         lowered = without_links.casefold()
         for term, entries in terms.items():
             if not term or term not in lowered:
+                continue
+            if _term_pattern(term).search(lowered) is None:
                 continue
             target_ids = {entry[0] for entry in entries}
             if page_id in target_ids:
@@ -1485,7 +1532,7 @@ def _split_frontmatter(raw: str) -> tuple[dict[str, Any], str, str | None]:
     if len(parts) != 3:
         return {}, raw, "YAML frontmatter is not closed with ---."
     try:
-        parsed = yaml.safe_load(parts[1]) or {}
+        parsed = yaml.load(parts[1], Loader=_StrictFrontmatterLoader) or {}
     except yaml.YAMLError as error:
         return {}, parts[2].lstrip("\r\n"), f"Invalid YAML frontmatter: {error}"
     if not isinstance(parsed, dict):
