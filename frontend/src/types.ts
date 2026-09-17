@@ -332,6 +332,8 @@ export type AppSettings = {
   enable_agent_memory: boolean;
   enable_external_research: boolean;
   memory_recall_token_budget: number;
+  agent_context_max_tokens: number;
+  agent_context_max_token_presets: number[];
   restart_required?: boolean;
 };
 

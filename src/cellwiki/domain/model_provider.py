@@ -18,6 +18,11 @@ SUPPORTED_WIRE_PROTOCOLS = frozenset(
     }
 )
 
+# Global prompt-budget presets exposed by the desktop settings UI. Keep this
+# list free of configuration imports so the sidecar can load it before the
+# project-scoped environment is installed.
+AGENT_CONTEXT_MAX_TOKEN_PRESETS = (200_000, 400_000, 512_000, 1_000_000)
+
 
 def normalize_wire_protocol(value: str) -> WireProtocol:
     """Validate the explicit wire protocol without importing provider SDKs."""

@@ -32,6 +32,7 @@ type SettingsDraft = {
   enable_agent_memory: boolean;
   enable_external_research: boolean;
   memory_recall_token_budget: number;
+  agent_context_max_tokens: number;
 };
 
 const emptyDraft: SettingsDraft = {
@@ -45,7 +46,14 @@ const emptyDraft: SettingsDraft = {
   enable_agent_memory: false,
   enable_external_research: false,
   memory_recall_token_budget: 800,
+  agent_context_max_tokens: 512000,
 };
+
+function formatContextWindow(value: number): string {
+  return value >= 1_000_000
+    ? `${value / 1_000_000}M`
+    : `${Math.round(value / 1_000)}K`;
+}
 
 export function SettingsView({ onClose }: { onClose: () => void }) {
   const { setLanguage, t } = useI18n();
@@ -58,6 +66,13 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
   const [runtime, setRuntime] = useState(() => runtimeConfig());
   const [workspacePath, setWorkspacePath] = useState("");
   const [workspaceSaving, setWorkspaceSaving] = useState(false);
+  const contextPresets = stored?.agent_context_max_token_presets?.length
+    ? stored.agent_context_max_token_presets
+    : [200000, 400000, 512000, 1000000];
+  const contextIndex = Math.max(
+    0,
+    contextPresets.indexOf(draft.agent_context_max_tokens),
+  );
 
   async function loadSettings() {
     setLoading(true);
@@ -77,6 +92,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         enable_agent_memory: settings.enable_agent_memory,
         enable_external_research: settings.enable_external_research,
         memory_recall_token_budget: settings.memory_recall_token_budget,
+        agent_context_max_tokens: settings.agent_context_max_tokens,
       });
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.loadError") });
@@ -261,6 +277,46 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             <section className="settings-card runtime-grid">
               <RuntimeStatus label="Product API + Agent Runtime" endpoint={runtime.productApiOrigin || "127.0.0.1"} online={runtime.ready} />
               <RuntimeStatus label="Runtime mode" endpoint={runtime.mode} online={runtime.ready} />
+            </section>
+            <section className="settings-card context-window-card">
+              <div className="settings-card-title">
+                <Activity size={16} />
+                <div><h3>{t("settings.contextWindowTitle")}</h3></div>
+                <span className="provider-restart-badge">{t("settings.contextWindowRestartBadge")}</span>
+              </div>
+              <div className="context-window-control">
+                <input
+                  data-testid="context-window-slider"
+                  className="context-window-slider"
+                  type="range"
+                  min={0}
+                  max={contextPresets.length - 1}
+                  step={1}
+                  value={contextIndex}
+                  aria-label={t("settings.contextWindowTitle")}
+                  onChange={(event) => {
+                    const preset = contextPresets[Number(event.target.value)];
+                    if (preset !== undefined) {
+                      updateDraft({ agent_context_max_tokens: preset });
+                    }
+                  }}
+                />
+                <div className="context-window-ticks" aria-hidden="true">
+                  {contextPresets.map((preset) => (
+                    <span
+                      key={preset}
+                      className={preset === draft.agent_context_max_tokens ? "active" : ""}
+                    >
+                      {formatContextWindow(preset)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="context-window-summary">
+                <span>{t("settings.contextWindowCurrent")}</span>
+                <strong>{formatContextWindow(draft.agent_context_max_tokens)}</strong>
+              </div>
+              <p className="context-window-hint">{t("settings.contextWindowHint")}</p>
             </section>
             <section className="settings-card">
               <div className="settings-card-title"><Activity size={16} /><div><h3>{t("settings.logging")}</h3></div></div>

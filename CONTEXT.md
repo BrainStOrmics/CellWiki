@@ -57,7 +57,8 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
 - **模型输入窗口（declared model input window）**：供应商模型条目的
   `max_input_tokens` 或 legacy `OPENAI_MAX_INPUT_TOKENS`；不按模型名推断。
   未声明时使用单一保守 fallback，实际预算取
-  `min(AGENT_CONTEXT_MAX_TOKENS, 声明窗口或 fallback)`。
+  `min(AGENT_CONTEXT_MAX_TOKENS, 声明窗口或 fallback)`。全局上限可在设置页
+  按 `200K / 400K / 512K / 1M` 四档调整，保存后重启生效。
 - **compaction boundary**：最新一条 `kind=compaction` 的模型消息；prompt loader
   只加载该 boundary 及其后的消息，之前的记录保留用于审计但不进入当前 prompt。
 - **promote**：用户经 ask_user_question 同意后，把附件提升为 raw/<source_id>/ 正式源

@@ -93,6 +93,9 @@ class SettingsUpdateRequest(BaseModel):
     clear_openai_api_key: bool = False        # 是否清除 API 密钥
     log_level: str = Field(default="INFO", max_length=20)
     app_language: str = Field(default="zh-CN", max_length=10)
+    agent_context_max_tokens: int | None = Field(
+        default=None, ge=8_000, le=2_000_000
+    )
 
 
 # ---- 设置测试请求（仅用于连接测试，不持久化）----

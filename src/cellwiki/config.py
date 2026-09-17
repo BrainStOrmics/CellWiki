@@ -20,6 +20,8 @@ from pathlib import Path
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from cellwiki.domain.model_provider import AGENT_CONTEXT_MAX_TOKEN_PRESETS
+
 
 # ---------------------------------------------------------------------------
 # 日志初始化
@@ -118,7 +120,11 @@ class Settings(BaseSettings):
     # 亚秒值才能确定性地验证看门狗。
     agent_stream_idle_seconds: int = Field(default=300, ge=1, le=3600)
     # 会话上下文上限（token）；阶段 5 的分层 prompt 按 512K/80%/32K 压缩
-    agent_context_max_tokens: int = Field(default=512_000, ge=8_000, le=2_000_000)
+    agent_context_max_tokens: int = Field(
+        default=AGENT_CONTEXT_MAX_TOKEN_PRESETS[2],
+        ge=8_000,
+        le=2_000_000,
+    )
     agent_context_auto_compact_ratio: float = Field(default=0.8, ge=0.5, le=0.95)
     agent_context_retained_tokens: int = Field(default=32_768, ge=4_000, le=200_000)
     # ADR-0014：v2 使用 append-only 模型 transcript；legacy 仅用于旧 run 和回滚。

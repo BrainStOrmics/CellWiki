@@ -328,6 +328,32 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .provider-test-result b { font-weight: 570; }
 .provider-test-result small { margin-top: 3px; color: #66776d; font-size: 8px; }
 .runtime-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 10px; }
+.context-window-control { margin-top: 20px; }
+.context-window-slider {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.context-window-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: 10px;
+}
+.context-window-ticks span.active { color: var(--text); font-weight: 700; }
+.context-window-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-soft);
+  color: var(--muted);
+  font-size: 11px;
+}
+.context-window-summary strong { color: var(--accent-strong); font-size: 15px; }
+.context-window-hint { margin: 10px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.5; }
 .runtime-status { padding: 16px; border: 1px solid #2c333d; border-radius: 8px; background: #14181e; }
 .runtime-status > span { display: inline-flex; align-items: center; gap: 5px; color: #ba747c; font-size: 7px; font-weight: 700; letter-spacing: 0.08em; }
 .runtime-status > span i { width: 6px; height: 6px; border-radius: 50%; background: #b75d66; }

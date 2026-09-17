@@ -14,6 +14,7 @@ from time import perf_counter
 from typing import Any
 
 from cellwiki.domain.model_provider import (
+    AGENT_CONTEXT_MAX_TOKEN_PRESETS,
     WIRE_PROTOCOL_ANTHROPIC,
     WIRE_PROTOCOL_CHAT_COMPLETIONS,
     normalize_wire_protocol,
@@ -28,6 +29,7 @@ _DEFAULTS = {
     "OPENAI_MODEL": "qwen3.6-plus",
     "OPENAI_API_PROTOCOL": WIRE_PROTOCOL_CHAT_COMPLETIONS,
     "OPENAI_MAX_INPUT_TOKENS": "",
+    "AGENT_CONTEXT_MAX_TOKENS": str(AGENT_CONTEXT_MAX_TOKEN_PRESETS[2]),
     "LOG_LEVEL": "INFO",
     "APP_LANGUAGE": "zh-CN",
     "ENABLE_AGENT_MEMORY": "false",
@@ -86,6 +88,13 @@ class EnvironmentSettingsService:
             "openai_max_input_tokens": (
                 self._integer(values["OPENAI_MAX_INPUT_TOKENS"], default=0) or None
             ),
+            "agent_context_max_tokens": self._integer(
+                values["AGENT_CONTEXT_MAX_TOKENS"],
+                default=AGENT_CONTEXT_MAX_TOKEN_PRESETS[2],
+            ),
+            "agent_context_max_token_presets": list(
+                AGENT_CONTEXT_MAX_TOKEN_PRESETS
+            ),
             "openai_api_key_configured": bool(api_key),
             "openai_api_key_hint": self._mask_secret(api_key),
             "secret_storage": "system" if self._system_secret() else "env",
@@ -125,6 +134,7 @@ class EnvironmentSettingsService:
         app_language: str,
         openai_api_protocol: str | None = None,
         openai_max_input_tokens: int | None = None,
+        agent_context_max_tokens: int | None = None,
         enable_agent_memory: bool = False,
         enable_external_research: bool = False,
         memory_recall_token_budget: int = 800,
@@ -144,6 +154,11 @@ class EnvironmentSettingsService:
                 if openai_max_input_tokens is None
                 else str(openai_max_input_tokens)
             ),
+            "AGENT_CONTEXT_MAX_TOKENS": (
+                current["AGENT_CONTEXT_MAX_TOKENS"]
+                if agent_context_max_tokens is None
+                else str(agent_context_max_tokens)
+            ),
             "LOG_LEVEL": log_level.strip().upper(),
             "APP_LANGUAGE": app_language.strip(),
             "ENABLE_AGENT_MEMORY": "true" if enable_agent_memory else "false",
@@ -158,6 +173,13 @@ class EnvironmentSettingsService:
             raise ValueError("app language must be zh-CN or en")
         if not 128 <= memory_recall_token_budget <= 4000:
             raise ValueError("memory recall token budget must be between 128 and 4000")
+        if agent_context_max_tokens is not None and (
+            agent_context_max_tokens not in AGENT_CONTEXT_MAX_TOKEN_PRESETS
+        ):
+            allowed = ", ".join(str(value) for value in AGENT_CONTEXT_MAX_TOKEN_PRESETS)
+            raise ValueError(
+                f"agent context max tokens must be one of: {allowed}"
+            )
 
         if clear_openai_api_key:
             normalized["OPENAI_API_KEY"] = ""
@@ -180,6 +202,7 @@ class EnvironmentSettingsService:
                 "OPENAI_MODEL",
                 "OPENAI_API_PROTOCOL",
                 "OPENAI_MAX_INPUT_TOKENS",
+                "AGENT_CONTEXT_MAX_TOKENS",
                 "LOG_LEVEL",
                 "ENABLE_AGENT_MEMORY",
                 "ENABLE_EXTERNAL_RESEARCH",

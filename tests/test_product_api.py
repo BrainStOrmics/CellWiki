@@ -127,6 +127,33 @@ def test_settings_roundtrip_and_test(tmp_path: Path):
     assert probe.json()["ok"] is False
 
 
+def test_settings_context_window_preset_roundtrip(tmp_path: Path):
+    client = TestClient(create_app(tmp_path))
+    current = client.get("/api/settings")
+    assert current.status_code == 200
+    assert current.json()["agent_context_max_tokens"] == 512_000
+    assert current.json()["agent_context_max_token_presets"] == [
+        200_000,
+        400_000,
+        512_000,
+        1_000_000,
+    ]
+
+    updated = client.post(
+        "/api/settings",
+        json={"openai_model": "test-model", "agent_context_max_tokens": 1_000_000},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["agent_context_max_tokens"] == 1_000_000
+    assert updated.json()["restart_required"] is True
+
+    invalid = client.post(
+        "/api/settings",
+        json={"openai_model": "test-model", "agent_context_max_tokens": 300_000},
+    )
+    assert invalid.status_code == 422
+
+
 def test_agent_thread_and_run_lifecycle(tmp_path: Path):
     adapter = _ApiAgentAdapter()
     manager = AgentRuntimeManager(tmp_path, adapter=adapter)

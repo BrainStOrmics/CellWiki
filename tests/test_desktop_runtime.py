@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from langchain_core.messages import AIMessage
 
 from cellwiki.services.checkpoints import CHECKPOINT_FILE_NAME
@@ -152,6 +153,43 @@ def test_packaged_settings_prefer_system_credential_store(tmp_path: Path):
     assert vault.value == "vault-secret"
     assert "vault-secret" not in (tmp_path / ".env").read_text(encoding="utf-8")
     assert settings.public_settings()["secret_storage"] == "system"
+
+
+def test_context_window_preset_persists_and_requires_restart(tmp_path: Path):
+    service = EnvironmentSettingsService(tmp_path, prefer_system_store=False)
+
+    changed = service.update(
+        openai_base_url="",
+        openai_model="test-model",
+        openai_api_key=None,
+        clear_openai_api_key=False,
+        log_level="INFO",
+        app_language="zh-CN",
+        agent_context_max_tokens=1_000_000,
+    )
+
+    assert changed is True
+    public = service.public_settings()
+    assert public["agent_context_max_tokens"] == 1_000_000
+    assert public["agent_context_max_token_presets"] == [
+        200_000,
+        400_000,
+        512_000,
+        1_000_000,
+    ]
+    assert "AGENT_CONTEXT_MAX_TOKENS=1000000" in (tmp_path / ".env").read_text(
+        encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="one of"):
+        service.update(
+            openai_base_url="",
+            openai_model="test-model",
+            openai_api_key=None,
+            clear_openai_api_key=False,
+            log_level="INFO",
+            app_language="zh-CN",
+            agent_context_max_tokens=300_000,
+        )
 
 
 def test_provider_test_uses_selected_protocol_and_closes_temporary_client(tmp_path: Path):
