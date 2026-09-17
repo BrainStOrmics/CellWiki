@@ -13,7 +13,7 @@ from pydantic import Field
 
 from cellwiki.agent.app import build_wiki_agent
 from cellwiki.domain.contracts import WikiAgentContext
-from cellwiki.domain.runs import AgentRun, AgentRunStatus
+from cellwiki.domain.runs import AgentEventType, AgentRun, AgentRunStatus
 from cellwiki.services.agent_runtime import AgentRuntimeManager
 from cellwiki.services.model_transcript import render_model_messages
 from cellwiki.services.prompt_cache import PromptCachePolicy, resolve_prompt_cache_policy
@@ -294,6 +294,76 @@ def test_explicit_cache_markers_cover_static_prefix_and_tool_result(tmp_path: Pa
     )
     assert isinstance(tool_message.content, list)
     assert tool_message.content[-1]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+
+
+def test_local_compaction_emits_visible_context_events(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    manager = _manager(tmp_path, _TranscriptModel())
+    run = AgentRun(
+        run_id="run_compact_events",
+        thread_id="thread_compact_events",
+        input_message="new question",
+        transcript_version=2,
+    )
+    try:
+        manager.store.create_run(run)
+        manager.store.bootstrap_model_transcript(
+            run.thread_id, exclude_run_id=run.run_id
+        )
+        manager.store.append_model_message(
+            thread_id=run.thread_id,
+            run_id=run.run_id,
+            kind="user",
+            role="user",
+            content={"text": "decision: keep this"},
+            message_key="old",
+        )
+        policy = PromptCachePolicy(
+            mode="implicit",
+            protocol="chat_completions",
+            max_breakpoints=0,
+            provider_native_compaction=False,
+            compact_threshold=1,
+            breakpoint_key="",
+            model_input_tokens=65_536,
+            input_window_source="fallback",
+            effective_context_limit=65_536,
+        )
+        monkeypatch.setattr(manager, "_cache_policy_for_run", lambda _run: policy)
+        monkeypatch.setattr(
+            "cellwiki.services.agent_runtime.split_for_compaction",
+            lambda records, retained_tokens: (records, []),
+        )
+        monkeypatch.setattr(
+            "cellwiki.services.agent_runtime.summarize_transcript",
+            lambda records: "## Compacted history summary\ndecisions:\n- keep",
+        )
+
+        manager._prepare_v2_transcript(
+            run,
+            "new question",
+            WikiAgentContext(project_id="cellwiki", thread_id=run.thread_id),
+            adapter=object(),
+        )
+
+        events = [
+            event
+            for event in manager.store.list_events(run.run_id)
+            if event.type
+            in {
+                AgentEventType.CONTEXT_COMPACTION_STARTED,
+                AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+            }
+        ]
+        assert [event.type for event in events] == [
+            AgentEventType.CONTEXT_COMPACTION_STARTED,
+            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+        ]
+        assert events[1].data["mode"] == "local"
+        assert events[1].data["changed"] is True
+    finally:
+        manager.close()
 
 
 def test_transcript_compaction_boundary_hides_earlier_messages(tmp_path: Path):

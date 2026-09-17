@@ -80,6 +80,8 @@ export const agentEventTypes: AgentEventType[] = [
   "subagent_started",
   "subagent_completed",
   "progress",
+  "context_compaction_started",
+  "context_compaction_completed",
   "task_confirmation_required",
   "review_required",
   "changeset_ready",
@@ -954,6 +956,11 @@ export function AppShell() {
         reject: t("chat.maintenance.reject"),
         unfinished: t("chat.maintenance.unfinished"),
         failed: t("chat.maintenance.failed"),
+      },
+      compaction: {
+        started: t("chat.compactionStarted"),
+        completed: t("chat.compactionCompleted"),
+        skipped: t("chat.compactionSkipped"),
       },
       timelineContext: context ?? buildTimelineContext(),
     };

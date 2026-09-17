@@ -800,7 +800,8 @@ def _tool_result_preview(tool_name: str, content: str) -> dict[str, Any] | None:
 def _signal_key(segment: str, signal: RuntimeSignal) -> tuple[str, AgentEventType]:
     """Build a stable deduplication key for non-streaming lifecycle signals."""
     tool_call_id = str((signal.data or {}).get("tool_call_id") or "")
-    identity = tool_call_id or signal.message[:200] or segment
+    compaction_id = str((signal.data or {}).get("compaction_id") or "")
+    identity = tool_call_id or compaction_id or signal.message[:200] or segment
     return (f"{signal.type.value}:{identity}", signal.type)
 
 
@@ -879,9 +880,14 @@ def _signals_from_stream_item(
                         continue
                     responses.append(
                         RuntimeSignal(
-                            type=AgentEventType.MESSAGE_DELTA,
-                            message="",
-                            data={"source": "compaction"},
+                            type=AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+                            message="Context compacted.",
+                            data={
+                                "mode": "provider_native",
+                                "changed": True,
+                                "compaction_id": block.get("id"),
+                                "source": "compaction",
+                            },
                             model_call_id=model_call_id,
                             model_message={
                                 "kind": "compaction",
@@ -1216,6 +1222,9 @@ class AgentRuntimeManager:
         # except 据此改写分类——原始异常是"连接已关闭"一类，classify_agent_error 会把它
         # 归成 SYSTEM，读起来像我们的 bug，而它其实是超时或用户取消。
         self._forced_closes: dict[str, str] = {}
+        # provider-native compaction 的开始只能按阈值预判；完成信号到达前
+        # 保持 pending，以便流结束没有 opaque item 时给 UI 一个明确的收尾。
+        self._provider_compaction_pending: dict[str, dict[str, int]] = {}
         self._running_run_id: str | None = None
         self._watchdog = _StreamWatchdog(self._on_stream_watchdog_expire)
         self._watchdog.start()
@@ -1772,6 +1781,60 @@ class AgentRuntimeManager:
         )
         return digest.hexdigest()[:16]
 
+    def _append_context_compaction_started(
+        self,
+        run_id: str,
+        *,
+        mode: str,
+        estimated_tokens: int,
+        threshold: int,
+    ) -> None:
+        if mode == "provider_native":
+            self._provider_compaction_pending[run_id] = {
+                "estimated_tokens": estimated_tokens,
+                "threshold": threshold,
+            }
+        self.store.append_event(
+            run_id,
+            AgentEventType.CONTEXT_COMPACTION_STARTED,
+            message="Compacting context.",
+            data={
+                "mode": mode,
+                "estimated_tokens": estimated_tokens,
+                "threshold": threshold,
+            },
+        )
+
+    def _append_context_compaction_completed(
+        self,
+        run_id: str,
+        *,
+        mode: str,
+        changed: bool,
+        estimated_tokens: int,
+        threshold: int,
+        retained_messages: int = 0,
+        new_epoch: int | None = None,
+    ) -> None:
+        self._provider_compaction_pending.pop(run_id, None)
+        self.store.append_event(
+            run_id,
+            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+            message=(
+                "Context compacted."
+                if changed
+                else "Context compaction not triggered."
+            ),
+            data={
+                "mode": mode,
+                "changed": changed,
+                "estimated_tokens": estimated_tokens,
+                "threshold": threshold,
+                "retained_messages": retained_messages,
+                "new_epoch": new_epoch,
+            },
+        )
+
     def _prepare_v2_transcript(
         self,
         run: AgentRun,
@@ -1786,11 +1849,18 @@ class AgentRuntimeManager:
         policy = self._cache_policy_for_run(run)
         records = self.store.list_model_messages(run.thread_id)
         threshold = policy.compact_threshold
+        estimated_tokens = estimate_transcript_tokens(records) if records else 0
         if (
             not policy.provider_native_compaction
             and records
-            and estimate_transcript_tokens(records) > threshold
+            and estimated_tokens > threshold
         ):
+            self._append_context_compaction_started(
+                run.run_id,
+                mode="local",
+                estimated_tokens=estimated_tokens,
+                threshold=threshold,
+            )
             prefix, tail = split_for_compaction(
                 records,
                 retained_tokens=settings.agent_context_retained_tokens,
@@ -1819,6 +1889,28 @@ class AgentRuntimeManager:
                         tool_call_id=record.get("tool_call_id"),
                         name=record.get("name"),
                     )
+            self._append_context_compaction_completed(
+                run.run_id,
+                mode="local",
+                changed=bool(summary),
+                estimated_tokens=estimated_tokens,
+                threshold=threshold,
+                retained_messages=len(tail) if summary else 0,
+                new_epoch=self.store.current_transcript_epoch(run.thread_id),
+            )
+        elif (
+            policy.provider_native_compaction
+            and records
+            and estimated_tokens > threshold
+        ):
+            # provider 不提供“开始压缩”回调；这是基于有效窗口的预判，真正
+            # completed(changed=true) 只在收到 opaque compaction item 时发出。
+            self._append_context_compaction_started(
+                run.run_id,
+                mode="provider_native",
+                estimated_tokens=estimated_tokens,
+                threshold=threshold,
+            )
 
         self.store.append_message(
             thread_id=run.thread_id,
@@ -2376,6 +2468,8 @@ class AgentRuntimeManager:
                         cache_creation_input_tokens += (
                             signal.cache_creation_input_tokens
                         )
+                    if signal.type == AgentEventType.CONTEXT_COMPACTION_COMPLETED:
+                        self._provider_compaction_pending.pop(run_id, None)
                     if signal.type == AgentEventType.TOOL_STARTED:
                         # Streaming and non-streaming paths can both surface the same
                         # call id (messages chunk + assembled updates AIMessage); the
@@ -2489,6 +2583,26 @@ class AgentRuntimeManager:
                 with suppress(Exception):
                     self.store.set_run_checkpoint(
                         run_id, latest_checkpoint_id(adapter, thread_id, run_id)
+                    )
+            pending_compaction = self._provider_compaction_pending.pop(
+                run_id, None
+            )
+            if pending_compaction is not None:
+                with suppress(Exception):
+                    self.store.append_event(
+                        run_id,
+                        AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+                        message="Context compaction not triggered.",
+                        data={
+                            "mode": "provider_native",
+                            "changed": False,
+                            "estimated_tokens": pending_compaction[
+                                "estimated_tokens"
+                            ],
+                            "threshold": pending_compaction["threshold"],
+                            "retained_messages": 0,
+                            "new_epoch": None,
+                        },
                     )
         assistant_text = "".join(assistant_text_parts).strip()
         if final_answer is None and assistant_text and not question_pending:
@@ -2867,6 +2981,7 @@ class AgentRuntimeManager:
                     AgentEventType.REASONING_DELTA,
                     AgentEventType.TOOL_STARTED,
                     AgentEventType.FINAL_RESPONSE,
+                    AgentEventType.CONTEXT_COMPACTION_COMPLETED,
                 }
             }
             new_model_ids = model_ids - seen_model_call_ids

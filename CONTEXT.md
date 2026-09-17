@@ -61,6 +61,10 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
   按 `200K / 400K / 512K / 1M` 四档调整，保存后重启生效。
 - **compaction boundary**：最新一条 `kind=compaction` 的模型消息；prompt loader
   只加载该 boundary 及其后的消息，之前的记录保留用于审计但不进入当前 prompt。
+- **上下文压缩事件**：`context_compaction_started` 与
+  `context_compaction_completed` 持久化事件，供 Agent 时间线显示“正在压缩”
+  和“已压缩/未触发压缩”；事件只携带模式、估算 token、阈值等元数据，不暴露
+  摘要正文或 provider opaque item。
 - **promote**：用户经 ask_user_question 同意后，把附件提升为 raw/<source_id>/ 正式源
   （原件 + 提取文本 + meta.json），登记 data/runtime/sources/<source_id>.json，并提交 git。
 - **预置源登记（raw scan）**：用户从产品侧发起的"扫描并登记 raw/"动作，按目录名

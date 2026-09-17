@@ -346,6 +346,51 @@ describe("reduceAgentRunMessages timeline", () => {
     if (verifyNode.kind === "status") expect(verifyNode.tone).toBe("info");
   });
 
+  it("maps context compaction events to localized status nodes", () => {
+    const compactionLabels = {
+      ...labels,
+      compaction: {
+        started: "正在压缩上下文…",
+        completed: "上下文已压缩",
+        skipped: "上下文未触发压缩",
+      },
+    };
+    const started = reduceAgentRunMessages(
+      [],
+      event(1, "context_compaction_started", { mode: "local" }, "Compacting context."),
+      compactionLabels,
+    );
+    const startNode = (started[0].timeline ?? []).at(-1);
+    expect(startNode?.kind).toBe("status");
+    if (startNode?.kind === "status") {
+      expect(startNode.tone).toBe("info");
+      expect(startNode.label).toBe("正在压缩上下文…");
+    }
+
+    const completed = reduceAgentRunMessages(
+      started,
+      event(2, "context_compaction_completed", { mode: "local", changed: true }, "Context compacted."),
+      compactionLabels,
+    );
+    const completedNode = (completed[0].timeline ?? []).at(-1);
+    expect(completedNode?.kind).toBe("status");
+    if (completedNode?.kind === "status") {
+      expect(completedNode.tone).toBe("success");
+      expect(completedNode.label).toBe("上下文已压缩");
+    }
+
+    const skipped = reduceAgentRunMessages(
+      started,
+      event(3, "context_compaction_completed", { mode: "provider_native", changed: false }, "Context compaction not triggered."),
+      compactionLabels,
+    );
+    const skippedNode = (skipped[0].timeline ?? []).at(-1);
+    if (skippedNode?.kind === "status") {
+      expect(skippedNode.tone).toBe("warning");
+      expect(skippedNode.label).toBe("上下文未触发压缩");
+    }
+  });
+
   it("does not duplicate the answer when text nodes already streamed", () => {
     const narrated = reduceAgentRunMessages([], event(1, "message_delta", {}, "答案第一段"), labels);
     const finished = reduceAgentRunMessages(narrated, event(2, "final_response", { answer: "答案第一段" }, "答案第一段"), labels);

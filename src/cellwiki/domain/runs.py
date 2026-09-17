@@ -66,6 +66,8 @@ class AgentEventType(str, Enum):
     SUBAGENT_STARTED = "subagent_started"   # 子智能体启动
     SUBAGENT_COMPLETED = "subagent_completed"  # 子智能体完成
     PROGRESS = "progress"                   # 进度更新
+    CONTEXT_COMPACTION_STARTED = "context_compaction_started"    # 上下文开始压缩
+    CONTEXT_COMPACTION_COMPLETED = "context_compaction_completed"  # 上下文压缩完成/跳过
     TASK_CONFIRMATION_REQUIRED = "task_confirmation_required"  # 需要确认动作型任务
     REVIEW_REQUIRED = "review_required"     # 需要人工审查
     CHANGESET_READY = "changeset_ready"     # ChangeSet 已就绪

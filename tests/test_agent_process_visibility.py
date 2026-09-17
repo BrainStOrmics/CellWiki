@@ -318,10 +318,18 @@ def test_stream_item_emits_compaction_model_message():
         id="call_compaction",
     )
     signals = list(_signals_from_stream_item(("messages", (chunk, {}))))
-    message = next(signal.model_message for signal in signals if signal.model_message)
+    completed = next(
+        signal
+        for signal in signals
+        if signal.type == AgentEventType.CONTEXT_COMPACTION_COMPLETED
+    )
+    message = completed.model_message
+    assert message is not None
     assert message["kind"] == "compaction"
     assert message["content"]["provider"] == "openai"
     assert message["content"]["item"]["id"] == "cmp_1"
+    assert completed.data["mode"] == "provider_native"
+    assert completed.data["changed"] is True
 
 
 def test_reasoning_delta_keeps_word_boundaries_across_chunks():

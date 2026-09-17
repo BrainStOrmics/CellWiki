@@ -240,6 +240,8 @@ export type AgentEventType =
   | "subagent_started"
   | "subagent_completed"
   | "progress"
+  | "context_compaction_started"
+  | "context_compaction_completed"
   | "task_confirmation_required"
   | "review_required"
   | "changeset_ready"

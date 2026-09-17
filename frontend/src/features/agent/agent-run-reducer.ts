@@ -25,6 +25,11 @@ export type AgentRunReducerLabels = {
   /** 系统维护回执的 verdict -> 用户可读的一句话（verdict 与 workspace_maintenance.py
    * 一一对应）；maintenance_failed 统一取 failed；漏译的 verdict 回落事件原文。 */
   maintenance: Record<string, string>;
+  compaction?: {
+    started: string;
+    completed: string;
+    skipped: string;
+  };
   timelineContext?: { label: string; detail?: string } | null;
 };
 
@@ -35,6 +40,8 @@ const processEventTypes = new Set([
   "subagent_started",
   "subagent_completed",
   "progress",
+  "context_compaction_started",
+  "context_compaction_completed",
   "review_required",
   "changeset_ready",
   "verification",
@@ -45,6 +52,8 @@ const statusTones: Record<string, AgentTimelineStatusTone> = {
   subagent_started: "info",
   subagent_completed: "success",
   progress: "info",
+  context_compaction_started: "info",
+  context_compaction_completed: "success",
   review_required: "warning",
   changeset_ready: "success",
   verification: "info",
@@ -62,6 +71,23 @@ function localizedError(event: AgentEvent, labels: AgentRunReducerLabels): strin
   const code = event.data?.error_type;
   if (typeof code !== "string" || !code) return null;
   return labels.errorTypes[code] ?? null;
+}
+
+function compactionLabel(event: AgentEvent, labels: AgentRunReducerLabels): string {
+  if (event.type === "context_compaction_started") {
+    return labels.compaction?.started ?? event.message;
+  }
+  const changed = (event.data as Record<string, unknown>).changed !== false;
+  return changed
+    ? labels.compaction?.completed ?? event.message
+    : labels.compaction?.skipped ?? event.message;
+}
+
+function compactionTone(event: AgentEvent): AgentTimelineStatusTone {
+  if (event.type === "context_compaction_started") return "info";
+  return (event.data as Record<string, unknown>).changed === false
+    ? "warning"
+    : "success";
 }
 
 /** Pure projection from durable run events to the user-visible transcript. */
@@ -287,7 +313,9 @@ function settleRun(
 function processStepFromEvent(event: AgentEvent): AgentProcessStep {
   const phase = event.type === "tool_failed" || event.type === "error"
     ? "failed"
-    : event.type === "tool_started" || event.type === "subagent_started"
+    : event.type === "tool_started"
+      || event.type === "subagent_started"
+      || event.type === "context_compaction_started"
       ? "running"
       : "completed";
   return { ...event, phase };
@@ -399,6 +427,17 @@ function appendProcessEventNode(
       const maintenanceTone: AgentTimelineStatusTone = maintenanceKind === "maintenance_failed" ? "warning" : "success";
       return [...base, { kind: "status", tone: maintenanceTone, label, step }];
     }
+  }
+  if (
+    event.type === "context_compaction_started"
+    || event.type === "context_compaction_completed"
+  ) {
+    return [...base, {
+      kind: "status",
+      tone: compactionTone(event),
+      label: compactionLabel(event, labels),
+      step,
+    }];
   }
   const tone: AgentTimelineStatusTone = event.type === "error" ? "danger" : (statusTones[event.type] ?? "info");
   // 失败 run 真正被读到的就是这一条：气泡只在"没有时间线节点"时才渲染 message.text，

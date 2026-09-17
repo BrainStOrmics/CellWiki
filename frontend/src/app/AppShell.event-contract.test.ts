@@ -27,6 +27,8 @@ const EVENT_TYPE_CONTRACT: Record<AgentEventType, true> = {
   subagent_started: true,
   subagent_completed: true,
   progress: true,
+  context_compaction_started: true,
+  context_compaction_completed: true,
   task_confirmation_required: true,
   review_required: true,
   changeset_ready: true,

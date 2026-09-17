@@ -2282,6 +2282,8 @@ class RuntimeStore:
             AgentEventType.SUBAGENT_STARTED,
             AgentEventType.SUBAGENT_COMPLETED,
             AgentEventType.PROGRESS,
+            AgentEventType.CONTEXT_COMPACTION_STARTED,
+            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
             AgentEventType.REVIEW_REQUIRED,
             AgentEventType.CHANGESET_READY,
             AgentEventType.VERIFICATION,
@@ -2302,7 +2304,11 @@ class RuntimeStore:
                 "failed"
                 if event.type in {AgentEventType.TOOL_FAILED, AgentEventType.ERROR}
                 else "running"
-                if event.type in {AgentEventType.TOOL_STARTED, AgentEventType.SUBAGENT_STARTED}
+                if event.type in {
+                    AgentEventType.TOOL_STARTED,
+                    AgentEventType.SUBAGENT_STARTED,
+                    AgentEventType.CONTEXT_COMPACTION_STARTED,
+                }
                 else "completed"
             )
             steps.append(
