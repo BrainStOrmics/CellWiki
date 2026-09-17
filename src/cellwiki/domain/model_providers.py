@@ -41,6 +41,10 @@ class ProviderModel(ContractModel):
     id: str                          # wire 模型名（请求里发送的 model 值）
     display_name: str | None = None  # 展示名；缺省用 id
     enabled: bool = True
+    # Provider-declared maximum input capacity. None means "not declared";
+    # prompt budgeting then uses one conservative fallback, never model-name
+    # inference. The UI exposes this field so users can replace the fallback.
+    max_input_tokens: int | None = Field(default=None, ge=8_000, le=2_000_000)
 
     @field_validator("id")
     @classmethod
@@ -179,11 +183,13 @@ class ResolvedModelSpec:
     protocol: str
     api_key: str
     request_overrides: dict[str, Any]
+    max_input_tokens: int | None = None
 
     def __repr__(self) -> str:  # pragma: no cover - trivial
         return (
             f"ResolvedModelSpec(provider_id={self.provider_id!r}, "
             f"model_id={self.model_id!r}, base_url={self.base_url!r}, "
             f"protocol={self.protocol!r}, api_key=***, "
-            f"request_overrides={list(self.request_overrides)!r})"
+            f"request_overrides={list(self.request_overrides)!r}, "
+            f"max_input_tokens={self.max_input_tokens!r})"
         )

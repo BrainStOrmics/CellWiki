@@ -112,6 +112,7 @@ class ProviderModelDraft(BaseModel):
     id: str = Field(min_length=1, max_length=300)
     display_name: str | None = Field(default=None, max_length=120)
     enabled: bool = True
+    max_input_tokens: int | None = Field(default=None, ge=8_000, le=2_000_000)
 
 
 class ProviderCreateRequest(BaseModel):

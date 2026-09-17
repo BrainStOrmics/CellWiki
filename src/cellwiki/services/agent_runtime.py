@@ -83,7 +83,6 @@ from cellwiki.services.prompt_layers import (
     build_r1_r5_block,
     build_turn_context,
     compact_transcript,
-    warn_if_narrow_window,
 )
 from cellwiki.services.prompt_runtime import (
     PromptRunContext,
@@ -1299,9 +1298,6 @@ class AgentRuntimeManager:
             max_runtime_seconds=max(settings.agent_run_max_seconds, MAX_RUN_SECONDS_FLOOR),
         )
         effective_model_name = (model_name if model_name is not None else settings.openai_model) or ""
-        warn_if_narrow_window(
-            effective_model_name.casefold(), settings.agent_context_max_tokens
-        )
         run = AgentRun(
             run_id=run_id,
             thread_id=thread_id,
@@ -1730,9 +1726,18 @@ class AgentRuntimeManager:
         if model_spec is not None:
             model = build_coordinator_model(model_spec)
             cache_policy = prompt_cache_policy_for_spec(model_spec)
+            model_label = model_spec.model_id
         else:
             model = build_model()
             cache_policy = prompt_cache_policy_for_settings()
+            model_label = settings.openai_model
+        if cache_policy.input_window_source == "fallback":
+            logger.warning(
+                "model %s does not declare max_input_tokens; using conservative "
+                "fallback %s for prompt compaction",
+                model_label,
+                cache_policy.model_input_tokens,
+            )
         self._agent_model = model
         self._built_cache_policy = cache_policy
         return build_wiki_agent(
@@ -1780,10 +1785,7 @@ class AgentRuntimeManager:
         )
         policy = self._cache_policy_for_run(run)
         records = self.store.list_model_messages(run.thread_id)
-        threshold = policy.compact_threshold or int(
-            settings.agent_context_max_tokens
-            * settings.agent_context_auto_compact_ratio
-        )
+        threshold = policy.compact_threshold
         if (
             not policy.provider_native_compaction
             and records

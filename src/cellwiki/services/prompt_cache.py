@@ -14,6 +14,7 @@ from cellwiki.domain.model_provider import (
 CacheMode = Literal["off", "implicit", "explicit"]
 
 _OFFICIAL_OPENAI_HOSTS = {"api.openai.com"}
+FALLBACK_MODEL_INPUT_TOKENS = 65_536
 
 
 @dataclass(frozen=True)
@@ -24,8 +25,11 @@ class PromptCachePolicy:
     protocol: str
     max_breakpoints: int
     provider_native_compaction: bool
-    compact_threshold: int | None
+    compact_threshold: int
     breakpoint_key: str
+    model_input_tokens: int
+    input_window_source: Literal["configured", "fallback"]
+    effective_context_limit: int
 
     @property
     def tool_result_breakpoints(self) -> int:
@@ -69,12 +73,18 @@ def resolve_prompt_cache_policy(
     model_id: str,
     base_url: str = "",
     request_overrides: dict[str, Any] | None = None,
-    declared_window: int | None = None,
+    model_input_tokens: int | None = None,
+    fallback_input_tokens: int = FALLBACK_MODEL_INPUT_TOKENS,
     context_max_tokens: int = 512_000,
-    output_reserve_tokens: int = 16_384,
     auto_compact_ratio: float = 0.8,
 ) -> PromptCachePolicy:
-    """Resolve cache mode and compaction behavior without mutating provider options."""
+    """Resolve cache mode and the single compaction threshold for one run.
+
+    The model name is intentionally not consulted for window resolution. A
+    provider catalog entry declares its input capacity; a legacy configuration
+    may do the same through ``OPENAI_MAX_INPUT_TOKENS``. When neither is
+    present, the policy uses one conservative process-wide fallback.
+    """
 
     protocol = normalize_wire_protocol(protocol)
     overrides = dict(request_overrides or {})
@@ -91,32 +101,34 @@ def resolve_prompt_cache_policy(
         default_mode = "implicit"
     mode = _normalized_mode(overrides.pop("cache_mode", "auto"), default_mode)
 
-    if mode == "off":
-        return PromptCachePolicy(
-            mode=mode,
-            protocol=protocol,
-            max_breakpoints=0,
-            provider_native_compaction=False,
-            compact_threshold=None,
-            breakpoint_key="",
-        )
+    if fallback_input_tokens <= 0:
+        raise ValueError("fallback_input_tokens must be positive")
+    if context_max_tokens <= 0:
+        raise ValueError("context_max_tokens must be positive")
+    if not 0.0 < auto_compact_ratio <= 1.0:
+        raise ValueError("auto_compact_ratio must be between 0 and 1")
 
-    if declared_window is not None:
-        effective_limit = min(
-            context_max_tokens,
-            max(1, declared_window - output_reserve_tokens),
-        )
-    else:
-        effective_limit = context_max_tokens
+    input_window_source: Literal["configured", "fallback"] = (
+        "configured" if model_input_tokens is not None else "fallback"
+    )
+    resolved_input_window = (
+        model_input_tokens
+        if model_input_tokens is not None
+        else fallback_input_tokens
+    )
+    if resolved_input_window <= 0:
+        raise ValueError("model_input_tokens must be positive")
+    effective_limit = min(context_max_tokens, resolved_input_window)
     compact_threshold = max(1_024, int(effective_limit * auto_compact_ratio))
 
     native_compaction = (
-        protocol == WIRE_PROTOCOL_RESPONSES
+        mode != "off"
+        and protocol == WIRE_PROTOCOL_RESPONSES
         and _supports_native_compaction(model_id, base_url)
     )
-    if protocol == WIRE_PROTOCOL_RESPONSES:
+    if mode != "off" and protocol == WIRE_PROTOCOL_RESPONSES:
         breakpoint_key = "prompt_cache_breakpoint" if mode == "explicit" else ""
-    elif protocol == WIRE_PROTOCOL_ANTHROPIC:
+    elif mode != "off" and protocol == WIRE_PROTOCOL_ANTHROPIC:
         breakpoint_key = "cache_control" if mode == "explicit" else ""
     else:
         breakpoint_key = ""
@@ -126,9 +138,17 @@ def resolve_prompt_cache_policy(
         protocol=protocol,
         max_breakpoints=4 if mode == "explicit" else 0,
         provider_native_compaction=native_compaction,
-        compact_threshold=compact_threshold if native_compaction else None,
+        compact_threshold=compact_threshold,
         breakpoint_key=breakpoint_key,
+        model_input_tokens=resolved_input_window,
+        input_window_source=input_window_source,
+        effective_context_limit=effective_limit,
     )
 
 
-__all__ = ["CacheMode", "PromptCachePolicy", "resolve_prompt_cache_policy"]
+__all__ = [
+    "CacheMode",
+    "FALLBACK_MODEL_INPUT_TOKENS",
+    "PromptCachePolicy",
+    "resolve_prompt_cache_policy",
+]

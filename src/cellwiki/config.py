@@ -17,7 +17,7 @@ from typing import Literal
 from cellwiki.services.logging_context import setup_structured_logging
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     # OpenAI 风格的 Base URL 无法说明服务端实现的是哪一种请求协议。
     # 显式配置可以避免 LangChain 根据模型名做出错误的自动切换。
     openai_api_protocol: str = "chat_completions"
+    # Legacy single-provider declarations do not have a provider catalog model
+    # entry, so the same input-capacity contract is available through .env.
+    openai_max_input_tokens: int | None = Field(
+        default=None, ge=8_000, le=2_000_000
+    )
     # 每个请求的超时时间，确保运行级取消和超时能在 HTTP 流停止时
     # 长论文结构化抽取的真实供应商尾延迟可超过 45 秒；默认 90 秒，
     # 同时保留 5-300 秒的显式配置范围。
@@ -116,8 +121,6 @@ class Settings(BaseSettings):
     agent_context_max_tokens: int = Field(default=512_000, ge=8_000, le=2_000_000)
     agent_context_auto_compact_ratio: float = Field(default=0.8, ge=0.5, le=0.95)
     agent_context_retained_tokens: int = Field(default=32_768, ge=4_000, le=200_000)
-    # ADR-0014：为输出和 provider 渲染预留的上下文 token。
-    agent_context_output_reserve_tokens: int = Field(default=16_384, ge=1_024, le=200_000)
     # ADR-0014：v2 使用 append-only 模型 transcript；legacy 仅用于旧 run 和回滚。
     agent_prompt_transcript: Literal["legacy", "v2"] = "v2"
     # ---- 附件感知与读取预算（附件驱动导入）----
@@ -127,6 +130,15 @@ class Settings(BaseSettings):
     # 开启后 coordinator 模型以流式请求调用 Responses API，正文/思考按增量
     # 推送；置 0（AGENT_STREAMING=0）一键回退为整块返回。
     agent_streaming: bool = True
+
+    @field_validator("openai_max_input_tokens", mode="before")
+    @classmethod
+    def _blank_max_input_tokens(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
 
     # ---- Run 作用域持久化 checkpoint（ADR-0010 决策 1/14）----
     # sqlite：图状态落 data/runtime/checkpoints.sqlite，跨重启可续跑（默认）。

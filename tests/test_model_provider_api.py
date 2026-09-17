@@ -107,6 +107,31 @@ def test_provider_crud_roundtrip_and_sanitization(client: TestClient) -> None:
     assert deleted.json()["default_selection"] is None
 
 
+def test_provider_model_input_window_roundtrip(client: TestClient) -> None:
+    created = client.post(
+        "/api/model-providers",
+        json={
+            "provider_id": "gw-window",
+            "name": "Gateway Window",
+            "models": [
+                {"id": "model-a", "max_input_tokens": 131_072},
+                {"id": "model-b"},
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+    models = created.json()["providers"][0]["models"]
+    assert models[0]["max_input_tokens"] == 131_072
+    assert models[1]["max_input_tokens"] is None
+
+    updated = client.put(
+        "/api/model-providers/gw-window",
+        json={"models": [{"id": "model-a", "max_input_tokens": 65_536}]},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["providers"][0]["models"][0]["max_input_tokens"] == 65_536
+
+
 def test_provider_validation_and_not_found(client: TestClient) -> None:
     assert client.post(
         "/api/model-providers",

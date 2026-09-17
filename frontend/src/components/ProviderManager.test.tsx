@@ -122,6 +122,9 @@ describe("ProviderManager", () => {
     expect(idInputs).toHaveLength(2);
     fireEvent.change(idInputs[0], { target: { value: "openrouter/auto" } });
     fireEvent.change(screen.getAllByPlaceholderText("显示名称")[0], { target: { value: "Auto Router" } });
+    fireEvent.change(screen.getAllByPlaceholderText("最大输入 token")[0], {
+      target: { value: "131072" },
+    });
     fireEvent.click(screen.getByRole("button", { name: /保存供应商/ }));
 
     await waitFor(() => expect(postJson).toHaveBeenCalledWith(
@@ -130,7 +133,12 @@ describe("ProviderManager", () => {
         name: "OpenRouter",
         api_key: null,
         // 未填调用名的空行在保存时丢弃
-        models: [{ id: "openrouter/auto", display_name: "Auto Router", enabled: true }],
+        models: [{
+          id: "openrouter/auto",
+          display_name: "Auto Router",
+          enabled: true,
+          max_input_tokens: 131072,
+        }],
       }),
     ));
     // 保存后仍选中新建的供应商
@@ -296,7 +304,12 @@ describe("ProviderManager", () => {
         name: "Anthropic 官方",
         base_url: "https://api.anthropic.com",
         protocol: "anthropic",
-        models: [{ id: "claude-sonnet-4-5-20250929", display_name: null, enabled: true }],
+        models: [{
+          id: "claude-sonnet-4-5-20250929",
+          display_name: null,
+          enabled: true,
+          max_input_tokens: null,
+        }],
       }),
     ));
   });

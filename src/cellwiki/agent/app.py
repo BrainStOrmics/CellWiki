@@ -21,6 +21,7 @@ from deepagents import (
     register_harness_profile,
 )
 from deepagents.backends import StateBackend
+from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import SystemMessage, ToolMessage
@@ -53,7 +54,6 @@ from cellwiki.services.prompt_cache import (
 )
 from cellwiki.services.prompt_layers import (
     LAYER_A_TEXT,
-    resolve_declared_window,
     schema_prompt_block,
 )
 from cellwiki.services.prompt_runtime import current_prompt_run_context
@@ -104,9 +104,8 @@ def prompt_cache_policy_for_spec(spec: ResolvedModelSpec) -> PromptCachePolicy:
         model_id=spec.model_id,
         base_url=spec.base_url,
         request_overrides=spec.request_overrides,
-        declared_window=resolve_declared_window(spec.model_id),
+        model_input_tokens=spec.max_input_tokens,
         context_max_tokens=settings.agent_context_max_tokens,
-        output_reserve_tokens=settings.agent_context_output_reserve_tokens,
         auto_compact_ratio=settings.agent_context_auto_compact_ratio,
     )
 
@@ -119,9 +118,8 @@ def prompt_cache_policy_for_settings(
         model_id=configuration.openai_model,
         base_url=configuration.openai_base_url,
         request_overrides={},
-        declared_window=resolve_declared_window(configuration.openai_model),
+        model_input_tokens=configuration.openai_max_input_tokens,
         context_max_tokens=configuration.agent_context_max_tokens,
-        output_reserve_tokens=configuration.agent_context_output_reserve_tokens,
         auto_compact_ratio=configuration.agent_context_auto_compact_ratio,
     )
 
@@ -354,7 +352,12 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
                 "move_folder",
             }
         ),
-        excluded_middleware=frozenset({cast(Any, TodoListMiddleware)}),
+        excluded_middleware=frozenset(
+            {
+                cast(Any, TodoListMiddleware),
+                cast(Any, SummarizationMiddleware),
+            }
+        ),
     )
     for provider in ("openai", "anthropic"):
         register_harness_profile(provider, profile)

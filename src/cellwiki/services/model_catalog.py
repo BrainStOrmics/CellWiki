@@ -44,6 +44,19 @@ class ProviderNotFoundError(ModelCatalogError):
     """选择或操作引用了不存在的供应商；API 层映射为 404。"""
 
 
+def _optional_positive_int(value: object, *, label: str) -> int | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = int(raw)
+    except ValueError as error:
+        raise ModelCatalogError(f"{label} must be an integer") from error
+    if parsed <= 0:
+        raise ModelCatalogError(f"{label} must be positive")
+    return parsed
+
+
 # 密钥条目协议：CredentialStore 与测试替身都满足该形状（结构化类型）。
 class _SecretEntry(Protocol):
     def get(self) -> str | None: ...
@@ -139,7 +152,15 @@ class ModelCatalogService:
             base_url=snapshot.get("base_url", ""),
             protocol=snapshot.get("protocol") or "chat_completions",
             enabled=True,
-            models=[ProviderModel(id=model)],
+            models=[
+                ProviderModel(
+                    id=model,
+                    max_input_tokens=_optional_positive_int(
+                        snapshot.get("max_input_tokens", ""),
+                        label="OPENAI_MAX_INPUT_TOKENS",
+                    ),
+                )
+            ],
             source="legacy",
         )
         api_key = (snapshot.get("api_key") or "").strip()
@@ -425,6 +446,7 @@ class ModelCatalogService:
                 protocol=provider.protocol,
                 api_key=self._read_secret(provider.id) or "",
                 request_overrides=dict(provider.request_overrides),
+                max_input_tokens=model.max_input_tokens,
             )
 
     def scrub_secrets(self, message: str) -> str:

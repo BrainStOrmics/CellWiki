@@ -7,19 +7,16 @@
 #   快照注入为系统消息。
 # Layer C 按需注入：文件内容 / git diff / lint 报告 / run_powershell 输出由工具
 #   返回（不在启动时静态注入）。
-# 会话历史上限 512K，压缩阈值 80%，保留窗口 32K，压缩后注入 R1-R5；六类摘要。
-# 模型声明窗口 < 上限时启动期非阻断 warning。
+# 会话历史上限与压缩阈值由 prompt cache policy 统一解析；实际窗口来自模型
+# 配置声明或单一保守 fallback，不再按模型名匹配。压缩保留窗口 32K，六类摘要。
 # =============================================================================
 
 """Phase 5 prompt layering: Layer A/B/C, bounded compaction, R1-R5, six summaries."""
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable
-
-logger = logging.getLogger(__name__)
+from typing import Any
 
 # 估算量：1 token ≈ 4 字符（英文为主的知识库文本的常用粗估）
 CHARS_PER_TOKEN = 4
@@ -33,21 +30,6 @@ _SUMMARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     "pending_questions": ("待确认", "?", "问题", "question", "请确认"),
     "corrections": ("纠正", "更正", "修正", "correction", "错误", "errata"),
 }
-
-# 已知模型声明窗口（token）。未知模型返回 None -> 不告警。
-_KNOWN_MODEL_WINDOWS: tuple[tuple[str, int], ...] = (
-    ("gpt-4o", 128_000),
-    ("gpt-4.1", 1_000_000),
-    ("gpt-4-turbo", 128_000),
-    ("gpt-4", 128_000),
-    ("gpt-3.5", 16_385),
-    ("deepseek-chat", 65_536),
-    ("deepseek-reasoner", 128_000),
-    ("deepseek-v3", 65_536),
-    ("deepseek-v4", 128_000),
-    ("qwen2.5", 131_072),
-    ("qwen3", 131_072),
-)
 
 # Layer A：静态基线（app.py 的 SYSTEM_PROMPT 来自这里）。
 # 结构：定位与不变量 -> 意图分诊 -> 工具合同 -> 输出纪律 -> 预算 -> 术语。
@@ -136,33 +118,6 @@ tools beyond this whitelist. Answer in the user's language.
 def estimate_tokens(text: str) -> int:
     """Rough token estimate (en/zh mixed markdown): chars / 4."""
     return max(0, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
-
-
-def resolve_declared_window(model_name: str | None) -> int | None:
-    """Return the known declared context window for a model name, else None."""
-    lowered = (model_name or "").lower()
-    for marker, window in _KNOWN_MODEL_WINDOWS:
-        if marker in lowered:
-            return window
-    return None
-
-
-def warn_if_narrow_window(
-    model_name: str | None,
-    configured_max_tokens: int,
-    *,
-    emit: Callable[[str], None] = lambda text: logger.warning(text),
-) -> bool:
-    """非阻断告警：模型声明窗口小于配置上限时记录 warning，不改变行为。"""
-    declared = resolve_declared_window(model_name)
-    if declared is not None and declared < configured_max_tokens:
-        emit(
-            "model window is below AGENT_CONTEXT_MAX_TOKENS: declared "
-            f"{declared} < configured {configured_max_tokens}; compaction will "
-            "keep the session within the model window."
-        )
-        return True
-    return False
 
 
 def _page_outline(markdown: str, max_headings: int = 24) -> list[str]:
@@ -527,8 +482,6 @@ __all__ = [
     "classify_intent_hint",
     "compact_transcript",
     "estimate_tokens",
-    "resolve_declared_window",
     "schema_prompt_block",
     "summarize_excerpts",
-    "warn_if_narrow_window",
 ]

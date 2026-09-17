@@ -359,6 +359,7 @@ export type ProviderModelInfo = {
   id: string;
   display_name?: string | null;
   enabled: boolean;
+  max_input_tokens?: number | null;
 };
 
 export type ModelProviderInfo = {

@@ -54,6 +54,10 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
 - **模型 transcript（model transcript）**：`agent_model_messages` 中按顺序追加的
   模型可见消息（user、run_context、assistant、tool_call、tool_result、
   compaction）；与 UI `agent_messages` 分离，是 v2 prompt 的唯一历史来源。
+- **模型输入窗口（declared model input window）**：供应商模型条目的
+  `max_input_tokens` 或 legacy `OPENAI_MAX_INPUT_TOKENS`；不按模型名推断。
+  未声明时使用单一保守 fallback，实际预算取
+  `min(AGENT_CONTEXT_MAX_TOKENS, 声明窗口或 fallback)`。
 - **compaction boundary**：最新一条 `kind=compaction` 的模型消息；prompt loader
   只加载该 boundary 及其后的消息，之前的记录保留用于审计但不进入当前 prompt。
 - **promote**：用户经 ask_user_question 同意后，把附件提升为 raw/<source_id>/ 正式源

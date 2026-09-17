@@ -183,6 +183,19 @@ def test_resolve_without_key_returns_spec_with_empty_key(service: ModelCatalogSe
     assert spec.api_key == ""
 
 
+def test_resolve_carries_explicit_model_input_tokens(service: ModelCatalogService) -> None:
+    service.create_provider(
+        **_provider_kwargs(
+            models=[ProviderModel(id="model-a1", max_input_tokens=131_072)]
+        ),
+        provider_id="gw",
+    )
+    spec = service.resolve(ModelSelection(provider_id="gw", model_id="model-a1"))
+    assert spec is not None
+    assert spec.max_input_tokens == 131_072
+    assert service.public_view()["providers"][0]["models"][0]["max_input_tokens"] == 131_072
+
+
 def test_default_selection_validation(service: ModelCatalogService) -> None:
     service.create_provider(**_provider_kwargs(), provider_id="gw")
     with pytest.raises(ModelCatalogError, match="no enabled model"):
@@ -251,6 +264,7 @@ def test_legacy_import_creates_default_provider(
                 "OPENAI_BASE_URL=https://legacy.example.com/v1",
                 "OPENAI_MODEL=qwen3.6-plus",
                 "OPENAI_API_PROTOCOL=responses",
+                "OPENAI_MAX_INPUT_TOKENS=131072",
             ]
         ),
         encoding="utf-8",
@@ -268,7 +282,14 @@ def test_legacy_import_creates_default_provider(
     assert provider["source"] == "legacy"
     assert provider["base_url"] == "https://legacy.example.com/v1"
     assert provider["protocol"] == "responses"
-    assert [model["id"] for model in provider["models"]] == ["qwen3.6-plus"]
+    assert provider["models"] == [
+        {
+            "id": "qwen3.6-plus",
+            "display_name": None,
+            "enabled": True,
+            "max_input_tokens": 131_072,
+        }
+    ]
     assert view["default_selection"] == {
         "provider_id": LEGACY_PROVIDER_ID,
         "model_id": "qwen3.6-plus",
@@ -281,6 +302,7 @@ def test_legacy_import_creates_default_provider(
     assert resolved.model_id == "qwen3.6-plus"
     assert resolved.api_key == "sk-legacy-key"
     assert resolved.protocol == "responses"
+    assert resolved.max_input_tokens == 131_072
     # .env 原样保留（回滚与回退链依赖它）。
     assert "OPENAI_MODEL=qwen3.6-plus" in (tmp_path / ".env").read_text(encoding="utf-8")
 

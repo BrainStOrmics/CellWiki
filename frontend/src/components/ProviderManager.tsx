@@ -36,7 +36,12 @@ type ProviderDraft = {
   base_url: string;
   protocol: WireProtocol;
   enabled: boolean;
-  models: { id: string; display_name?: string | null; enabled: boolean }[];
+  models: {
+    id: string;
+    display_name?: string | null;
+    enabled: boolean;
+    max_input_tokens?: number | null;
+  }[];
   api_key: string;
   clear_api_key: boolean;
   overrides_text: string;
@@ -392,6 +397,7 @@ export function ProviderManager({
       id: model.id.trim(),
       display_name: model.display_name?.trim() || null,
       enabled: model.enabled,
+      max_input_tokens: model.max_input_tokens ?? null,
     }))
     .filter((model) => model.id);
 
@@ -520,6 +526,24 @@ export function ProviderManager({
                           value={model.display_name ?? ""}
                           onChange={(event) => updateModel(index, { display_name: event.target.value })}
                           placeholder={t("settings.providerModelDisplayName")}
+                        />
+                        <input
+                          className="provider-model-window-input"
+                          type="number"
+                          min={8000}
+                          max={2000000}
+                          value={model.max_input_tokens ?? ""}
+                          onChange={(event) => {
+                            const raw = event.target.value;
+                            const parsed = Number(raw);
+                            updateModel(index, {
+                              max_input_tokens: raw === "" || !Number.isFinite(parsed)
+                                ? null
+                                : parsed,
+                            });
+                          }}
+                          placeholder={t("settings.providerModelMaxInputTokens")}
+                          aria-label={`${t("settings.providerModelMaxInputTokens")}: ${model.id}`}
                         />
                         <button
                           type="button"

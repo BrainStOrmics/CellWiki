@@ -12,9 +12,7 @@ from cellwiki.services.prompt_layers import (
     classify_intent_hint,
     compact_transcript,
     estimate_tokens,
-    resolve_declared_window,
     schema_prompt_block,
-    warn_if_narrow_window,
 )
 
 
@@ -168,22 +166,7 @@ def test_r1_r5_reinjection_block():
         assert marker in block
 
 
-def test_narrow_window_warning_is_non_blocking():
-    warned: list[str] = []
-    result = warn_if_narrow_window(
-        "gpt-4o", 512_000, emit=warned.append  # type: ignore[arg-type]
-    )
-    assert result is True
-    assert warned and "below AGENT_CONTEXT_MAX_TOKENS" in warned[0]
-    # 未知模型不告警；窗口充足不告警
-    assert warn_if_narrow_window("unknown-model", 512_000, emit=warned.append) is False  # type: ignore[arg-type]
-    assert warn_if_narrow_window("gpt-4.1", 512_000, emit=warned.append) is False  # type: ignore[arg-type]
-
-
-def test_declared_window_and_token_estimate():
-    assert resolve_declared_window("gpt-4o-mini") == 128_000
-    assert resolve_declared_window("deepseek-chat") == 65_536
-    assert resolve_declared_window("mystery") is None
+def test_token_estimate():
     assert estimate_tokens("abcd") == 1
     assert estimate_tokens("a" * 100) == 25
 

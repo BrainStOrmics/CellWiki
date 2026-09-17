@@ -209,6 +209,10 @@ def test_cache_policy_defaults_and_override():
     assert responses.provider_native_compaction is True
     assert responses.breakpoint_key == "prompt_cache_breakpoint"
     assert responses.tool_result_breakpoints == 3
+    assert responses.input_window_source == "fallback"
+    assert responses.model_input_tokens == 65_536
+    assert responses.effective_context_limit == 65_536
+    assert responses.compact_threshold == 52_428
 
     gateway = resolve_prompt_cache_policy(
         protocol="responses",
@@ -231,6 +235,25 @@ def test_cache_policy_defaults_and_override():
     )
     assert chat.mode == "implicit"
     assert chat.breakpoint_key == ""
+    # Model names are not consulted for window resolution: GPT-4.1 and an
+    # unknown id receive the same conservative fallback.
+    unknown = resolve_prompt_cache_policy(
+        protocol="chat_completions",
+        model_id="unknown-model",
+    )
+    assert unknown.model_input_tokens == chat.model_input_tokens
+    assert unknown.input_window_source == "fallback"
+
+    configured = resolve_prompt_cache_policy(
+        protocol="chat_completions",
+        model_id="gpt-4o",
+        model_input_tokens=128_000,
+        context_max_tokens=512_000,
+    )
+    assert configured.model_input_tokens == 128_000
+    assert configured.input_window_source == "configured"
+    assert configured.effective_context_limit == 128_000
+    assert configured.compact_threshold == 102_400
 
     off = resolve_prompt_cache_policy(
         protocol="anthropic",
@@ -238,6 +261,7 @@ def test_cache_policy_defaults_and_override():
         request_overrides={"cache_mode": "off"},
     )
     assert off.mode == "off"
+    assert off.compact_threshold == 52_428
 
 
 def test_explicit_cache_markers_cover_static_prefix_and_tool_result(tmp_path: Path):
@@ -247,8 +271,11 @@ def test_explicit_cache_markers_cover_static_prefix_and_tool_result(tmp_path: Pa
         protocol="responses",
         max_breakpoints=4,
         provider_native_compaction=False,
-        compact_threshold=None,
+        compact_threshold=52_428,
         breakpoint_key="prompt_cache_breakpoint",
+        model_input_tokens=65_536,
+        input_window_source="fallback",
+        effective_context_limit=65_536,
     )
     manager = AgentRuntimeManager(
         tmp_path,

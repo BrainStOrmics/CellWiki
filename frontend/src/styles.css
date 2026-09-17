@@ -2272,6 +2272,7 @@ select:focus-visible {
 }
 .provider-model-line .provider-model-id-input { flex: 1.4 1 0; }
 .provider-model-line .provider-model-display-input { flex: 1 1 0; }
+.provider-model-line .provider-model-window-input { flex: 0 1 110px; min-width: 86px; }
 .provider-model-default {
   display: grid; flex: 0 0 auto; width: 18px; height: 18px;
   border: 0; border-radius: 5px; color: var(--subtle); background: transparent;

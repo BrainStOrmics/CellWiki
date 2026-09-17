@@ -27,6 +27,7 @@ _DEFAULTS = {
     "OPENAI_BASE_URL": "",
     "OPENAI_MODEL": "qwen3.6-plus",
     "OPENAI_API_PROTOCOL": WIRE_PROTOCOL_CHAT_COMPLETIONS,
+    "OPENAI_MAX_INPUT_TOKENS": "",
     "LOG_LEVEL": "INFO",
     "APP_LANGUAGE": "zh-CN",
     "ENABLE_AGENT_MEMORY": "false",
@@ -82,6 +83,9 @@ class EnvironmentSettingsService:
             "openai_base_url": values["OPENAI_BASE_URL"],
             "openai_model": values["OPENAI_MODEL"],
             "openai_api_protocol": values["OPENAI_API_PROTOCOL"],
+            "openai_max_input_tokens": (
+                self._integer(values["OPENAI_MAX_INPUT_TOKENS"], default=0) or None
+            ),
             "openai_api_key_configured": bool(api_key),
             "openai_api_key_hint": self._mask_secret(api_key),
             "secret_storage": "system" if self._system_secret() else "env",
@@ -120,6 +124,7 @@ class EnvironmentSettingsService:
         log_level: str,
         app_language: str,
         openai_api_protocol: str | None = None,
+        openai_max_input_tokens: int | None = None,
         enable_agent_memory: bool = False,
         enable_external_research: bool = False,
         memory_recall_token_budget: int = 800,
@@ -133,6 +138,11 @@ class EnvironmentSettingsService:
                 current["OPENAI_API_PROTOCOL"]
                 if openai_api_protocol is None
                 else normalize_wire_protocol(openai_api_protocol)
+            ),
+            "OPENAI_MAX_INPUT_TOKENS": (
+                current["OPENAI_MAX_INPUT_TOKENS"]
+                if openai_max_input_tokens is None
+                else str(openai_max_input_tokens)
             ),
             "LOG_LEVEL": log_level.strip().upper(),
             "APP_LANGUAGE": app_language.strip(),
@@ -169,6 +179,7 @@ class EnvironmentSettingsService:
                 "OPENAI_BASE_URL",
                 "OPENAI_MODEL",
                 "OPENAI_API_PROTOCOL",
+                "OPENAI_MAX_INPUT_TOKENS",
                 "LOG_LEVEL",
                 "ENABLE_AGENT_MEMORY",
                 "ENABLE_EXTERNAL_RESEARCH",
@@ -205,6 +216,7 @@ class EnvironmentSettingsService:
             "base_url": values.get("OPENAI_BASE_URL", ""),
             "model": values.get("OPENAI_MODEL", ""),
             "protocol": values.get("OPENAI_API_PROTOCOL", ""),
+            "max_input_tokens": values.get("OPENAI_MAX_INPUT_TOKENS", ""),
             "api_key": api_key,
         }
 
