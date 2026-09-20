@@ -1907,6 +1907,327 @@ def test_auto_version_failure_marks_run_unfinished(tmp_path: Path):
         manager.close()
 
 
+# ---- 自动收口脏状态矩阵（2026-09-18 事故回归）----
+# 逐路径 add 对"已暂存的删除/改名旧路径"必现 fatal（pathspec 已不匹配任何
+# 文件）：88 页删除悬在已暂存态后，所有 run 的收口重复失败、全部落
+# unfinished。自动收口因此改为整树排除式 add + commit --only（与 add 圈
+# 同一范围）。取舍：index 里预暂存的系统维护文件改动（外来暂存）不卷入
+# wip commit，留在 index 等用户处置，见 test_auto_version_staged_system_files。
+# 页面走 schema 契约（wiki/cell_types/<id>.md 有效页）：删除页离开工作树
+# 后 lint 天然跳过，修改/新增页保持 lint 干净，schema gate 不会拦截收口。
+
+
+def _commit_pages(repo: Path, *standard_names: str) -> None:
+    """在基线里提交若干有效 wiki 页，供后续制造删除/修改类脏状态。"""
+    import subprocess
+
+    for name in standard_names:
+        path = repo / "wiki" / "cell_types" / f"{name}.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            valid_cell_type_page(standard_name=name, display_name=name),
+            encoding="utf-8",
+        )
+    subprocess.run(["git", "-C", str(repo), "add", "wiki"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-m", "seed pages"],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _stage_paths(repo: Path, *paths: str) -> None:
+    import subprocess
+
+    subprocess.run(
+        ["git", "-C", str(repo), "add", *paths], check=True, capture_output=True
+    )
+
+
+def _wip_commit_sha(repo: Path, run_id: str) -> str:
+    """返回该 run 的自动收口 commit sha（message 含确定性 run 标识）。"""
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "-C", str(repo), "log", "--format=%H %s"],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    wanted = f"wip(agent): auto-version uncommitted changes from run {run_id}"
+    for line in result.stdout.splitlines():
+        sha, _, subject = line.partition(" ")
+        if subject == wanted:
+            return sha
+    raise AssertionError(f"no auto-version commit for run {run_id}")
+
+
+def _name_status(repo: Path, sha: str) -> dict[str, str]:
+    import subprocess
+
+    result = subprocess.run(
+        # --no-renames：git 默认 rename 检测会把"删除 + 新文件"配对成一条
+        # R 记录，按文件断言时需要无歧义的 D/M/A 行
+        ["git", "-C", str(repo), "show", "--name-status", "--no-renames", "--format=", sha],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    rows: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            rows[parts[-1]] = parts[0]
+    return rows
+
+
+_SYSTEM_MAINTAINED = {"overview.md", "statistics.md", "log.md", "audit_report.md"}
+
+
+def _dirty_paths(repo: Path) -> set[str]:
+    raw = GitExecutor(repo).run("status", "--porcelain")
+    paths: set[str] = set()
+    for line in raw.splitlines():
+        if len(line) < 4:
+            continue
+        path = line[3:]
+        if " -> " in path:
+            paths.update(part for part in path.split(" -> ") if part)
+        else:
+            paths.add(path)
+    return paths
+
+
+def _assert_clean_except_system(repo: Path) -> None:
+    """收口后除系统维护文件外工作区必须干净（系统文件按设计留在脏区）。"""
+    leftover = _dirty_paths(repo) - _SYSTEM_MAINTAINED
+    assert not leftover, f"non-system paths left dirty: {sorted(leftover)}"
+
+
+def test_auto_version_unstaged_deletion(tmp_path: Path):
+    """脏状态 (a) 未暂存删除：收口把删除带进 wip commit 与审批单元。"""
+    repo = _prepare_schema_workspace(tmp_path)
+    _commit_pages(repo, "gone_cell")
+
+    class UnstagedDeleter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "wiki" / "cell_types" / "gone_cell.md").unlink()
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="删好了", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=UnstagedDeleter())
+    try:
+        started = manager.start(
+            thread_id="t_dirty_a",
+            message="删页不提交",
+            context=_context("t_dirty_a"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diff = _wait_for_diff(manager, started.run_id)[0]
+        assert "wiki/cell_types/gone_cell.md" in diff.files
+        rows = _name_status(repo, _wip_commit_sha(repo, started.run_id))
+        assert rows["wiki/cell_types/gone_cell.md"] == "D"
+        _assert_clean_except_system(repo)
+    finally:
+        manager.close()
+
+
+def test_auto_version_staged_deletion(tmp_path: Path):
+    """脏状态 (b) 已暂存删除（事故形态）：收口不再 fatal，run 正常成功。
+
+    修复前：``git add wiki/cell_types/gone_cell.md`` 对已暂存删除 fatal，
+    run 落 unfinished，且每次重试收口重复失败。
+    """
+    repo = _prepare_schema_workspace(tmp_path)
+    _commit_pages(repo, "gone_cell")
+
+    class StagedDeleter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "wiki" / "cell_types" / "gone_cell.md").unlink()
+            _stage_paths(repo, "wiki/cell_types/gone_cell.md")
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="删好并暂存", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=StagedDeleter())
+    try:
+        started = manager.start(
+            thread_id="t_dirty_b",
+            message="删页暂存不提交",
+            context=_context("t_dirty_b"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diff = _wait_for_diff(manager, started.run_id)[0]
+        assert "wiki/cell_types/gone_cell.md" in diff.files
+        rows = _name_status(repo, _wip_commit_sha(repo, started.run_id))
+        assert rows["wiki/cell_types/gone_cell.md"] == "D"
+        _assert_clean_except_system(repo)
+        # 幂等：重复收口不产生新 wip commit（run 结束后的异步系统维护
+        # commit 会动 HEAD，比对该 run 的 wip sha 才不受竞态干扰）
+        wip_before = _wip_commit_sha(repo, started.run_id)
+        manager._ensure_run_versioned(started.run_id)
+        assert _wip_commit_sha(repo, started.run_id) == wip_before
+    finally:
+        manager.close()
+
+
+def test_auto_version_tracked_modification(tmp_path: Path):
+    """脏状态 (c) 已跟踪文件修改：收口进 wip commit 与审批单元。"""
+    repo = _prepare_schema_workspace(tmp_path)
+    _commit_pages(repo, "edited_cell")
+
+    class Modifier:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "wiki" / "cell_types" / "edited_cell.md").write_text(
+                valid_cell_type_page(
+                    standard_name="edited_cell", display_name="Edited Cell V2"
+                ),
+                encoding="utf-8",
+            )
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="改好了", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=Modifier())
+    try:
+        started = manager.start(
+            thread_id="t_dirty_c",
+            message="改页不提交",
+            context=_context("t_dirty_c"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diff = _wait_for_diff(manager, started.run_id)[0]
+        assert "wiki/cell_types/edited_cell.md" in diff.files
+        rows = _name_status(repo, _wip_commit_sha(repo, started.run_id))
+        assert rows["wiki/cell_types/edited_cell.md"] == "M"
+        _assert_clean_except_system(repo)
+    finally:
+        manager.close()
+
+
+def test_auto_version_mixed_dirty_states(tmp_path: Path):
+    """脏状态 (d) 混合：已暂存删除 + 未暂存删除 + 修改 + 新文件 + 四个系统
+    维护文件的外部改动——一次收口全收，系统文件一个不卷。"""
+    repo = _prepare_schema_workspace(tmp_path)
+    _commit_pages(repo, "staged_gone_cell", "plain_gone_cell", "edited_cell")
+
+    class MixedWriter:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "wiki" / "cell_types" / "staged_gone_cell.md").unlink()
+            _stage_paths(repo, "wiki/cell_types/staged_gone_cell.md")
+            (repo / "wiki" / "cell_types" / "plain_gone_cell.md").unlink()
+            (repo / "wiki" / "cell_types" / "edited_cell.md").write_text(
+                valid_cell_type_page(
+                    standard_name="edited_cell", display_name="Edited Cell V2"
+                ),
+                encoding="utf-8",
+            )
+            (repo / "wiki" / "cell_types" / "fresh_cell.md").write_text(
+                valid_cell_type_page(
+                    standard_name="fresh_cell", display_name="Fresh Cell"
+                ),
+                encoding="utf-8",
+            )
+            for name in ("overview.md", "statistics.md", "log.md", "audit_report.md"):
+                path = repo / name
+                path.write_text(
+                    path.read_text(encoding="utf-8") + "\nexternal touch\n",
+                    encoding="utf-8",
+                )
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="都改好了", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=MixedWriter())
+    try:
+        started = manager.start(
+            thread_id="t_dirty_d",
+            message="混合脏状态",
+            context=_context("t_dirty_d"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diff = _wait_for_diff(manager, started.run_id)[0]
+        # git 默认 rename 检测可能把"未暂存删除 + 新文件"配对成一条
+        # {old => new} numstat 记录：展开成两端路径后再断言审批单元内容
+        expanded = set(diff.files)
+        for entry in diff.files:
+            if "{" in entry and " => " in entry and "}" in entry:
+                prefix, rest = entry.split("{", 1)
+                inner, _, suffix = rest.rpartition("}")
+                old, _, new = inner.partition(" => ")
+                expanded.update({prefix + old + suffix, prefix + new + suffix})
+        assert {
+            "wiki/cell_types/staged_gone_cell.md",
+            "wiki/cell_types/plain_gone_cell.md",
+            "wiki/cell_types/edited_cell.md",
+            "wiki/cell_types/fresh_cell.md",
+        } <= expanded
+        system_files = {"overview.md", "statistics.md", "log.md", "audit_report.md"}
+        assert not system_files & set(diff.files)
+        rows = _name_status(repo, _wip_commit_sha(repo, started.run_id))
+        assert rows["wiki/cell_types/staged_gone_cell.md"] == "D"
+        assert rows["wiki/cell_types/plain_gone_cell.md"] == "D"
+        assert rows["wiki/cell_types/edited_cell.md"] == "M"
+        assert rows["wiki/cell_types/fresh_cell.md"] == "A"
+        for name in system_files:
+            assert name not in rows, "系统维护文件不得卷入 wip commit"
+        dirty = _dirty_paths(repo)
+        for name in system_files:
+            assert name in dirty, "外部改动的系统维护文件保持脏区等用户处置"
+        # 幂等：重复收口不产生新 wip commit（竞态说明同上）
+        wip_before = _wip_commit_sha(repo, started.run_id)
+        manager._ensure_run_versioned(started.run_id)
+        assert _wip_commit_sha(repo, started.run_id) == wip_before
+    finally:
+        manager.close()
+
+
+def test_auto_version_staged_system_files(tmp_path: Path):
+    """取舍固化：index 里预暂存的系统维护文件改动（外来暂存）不卷入 wip
+    commit——commit 用 --only 与 add 圈同一范围，改动留在 index 等用户处置。"""
+    repo = _prepare_schema_workspace(tmp_path)
+    _commit_pages(repo, "edited_cell")
+
+    class ForeignStager:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "wiki" / "cell_types" / "edited_cell.md").write_text(
+                valid_cell_type_page(
+                    standard_name="edited_cell", display_name="Edited Cell V2"
+                ),
+                encoding="utf-8",
+            )
+            (repo / "log.md").write_text(
+                (repo / "log.md").read_text(encoding="utf-8") + "\nforeign entry\n",
+                encoding="utf-8",
+            )
+            _stage_paths(repo, "log.md")
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="改好了", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=ForeignStager())
+    try:
+        started = manager.start(
+            thread_id="t_dirty_sys",
+            message="改页并预暂存 log",
+            context=_context("t_dirty_sys"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        rows = _name_status(repo, _wip_commit_sha(repo, started.run_id))
+        assert rows["wiki/cell_types/edited_cell.md"] == "M"
+        assert "log.md" not in rows, "外来暂存的 log.md 改动不得进 wip commit"
+        status = GitExecutor(repo).run("status", "--porcelain")
+        assert "log.md" in status, "预暂存的 log.md 改动留在 index"
+        wip_before = _wip_commit_sha(repo, started.run_id)
+        manager._ensure_run_versioned(started.run_id)
+        assert _wip_commit_sha(repo, started.run_id) == wip_before
+    finally:
+        manager.close()
+
+
 def _schema_gate_contract() -> str:
     return minimal_schema_contract()
 

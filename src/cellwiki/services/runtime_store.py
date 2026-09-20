@@ -1134,6 +1134,45 @@ class RuntimeStore:
                 (thread_id,),
             )
             connection.execute("DELETE FROM agent_runs WHERE thread_id = ?", (thread_id,))
+            # B3 审计留存：已判定审批单元先迁入 tombstone 再级联删除。
+            # 只留摘要（commits/files/revert 范围），patch 全文随删除消失——
+            # 回看依赖 git 历史，符合"git 承载版本"约定。坏 payload 行尽力而为，
+            # 不阻塞删除。
+            decided_rows = connection.execute(
+                "SELECT payload, status FROM pending_diffs "
+                "WHERE thread_id = ? AND status != ?",
+                (thread_id, PendingDiffStatus.PENDING.value),
+            ).fetchall()
+            recorded_at = datetime.now(UTC).isoformat()
+            for payload, status in decided_rows:
+                try:
+                    diff = PendingDiff.model_validate_json(payload)
+                except (TypeError, ValidationError):
+                    continue
+                revert_commits = diff.data.get("revert_commits")
+                connection.execute(
+                    """
+                    INSERT OR REPLACE INTO pending_diff_tombstones (
+                        diff_id, run_id, thread_id, verdict, created_at, resolved_at,
+                        head_commit, commits, files_count, files_summary,
+                        revert_commits, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        diff.diff_id,
+                        diff.run_id,
+                        diff.thread_id,
+                        status,
+                        diff.created_at.isoformat(),
+                        diff.resolved_at.isoformat() if diff.resolved_at else None,
+                        diff.head_commit,
+                        json.dumps(diff.commits[-200:]),
+                        len(diff.files),
+                        json.dumps(diff.files[:200]),
+                        json.dumps(revert_commits if isinstance(revert_commits, list) else []),
+                        recorded_at,
+                    ),
+                )
             connection.execute(
                 "DELETE FROM pending_diffs WHERE thread_id = ?", (thread_id,)
             )
@@ -1277,6 +1316,10 @@ class RuntimeStore:
         的后继集合都含 ``RUNNING``，于是"待确认 diff 尚未判定"也能被 resume 拉回
         RUNNING —— 审批门禁的绕过路径。挂起问题的续跑走 ``answer_question``，
         审批续跑走 ``claim_resume``，两者都不经过这里。
+        刻意**不**重锚 ``snapshot_commit``（B1 只重锚 retry）：resume 是同一
+        run 从 checkpoint 续跑，挂起段未判定的提交与工程侧修复（schema gate
+        修复流程）必须留在审批视野内；代价是跨会话隔离在 resume 侧靠
+        ``_newer_unit_baseline`` 的单元链覆盖，无单元时留已知残留。
         """
         with self._connect() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -1670,7 +1713,11 @@ class RuntimeStore:
         return updated
 
     def claim_resume(self, run_id: str, *, decision: str) -> AgentRun:
-        """Claim one approval continuation with a compare-and-set transition."""
+        """Claim one approval continuation with a compare-and-set transition.
+
+        与 claim_resume_unfinished 同理**不**重锚 ``snapshot_commit``：审批续跑
+        仍是同一 run 的延续，未判定工作必须留在审批视野内。
+        """
 
         if decision not in {"approve", "reject"}:
             raise ValueError("decision must be approve or reject")
@@ -1761,7 +1808,9 @@ class RuntimeStore:
             )
         return updated
 
-    def claim_retry(self, run_id: str) -> AgentRun:
+    def claim_retry(
+        self, run_id: str, *, snapshot_commit: str | None = None
+    ) -> AgentRun:
         """Atomically increment retry accounting and claim the retry slot.
 
         准入是 ``FAILED`` 与 ``UNFINISHED``。后者不是放松安全，是与既有意图对齐：
@@ -1770,6 +1819,7 @@ class RuntimeStore:
         ``checkpoint_missing`` 之后唯一的兜底出路。只放行 FAILED 时那条出路是死的
         ——用户点「重试」必然 409，等于没有兜底。ADR-0010 决策 5 只定 retry 的语义
         （同 run_id、先删状态键、从有界 transcript 重放），没有钉死"谁能 retry"。
+        ``snapshot_commit`` 提供时重锚段基线（B1，语义同 claim_resume_unfinished）。
         """
 
         with self._connect() as connection:
@@ -1788,23 +1838,25 @@ class RuntimeStore:
                 ),
                 action="retry",
             )
-            updated = current.model_copy(
-                update={
-                    "status": AgentRunStatus.RETRYING,
-                    "retry_count": current.retry_count + 1,
-                    "finished_at": None,
-                    "updated_at": datetime.now(UTC),
-                }
-            )
+            update: dict[str, Any] = {
+                "status": AgentRunStatus.RETRYING,
+                "retry_count": current.retry_count + 1,
+                "finished_at": None,
+                "updated_at": datetime.now(UTC),
+            }
+            if snapshot_commit is not None:
+                update["snapshot_commit"] = snapshot_commit
+            updated = current.model_copy(update=update)
             connection.execute(
                 "UPDATE agent_runs SET status = ?, payload = ?, updated_at = ? "
-                "WHERE run_id = ? AND status = ?",
+                "WHERE run_id = ? AND status IN (?, ?)",
                 (
                     AgentRunStatus.RETRYING.value,
                     updated.model_dump_json(),
                     updated.updated_at.isoformat(),
                     run_id,
                     AgentRunStatus.FAILED.value,
+                    AgentRunStatus.UNFINISHED.value,
                 ),
             )
             self._insert_event(
@@ -1986,6 +2038,20 @@ class RuntimeStore:
                     payload TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS pending_diff_tombstones (
+                    diff_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    verdict TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    resolved_at TEXT,
+                    head_commit TEXT,
+                    commits TEXT NOT NULL,
+                    files_count INTEGER NOT NULL,
+                    files_summary TEXT NOT NULL,
+                    revert_commits TEXT NOT NULL,
+                    recorded_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS agent_attachments (
         attachment_id TEXT PRIMARY KEY,

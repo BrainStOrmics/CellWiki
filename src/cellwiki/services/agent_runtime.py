@@ -191,6 +191,14 @@ _SYSTEM_MAINTAINED_FILES = frozenset(
     {"overview.md", "statistics.md", "log.md", "audit_report.md"}
 )
 
+# 自动收口 add/commit 共用的整树排除式 pathspec。显式路径 add 对"已暂存的
+# 删除/改名旧路径"必现 fatal（pathspec 已不匹配任何文件，2026-09-18 事故
+# 根因），只有整树 pathspec 能收口该状态；Git ≥2.0 的 ``git add -- <pathspec>``
+# 默认即 -A 语义（含删除），白名单无需放行 -A。
+_VERSION_EXCLUDE_PATHSPEC = tuple(
+    f":(exclude){name}" for name in sorted(_SYSTEM_MAINTAINED_FILES)
+)
+
 
 # 兼容别名：API 仍在使用旧名（严格串行门禁语义）
 AgentRuntimeBusyError = AgentRunInProgressError
@@ -1639,11 +1647,14 @@ class AgentRuntimeManager:
             self._cancellations.pop(run_id, None)
             self._forced_closes.pop(run_id, None)
         try:
-            self._maybe_publish_pending_diff(run_id)
-        except (GitCommandError, OSError, RunVersioningError):
+            # 段尾兜底发布是只读的（串行门已清，写侧 git 必须已结束）：
+            # 不再做版本化收口，收口由各终态收尾点负责。
+            self._maybe_publish_pending_diff(run_id, version_first=False)
+        except (GitCommandError, OSError, RunVersioningError) as error:
             # 发布是幂等收尾；git 异常不得掩盖这一段真正的运行结果。收口失败在
             # SUCCEEDED 落点前已被拦截，这里的兜底只保证不掩盖真实运行结果。
-            pass
+            if isinstance(error, RunVersioningError):
+                self._emit_versioning_failure_event(run_id, error)
 
     def _on_stream_watchdog_expire(self, run_id: str, escalated: bool) -> None:
         """看门狗到期：关掉模型的 HTTP client，让挂起的流式读抛错。
@@ -2253,6 +2264,7 @@ class AgentRuntimeManager:
                 self._ensure_run_versioned(run_id)
             except RunVersioningError as error:
                 # 不变式 1 收口失败：宁可 unfinished 也不让脏改动以 SUCCEEDED 收场。
+                self._emit_versioning_failure_event(run_id, error)
                 self._finalize_unfinished(run_id, AgentErrorType.SYSTEM, str(error))
                 return
             if not self._schema_gate_before_success(run_id):
@@ -2272,6 +2284,7 @@ class AgentRuntimeManager:
             try:
                 self._ensure_run_versioned(run_id)
             except RunVersioningError as error:
+                self._emit_versioning_failure_event(run_id, error)
                 self._finalize_unfinished(run_id, AgentErrorType.SYSTEM, str(error))
                 return
             if not self._schema_gate_before_success(run_id):
@@ -2286,9 +2299,9 @@ class AgentRuntimeManager:
             return
         try:
             self._ensure_run_versioned(run_id)
-        except RunVersioningError:
+        except RunVersioningError as error:
             # 失败 run 的收口尽力而为：改动已被 error 语义覆盖，不再翻转状态。
-            pass
+            self._emit_versioning_failure_event(run_id, error)
         self.store.finalize_run(
             run_id,
             AgentRunOutcome(
@@ -3112,9 +3125,12 @@ class AgentRuntimeManager:
     ) -> tuple[str, int, str | None]:
         """Return (diff_id, unit_index, baseline_commit) for the next publish.
 
-        审批单元边界 = 判定，不是发布：最新单元仍未判定时复用它的行（就地刷新，
-        基线不变）；已判定（或尚无任何单元）时新建序号 +1 的单元，基线取上一单元
-        head。旧库中无序号的 ``diff_<run_id>`` 视为单元 1，不重编号。
+        审批单元边界 = 判定，不是发布：最新单元仍未判定时复用它的行（就地刷新）；
+        已判定（或尚无任何单元）时新建序号 +1 的单元。两条分支的基线都经
+        :meth:`_newer_unit_baseline` 取"段起始快照与既有基线中较新者"（B1）：
+        重试/续跑段重锚后的快照更新时，用它把段间其他会话的提交挡在审批单元外；
+        同段内快照不变，行为与旧链式规则一致。旧库中无序号的 ``diff_<run_id>``
+        视为单元 1，不重编号。
         """
         units = sorted(
             self.store.list_pending_diffs(run_id=run.run_id, limit=500),
@@ -3124,14 +3140,41 @@ class AgentRuntimeManager:
             latest = units[-1]
             if latest.status == PendingDiffStatus.PENDING:
                 index = self._unit_index(latest.diff_id, run.run_id, len(units))
-                return latest.diff_id, index, latest.snapshot_commit
+                return (
+                    latest.diff_id,
+                    index,
+                    self._newer_unit_baseline(run, latest.snapshot_commit),
+                )
             last_index = self._unit_index(latest.diff_id, run.run_id, len(units))
             return (
                 self._unit_id(run.run_id, last_index + 1),
                 last_index + 1,
-                latest.head_commit,
+                self._newer_unit_baseline(run, latest.head_commit),
             )
         return self._unit_id(run.run_id, 1), 1, run.snapshot_commit
+
+    def _newer_unit_baseline(self, run: AgentRun, head_commit: str | None) -> str | None:
+        """New-unit baseline = the newer of segment-start snapshot and unit chain head.
+
+        段开始重锚（B1）后，``run.snapshot_commit`` 晚于上一单元 head 意味着
+        段间有其他提交：以它为基线才能把外来提交挡在审批单元之外；快照更旧
+        （同段连续发布）时维持逐单元链式基线，避免把已判定内容再次装入。
+        读不到祖先关系（非 git 工作区、git 异常）时保守退回链式基线。
+        """
+        anchor = run.snapshot_commit
+        if anchor is None or anchor == head_commit:
+            return head_commit
+        if head_commit is None:
+            return anchor
+        git = self._git_executor()
+        if git is None:
+            return head_commit
+        try:
+            if anchor in set(git.commits_since(head_commit)):
+                return anchor
+        except GitCommandError:
+            pass
+        return head_commit
 
     def _unit_index(self, diff_id: str, run_id: str, fallback: int) -> int:
         """Parse the unit index from a diff id; legacy suffix-less rows are unit 1."""
@@ -3167,6 +3210,12 @@ class AgentRuntimeManager:
 
         发现代码可版本化的脏路径（排除系统维护文件）时，系统以确定性 message
         代为 add + commit——审批人审的闸门不变，只是版本化不再依赖模型自觉。
+        add/commit 都圈整树排除式 pathspec（``. :(exclude)<系统文件>``）：
+        逐路径 add 对已暂存的删除必现 fatal；commit 用 ``--only`` 与 add 圈定
+        同一范围，index 里预暂存的系统维护文件改动（外来暂存）不卷入 wip
+        commit、留在 index 等用户处置。
+        add/commit 段持有 ``_maintenance_lock``：与判定维护、审计快照、revert
+        的 git 写互斥，避免 index.lock 竞争（本函数会在发布路径被调用）。
         无法收口（如 ``.git/index.lock``）时抛 :class:`RunVersioningError`。
         """
         git = self._git_executor()
@@ -3184,12 +3233,17 @@ class AgentRuntimeManager:
         if not versionable:
             return
         try:
-            git.run("add", *versionable)
-            git.run(
-                "commit",
-                "-m",
-                f"wip(agent): auto-version uncommitted changes from run {run_id}",
-            )
+            with self._maintenance_lock:
+                git.run("add", "--", ".", *_VERSION_EXCLUDE_PATHSPEC)
+                git.run(
+                    "commit",
+                    "--only",
+                    "-m",
+                    f"wip(agent): auto-version uncommitted changes from run {run_id}",
+                    "--",
+                    ".",
+                    *_VERSION_EXCLUDE_PATHSPEC,
+                )
         except GitCommandError as error:
             raise RunVersioningError(
                 f"run {run_id} finished with uncommitted changes that could not "
@@ -3209,10 +3263,46 @@ class AgentRuntimeManager:
         except TerminalRunError:
             pass
 
+    def _emit_versioning_failure_event(
+        self, run_id: str, error: RunVersioningError
+    ) -> None:
+        """B2：版本化收口失败时给出可操作指引，不让用户对着"已中断"没头绪。
+
+        终端 run 上事件写入会被拒（TerminalRunError）：收口失败发生在已终态
+        run 之后的尽力而为发布路径时，指引无处附着，静默放弃是接受的取舍。
+        """
+        try:
+            self.store.append_event(
+                run_id,
+                AgentEventType.ERROR,
+                message=(
+                    "自动版本化失败：本段改动未能提交进 git，未进入待审 diff。"
+                    "可关闭占用工作区的程序后重试该 run，或手动 git add + commit "
+                    "后再继续/重试。"
+                ),
+                data={
+                    "reason": "auto_version_failed",
+                    "remediation": [
+                        "关闭占用工作区索引（.git/index.lock）的程序后重试该 run",
+                        "在工作区手动 git add + commit 后再继续/重试该 run",
+                    ],
+                    "detail": str(error)[:500],
+                },
+            )
+        except TerminalRunError:
+            pass
+
     def _collect_run_agent_diff(
-        self, run_id: str
+        self, run_id: str, *, version_first: bool = True
     ) -> tuple[AgentRun, str, str | None, str, list[str], GitDiff] | None:
-        """Collect the current publish unit's agent commits and diff without saving it."""
+        """Collect the current publish unit's agent commits and diff without saving it.
+
+        ``version_first``（B2）：收集前无条件先做不变式 1 收口，堵住"有提交但
+        树仍脏"时脏文件游离在审批视野外的缺口。唯一例外是段尾兜底发布
+        （``_finish_run_segment``）：它在串行门清空之后运行，契约是只读
+        （``_wait_for_segment_finish`` 依赖此事实），且收口已由各终态收尾点
+        完成，此时若再写 git 会与测试/用户的 git 操作撞 index.lock。
+        """
         run = self.store.get_run(run_id)
         if run is None:
             return None
@@ -3220,19 +3310,16 @@ class AgentRuntimeManager:
         if git is None:
             return None
         diff_id, _index, baseline = self._resolve_publish_target(run)
+        if version_first:
+            # 不变式 1 双保险（B2）：干净树上幂等（只读一次 status）。
+            self._ensure_run_versioned(run_id)
+            run = self.store.get_run(run_id) or run
         try:
             commits = git.commits_since(baseline)
         except GitCommandError:
             return None
         if not commits:
-            self._ensure_run_versioned(run_id)
-            run = self.store.get_run(run_id) or run
-            try:
-                commits = git.commits_since(baseline)
-            except GitCommandError:
-                return None
-            if not commits:
-                return None
+            return None
         reverted = self._resolved_revert_commits(run.run_id)
         agent_commits = [
             sha
@@ -3382,12 +3469,15 @@ class AgentRuntimeManager:
         )
         return False
 
-    def _maybe_publish_pending_diff(self, run_id: str) -> bool:
+    def _maybe_publish_pending_diff(
+        self, run_id: str, *, version_first: bool = True
+    ) -> bool:
         """Collect the run's newest commits into the current pending unit.
 
         Returns True when a pending diff was published or refreshed. System
         maintenance commits and earlier units' revert commits are excluded from
-        both the commit list and the review patch.
+        both the commit list and the review patch. ``version_first=False`` 供段尾
+        兜底发布使用（只读契约，见 :meth:`_collect_run_agent_diff`）。
         """
         run = self.store.get_run(run_id)
         if run is None:
@@ -3396,7 +3486,7 @@ class AgentRuntimeManager:
             run.error_message or ""
         ).startswith(SCHEMA_GATE_ERROR_PREFIX):
             return False
-        collected = self._collect_run_agent_diff(run_id)
+        collected = self._collect_run_agent_diff(run_id, version_first=version_first)
         if collected is None:
             return False
         run, diff_id, baseline, head, agent_commits, diff = collected
@@ -3667,7 +3757,9 @@ class AgentRuntimeManager:
                 f"another agent run is active: {current.run_id}"
             )
         if status == AgentRunStatus.RETRYING:
-            claimed = self.store.claim_retry(run_id)
+            claimed = self.store.claim_retry(
+                run_id, snapshot_commit=self._git_snapshot()
+            )
         else:
             raise InvalidRunTransitionError(f"unsupported claim status: {status}")
         with self._thread_lock:

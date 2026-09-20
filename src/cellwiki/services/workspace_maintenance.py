@@ -166,6 +166,10 @@ def _log_entry(
 ) -> str:
     suffix = f" (parent {parent_run_id})" if parent_run_id else ""
     lines = [f"## [{_timestamp()}] {verdict} | run {run_id}{suffix}"]
+    if diff is not None:
+        # B3 人读强化：判定记录在库中随会话删除后，log.md 仍可反查审批单元 id
+        # （权威 tombstone 落在 pending_diff_tombstones 表）。
+        lines.append(f"- diff: {diff.diff_id}")
     if diff is not None and diff.commits:
         lines.append(f"- commits: {diff.commits[-1][:12]}..{diff.commits[0][:12]}")
         files = ", ".join(diff.files[:5]) or "none"
