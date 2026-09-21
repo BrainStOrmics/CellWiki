@@ -159,6 +159,12 @@ class ProviderFetchDraftRequest(BaseModel):
     api_key: str | None = Field(default=None, max_length=4000)
 
 
+class ProviderTestRequest(BaseModel):
+    """连接探测的可选目标；省略 model_id 时测第一个启用模型。"""
+
+    model_id: str | None = Field(default=None, max_length=300)
+
+
 # ---- 智能体运行请求 ----
 class AnswerQuestionRequest(BaseModel):
     """ask_user_question 5+1 回复：string | array + 超时标记。"""
@@ -415,10 +421,18 @@ def create_app(
         return _catalog_response()
 
     @app.post("/api/model-providers/{provider_id}/test")
-    def test_model_provider(provider_id: str) -> dict:
-        """Bounded connection probe using the provider's stored configuration."""
+    def test_model_provider(
+        provider_id: str, request: ProviderTestRequest | None = None
+    ) -> dict:
+        """Bounded connection probe using the provider's stored configuration.
+
+        带 model_id 时只探测该模型（模型行上的逐个测试走这条）；省略则探测第一个
+        启用模型（供应商级测试）。
+        """
         try:
-            return model_catalog.test_provider(provider_id)
+            return model_catalog.test_provider(
+                provider_id, model_id=(request.model_id if request else None)
+            )
         except ValueError as error:
             raise _catalog_http_error(error) from None
         except RuntimeError as error:

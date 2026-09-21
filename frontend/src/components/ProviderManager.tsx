@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  Activity,
   Box,
   CheckCircle2,
   ChevronRight,
@@ -8,11 +9,12 @@ import {
   EyeOff,
   KeyRound,
   LoaderCircle,
+  MoreHorizontal,
+  PenLine,
   Plus,
   Save,
   Search,
   Star,
-  TestTube2,
   Trash2,
   XCircle,
 } from "lucide-react";
@@ -110,8 +112,12 @@ export function ProviderManager({
   const [openPanelIndex, setOpenPanelIndex] = useState<number | null>(null);
   const [panelQuery, setPanelQuery] = useState("");
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<ProviderTestResult>();
+  // 测试连接只按模型行走：结果跟着行号走，免得"点第三行、结果却报别的模型"。
+  const [testingIndex, setTestingIndex] = useState<number | null>(null);
+  const [testResult, setTestResult] = useState<(ProviderTestResult & { index: number })>();
+  const [renaming, setRenaming] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const moreRef = useRef<HTMLSpanElement>(null);
   const [loading, setLoading] = useState(true);
   const queryClient = useQueryClient();
 
@@ -154,6 +160,32 @@ export function ProviderManager({
     void available.refetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [openPanelIndex, available.data, available.isFetching]);
+
+  // 「模型服务连接成功。」五秒后自己退场；失败结果留着，用户要读原因。
+  useEffect(() => {
+    if (!testResult?.ok) return;
+    const timer = window.setTimeout(() => setTestResult(undefined), 5_000);
+    return () => window.clearTimeout(timer);
+  }, [testResult]);
+
+  // ⋯ 菜单：点外面或按 Esc 收起。自己人（菜单与触发键）不算"外面"——否则
+  // mousedown 先把菜单收掉，click 永远到不了菜单项。
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (moreRef.current?.contains(event.target as Node)) return;
+      setMenuOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
 
   async function loadCatalog(selectId?: string) {
     setLoading(true);
@@ -355,19 +387,26 @@ export function ProviderManager({
     }
   }
 
-  async function testProvider() {
+  async function testProvider(index: number, modelId: string) {
     if (!selectedId) return;
-    setTesting(true);
+    setTestingIndex(index);
     setTestResult(undefined);
     try {
-      setTestResult(await postJson<ProviderTestResult>(
-        `/api/model-providers/${encodeURIComponent(selectedId)}/test`,
-        {},
-      ));
+      setTestResult({
+        ...(await postJson<ProviderTestResult>(
+          `/api/model-providers/${encodeURIComponent(selectedId)}/test`,
+          { model_id: modelId },
+        )),
+        index,
+      });
     } catch (error) {
-      setTestResult({ ok: false, message: error instanceof Error ? error.message : t("settings.testError") });
+      setTestResult({
+        ok: false,
+        message: error instanceof Error ? error.message : t("settings.testError"),
+        index,
+      });
     } finally {
-      setTesting(false);
+      setTestingIndex(null);
     }
   }
 
@@ -405,12 +444,11 @@ export function ProviderManager({
     <div className="provider-manager">
       <div className="provider-list" role="list">
         {catalog?.providers.map((provider) => {
-          const health = !provider.enabled ? "off" : provider.api_key_configured ? "ok" : "warn";
-          const healthTitle = health === "off"
-            ? t("settings.providerDisabledBadge")
-            : health === "warn"
-              ? t("settings.providerNoKeyBadge")
-              : undefined;
+          // 点只表达"启用"：绿=已启用，灰=未启用（是否配了 key 由编辑页的输入框呈现）。
+          const health = provider.enabled ? "ok" : "off";
+          const healthTitle = provider.enabled
+            ? undefined
+            : t("settings.providerDisabledBadge");
           return (
             <button
               key={provider.id}
@@ -445,6 +483,79 @@ export function ProviderManager({
           </div>
         ) : (
           <>
+            <div className="provider-editor-head">
+              <span className="provider-editor-title">
+                <Box size={15} />
+                {/* 新建时标题就是输入框；已保存的供应商按参考稿只读，改名走 ⋯ 菜单。 */}
+                {creating || renaming ? (
+                  <input
+                    className="provider-rename-input"
+                    autoFocus={renaming}
+                    value={draft.name}
+                    placeholder="OpenRouter"
+                    onChange={(event) => updateDraft({ name: event.target.value })}
+                    onBlur={() => setRenaming(false)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") setRenaming(false);
+                    }}
+                  />
+                ) : (
+                  <strong>{draft.name.trim() || t("settings.providerName")}</strong>
+                )}
+              </span>
+              <span className="provider-editor-head-actions">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={draft.enabled}
+                  className="provider-enabled-switch"
+                  title={t("settings.providerEnabled")}
+                  aria-label={t("settings.providerEnabled")}
+                  onClick={() => updateDraft({ enabled: !draft.enabled })}
+                />
+                <span className="provider-more" ref={moreRef}>
+                  <button
+                    type="button"
+                    className="provider-more-toggle"
+                    aria-haspopup="menu"
+                    aria-expanded={menuOpen}
+                    aria-label={t("settings.providerMore")}
+                    onClick={() => setMenuOpen((open) => !open)}
+                  >
+                    <MoreHorizontal size={16} />
+                  </button>
+                  {menuOpen && (
+                    <span className="provider-more-menu" role="menu">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setRenaming(true);
+                          setMenuOpen(false);
+                        }}
+                      >
+                        <PenLine size={14} />
+                        {t("settings.providerRename")}
+                      </button>
+                      {selectedId && !creating && (
+                        <button
+                          type="button"
+                          role="menuitem"
+                          className="danger"
+                          onClick={() => {
+                            setMenuOpen(false);
+                            void deleteProvider(selectedId);
+                          }}
+                        >
+                          <Trash2 size={14} />
+                          {t("settings.providerDelete")}
+                        </button>
+                      )}
+                    </span>
+                  )}
+                </span>
+              </span>
+            </div>
             {creating && (
               <div className="provider-templates">
                 <span>{t("settings.providerTemplates")}:</span>
@@ -455,9 +566,6 @@ export function ProviderManager({
                 ))}
               </div>
             )}
-            <label className="settings-field"><span>{t("settings.providerName")}</span>
-              <input value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} placeholder="OpenRouter" />
-            </label>
             <label className="settings-field"><span>{t("settings.baseUrl")}</span>
               <input value={draft.base_url} onChange={(event) => updateDraft({ base_url: event.target.value })} placeholder="https://api.openai.com/v1" />
             </label>
@@ -488,10 +596,6 @@ export function ProviderManager({
                 <span>{t("settings.clearKey")}</span>
               </label>
             )}
-            <label className="clear-secret">
-              <input type="checkbox" checked={draft.enabled} onChange={(event) => updateDraft({ enabled: event.target.checked })} />
-              <span>{t("settings.providerEnabled")}</span>
-            </label>
 
             <div className="settings-field provider-models-field">
               <div className="provider-models-header">
@@ -512,6 +616,8 @@ export function ProviderManager({
                     && defaultSelection?.provider_id === selectedId
                     && defaultSelection.model_id === model.id;
                   const panelOpen = openPanelIndex === index;
+                  const rowTesting = testingIndex === index;
+                  const rowResult = testResult?.index === index ? testResult : undefined;
                   return (
                     <div key={index} className="provider-model-row">
                       <div className="provider-model-line">
@@ -567,6 +673,18 @@ export function ProviderManager({
                         </button>
                         <button
                           type="button"
+                          className="provider-model-test"
+                          title={`${t("settings.providerTest")}: ${model.id}`}
+                          aria-label={`${t("settings.providerTest")}: ${model.id}`}
+                          disabled={creating || testingIndex !== null || !model.id.trim()}
+                          onClick={() => void testProvider(index, model.id.trim())}
+                        >
+                          {rowTesting
+                            ? <LoaderCircle className="spin" size={13} />
+                            : <Activity size={13} />}
+                        </button>
+                        <button
+                          type="button"
                           className="provider-model-remove"
                           onClick={() => removeModel(index)}
                           aria-label={`${t("settings.providerDelete")}: ${model.id}`}
@@ -574,6 +692,15 @@ export function ProviderManager({
                           <Trash2 size={13} />
                         </button>
                       </div>
+                      {rowResult && (
+                        <div className={rowResult.ok ? "provider-test-result ok" : "provider-test-result error"}>
+                          {rowResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                          <span>
+                            <b>{rowResult.ok ? t("settings.testSuccess") : rowResult.message}</b>
+                            {rowResult.ok && <small>{rowResult.model} · {rowResult.protocol} · JSON · {rowResult.latency_ms} ms</small>}
+                          </span>
+                        </div>
+                      )}
                       {panelOpen && (
                         <div className="provider-model-panel">
                           <label className="provider-model-search">
@@ -630,26 +757,7 @@ export function ProviderManager({
                 {saving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}
                 {t("settings.providerSave")}
               </button>
-              <button className="provider-test" type="button" onClick={() => void testProvider()} disabled={creating || testing}>
-                {testing ? <LoaderCircle className="spin" size={14} /> : <TestTube2 size={14} />}
-                {t("settings.providerTest")}
-              </button>
-              {selectedId && !creating && (
-                <button className="provider-delete" type="button" onClick={() => void deleteProvider(selectedId)}>
-                  <Trash2 size={14} />
-                  {t("settings.providerDelete")}
-                </button>
-              )}
             </div>
-            {testResult && (
-              <div className={testResult.ok ? "provider-test-result ok" : "provider-test-result error"}>
-                {testResult.ok ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                <span>
-                  <b>{testResult.ok ? t("settings.testSuccess") : testResult.message}</b>
-                  {testResult.ok && <small>{testResult.model} · {testResult.protocol} · JSON · {testResult.latency_ms} ms</small>}
-                </span>
-              </div>
-            )}
           </>
         )}
       </div>

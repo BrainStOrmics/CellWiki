@@ -495,7 +495,11 @@ class _QuestionCapableApiAdapter:
             data={
                 "interrupt": {
                     "question": "是否将结果写入 wiki？",
-                    "options": ["写入", "仅回答", "放弃"],
+                    "options": [
+                        {"label": "写入", "description": "走审批单元写入", "recommended": True},
+                        {"label": "仅回答"},
+                        "放弃",
+                    ],
                     "required": True,
                 }
             },
@@ -533,7 +537,12 @@ def test_agent_question_flow_via_api(tmp_path: Path):
     question = questioning.json()
     assert question["run_id"] == run_id
     assert question["question"] == "是否将结果写入 wiki？"
-    assert question["options"] == ["写入", "仅回答", "放弃"]
+    # 选项对象透传到 API；字符串选项（旧载荷/脚本适配器）归一化成只有标签的选项。
+    assert question["options"] == [
+        {"label": "写入", "description": "走审批单元写入", "recommended": True},
+        {"label": "仅回答", "description": "", "recommended": False},
+        {"label": "放弃", "description": "", "recommended": False},
+    ]
 
     run_before = client.get(f"/api/agent/runs/{run_id}").json()
     assert run_before["status"] == "waiting_confirmation"

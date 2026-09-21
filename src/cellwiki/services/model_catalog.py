@@ -534,20 +534,21 @@ class ModelCatalogService:
             api_key = self._read_secret(provider_id) or ""
         if not api_key:
             raise ModelCatalogError(f"provider {provider_id} has no API key configured")
-        model = next(
-            (
-                item
-                for item in provider.models
-                if item.id == (model_id or "") and item.enabled
-            ),
-            None,
-        )
-        if model is None:
+        if model_id:
+            # 点名测哪个就测哪个，不静默换成别的模型：结果会挂在那一行下面，
+            # 换成别的模型报的是另一件事的成败。
+            model = next((item for item in provider.models if item.id == model_id), None)
+            if model is None or not model.enabled:
+                raise ModelCatalogError(
+                    f"provider {provider_id} has no saved enabled model {model_id};"
+                    " save the provider first"
+                )
+        else:
             model = next((item for item in provider.models if item.enabled), None)
-        if model is None:
-            raise ModelCatalogError(
-                f"provider {provider_id} has no enabled model to test"
-            )
+            if model is None:
+                raise ModelCatalogError(
+                    f"provider {provider_id} has no enabled model to test"
+                )
         environment = EnvironmentSettingsService(self.root)
         return environment.test_connection(
             openai_base_url=provider.base_url,

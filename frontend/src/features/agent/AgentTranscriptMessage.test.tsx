@@ -20,7 +20,10 @@ function pendingQuestion() {
     thread_id: "thread_1",
     tool_call_id: null,
     question: "确认收录这篇论文吗？",
-    options: ["确认，开始 ingest", "先不处理"],
+    options: [
+      { label: "确认，开始 ingest", description: "写入 raw/ 并登记来源", recommended: true },
+      { label: "先不处理" },
+    ],
     required: false,
     status: "pending",
     answers: null,

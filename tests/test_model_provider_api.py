@@ -232,6 +232,51 @@ def test_provider_test_uses_stored_key(client: TestClient) -> None:
     assert "sk-live-key-9876" not in payload["message"]
 
 
+def test_provider_test_can_target_one_model(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _create_provider(client, models=["model-a1", "model-a2"])
+    probed: dict[str, object] = {}
+
+    def fake_test(self: object, **kwargs: object) -> dict:
+        probed.update(kwargs)
+        return {
+            "ok": True,
+            "message": "",
+            "model": kwargs.get("openai_model"),
+            "protocol": kwargs.get("openai_api_protocol"),
+            "latency_ms": 12,
+        }
+
+    from cellwiki.services.environment import EnvironmentSettingsService
+
+    monkeypatch.setattr(EnvironmentSettingsService, "test_connection", fake_test)
+
+    # 模型行上的逐个测试：点名 model-a2 就探测 model-a2，不换成第一个启用模型。
+    response = client.post(
+        "/api/model-providers/gw-a/test", json={"model_id": "model-a2"}
+    )
+    assert response.status_code == 200, response.text
+    assert probed["openai_model"] == "model-a2"
+    assert response.json()["ok"] is True
+
+    # 省略 model_id 的供应商级测试仍测第一个启用模型。
+    probed.clear()
+    assert client.post("/api/model-providers/gw-a/test", json={}).status_code == 200
+    assert probed["openai_model"] == "model-a1"
+
+
+def test_provider_test_refuses_an_unsaved_model(client: TestClient) -> None:
+    _create_provider(client)
+    response = client.post(
+        "/api/model-providers/gw-a/test", json={"model_id": "ghost-model"}
+    )
+    # 点名测一个不在已存配置里的模型：显式拒绝而不是静默换模型——结果会挂在
+    # 那一行下面，换了模型报的就是另一件事的成败。
+    assert response.status_code == 422
+    assert "ghost-model" in response.json()["detail"]
+
+
 # ---------------------------------------------------------------------------
 # run 级解析链
 # ---------------------------------------------------------------------------

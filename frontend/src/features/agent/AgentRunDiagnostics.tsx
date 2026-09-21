@@ -61,10 +61,12 @@ export function AgentRunDiagnostics({ runId, usageSegments }: AgentRunDiagnostic
           <dt>Model</dt><dd>{diagnostics.model || "No model call"}</dd>
           <dt>Latency</dt><dd>{Math.round(usage.elapsed_seconds * 1000)} ms</dd>
           <dt>Tokens</dt>
-          <dd>
-            {usage.input_tokens} in · {usage.output_tokens} out
+          <dd title={`${usage.input_tokens} in · ${usage.output_tokens} out${
+            usage.cached_input_tokens ? ` · ${usage.cached_input_tokens} cached` : ""
+          }`}>
+            {formatTokens(usage.input_tokens)} in · {formatTokens(usage.output_tokens)} out
             {usage.cached_input_tokens
-              ? ` · ${usage.cached_input_tokens} cached (${hitRate(usage.cached_input_tokens, usage.input_tokens)})`
+              ? ` · ${formatTokens(usage.cached_input_tokens)} cached (${hitRate(usage.cached_input_tokens, usage.input_tokens)})`
               : ""}
           </dd>
           <dt>Tools</dt>
@@ -79,10 +81,13 @@ export function AgentRunDiagnostics({ runId, usageSegments }: AgentRunDiagnostic
               <dt>Segments</dt>
               <dd>
                 {usageSegments?.map((entry, index) => (
-                  <span key={entry.event_id ?? `segment-${index}`}>
+                  <span
+                    key={entry.event_id ?? `segment-${index}`}
+                    title={`${entry.segment.input_tokens} in / ${entry.segment.output_tokens} out`}
+                  >
                     {index > 0 && " · "}
-                    #{index + 1} {entry.segment.input_tokens} in /{" "}
-                    {entry.segment.output_tokens} out (
+                    #{index + 1} {formatTokens(entry.segment.input_tokens)} in /{" "}
+                    {formatTokens(entry.segment.output_tokens)} out (
                     {formatSeconds(entry.segment.elapsed_seconds * 1000)})
                   </span>
                 ))}
@@ -102,8 +107,9 @@ export function AgentRunDiagnostics({ runId, usageSegments }: AgentRunDiagnostic
         </dl>
         {thread && (
           <p className="agent-run-thread-summary">
-            {thread.run_count} runs · {thread.total_input_tokens} in ·{" "}
-            {thread.total_output_tokens} out · {thread.total_cached_input_tokens} cached ·{" "}
+            {thread.run_count} runs · {formatTokens(thread.total_input_tokens)} in ·{" "}
+            {formatTokens(thread.total_output_tokens)} out ·{" "}
+            {formatTokens(thread.total_cached_input_tokens)} cached ·{" "}
             avg hit {Math.round(thread.avg_cache_hit_rate * 100)}%
           </p>
         )}
@@ -118,9 +124,11 @@ export function AgentRunDiagnostics({ runId, usageSegments }: AgentRunDiagnostic
               {modelSpans.map((span, index) => (
                 <tr key={span.span_id}>
                   <td>{index + 1}</td>
-                  <td>{span.input_tokens}</td>
-                  <td>{span.output_tokens}</td>
-                  <td>{span.cached_input_tokens ?? 0}</td>
+                  <td title={String(span.input_tokens)}>{formatTokens(span.input_tokens)}</td>
+                  <td title={String(span.output_tokens)}>{formatTokens(span.output_tokens)}</td>
+                  <td title={String(span.cached_input_tokens ?? 0)}>
+                    {formatTokens(span.cached_input_tokens ?? 0)}
+                  </td>
                   <td>{hitRate(span.cached_input_tokens ?? 0, span.input_tokens)}</td>
                   <td>{Math.round(span.duration_ms ?? 0)} ms</td>
                 </tr>
@@ -199,12 +207,14 @@ function formatSeconds(ms: number): string {
   return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}s`;
 }
 
-/** 108K / 2.2K / 340 — K units above 1000, one decimal below 100K. */
+/** 340 / 43.1K / 12M / 57.3M — K above 1000, M above 1M, one decimal below 100 units. */
 function formatTokens(value: number): string {
   if (value < 1000) return String(value);
-  const k = value / 1000;
-  const rounded = k >= 100 ? Math.round(k) : Math.round(k * 10) / 10;
-  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}K`;
+  // 999,500 起四舍五入就是 1M，别显示成 1000K。
+  const million = value >= 999_500;
+  const scaled = million ? value / 1_000_000 : value / 1_000;
+  const rounded = scaled >= 100 ? Math.round(scaled) : Math.round(scaled * 10) / 10;
+  return `${Number.isInteger(rounded) ? rounded : rounded.toFixed(1)}${million ? "M" : "K"}`;
 }
 
 /** checkpoints.sqlite 体积：1 KB 以下按字节报，往上 KB/MB 各留一位小数。 */

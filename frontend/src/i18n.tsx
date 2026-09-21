@@ -389,10 +389,11 @@ const zh = {
   "settings.providerTest": "测试连接",
   "settings.providerSetDefault": "设为默认",
   "settings.providerDisabledBadge": "已停用",
-  "settings.providerNoKeyBadge": "缺 Key",
   "settings.providerDelete": "删除供应商",
   "settings.providerDeleteConfirm": "确定删除供应商 {name}？其默认选择会被一并清除。",
   "settings.providerEnabled": "启用该供应商",
+  "settings.providerMore": "更多操作",
+  "settings.providerRename": "重命名",
   "settings.providerEmpty": "尚未配置供应商。新建一个，或在首次使用时由 .env 自动导入。",
   "settings.providerSelectHint": "在左侧选择一个供应商进行编辑。",
   "settings.providerRequestOverrides": "请求参数覆盖（JSON，可选）",
@@ -404,7 +405,6 @@ const zh = {
   "settings.templateSiliconFlow": "硅基流动",
   "settings.templateOllama": "Ollama 本地",
   "settings.templateAnthropic": "Anthropic 官方",
-  "settings.providerRestartNotRequired": "免重启生效",
 } as const;
 
 export type MessageKey = keyof typeof zh;
@@ -795,10 +795,11 @@ const en: Record<MessageKey, string> = {
   "settings.providerTest": "Test connection",
   "settings.providerSetDefault": "Set as default",
   "settings.providerDisabledBadge": "disabled",
-  "settings.providerNoKeyBadge": "no key",
   "settings.providerDelete": "Delete provider",
   "settings.providerDeleteConfirm": "Delete provider {name}? Its default selection will be cleared.",
   "settings.providerEnabled": "Provider enabled",
+  "settings.providerMore": "More actions",
+  "settings.providerRename": "Rename",
   "settings.providerEmpty": "No providers yet. Add one, or it will be imported from .env on first use.",
   "settings.providerSelectHint": "Select a provider on the left to edit it.",
   "settings.providerRequestOverrides": "Request parameter overrides (JSON, optional)",
@@ -810,7 +811,6 @@ const en: Record<MessageKey, string> = {
   "settings.templateSiliconFlow": "SiliconFlow",
   "settings.templateOllama": "Ollama (local)",
   "settings.templateAnthropic": "Anthropic",
-  "settings.providerRestartNotRequired": "no restart needed",
 };
 
 type LanguageContextValue = {

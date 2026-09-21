@@ -15,6 +15,15 @@ export function isWaitingRunStatus(status: AgentRunStatus | undefined): boolean 
   return status === "waiting_confirmation" || status === "waiting_approval";
 }
 
+/**
+ * 真正定局的状态：既不可续跑，也不在等用户——终态清理（活动 run、续跑/重试标记）
+ * 只认这一组。
+ */
+export function isSettledRunStatus(status: AgentRunStatus | undefined): boolean {
+  return status === "succeeded" || status === "failed" || status === "cancelled"
+    || status === "rejected";
+}
+
 export const terminalAgentStatuses = new Set<AgentRunStatus>([
   "waiting_confirmation",
   "waiting_approval",

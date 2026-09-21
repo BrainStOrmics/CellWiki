@@ -155,10 +155,82 @@ def test_ask_user_question_registers_5_plus_one_schema(tmp_path: Path):
     tool = build_question_tool()[0]
     schema = tool.args_schema
     assert schema is AskUserQuestionInput
-    props = AskUserQuestionInput.model_json_schema()["properties"]
+    json_schema = AskUserQuestionInput.model_json_schema()
+    props = json_schema["properties"]
     assert props["question"]["maxLength"] == 2_000
     assert props["options"]["maxItems"] == 5
     assert props["required"]["default"] is True
+    # 选项收对象或裸字符串（弱模型会原样发字符串，严格拒收会把它逼成 options=[]）；
+    # 对象里标签必填且是答案回传值，说明与推荐标记可选。
+    assert props["options"]["items"]["anyOf"][0]["type"] == "string"
+    option = json_schema["$defs"]["AskUserQuestionOption"]["properties"]
+    assert option["label"]["maxLength"] == 120
+    assert option["description"]["maxLength"] == 240
+    assert option["recommended"]["default"] is False
+    assert json_schema["$defs"]["AskUserQuestionOption"]["required"] == ["label"]
+
+
+def test_question_payload_keeps_richer_option_objects():
+    """工具函数收到的是 LangChain 校验后的模型实例，不是 dict。
+
+    2026-09-20 真机实测：归一化只认 dict/str 时实例被静默丢光（卡片只剩问题、
+    没有选项），因此这里固定"实例也留得住"。
+    """
+    from cellwiki.agent.question_tool import (
+        AskUserQuestionOption,
+        _question_payload,
+    )
+
+    payload = _question_payload(
+        "继续吗？",
+        [
+            AskUserQuestionOption(label="A 先做，再做 B", description="先修缺陷"),
+            AskUserQuestionOption(label="只做 A"),
+        ],
+        True,
+    )
+    assert payload["options"] == [
+        {"label": "A 先做，再做 B", "description": "先修缺陷", "recommended": False},
+        {"label": "只做 A", "description": "", "recommended": False},
+    ]
+
+
+def test_question_payload_accepts_string_and_object_options():
+    from cellwiki.agent.question_tool import _question_payload
+
+    payload = _question_payload(
+        "继续吗？",
+        ["是", {"label": "否", "description": "先停在这里", "recommended": True}],
+        True,
+    )
+    assert payload["options"] == [
+        {"label": "是", "description": "", "recommended": False},
+        {"label": "否", "description": "先停在这里", "recommended": True},
+    ]
+
+
+def test_question_options_normalize_to_label_description_recommended():
+    from cellwiki.domain.questions import normalize_question_options
+
+    options = normalize_question_options(
+        [
+            {"label": "写入", "description": "走审批单元", "recommended": True},
+            {"label": "写入"},              # 标签重复：保留先出现的那条
+            "仅回答",                        # 旧载荷/脚本里的字符串选项
+            {"label": "  "},                # 空标签丢掉
+            {"text": "没有 label"},          # 形状不对：丢掉而不是报错
+            "放弃",
+            "第五个",
+            "第六个",                        # 超过 5 个截断
+        ]
+    )
+    assert [option.model_dump() for option in options] == [
+        {"label": "写入", "description": "走审批单元", "recommended": True},
+        {"label": "仅回答", "description": "", "recommended": False},
+        {"label": "放弃", "description": "", "recommended": False},
+        {"label": "第五个", "description": "", "recommended": False},
+        {"label": "第六个", "description": "", "recommended": False},
+    ]
 
 
 def test_runtime_tool_schema_is_exactly_the_whitelist(tmp_path: Path):

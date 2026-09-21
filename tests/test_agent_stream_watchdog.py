@@ -240,7 +240,7 @@ def _park_on_question(store: RuntimeStore, run_id: str, thread_id: str) -> None:
             run_id=run_id,
             thread_id=thread_id,
             question="继续吗？",
-            options=["是", "否"],
+            options=[{"label": "是"}, {"label": "否"}],
             required=False,
         ),
         message="Run paused for a question.",

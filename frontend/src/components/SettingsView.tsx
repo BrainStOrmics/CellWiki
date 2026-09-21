@@ -247,12 +247,8 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
           </div>
         ) : section === "model" ? (
           <div className="settings-content">
+            {/* 不要卡片标题：供应商列表与具体配置直接顶到卡片上沿（对齐参考稿）。 */}
             <section className="settings-card provider-catalog-card">
-              <div className="settings-card-title">
-                <Server size={16} />
-                <div><h3>{t("settings.modelTitle")}</h3></div>
-                <span className="provider-restart-badge">{t("settings.providerRestartNotRequired")}</span>
-              </div>
               <ProviderManager onNotice={setNotice} />
             </section>
           </div>

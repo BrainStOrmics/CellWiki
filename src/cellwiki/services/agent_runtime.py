@@ -46,7 +46,7 @@ from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.model_providers import ModelSelection, ResolvedModelSpec
 from cellwiki.domain.pending_diff import PendingDiff, PendingDiffStatus
-from cellwiki.domain.questions import PendingQuestion
+from cellwiki.domain.questions import PendingQuestion, normalize_question_options
 from cellwiki.domain.runs import (
     AgentErrorType,
     AgentEventType,
@@ -215,6 +215,21 @@ def is_retryable_run(run: AgentRun) -> bool:
         AgentErrorType.RATE_LIMIT,
         AgentErrorType.TIMEOUT,
     }
+
+
+def outcome_retryable(
+    run: AgentRun, *, status: AgentRunStatus, error_type: AgentErrorType | None
+) -> bool:
+    """终局落盘前的"可重试"判定：与 ``is_retryable_run`` 用同一条规则。
+
+    终局事件里的 ``retryable`` 曾恒为默认假（各收口点不赋值），于是实时会话不
+    点亮「重试」，刷新后 run 视图（走 ``is_retryable_run``）又显示可重试——两处
+    打架。用预演对象走同一条判定，保证事件与 run 视图永远一致。
+    """
+
+    return is_retryable_run(
+        run.model_copy(update={"status": status, "error_type": error_type})
+    )
 
 
 def classify_agent_error(error: Exception) -> AgentErrorType:
@@ -827,7 +842,10 @@ def _signals_from_interrupt(value: Any) -> list[RuntimeSignal]:
     question = str(payload.get("question") or "")[:2_000]
     if not question:
         return []
-    options = [str(option)[:120] for option in (payload.get("options") or [])][:5]
+    options = [
+        option.model_dump()
+        for option in normalize_question_options(payload.get("options"))
+    ]
     return [
         RuntimeSignal(
             type=AgentEventType.TASK_CONFIRMATION_REQUIRED,
@@ -2302,6 +2320,7 @@ class AgentRuntimeManager:
         except RunVersioningError as error:
             # 失败 run 的收口尽力而为：改动已被 error 语义覆盖，不再翻转状态。
             self._emit_versioning_failure_event(run_id, error)
+        current = self.store.get_run(run_id)
         self.store.finalize_run(
             run_id,
             AgentRunOutcome(
@@ -2309,6 +2328,9 @@ class AgentRuntimeManager:
                 message="Agent completed without a textual answer.",
                 error_type=AgentErrorType.SYSTEM,
                 error_message="Agent completed without a textual answer.",
+                retryable=outcome_retryable(
+                    current, status=AgentRunStatus.FAILED, error_type=AgentErrorType.SYSTEM
+                ),
             ),
         )
 
@@ -2753,7 +2775,7 @@ class AgentRuntimeManager:
             thread_id=thread_id,
             tool_call_id=payload.get("tool_call_id"),
             question=str(payload.get("question") or "")[:2_000],
-            options=[str(option)[:120] for option in (payload.get("options") or [])][:5],
+            options=normalize_question_options(payload.get("options")),
             required=bool(payload.get("required", True)),
         )
         self.store.save_pending_question_and_transition(
@@ -2829,12 +2851,15 @@ class AgentRuntimeManager:
                 str(item).strip()[:2_000]
                 for item in cast(Iterable[Any], answers)
             ]
-        if question.get("required") and not answers_list:
-            raise ValueError("required question needs at least one answer")
+        # 跳过（timed_out）优先于必答校验：放弃回答是合法出口，把 run 停在可继续的
+        # 中断态；必答校验只管"要回答"这条路径（2026-09-20 实测：顺序反了会让必答
+        # 问题的「跳过本题」永远 422）。
         if timed_out:
             self.store.answer_question(run_id, [], timed_out=True)
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, "question timed out")
             return self.store.get_run(run_id).model_dump(mode="json")  # type: ignore[union-attr]
+        if question.get("required") and not answers_list:
+            raise ValueError("required question needs at least one answer")
         adapter = self._ensure_adapter_for_run(run)
         # ADR-0010 决策 4：图 adapter 的续跑依赖该 run 自己的 checkpoint。升级前
         # 产生的 run 一律 checkpoint_id=NULL，必须在登记答案与转 RUNNING 之前显式
@@ -3030,13 +3055,21 @@ class AgentRuntimeManager:
         # transition 一次写入状态 + 错误字段 + finished_at：任何时刻读到
         # UNFINISHED 的行都带完整信息；没有后续覆盖写，resume（claim）不会被
         # 迟到的写回退。
+        current = self.store.get_run(run_id)
         run = self.store.transition(
             run_id,
             AgentRunStatus.UNFINISHED,
             error_type=error_type,
             error_message=message[:2000],
             message=f"Run paused: {message}. Resume to continue.",
-            data={"reason": "budget_or_timeout", **(data or {})},
+            data={
+                "reason": "budget_or_timeout",
+                # 实时会话靠事件里的 retryable 点亮「重试」；规则与 run 视图同源。
+                "retryable": outcome_retryable(
+                    current, status=AgentRunStatus.UNFINISHED, error_type=error_type
+                ),
+                **(data or {}),
+            },
             finished_at=datetime.now(UTC),
         )
         self._maintain_unfinished(run)
@@ -3070,7 +3103,8 @@ class AgentRuntimeManager:
 
         ``error_type`` 刻意留空：``is_retryable_run`` 因此返回假，主动停止只给
         「继续」不给「重试」——重试会删掉状态键从头重放，那不是按下停止的人想要的。
-        被动中断（TIMEOUT/BUDGET）带 error_type，两条出路都还在。区分靠事件
+        被动中断（TIMEOUT）带可重试的 error_type，「继续」与「重试」两条出路都在；
+        预算暂停（BUDGET）按同一判定不可重试，只给「继续」。区分靠事件
         ``data.reason``，不靠新增 ``AgentErrorType``：停止不是错误。
 
         走 ``transition`` 而不是 ``finalize_run``：后者的终态集合不含 ``unfinished``。
@@ -3091,7 +3125,7 @@ class AgentRuntimeManager:
             run_id,
             AgentRunStatus.UNFINISHED,
             message="Run paused: stopped by the user. Resume to continue.",
-            data={"reason": "user_stopped"},
+            data={"reason": "user_stopped", "retryable": False},
             finished_at=datetime.now(UTC),
         )
         self._maintain_unfinished(stopped)
@@ -3113,6 +3147,9 @@ class AgentRuntimeManager:
                 message=str(error)[:2000],
                 error_type=error_type,
                 error_message=str(error)[:2000],
+                retryable=outcome_retryable(
+                    current, status=AgentRunStatus.FAILED, error_type=error_type
+                ),
             ),
         )
 
@@ -3900,6 +3937,11 @@ class AgentRuntimeManager:
                             message=message,
                             error_type=AgentErrorType.STRUCTURED_OUTPUT,
                             error_message=message,
+                            retryable=outcome_retryable(
+                                run,
+                                status=AgentRunStatus.FAILED,
+                                error_type=AgentErrorType.STRUCTURED_OUTPUT,
+                            ),
                         ),
                     )
                     raise ValueError(message)
@@ -3913,6 +3955,9 @@ class AgentRuntimeManager:
                     message=str(error)[:500],
                     error_type=AgentErrorType.SYSTEM,
                     error_message=str(error)[:2000],
+                    retryable=outcome_retryable(
+                        run, status=AgentRunStatus.FAILED, error_type=AgentErrorType.SYSTEM
+                    ),
                 ),
             )
             raise

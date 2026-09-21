@@ -174,6 +174,38 @@ def test_failed_run_is_marked_failed_and_retryable(tmp_path: Path):
         assert failed.error_type == AgentErrorType.SYSTEM
         assert is_retryable_run(failed) is True
         assert "provider exploded" in (failed.error_message or "")
+        error_events = [
+            event
+            for event in manager.store.list_events(started.run_id)
+            if event.type == AgentEventType.ERROR
+        ]
+        # 实时会话靠事件里的 retryable 点亮「重试」；曾恒为默认假，与刷新后的
+        # run 视图（走 is_retryable_run）打架。
+        assert error_events[-1].data["retryable"] is True
+    finally:
+        manager.close()
+
+
+def test_timeout_failure_event_is_retryable(tmp_path: Path):
+    """超时失败必须带 retryable=True：否则实时会话的失败卡片点不亮「重试」，
+    只有刷新后（run 视图走 is_retryable_run）才显示，两处打架。"""
+    adapter = ScriptedAdapter([TimeoutError("Request timed out.")])
+    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id="thread_timeout",
+            message="会超时吗？",
+            context=_context("thread_timeout"),
+        )
+        failed = _wait_for_status(manager, started.run_id, {AgentRunStatus.FAILED})
+        assert failed.error_type == AgentErrorType.TIMEOUT
+        assert is_retryable_run(failed) is True
+        error_events = [
+            event
+            for event in manager.store.list_events(started.run_id)
+            if event.type == AgentEventType.ERROR
+        ]
+        assert error_events[-1].data["retryable"] is True
     finally:
         manager.close()
 
@@ -250,6 +282,14 @@ def test_a_user_stop_pauses_the_run_instead_of_destroying_it(tmp_path: Path):
 
         assert stopped.error_type is None
         assert is_retryable_run(stopped) is False
+        pause_events = [
+            event
+            for event in manager.store.list_events(started.run_id)
+            if event.type == AgentEventType.RUN_STATUS
+            and (event.data or {}).get("reason") == "user_stopped"
+        ]
+        # 事件与 run 视图同口径：主动停止不给「重试」。
+        assert pause_events and pause_events[-1].data.get("retryable") is False
 
         resumed = manager.resume(started.run_id)
         assert resumed.status == AgentRunStatus.RUNNING
@@ -441,6 +481,14 @@ def test_budget_gate_marks_run_as_unfinished_and_resume_advances(tmp_path: Path)
         unfinished = _wait_for_status(manager, started.run_id, {AgentRunStatus.UNFINISHED})
         assert unfinished.error_type == AgentErrorType.BUDGET
         assert is_retryable_run(unfinished) is False
+        pause_events = [
+            event
+            for event in manager.store.list_events(started.run_id)
+            if event.type == AgentEventType.RUN_STATUS
+            and (event.data or {}).get("status") == "unfinished"
+        ]
+        # 预算暂停按 is_retryable_run 不可重试：事件里也必须是假，别把「重试」点亮。
+        assert pause_events and pause_events[-1].data.get("retryable") is False
         # 继续/恢复推进会话：unfinished -> running -> succeeded
         resumed = manager.resume(started.run_id)
         assert resumed.status == AgentRunStatus.RUNNING
@@ -1064,7 +1112,10 @@ def test_ask_user_question_pauses_waits_and_resumes(tmp_path: Path):
                     data={
                         "interrupt": {
                             "question": "继续吗？",
-                            "options": ["是", "否"],
+                            "options": [
+                                {"label": "是"},
+                                {"label": "否", "description": "先停在这里", "recommended": True},
+                            ],
                             "required": True,
                         }
                     },
@@ -1096,7 +1147,10 @@ def test_ask_user_question_pauses_waits_and_resumes(tmp_path: Path):
     assert question is not None
     assert question["run_id"] == started.run_id
     assert question["question"] == "继续吗？"
-    assert question["options"] == ["是", "否"]
+    assert question["options"] == [
+        {"label": "是", "description": "", "recommended": False},
+        {"label": "否", "description": "先停在这里", "recommended": True},
+    ]
     assert question["required"] is True
 
     # 必答问题空回复必须拒绝
@@ -1120,6 +1174,50 @@ def test_ask_user_question_pauses_waits_and_resumes(tmp_path: Path):
     assert runtime.store.get_open_question(started.run_id) is None
     messages = runtime.store.list_context_messages(thread_id)
     assert any("已完成" == item["content"] for item in messages)
+
+
+def test_open_question_read_normalizes_legacy_string_options(tmp_path: Path):
+    import json
+    import sqlite3
+
+    from cellwiki.services.runtime_store import RuntimeStore
+
+    # 升级前落库的挂起问题里选项是字符串列表，而新前端按 option.label 渲染；
+    # 读路径必须归一化，否则卡片只剩序号（2026-09-20 真机实测）。
+    store = RuntimeStore(tmp_path)
+    store.create_run(AgentRun(run_id="run_legacy_q", thread_id="t_legacy_q", input_message="x"))
+    legacy = {
+        "question_id": "q_legacy",
+        "run_id": "run_legacy_q",
+        "thread_id": "t_legacy_q",
+        "question": "继续吗？",
+        "options": ["是", "否"],
+        "required": True,
+        "status": "pending",
+        "answers": None,
+        "created_at": "2026-09-20T00:00:00Z",
+        "answered_at": None,
+    }
+    with sqlite3.connect(store.path) as connection:
+        connection.execute(
+            "INSERT INTO agent_questions(question_id, run_id, thread_id, payload, status, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "q_legacy",
+                "run_legacy_q",
+                "t_legacy_q",
+                json.dumps(legacy, ensure_ascii=False),
+                "pending",
+                "2026-09-20T00:00:00Z",
+            ),
+        )
+
+    question = store.get_open_question("run_legacy_q")
+    assert question["options"] == [
+        {"label": "是", "description": "", "recommended": False},
+        {"label": "否", "description": "", "recommended": False},
+    ]
+    assert store.list_questions("run_legacy_q")[0]["options"] == question["options"]
 
 
 def test_answer_question_rejects_non_waiting_run(tmp_path: Path):
@@ -1173,6 +1271,47 @@ def test_question_timeout_finalizes_unfinished(tmp_path: Path):
             break
         time.sleep(0.02)
     result = runtime.answer_question(run.run_id, [], timed_out=True)
+    assert result["status"] == AgentRunStatus.UNFINISHED.value
+    assert runtime.store.get_run(run.run_id).status == AgentRunStatus.UNFINISHED
+    question = runtime.store.list_questions(run.run_id)[0]
+    assert question["status"] == "timed_out"
+
+
+def test_skip_required_question_finalizes_unfinished(tmp_path: Path):
+    # 必答问题的「跳过本题」也必须是合法出口：放弃回答不触发必答校验
+    # （2026-09-20 实测：校验排在跳过前面，跳过永远 422）。
+    adapter = QuestionCapableAdapter(
+        scripts=[
+            [
+                RuntimeSignal(
+                    type=AgentEventType.TASK_CONFIRMATION_REQUIRED,
+                    message="Waiting for the user: 是否继续？",
+                    data={
+                        "interrupt": {
+                            "question": "是否继续？",
+                            "options": [],
+                            "required": True,
+                        }
+                    },
+                ),
+            ],
+        ],
+        resume_script=[],
+    )
+    runtime = AgentRuntimeManager(tmp_path, adapter=adapter)
+    thread_id = f"thread_q_{abs(hash(tmp_path)) & 0xFFFF}"
+    run = runtime.start(
+        thread_id=thread_id,
+        message="开始",
+        context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
+    )
+    deadline = time.monotonic() + WAIT_TIMEOUT
+    while time.monotonic() < deadline:
+        current = runtime.store.get_run(run.run_id)
+        if current is not None and current.status == AgentRunStatus.WAITING_CONFIRMATION:
+            break
+        time.sleep(0.02)
+    result = runtime.answer_question(run.run_id, None, timed_out=True)
     assert result["status"] == AgentRunStatus.UNFINISHED.value
     assert runtime.store.get_run(run.run_id).status == AgentRunStatus.UNFINISHED
     question = runtime.store.list_questions(run.run_id)[0]
@@ -1248,7 +1387,12 @@ def test_interrupt_signal_parsing_translates_to_confirmation():
     )
     assert len(signals) == 1
     assert signals[0].type == AgentEventType.TASK_CONFIRMATION_REQUIRED
-    assert signals[0].data["interrupt"]["options"] == ["是", "否"]
+    # 升级前的载荷里选项是字符串列表，且会随 checkpoint 落盘：读回时必须归一化成
+    # 选项对象，而不是 str(dict) 或 ValidationError。
+    assert signals[0].data["interrupt"]["options"] == [
+        {"label": "是", "description": "", "recommended": False},
+        {"label": "否", "description": "", "recommended": False},
+    ]
     # 截断与清洗
     signals2 = _signals_from_interrupt(
         FakeInterrupt({"question": "x" * 2_500})
@@ -1283,7 +1427,11 @@ class _InterruptFakeModel(BaseChatModel):
                     tool_calls=[
                         {
                             "name": "ask_user_question",
-                            "args": {"question": "继续吗？", "options": ["是", "否"]},
+                            "args": {
+                                "question": "继续吗？",
+                                # 工具入参是选项对象（严格 schema），标签才是答案回传值。
+                                "options": [{"label": "是"}, {"label": "否"}],
+                            },
                             "id": "call_interrupt",
                             "type": "tool_call",
                         }

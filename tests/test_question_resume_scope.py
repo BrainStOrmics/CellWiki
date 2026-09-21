@@ -125,7 +125,7 @@ def _parked_run_with_attachment(
             run_id=run.run_id,
             thread_id=thread_id,
             question="继续吗？",
-            options=["是", "否"],
+            options=[{"label": "是"}, {"label": "否"}],
             required=False,
         ),
         message="Run paused for a question.",

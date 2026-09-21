@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isResumableRunStatus, terminalAgentStatuses } from "../features/agent/run-status";
+import { isResumableRunStatus, isSettledRunStatus, terminalAgentStatuses } from "../features/agent/run-status";
 import reducerSource from "../features/agent/agent-run-reducer.ts?raw";
 import appShellSource from "./AppShell.tsx?raw";
 
@@ -15,6 +15,20 @@ describe("isResumableRunStatus", () => {
     expect(isResumableRunStatus("running")).toBe(false);
     expect(isResumableRunStatus("queued")).toBe(false);
     expect(isResumableRunStatus(undefined)).toBe(false);
+  });
+});
+
+describe("isSettledRunStatus", () => {
+  it("只把真正定局的状态算定局：暂停态（unfinished / waiting_*）不算", () => {
+    expect(isSettledRunStatus("succeeded")).toBe(true);
+    expect(isSettledRunStatus("failed")).toBe(true);
+    expect(isSettledRunStatus("cancelled")).toBe(true);
+    expect(isSettledRunStatus("rejected")).toBe(true);
+    expect(isSettledRunStatus("unfinished")).toBe(false);
+    expect(isSettledRunStatus("waiting_confirmation")).toBe(false);
+    expect(isSettledRunStatus("waiting_approval")).toBe(false);
+    expect(isSettledRunStatus("running")).toBe(false);
+    expect(isSettledRunStatus(undefined)).toBe(false);
   });
 });
 
@@ -74,6 +88,51 @@ describe("续跑出路不得是死结（决策 4 修订 / 实测交接问题 A�
     );
     expect(deleteThread).toContain("setResumableAgentRunId(null);");
   });
+
+  it("定局的 run 必须清掉续跑/重试标记：残留会让新消息被静默丢掉", () => {
+    // 实测（2026-09-20）：run 已 succeeded，但 resumableRunId 还指着它——脚注上挂着
+    // 一个「放弃」，而 sendMessage 见标记非空先走"放弃旧的"分支；那里 activeAgentRunId
+    // 已在终态时清空，cancelActiveAgentRun 直接 return false，消息无声无息地消失。
+    const terminal = sliceBetween(
+      "if (status && terminalAgentStatuses.has(status)) {",
+      "function subscribeToAgentRun(",
+    );
+    expect(terminal).toContain(
+      "setResumableAgentRunId((current) => (current === event.run_id ? null : current));",
+    );
+    expect(terminal).toContain(
+      "setRetryableAgentRunId((current) => (current === event.run_id ? null : current));",
+    );
+
+    // 恢复路径同一条罪：这两个标记跨线程存活，切会话时同样要按 run 清掉。
+    const restored = sliceBetween(
+      "} else if (!terminalAgentStatuses.has(run.status)) {",
+      "} catch {",
+    );
+    expect(restored).toContain(
+      "setResumableAgentRunId((current) => (current === runId ? null : current));",
+    );
+    expect(restored).toContain("if (run.status === \"failed\" && run.retryable)");
+    expect(restored).toContain(
+      "else setRetryableAgentRunId((current) => (current === runId ? null : current));",
+    );
+  });
+
+  it("续跑被拒先查真实状态：run 早已定局就按终态收敛，不再还回必吃 409 的按钮", () => {
+    // 实测（2026-09-20）：run 其实已 succeeded，但终态事件在前端断流时丢了；残留的
+    // 「继续」点一次报一次 `invalid resume: succeeded -> running`（409），而 catch 又把
+    // 按钮还回来——点一次吃一次，用户在这个会话里无路可走。
+    const resume = sliceBetween(
+      "async function resumeUnfinishedAgentRun",
+      "async function retryAgentRun",
+    );
+    expect(resume).toContain("isSettledRunStatus(current.status)");
+    expect(resume).toContain(
+      "applyAgentEvent(legacyTerminalEvent(current, agentEventSequenceRef.current + 1));",
+    );
+    // 查不到（网络抖动）仍按可重试处理：按钮还回来，而不是假装已定局。
+    expect(resume).toContain("setResumableAgentRunId(resumedRunId);");
+  });
 });
 
 describe("停止是暂停而不是死结（composer 单按钮合并）", () => {
@@ -97,8 +156,7 @@ describe("停止是暂停而不是死结（composer 单按钮合并）", () => {
     expect(runAgent).toContain("setResumableAgentRunId(null);");
   });
 
-  it("中断态下发送新消息必须先放弃旧 run：门禁还占着，直接发必然 409", () => {
-    const send = sliceBetween(
+  it("中断态下发送新消息必须先放弃旧 run：门禁还占着，直接发必然 409", () => {    const send = sliceBetween(
       "async function sendMessage()",
       "async function cancelActiveAgentRun",
     );

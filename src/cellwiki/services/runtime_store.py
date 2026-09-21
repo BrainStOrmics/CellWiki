@@ -801,7 +801,7 @@ class RuntimeStore:
             ).fetchone()
         if row is None:
             return None
-        return json.loads(row[0])
+        return self._normalize_question_payload(json.loads(row[0]))
 
     def answer_question(
         self,
@@ -848,7 +848,18 @@ class RuntimeStore:
                 """,
                 (run_id,),
             ).fetchall()
-        return [json.loads(row[0]) for row in rows]
+        return [self._normalize_question_payload(json.loads(row[0])) for row in rows]
+
+    @staticmethod
+    def _normalize_question_payload(payload: dict) -> dict:
+        """升级前落库的选项是字符串列表（新前端读 label 会渲染成空行），读回时归一化。"""
+        from cellwiki.domain.questions import normalize_question_options
+
+        payload["options"] = [
+            option.model_dump()
+            for option in normalize_question_options(payload.get("options"))
+        ]
+        return payload
 
     # ---- 线程身份 ----
     def create_thread(self, thread_id: str) -> None:

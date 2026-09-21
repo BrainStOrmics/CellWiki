@@ -185,7 +185,7 @@ def _question(run_id: str = "run_gated") -> PendingQuestion:
         thread_id="thread_gates",
         tool_call_id="call_1",
         question="Which page should I open?",
-        options=["index.md"],
+        options=[{"label": "index.md"}],
         required=True,
     )
 

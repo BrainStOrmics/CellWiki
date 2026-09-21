@@ -90,7 +90,7 @@ describe("AgentRunDiagnostics", () => {
     expect((container.querySelector(".agent-run-diagnostics") as HTMLDetailsElement).open).toBe(true);
     expect(screen.getByRole("columnheader", { name: "Round" })).toBeInTheDocument();
     expect(
-      screen.getByText("3 runs · 3600 in · 800 out · 1900 cached · avg hit 53%"),
+      screen.getByText("3 runs · 3.6K in · 800 out · 1.9K cached · avg hit 53%"),
     ).toBeInTheDocument();
   });
 
@@ -167,6 +167,48 @@ describe("AgentRunDiagnostics", () => {
     renderDiagnostics();
     expect(await screen.findByText("输入 108K tok · 输出 2.2K tok")).toBeInTheDocument();
     expect(screen.getByText("缓存命中 76%")).toBeInTheDocument();
+  });
+
+  it("shortens million-scale token counts to M, keeping the exact value on hover", async () => {
+    vi.mocked(getJson).mockResolvedValue({
+      ...base,
+      usage: {
+        ...base.usage,
+        input_tokens: 11_977_052,
+        output_tokens: 43_072,
+        cached_input_tokens: 11_451_136,
+      },
+      spans: [
+        {
+          ...base.spans[0],
+          input_tokens: 442_656, output_tokens: 6_192, cached_input_tokens: 436_224,
+        },
+      ],
+    });
+    const { container } = renderDiagnostics([
+      {
+        event_id: "u-1",
+        segment: {
+          ...base.usage,
+          input_tokens: 11_977_052,
+          output_tokens: 43_072,
+          elapsed_seconds: 732.4,
+        },
+        cumulative: base.usage,
+      },
+    ]);
+    await screen.findByText("gpt-x · 1次模型调用");
+
+    const detail = container.querySelector(".agent-run-detail") as HTMLElement;
+    expect(detail.textContent).toContain("12M in · 43.1K out · 11.5M cached (96%)");
+    expect(detail.textContent).toContain("#1 12M in / 43.1K out (732.4s)");
+
+    const cell = container.querySelector(".agent-run-spans tbody td[title]") as HTMLElement;
+    expect(cell.textContent).toBe("443K");
+    expect(cell.title).toBe("442656");
+
+    const tokensRow = container.querySelector("dd[title]") as HTMLElement;
+    expect(tokensRow.title).toBe("11977052 in · 43072 out · 11451136 cached");
   });
 
   it("renders each stream segment's own usage (ADR-0010 决策 9)", async () => {

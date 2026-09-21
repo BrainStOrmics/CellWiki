@@ -35,7 +35,7 @@ import { createAgentEventScheduler, flushesChatImmediately } from "../features/a
 import { QuestionCard } from "../features/agent/QuestionCard";
 // 终态判定只有一份：unfinished 也是流终态（后端已关 SSE 停在预算上）。漏掉它会让
 // 订阅侧无限重连、agentBusy 永不清零，"继续"按钮因此从不出现——看起来就是卡死。
-import { isWaitingRunStatus, terminalAgentStatuses } from "../features/agent/run-status";
+import { isSettledRunStatus, isWaitingRunStatus, terminalAgentStatuses } from "../features/agent/run-status";
 import { composerActionFor } from "../features/agent/composer-action";
 import { ModelSwitcher } from "../features/agent/ModelSwitcher";
 import { SearchWorkspace } from "../features/discovery/FeatureWorkspaces";
@@ -809,15 +809,15 @@ export function AppShell() {
             current?.runId === event.run_id ? null : current
           ));
         }
-        if (
-          status !== "waiting_confirmation"
-          && status !== "waiting_approval"
-          // 可恢复的暂停仍算"挂在这个 run 上"：保留它，取消按钮才留着——
-          // 那是 UI 里唯一能释放串行门禁（POST /cancel）的出口。
-          && status !== "unfinished"
-        ) {
+        if (isSettledRunStatus(status)) {
           setActiveAgentRunId(null);
           window.localStorage.removeItem(agentRunStorageKey(event.thread_id));
+          // 定局的 run 必须清掉它留下的续跑/重试标记：不清的话「放弃」会一直挂在
+          // 脚注上，而 sendMessage 见 resumableRunId 非空会先走"放弃旧的"分支，
+          // 那里 activeAgentRunId 已被清空、直接 return false——新消息被静默丢掉，
+          // 界面上什么都没发生（2026-09-20 实测：succeeded 的 run 让输入框发不出消息）。
+          setResumableAgentRunId((current) => (current === event.run_id ? null : current));
+          setRetryableAgentRunId((current) => (current === event.run_id ? null : current));
         }
       }
     }
@@ -1134,7 +1134,11 @@ export function AppShell() {
         setAgentActivity(t("chat.reconnected"));
         await subscribeToAgentRun(runId);
       } else {
+        // 已定局的 run 不得留下续跑/重试标记（这两个标记跨线程存活）：残留会让脚注
+        // 一直挂着「放弃」，发送前先走"放弃旧的"分支、那里拿不到活动 run 就静默丢消息。
+        setResumableAgentRunId((current) => (current === runId ? null : current));
         if (run.status === "failed" && run.retryable) setRetryableAgentRunId(runId);
+        else setRetryableAgentRunId((current) => (current === runId ? null : current));
         window.localStorage.removeItem(agentRunStorageKey(run.thread_id));
         // 运行在离开期间结束：恢复时同步一次工作区/待审徽标
         void refreshWorkspaceState();
@@ -1306,9 +1310,23 @@ export function AppShell() {
         // 于是成了死结：按钮点不动，而 UNFINISHED 仍占着串行门禁，重发同样是 409。
         setRetryableAgentRunId(resumedRunId);
       } else {
-        // 可重试拒绝（典型是门禁冲突 409）必须把"继续"还回来：否则按钮已清空、
-        // 思考指示器永远转下去，用户在这个会话里无路可走。
-        setResumableAgentRunId(resumedRunId);
+        // 续跑被拒不等于可重试：run 可能早已定局——终态事件在前端断流/重启窗口里丢了，
+        // 实测报 `invalid resume: succeeded -> running`。把真实状态查回来，定局就按终态
+        // 收敛（清标记、落定气泡）；还回一个必吃 409 的「继续」才是死结：点一次吃一次，
+        // 用户在这个会话里无路可走。
+        let current: AgentRun | null = null;
+        try {
+          current = await getJson<AgentRun>(`/api/agent/runs/${encodeURIComponent(resumedRunId)}`);
+        } catch {
+          current = null;
+        }
+        if (current && isSettledRunStatus(current.status)) {
+          applyAgentEvent(legacyTerminalEvent(current, agentEventSequenceRef.current + 1));
+        } else {
+          // 可重试拒绝（典型是门禁冲突 409）必须把"继续"还回来：否则按钮已清空、
+          // 思考指示器永远转下去，用户在这个会话里无路可走。
+          setResumableAgentRunId(resumedRunId);
+        }
       }
       setMessages((current) => [...current, {
         role: "agent",
