@@ -72,6 +72,11 @@ FRAMEWORK_EXCLUDED_TOOL_NAMES: frozenset[str] = frozenset(
     {"write_todos", "ls", "task", "execute"}
 )
 
+# 提示词里逐字列出的"不可用"清单（规范化顺序，保证文本确定可复现）。
+FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT: str = ", ".join(
+    sorted(FRAMEWORK_EXCLUDED_TOOL_NAMES)
+)
+
 # 不变量：框架排除清单与白名单不得有交集（框架排除按名匹配、不区分来源）。
 _OVERLAP = FRAMEWORK_EXCLUDED_TOOL_NAMES & AGENT_VISIBLE_TOOL_NAMES
 if _OVERLAP:
@@ -89,5 +94,6 @@ __all__ = [
     "AGENT_VISIBLE_TOOL_NAMES",
     "CANONICAL_TOOL_ORDER",
     "FRAMEWORK_EXCLUDED_TOOL_NAMES",
+    "FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT",
     "AgentToolSpec",
 ]

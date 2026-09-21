@@ -40,6 +40,7 @@ def test_prompt_tool_name_lists_come_from_the_registry():
     from cellwiki.domain.agent_tools import (
         AGENT_TOOL_NAMES_TEXT,
         AGENT_VISIBLE_TOOL_NAMES,
+        FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT,
     )
 
     # 两处清单逐字等于注册表文本（不是"包含某些名字"，而是恰好这一串）。
@@ -52,13 +53,22 @@ def test_prompt_tool_name_lists_come_from_the_registry():
         assert name in LAYER_A_TEXT, name
         assert name in CELLWIKI_BOUNDARY_REMINDER, name
 
-    # 已退役与框架残留的工具名不得作为"可用工具"出现在提示词里。
+    # 边界提醒的"不可用"清单也来自注册表，不再是手写散文（此前它还写着
+    # 框架里不存在的 bash，同时又把手写的 ls 列进"可用"）。
+    assert FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT in CELLWIKI_BOUNDARY_REMINDER
+
+    # 已退役与框架残留的工具名不得出现在 Layer A 的可用工具清单里。
     for retired in ("ls", "ingest_sources", "move_file", "move_folder", "read_wiki_page"):
         assert not re.search(rf"\b{retired}\b", LAYER_A_TEXT), retired
-        assert not re.search(rf"\b{retired}\b", CELLWIKI_BOUNDARY_REMINDER), retired
+
+    # 边界提醒里只允许把 ls 当作"不可用"提到（它是框架残留、仍需显式拦截）。
+    assert "available (" in CELLWIKI_BOUNDARY_REMINDER
+    available_clause = CELLWIKI_BOUNDARY_REMINDER.split("available (", 1)[1].split(")", 1)[0]
+    assert "ls" not in available_clause.split(", ")
 
 
 def test_v2_schema_block_and_turn_context_are_stable_and_tail_only():
+
     assert schema_prompt_block(2, "abc123") == (
         "## Workspace schema\nversion: 2\ncontract_hash: abc123"
     )

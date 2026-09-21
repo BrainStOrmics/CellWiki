@@ -42,6 +42,7 @@ from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.agent_tools import (
     AGENT_TOOL_NAMES_TEXT,
     FRAMEWORK_EXCLUDED_TOOL_NAMES,
+    FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT,
 )
 from cellwiki.agent.executor import (
     WHITELISTED_TOOL_NAMES,
@@ -88,7 +89,7 @@ Return concise results appropriate to your assigned role.
 CELLWIKI_BOUNDARY_REMINDER = (
     "CellWiki tool boundary: only the whitelisted CellWiki tools are "
     f"available ({AGENT_TOOL_NAMES_TEXT}). Generic "
-    "deep-agent tools such as execute, bash, task, and write_todos are "
+    f"deep-agent tools such as {FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT} are "
     "unavailable. Emit calls only for tool schemas visible in this request."
 )
 
