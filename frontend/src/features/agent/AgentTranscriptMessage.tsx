@@ -329,8 +329,12 @@ const TOOL_CARDS: Record<string, ToolCardSpec> = {
   read_wiki_page: { label: "Read", icon: FileCode2, Body: ReadCard },
   grep: { label: "Grep", icon: Search, Body: SearchCard },
   glob: { label: "Glob", icon: Search, Body: SearchCard },
+  // Retired tool (2026-09-21): retained only so historical transcripts still
+  // render readably. Not in the current agent whitelist.
   ls: { label: "LS", icon: Search, Body: SearchCard },
   search_wiki: { label: "Search", icon: Search, Body: SearchCard },
+
+
   write_file: { label: "Write", icon: FileText, Body: GenericCard },
   edit_file: { label: "Edit", icon: FileCode2, Body: EditCard },
   delete_file: { label: "Delete", icon: FileText, Body: GenericCard },

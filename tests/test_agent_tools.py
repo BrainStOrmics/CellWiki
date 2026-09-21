@@ -119,14 +119,9 @@ def test_lint_knowledge_base_returns_json_report(tmp_path: Path):
     assert "issues" in payload or "status" in payload
 
 
-def test_ls_delete_and_rename_single_files(tmp_path: Path):
+def test_delete_and_rename_single_files(tmp_path: Path):
     root = _workspace(tmp_path)
     tools = _tools(root)
-    listed = json.loads(tools["ls"].invoke({"folder": "wiki/cell_types"}))
-    assert any(item["path"] == "wiki/cell_types/alpha-cell.md" for item in listed["results"])
-    outside = json.loads(tools["ls"].invoke({"folder": ".."}))
-    assert "error" in outside
-
     created = _workspace(tmp_path) / "wiki" / "tmp.md"
     created.write_text("# Tmp\n", encoding="utf-8")
     deleted = json.loads(tools["delete_file"].invoke({"path": "wiki/tmp.md"}))
@@ -234,34 +229,34 @@ def test_question_options_normalize_to_label_description_recommended():
 
 
 def test_runtime_tool_schema_is_exactly_the_whitelist(tmp_path: Path):
-    # 编译后的运行时工具面必须恰好等于白名单（AGENTS.md：验证运行时 schema）
-    from cellwiki.agent.app import _CellWikiToolBoundaryMiddleware
+    """编译后真正发给模型的工具面必须恰好等于白名单。
 
-    middleware = _CellWikiToolBoundaryMiddleware()
-    assert middleware._allowed_tools == {
-        "ls",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "glob",
-        "grep",
-        "git",
-        "run_powershell",
-        "delete_file",
-        "rename_file",
-        "lint_knowledge_base",
-        "ask_user_question",
-        "read_attachment",
-        "promote_attachment",
-    }
+    2026-09-21 之前这条用例只断言中间件的常量 _allowed_tools，因此看着通过，
+    真实模型请求却少了 ls 与 delete_file（HarnessProfile.excluded_tools 按名
+    剥离、不区分来源）。这里改断言"真实编译图传给 bind_tools 的工具名"。
+    """
+    from cellwiki.domain.agent_tools import AGENT_VISIBLE_TOOL_NAMES
+    from tests.tool_surface import model_visible_tool_names
 
-def test_ls_with_empty_folder_defaults_to_root(tmp_path: Path):
-    """模型把 folder 传成空串时，ls 应归一化为工作区根而不是报错。"""
-    root = _workspace(tmp_path)
-    tools = _tools(root)
-    payload = json.loads(tools["ls"].invoke({"folder": ""}))
-    assert "error" not in payload, payload
-    assert payload["results"], "根目录应能列出条目"
+    names = model_visible_tool_names(_workspace(tmp_path))
+
+    assert names == set(AGENT_VISIBLE_TOOL_NAMES)
+    assert "delete_file" in names
+    assert "ls" not in names
+
+
+def test_framework_exclusions_never_touch_whitelisted_tools(tmp_path: Path):
+    """框架排除清单与白名单必须互斥（防止白名单工具被自己人删掉复发）。"""
+    from cellwiki.domain.agent_tools import (
+        AGENT_VISIBLE_TOOL_NAMES,
+        FRAMEWORK_EXCLUDED_TOOL_NAMES,
+    )
+
+    overlap = FRAMEWORK_EXCLUDED_TOOL_NAMES & AGENT_VISIBLE_TOOL_NAMES
+    assert overlap == frozenset(), (
+        "framework excluded_tools strips tools by name without checking their "
+        f"origin; these whitelisted tools would be deleted: {sorted(overlap)}"
+    )
 
 
 # ---------------------------------------------------------------------------

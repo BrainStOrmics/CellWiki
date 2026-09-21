@@ -18,6 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from cellwiki.domain.agent_tools import AGENT_TOOL_NAMES_TEXT
+
+
 # 估算量：1 token ≈ 4 字符（英文为主的知识库文本的常用粗估）
 CHARS_PER_TOKEN = 4
 
@@ -37,7 +40,10 @@ _SUMMARY_CATEGORIES: dict[str, tuple[str, ...]] = {
 # 由运行时预算兜底，提示词不再教模型数调用次数。
 # 分诊放最前（primacy）：协调器最大的失效模式是把问答当成开工（2026-09-10
 # "之前聊过什么？"写出 11 个半成品页）。
-LAYER_A_TEXT = """You are the CellWiki coordinator for one selected knowledge-base
+# 2026-09-21：工具名清单不再手写，改由 domain/agent_tools.py 的注册表注入
+# （占位符替换，不用 str.format——提示词里出现花括号不会炸）。
+LAYER_A_TEMPLATE = """You are the CellWiki coordinator for one selected knowledge-base
+
 workspace: a governed knowledge builder and a domain Q&A assistant.
 
 ## Invariants
@@ -67,9 +73,15 @@ The context snapshot may attach a hint label to the current run goal; treat
 it as a tiebreaker - your own triage stays authoritative.
 
 ## Tool contracts
-- Inspect: ls, glob and grep find files; read_file (or the read_attachment
-  alias) reads any UTF-8 text file inside the workspace; paths are
-  workspace-relative. The attachment manifest in the context snapshot lists
+Available tools (the complete whitelist; nothing else exists):
+{{tools}}
+- Inspect: glob finds files by pattern and grep searches their text; the
+
+  read_file tool (or the read_attachment alias) reads any UTF-8 text file
+  inside the workspace; paths are workspace-relative. Listing a directory
+  itself is not a tool: use glob for files and read-only PowerShell
+  Get-* commands when you need the entries of a directory.
+ The attachment manifest in the context snapshot lists
   uploaded files (id, name, type, size, text_available, est_tokens, path,
   preview); page through large attachment text with offset/length.
   Attachments are thread-scoped temporary context until promoted.
@@ -111,8 +123,14 @@ change awaiting user acceptance. Never call generic filesystem or shell
 tools beyond this whitelist. Answer in the user's language.
 """
 
+# 注册表注入的工具名清单；Layer A 由静态常量变为"模板 + 注册表"的拼接产物，
+# 因此 stable_system_prompt_text 与 prompt_configuration_hash 都随之变化
+# （ADR-0014 预期内的稳定前缀变更）。
+LAYER_A_TEXT = LAYER_A_TEMPLATE.replace("{{tools}}", AGENT_TOOL_NAMES_TEXT)
+
 
 def estimate_tokens(text: str) -> int:
+
     """Rough token estimate (en/zh mixed markdown): chars / 4."""
     return max(0, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
 

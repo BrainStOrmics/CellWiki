@@ -65,8 +65,10 @@ class _TranscriptModel(BaseChatModel):
                     content="",
                     tool_calls=[
                         {
-                            "name": "ls",
-                            "args": {"path": "."},
+                            # ls 已于 2026-09-21 退役：这里必须调用真实白名单工具，
+                            # 否则工具结果会被边界中间件替换成可恢复错误。
+                            "name": "glob",
+                            "args": {"pattern": "**/*.md"},
                             "id": "call_1",
                             "type": "tool_call",
                         }

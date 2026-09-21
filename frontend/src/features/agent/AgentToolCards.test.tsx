@@ -320,8 +320,10 @@ describe("工具卡片注册表", () => {
       ["delete_file", "Delete"],
       ["rename_file", "Rename"],
       ["glob", "Glob"],
+      // ls 已于 2026-09-21 从工具面退役；卡片保留只为历史 transcript 仍可读。
       ["ls", "LS"],
       ["search_wiki", "Search"],
+
       ["ingest_sources", "Legacy ingest"],
       ["ask_user_question", "Ask"],
       ["get_project_status", "Status"],

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import re
+
 from cellwiki.services.prompt_layers import (
     LAYER_A_TEXT,
     build_layer_b_snapshot,
@@ -26,6 +28,34 @@ def test_layer_a_is_the_static_baseline_imported_by_app():
     assert "pending diff" in LAYER_A_TEXT
     assert "ingest_sources" not in LAYER_A_TEXT
     assert "raw/<source_id>/" in LAYER_A_TEXT
+
+
+def test_prompt_tool_name_lists_come_from_the_registry():
+    """提示词与边界提醒里的工具名必须来自注册表，不得手写。
+
+    手写清单会和代码脱节：2026-09-21 修复前 Layer A 与边界提醒都写着模型
+    根本看不到的 ls，同时漏说 delete_file 被框架排除的事实。
+    """
+    from cellwiki.agent.app import CELLWIKI_BOUNDARY_REMINDER
+    from cellwiki.domain.agent_tools import (
+        AGENT_TOOL_NAMES_TEXT,
+        AGENT_VISIBLE_TOOL_NAMES,
+    )
+
+    # 两处清单逐字等于注册表文本（不是"包含某些名字"，而是恰好这一串）。
+    assert AGENT_TOOL_NAMES_TEXT in LAYER_A_TEXT
+    assert AGENT_TOOL_NAMES_TEXT in CELLWIKI_BOUNDARY_REMINDER
+    assert len(AGENT_TOOL_NAMES_TEXT.split(", ")) == len(AGENT_VISIBLE_TOOL_NAMES)
+
+    # 白名单里的每个名字都必须真的出现在提示词里（漏说不等于少给）。
+    for name in AGENT_VISIBLE_TOOL_NAMES:
+        assert name in LAYER_A_TEXT, name
+        assert name in CELLWIKI_BOUNDARY_REMINDER, name
+
+    # 已退役与框架残留的工具名不得作为"可用工具"出现在提示词里。
+    for retired in ("ls", "ingest_sources", "move_file", "move_folder", "read_wiki_page"):
+        assert not re.search(rf"\b{retired}\b", LAYER_A_TEXT), retired
+        assert not re.search(rf"\b{retired}\b", CELLWIKI_BOUNDARY_REMINDER), retired
 
 
 def test_v2_schema_block_and_turn_context_are_stable_and_tail_only():

@@ -39,8 +39,13 @@ from cellwiki.domain.model_provider import (
 )
 from cellwiki.domain.model_providers import ResolvedModelSpec
 from cellwiki.domain.contracts import WikiAgentContext
+from cellwiki.domain.agent_tools import (
+    AGENT_TOOL_NAMES_TEXT,
+    FRAMEWORK_EXCLUDED_TOOL_NAMES,
+)
 from cellwiki.agent.executor import (
     WHITELISTED_TOOL_NAMES,
+
     build_attachment_tools,
     build_workspace_tools,
     canonical_tool_sort_key,
@@ -78,14 +83,13 @@ approval boundary. Never use generic filesystem, shell, or publication tools.
 Return concise results appropriate to your assigned role.
 """
 
+# 工具名清单由注册表生成，不再手写：手写清单会与代码脱节（2026-09-21 修复前
+# 这里列着模型根本看不到的 ls，而 delete_file 也一并被框架排除掉）。
 CELLWIKI_BOUNDARY_REMINDER = (
     "CellWiki tool boundary: only the whitelisted CellWiki tools are "
-    "available (ls, read_file, write_file, edit_file, glob, grep, git, "
-    "run_powershell, delete_file, rename_file, lint_knowledge_base, "
-    "ask_user_question, read_attachment). Generic "
-    "deep-agent tools such as execute, bash, task, write_todos, and "
-    "move_folder are unavailable. Emit calls only for tool schemas "
-    "visible in this request."
+    f"available ({AGENT_TOOL_NAMES_TEXT}). Generic "
+    "deep-agent tools such as execute, bash, task, and write_todos are "
+    "unavailable. Emit calls only for tool schemas visible in this request."
 )
 
 
@@ -180,7 +184,8 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
 
     name = "cellwiki_tool_boundary"
     # 白名单（allowlist）：只有这些 CellWiki 自有工具名能进入模型请求；其余
-    # 框架通用工具（execute/bash/task/write_todos/move_folder 等）一律过滤。
+    # 框架通用工具（execute/task/write_todos/ls 等）一律过滤，并拦截模型若
+    # 仍尝试调用它们的情形（返回可恢复错误，不执行）。
     _allowed_tools = WHITELISTED_TOOL_NAMES
     def __init__(
         self,
@@ -338,20 +343,17 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
     profile = HarnessProfile(
         base_system_prompt=HARNESS_PROMPT,
         general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
-        # 白名单七工具由 executor 显式注册，名称不放入 excluded_tools，
-        # 否则框架会按名称剥离我们的工具注册；通用残留工具继续排除。
-        excluded_tools=frozenset(
-            {
-                "write_todos",
-                "ls",
-                "task",
-                "execute",
-                "bash",
-                "delete_file",
-                "move_file",
-                "move_folder",
-            }
-        ),
+        # 框架残留工具名来自 domain/agent_tools.py 的
+        # FRAMEWORK_EXCLUDED_TOOL_NAMES，与白名单的互斥关系在注册表里断言。
+        #
+        # 主导惯例是"不把白名单工具放进 excluded_tools"：框架排除按名字匹配、
+        # 不区分来源，写进去等于删掉 CellWiki 自己的注册（2026-09-21 缺陷：ls 与
+        # delete_file 就这样被自己人删掉——白名单声明 14 个、模型只见 12 个）。
+        # 框架同名工具（read_file 等）因此改由 _CellWikiToolBoundaryMiddleware 的
+        # allowlist 单层过滤；只有框架真实注入、且无同名 CellWiki 工具覆盖的残留
+        # 才留在本清单。ls 例外地留在清单里：它刚退役，框架同名 ls 失去了"被同名
+        # 工具覆盖"的天然遮蔽，必须显式排除。
+        excluded_tools=FRAMEWORK_EXCLUDED_TOOL_NAMES,
         excluded_middleware=frozenset(
             {
                 cast(Any, TodoListMiddleware),

@@ -1,8 +1,11 @@
 # =============================================================================
-# 白名单工具执行器 —— 七工具 + P1-P4 沙箱 + P4 审计
+# 白名单工具执行器 —— 九工具 + P1-P4 沙箱 + P4 审计
 # =============================================================================
 # File/Glob/Grep/Git/PowerShell 工具进入白名单，作为 Coordinator 的默认工具集：
-#   read_file / write_file / edit_file / glob / grep / git / run_powershell
+#   glob / grep / read_file / write_file / edit_file / delete_file /
+#   rename_file / git / run_powershell
+# 工具名与规范顺序的唯一定义在 domain/agent_tools.py，此处只实现工具本身。
+
 # - P1 路径校验、P2 symlink 策略：统一走 services/path_guard.py；
 # - P3 进程白名单：git 仅白名单六动作（services/git_executor.py）；
 #   run_powershell 仅只读 examine 命令（动词白名单 + 分隔符/危险动词拒绝）；
@@ -25,6 +28,10 @@ from typing import Any
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
+from cellwiki.domain.agent_tools import (
+    AGENT_VISIBLE_TOOL_NAMES,
+    CANONICAL_TOOL_ORDER as REGISTRY_TOOL_ORDER,
+)
 from cellwiki.services.git_executor import GitCommandError, GitExecutor
 from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 from cellwiki.services.workspace import SYSTEM_OWNED_FILES
@@ -106,43 +113,12 @@ _PS_FORBIDDEN_TOKENS = (
 _PS_FORBIDDEN_SEPARATORS = (";", "|", ">", "&", "`n", "`r", "&&", "||")
 
 
+# 工具清单由 domain/agent_tools.py 的注册表派生——它是"Agent 能干什么"的
+# 唯一事实源。变量名保持不变：services/subagents.py 用前者校验子 Agent 的
+# 工具声明必须落在主白名单内。
+WHITELISTED_TOOL_NAMES: frozenset[str] = AGENT_VISIBLE_TOOL_NAMES
 
-WHITELISTED_TOOL_NAMES = frozenset(
-    {
-        "ls",
-        "read_file",
-        "write_file",
-        "edit_file",
-        "glob",
-        "grep",
-        "git",
-        "run_powershell",
-        "delete_file",
-        "rename_file",
-        "lint_knowledge_base",
-        "ask_user_question",
-        "read_attachment",
-        "promote_attachment",
-    }
-)
-
-CANONICAL_TOOL_ORDER: tuple[str, ...] = (
-    "ls",
-    "glob",
-    "grep",
-    "read_file",
-    "write_file",
-    "edit_file",
-    "delete_file",
-    "rename_file",
-    "git",
-    "run_powershell",
-    "lint_knowledge_base",
-    "ask_user_question",
-    "read_attachment",
-    "promote_attachment",
-)
-
+CANONICAL_TOOL_ORDER: tuple[str, ...] = REGISTRY_TOOL_ORDER
 
 def canonical_tool_sort_key(tool_name: str) -> tuple[int, str]:
     try:
@@ -426,7 +402,12 @@ def _read_text_safely(path: Path, max_bytes: int) -> str:
 
 
 def build_workspace_tools(project_root: Path) -> list[BaseTool]:
-    """Assemble the seven whitelisted workspace tools for the coordinator."""
+    """Assemble the nine whitelisted workspace tools for the coordinator.
+
+    ``ls`` 已于 2026-09-21 退役：它不返回任何目录，能力被 ``glob``
+    （列文件）与 ``run_powershell`` 的只读 ``Get-*``（列目录）完全覆盖。
+    """
+
     root = Path(project_root).resolve()
 
     @tool("read_file")
@@ -499,38 +480,6 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             return _tool_json({"error": f"result exceeds the {MAX_WRITE_BYTES}-byte limit"})
         target.write_text(updated, encoding="utf-8", newline="")
         return _tool_json({"ok": True, "path": target.relative_to(root).as_posix(), "bytes": len(updated.encode("utf-8"))})
-
-    @tool("ls")
-    def ls(folder: str = ".", recursive: bool = False) -> str:
-        """List directory entries inside the workspace (excludes .git)."""
-        try:
-            # 模型可能把 folder 传成空串或 "."：归一化为工作区根
-            if folder not in ("", "."):
-                base = validate_workspace_path(root, folder, allow_missing=True)
-            else:
-                base = root
-        except PathGuardError as error:
-            return _tool_json({"error": str(error)})
-        if not base.is_dir():
-            return _tool_json({"error": "directory_not_found", "path": folder})
-        entries: list[dict[str, object]] = []
-        iterator = base.rglob("*") if recursive else base.iterdir()
-        for candidate in sorted(iterator, key=lambda item: (not item.is_dir(), item.name.lower())):
-            if candidate.is_dir():
-                continue
-            rel = candidate.relative_to(root).as_posix()
-            if ".git/" in f"/{rel}":
-                continue
-            entries.append(
-                {
-                    "name": candidate.name,
-                    "path": rel,
-                    "size": candidate.stat().st_size if candidate.is_file() else 0,
-                }
-            )
-            if len(entries) >= MAX_GLOB_RESULTS:
-                break
-        return _tool_json({"results": entries, "truncated": len(entries) >= MAX_GLOB_RESULTS})
 
     @tool("delete_file")
     def delete_file(path: str) -> str:
@@ -695,4 +644,14 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             return _tool_json({"error": f"command failed with {completed.returncode}: {error_text}"})
         return _tool_json({"stdout": output, "returncode": completed.returncode})
 
-    return [ls, read_file, write_file, edit_file, glob, grep, git, run_powershell, delete_file, rename_file]
+    return [
+        read_file,
+        write_file,
+        edit_file,
+        glob,
+        grep,
+        git,
+        run_powershell,
+        delete_file,
+        rename_file,
+    ]

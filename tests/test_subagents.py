@@ -23,7 +23,7 @@ def _valid_spec() -> SubagentSpec:
         version="1.0.0",
         display_name="Reader",
         description="只读浏览与搜索",
-        tool_whitelist=["ls", "glob", "grep", "read_file"],
+        tool_whitelist=["glob", "grep", "read_file"],
         permission_domain="workspace_read",
         result_contract=RESULT_CONTRACT_PLAIN_TEXT,
     )
@@ -97,7 +97,7 @@ def test_sequential_delegation_framework_creates_parent_linked_record():
     )
     assert record["parent_run_id"] == "run_parent"
     assert record["spec_id"] == "reader"
-    assert record["tool_whitelist"] == "ls,glob,grep,read_file"
+    assert record["tool_whitelist"] == "glob,grep,read_file"
     assert record["permission_domain"] == "workspace_read"
     with pytest.raises(KeyError):
         create_delegated_run(
@@ -110,3 +110,6 @@ def test_whitelist_constant_covers_runtime_boundary():
     assert "read_attachment" in WHITELISTED_TOOL_NAMES
     assert "bash" not in WHITELISTED_TOOL_NAMES
     assert "execute" not in WHITELISTED_TOOL_NAMES
+    # ls 于 2026-09-21 退役；白名单由 domain/agent_tools.py 注册表派生。
+    assert "ls" not in WHITELISTED_TOOL_NAMES
+    assert "delete_file" in WHITELISTED_TOOL_NAMES
