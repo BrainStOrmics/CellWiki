@@ -7,10 +7,13 @@ from __future__ import annotations
 import re
 
 from cellwiki.services.prompt_layers import (
+    CALIBRATION_MAX,
+    CALIBRATION_MIN,
     LAYER_A_TEXT,
     build_layer_b_snapshot,
     build_r1_r5_block,
     build_turn_context,
+    calibration_ratio,
     classify_intent_hint,
     compact_transcript,
     estimate_tokens,
@@ -211,6 +214,42 @@ def test_r1_r5_reinjection_block():
 def test_token_estimate():
     assert estimate_tokens("abcd") == 1
     assert estimate_tokens("a" * 100) == 25
+
+
+def test_calibration_ratio_clamps_and_defaults():
+    assert calibration_ratio(None, 1_000) == 1.0
+    assert calibration_ratio(0, 1_000) == 1.0
+    assert calibration_ratio(2_000, 0) == 1.0
+    assert calibration_ratio(2_000, 1_000) == 2.0
+    assert calibration_ratio(10_000, 1_000) == CALIBRATION_MAX
+    assert calibration_ratio(100, 1_000) == CALIBRATION_MIN
+
+
+def test_legacy_compaction_prefers_measured_and_scales_the_window():
+    """legacy 路径与 v2 同一记账语义：实测触发 + 校准保留窗口。"""
+
+    messages = [
+        {"role": "user", "content": f"决定：保留方案 {index}。" + "x" * 400}
+        for index in range(6)
+    ]
+    # 估算远低于阈值：没有 measured 时不触发
+    untouched = compact_transcript(
+        messages, max_tokens=1_000, auto_compact_ratio=0.8, retained_tokens=5_000
+    )
+    assert untouched.compacted is False
+
+    # 同一批消息，measured 远超阈值：触发，且窗口按 measured/估算比值收缩
+    measured = 10_000
+    result = compact_transcript(
+        messages,
+        max_tokens=1_000,
+        auto_compact_ratio=0.8,
+        retained_tokens=1_000,
+        measured_tokens=measured,
+    )
+    assert result.compacted is True
+    assert len(result.retained) < len(messages)
+    assert result.retained[-1] == messages[-1]
 
 
 def test_turn_context_renders_previous_gate_issues():

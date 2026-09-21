@@ -135,6 +135,27 @@ def estimate_tokens(text: str) -> int:
     return max(0, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
 
 
+# 校准系数钳制范围：provider 实测/固定估算的比值一旦超出这个区间就按边界取值。
+CALIBRATION_MIN = 0.5
+CALIBRATION_MAX = 4.0
+
+
+def calibration_ratio(measured_tokens: int | None, estimated_tokens: int) -> float:
+    """把 provider 实测 prompt 与固定估算的比值换算成切分用的校准系数。
+
+    实测值对固定估算可低可高（中文密度、tool_calls JSON、system/工具 schema
+    固定开销都会影响），因此钳制到 [0.5, 4.0]；无实测或估算非正时返回 1.0，
+    保持"纯估算"语义。压缩的触发判定仍直接用实测值，不乘本系数。
+    """
+
+    if not measured_tokens or not estimated_tokens:
+        return 1.0
+    if measured_tokens <= 0 or estimated_tokens <= 0:
+        return 1.0
+    ratio = measured_tokens / estimated_tokens
+    return max(CALIBRATION_MIN, min(CALIBRATION_MAX, ratio))
+
+
 def _page_outline(markdown: str, max_headings: int = 24) -> list[str]:
     """Only metadata + heading outline (Layer B keeps page context small)."""
     outline: list[str] = []
@@ -446,21 +467,38 @@ def compact_transcript(
     max_tokens: int = 512_000,
     auto_compact_ratio: float = 0.8,
     retained_tokens: int = 32_768,
+    measured_tokens: int | None = None,
 ) -> CompactedContext:
-    """Compress an over-budget transcript into six-category summary + retained window."""
+    """Compress an over-budget transcript into six-category summary + retained window.
+
+    触发判定与保留窗口都走实测优先口径：`measured_tokens`（provider 回报的真实
+    prompt）存在时优先用它判定超限，并按实测/估算比值校准保留窗口，使"32K"
+    更接近真实 token 预算；无实测时退回 chars/4 估算（校准系数 1.0）。
+    """
     total_chars = sum(len(str(item.get("content") or "")) for item in messages)
-    threshold_chars = int(max_tokens * auto_compact_ratio) * CHARS_PER_TOKEN
-    if total_chars <= threshold_chars:
+    estimated_tokens = max(
+        1, (total_chars + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
+    )
+    threshold = int(max_tokens * auto_compact_ratio)
+    over_budget = (
+        measured_tokens > threshold
+        if measured_tokens is not None
+        else estimated_tokens > threshold
+    )
+    if not over_budget:
         return CompactedContext(retained=messages, compacted=False)
-    retained_chars = retained_tokens * CHARS_PER_TOKEN
+    ratio = calibration_ratio(measured_tokens, estimated_tokens)
     summary_excerpts: list[str] = []
     retained: list[dict[str, str]] = []
-    used_chars = 0
+    used = 0.0
     for item in reversed(messages):
         content_text = str(item.get("content") or "")
-        if used_chars + len(content_text) <= retained_chars:
+        # 单条代价按校准系数折算成"真实 token"，预算仍是标称的 retained_tokens；
+        # 若预算也乘系数，比值会在不等式两边约掉、校准形同虚设。
+        cost = (len(content_text) / CHARS_PER_TOKEN) * ratio
+        if not retained or used + cost <= retained_tokens:
             retained.append(item)
-            used_chars += len(content_text)
+            used += cost
         else:
             summary_excerpts.append(content_text)
     retained.reverse()
@@ -489,11 +527,14 @@ def build_r1_r5_block(
 
 
 __all__ = [
+    "CALIBRATION_MAX",
+    "CALIBRATION_MIN",
     "CompactedContext",
     "LAYER_A_TEXT",
     "build_layer_b_snapshot",
     "build_r1_r5_block",
     "build_turn_context",
+    "calibration_ratio",
     "classify_intent_hint",
     "compact_transcript",
     "estimate_tokens",

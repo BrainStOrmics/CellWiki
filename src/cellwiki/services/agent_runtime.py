@@ -82,6 +82,7 @@ from cellwiki.services.prompt_layers import (
     build_layer_b_snapshot,
     build_r1_r5_block,
     build_turn_context,
+    calibration_ratio,
     compact_transcript,
 )
 from cellwiki.services.prompt_runtime import (
@@ -1903,6 +1904,7 @@ class AgentRuntimeManager:
         estimated_tokens: int,
         threshold: int,
         measured_tokens: int | None = None,
+        calibration: float | None = None,
     ) -> None:
         data = {
             "mode": mode,
@@ -1911,6 +1913,8 @@ class AgentRuntimeManager:
         }
         if measured_tokens is not None:
             data["measured_tokens"] = measured_tokens
+        if calibration is not None:
+            data["calibration_ratio"] = calibration
         if mode == "provider_native":
             self._provider_compaction_pending[run_id] = dict(data)
         self.store.append_event(
@@ -1931,6 +1935,7 @@ class AgentRuntimeManager:
         retained_messages: int = 0,
         new_epoch: int | None = None,
         measured_tokens: int | None = None,
+        calibration: float | None = None,
     ) -> None:
         self._provider_compaction_pending.pop(run_id, None)
         data = {
@@ -1943,6 +1948,8 @@ class AgentRuntimeManager:
         }
         if measured_tokens is not None:
             data["measured_tokens"] = measured_tokens
+        if calibration is not None:
+            data["calibration_ratio"] = calibration
         self.store.append_event(
             run_id,
             AgentEventType.CONTEXT_COMPACTION_COMPLETED,
@@ -1974,6 +1981,7 @@ class AgentRuntimeManager:
         # 因此永远够不到、压缩形同虚设。老 thread 无记录时退回估算。
         measured_tokens = self.store.last_prompt_tokens(run.thread_id)
         baseline_tokens = measured_tokens or estimated_tokens
+        calibration = calibration_ratio(measured_tokens, estimated_tokens)
         if (
             not policy.provider_native_compaction
             and records
@@ -1985,10 +1993,12 @@ class AgentRuntimeManager:
                 estimated_tokens=estimated_tokens,
                 threshold=threshold,
                 measured_tokens=measured_tokens,
+                calibration=calibration,
             )
             prefix, tail = split_for_compaction(
                 records,
                 retained_tokens=settings.agent_context_retained_tokens,
+                calibration=calibration,
             )
             summary = summarize_transcript(prefix)
             if summary:
@@ -2023,6 +2033,7 @@ class AgentRuntimeManager:
                 retained_messages=len(tail) if summary else 0,
                 new_epoch=self.store.current_transcript_epoch(run.thread_id),
                 measured_tokens=measured_tokens,
+                calibration=calibration,
             )
         elif (
             policy.provider_native_compaction
@@ -2037,6 +2048,7 @@ class AgentRuntimeManager:
                 estimated_tokens=estimated_tokens,
                 threshold=threshold,
                 measured_tokens=measured_tokens,
+                calibration=calibration,
             )
 
         self.store.append_message(
@@ -2217,12 +2229,16 @@ class AgentRuntimeManager:
                     current_run_id=run_id,
                     current_content=message or "",
                 )
-                # 阶段 5：512K/80% 阈值压缩 -> 六类摘要 + 保留窗口 32K，并注入 R1-R5
+                # 阶段 5：512K/80% 阈值压缩 -> 六类摘要 + 保留窗口 32K，并注入 R1-R5。
+                # 2026-09-21：与 v2 同一记账语义——有 provider 实测就优先按实测
+                # 判定，并用实测/估算比值校准保留窗口。
+                legacy_measured = self.store.last_prompt_tokens(thread_id)
                 compacted = compact_transcript(
                     messages_in,
                     max_tokens=settings.agent_context_max_tokens,
                     auto_compact_ratio=settings.agent_context_auto_compact_ratio,
                     retained_tokens=settings.agent_context_retained_tokens,
+                    measured_tokens=legacy_measured,
                 )
                 if compacted.compacted:
                     r1_r5 = build_r1_r5_block(
@@ -2753,6 +2769,13 @@ class AgentRuntimeManager:
                             "threshold": pending_compaction["threshold"],
                             "retained_messages": 0,
                             "new_epoch": None,
+                            **(
+                                {"calibration_ratio": pending_compaction[
+                                    "calibration_ratio"
+                                ]}
+                                if "calibration_ratio" in pending_compaction
+                                else {}
+                            ),
                         },
                     )
         assistant_text = "".join(assistant_text_parts).strip()

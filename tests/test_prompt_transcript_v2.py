@@ -15,7 +15,11 @@ from cellwiki.agent.app import build_wiki_agent
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.runs import AgentEventType, AgentRun, AgentRunStatus
 from cellwiki.services.agent_runtime import AgentRuntimeManager
-from cellwiki.services.model_transcript import render_model_messages
+from cellwiki.services.model_transcript import (
+    estimate_transcript_tokens,
+    render_model_messages,
+    split_for_compaction,
+)
 from cellwiki.services.prompt_cache import PromptCachePolicy, resolve_prompt_cache_policy
 from cellwiki.services.runtime_store import RuntimeStore
 
@@ -357,7 +361,7 @@ def test_local_compaction_emits_visible_context_events(
         monkeypatch.setattr(manager, "_cache_policy_for_run", lambda _run: policy)
         monkeypatch.setattr(
             "cellwiki.services.agent_runtime.split_for_compaction",
-            lambda records, retained_tokens: (records, []),
+            lambda records, retained_tokens, calibration=1.0: (records, []),
         )
         monkeypatch.setattr(
             "cellwiki.services.agent_runtime.summarize_transcript",
@@ -419,7 +423,7 @@ def _patch_compaction_policy(
     monkeypatch.setattr(manager, "_cache_policy_for_run", lambda _run: policy)
     monkeypatch.setattr(
         "cellwiki.services.agent_runtime.split_for_compaction",
-        lambda records, retained_tokens: (records, []),
+        lambda records, retained_tokens, calibration=1.0: (records, []),
     )
     monkeypatch.setattr(
         "cellwiki.services.agent_runtime.summarize_transcript",
@@ -462,8 +466,63 @@ def test_measured_prompt_tokens_drive_compaction_before_the_estimate(
         assert events[0].data["measured_tokens"] == 5_000
         assert events[1].data["measured_tokens"] == 5_000
         assert events[1].data["changed"] is True
+        # 事件同时给出校准系数，供诊断解释"实测/估算"的差距
+        assert events[0].data["calibration_ratio"] > 1.0
+        assert events[1].data["calibration_ratio"] > 1.0
     finally:
         manager.close()
+
+
+def test_transcript_estimate_counts_assistant_tool_call_arguments():
+    """回归：tool_calls 参数 JSON 与 content 一样发给 provider，必须计入估算。"""
+
+    records = [
+        {
+            "kind": "assistant",
+            "role": "assistant",
+            "content": {
+                "text": "done",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "name": "grep",
+                        "args": {"pattern": "x" * 400},
+                    }
+                ],
+            },
+        }
+    ]
+    text_only = len("done") // 4
+    assert estimate_transcript_tokens(records) > text_only + 50
+
+
+def test_split_for_compaction_scales_the_retained_window_by_calibration():
+    """实测/估算比值高时，保留窗口必须收敛；比值 1.0 时口径不变。"""
+
+    records = [
+        {"kind": "user", "role": "user", "content": {"text": "x" * 400}}
+        for _ in range(10)
+    ]
+    prefix, tail = split_for_compaction(
+        records, retained_tokens=200, calibration=1.0
+    )
+    assert len(tail) == 2  # 每条约 100 token，200 预算装两条
+    assert len(prefix) == 8
+
+    prefix_cal, tail_cal = split_for_compaction(
+        records, retained_tokens=200, calibration=2.0
+    )
+    assert len(tail_cal) == 1
+    assert len(prefix_cal) == 9
+
+
+def test_split_for_compaction_always_keeps_the_last_record():
+    records = [
+        {"kind": "user", "role": "user", "content": {"text": "y" * 4_000}}
+    ]
+    prefix, tail = split_for_compaction(records, retained_tokens=1)
+    assert tail == records
+    assert prefix == []
 
 
 def test_compaction_stays_quiet_without_measurement_and_small_estimate(

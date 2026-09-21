@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from cellwiki.services.prompt_layers import summarize_excerpts
@@ -18,8 +19,30 @@ def _text(record: dict[str, Any]) -> str:
     return str(record.get("content_text") or "")
 
 
+def _tool_calls_text(record: dict[str, Any]) -> str:
+    """Serialize assistant tool_calls for token accounting.
+
+    tool_calls 参数 JSON 与 content 文本一样按字面发给 provider，但旧估算只看
+    content.text，实测同一 thread 因此低估 2.4 倍（见
+    design/active/2026-09-21-measured-first-compaction-accounting.md）。
+    """
+
+    content = record.get("content")
+    if not isinstance(content, dict):
+        return ""
+    calls = content.get("tool_calls")
+    if not isinstance(calls, list) or not calls:
+        return ""
+    return json.dumps(calls, ensure_ascii=False, default=str)
+
+
 def estimate_transcript_tokens(records: list[dict[str, Any]]) -> int:
-    return max(0, sum(len(_text(record)) for record in records) // CHARS_PER_TOKEN)
+    """Fixed fallback estimate: content text + assistant tool_calls JSON."""
+
+    total_chars = sum(
+        len(_text(record)) + len(_tool_calls_text(record)) for record in records
+    )
+    return max(0, total_chars // CHARS_PER_TOKEN)
 
 
 def summarize_transcript(records: list[dict[str, Any]]) -> str:
@@ -30,14 +53,23 @@ def summarize_transcript(records: list[dict[str, Any]]) -> str:
 
 
 def split_for_compaction(
-    records: list[dict[str, Any]], *, retained_tokens: int
+    records: list[dict[str, Any]],
+    *,
+    retained_tokens: int,
+    calibration: float = 1.0,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Split active records into the summarized prefix and retained tail."""
+    """Split active records into the summarized prefix and retained tail.
+
+    `calibration` 是 provider 实测 prompt 与固定估算的比值（由
+    `prompt_layers.calibration_ratio` 解析）：固定估算只覆盖消息体，真实请求
+    还含 system/工具 schema 与按 provider 计费的 token 密度差异，因此保留窗口
+    按该比值缩放后再累计。无实测时 calibration=1.0，退回纯估算语义。
+    """
 
     tail: list[dict[str, Any]] = []
-    used = 0
+    used = 0.0
     for record in reversed(records):
-        tokens = estimate_transcript_tokens([record])
+        tokens = estimate_transcript_tokens([record]) * calibration
         if tail and used + tokens > retained_tokens:
             break
         tail.append(record)
