@@ -77,6 +77,28 @@ class _TranscriptModel(BaseChatModel):
         yield ChatGenerationChunk(message=AIMessageChunk(content="done"))
 
 
+class _UsageReportingModel(_TranscriptModel):
+    """Reports provider usage so the runtime can record the real prompt size."""
+
+    reported_input_tokens: int = 5_000
+
+    def _stream(
+        self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any
+    ):
+        self.seen.append(list(messages))
+        yield ChatGenerationChunk(
+            message=AIMessageChunk(
+                id="call_measured",
+                content="done",
+                usage_metadata={
+                    "input_tokens": self.reported_input_tokens,
+                    "output_tokens": 8,
+                    "total_tokens": self.reported_input_tokens + 8,
+                },
+            )
+        )
+
+
 def _wait(manager: AgentRuntimeManager, run: AgentRun) -> AgentRun:
     deadline = time.monotonic() + WAIT_TIMEOUT
     while time.monotonic() < deadline:
@@ -364,6 +386,128 @@ def test_local_compaction_emits_visible_context_events(
         assert events[1].data["changed"] is True
     finally:
         manager.close()
+
+
+def _compaction_events(manager: AgentRuntimeManager, run_id: str) -> list[Any]:
+    return [
+        event
+        for event in manager.store.list_events(run_id)
+        if event.type
+        in {
+            AgentEventType.CONTEXT_COMPACTION_STARTED,
+            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+        }
+    ]
+
+
+def _patch_compaction_policy(
+    monkeypatch: Any, manager: AgentRuntimeManager, *, threshold: int
+) -> None:
+    policy = PromptCachePolicy(
+        mode="implicit",
+        protocol="chat_completions",
+        max_breakpoints=0,
+        provider_native_compaction=False,
+        compact_threshold=threshold,
+        breakpoint_key="",
+        model_input_tokens=1_000_000,
+        input_window_source="configured",
+        effective_context_limit=1_000_000,
+    )
+    monkeypatch.setattr(manager, "_cache_policy_for_run", lambda _run: policy)
+    monkeypatch.setattr(
+        "cellwiki.services.agent_runtime.split_for_compaction",
+        lambda records, retained_tokens: (records, []),
+    )
+    monkeypatch.setattr(
+        "cellwiki.services.agent_runtime.summarize_transcript",
+        lambda records: "## Compacted history summary\ndecisions:\n- keep",
+    )
+
+
+def test_measured_prompt_tokens_drive_compaction_before_the_estimate(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """回归：中文/工具结果多时 chars/4 估算只有真实值的零头，压缩必须看真实值。"""
+
+    model = _UsageReportingModel(reported_input_tokens=5_000)
+    manager = _manager(tmp_path, model)
+    try:
+        _turn(manager, "thread_measured", "first question")
+        assert manager.store.last_prompt_tokens("thread_measured") == 5_000
+
+        run = AgentRun(
+            run_id="run_measured",
+            thread_id="thread_measured",
+            input_message="second question",
+            transcript_version=2,
+        )
+        manager.store.create_run(run)
+        _patch_compaction_policy(monkeypatch, manager, threshold=4_096)
+        manager._prepare_v2_transcript(
+            run,
+            "second question",
+            WikiAgentContext(project_id="cellwiki", thread_id="thread_measured"),
+            adapter=object(),
+        )
+        events = _compaction_events(manager, run.run_id)
+        assert [event.type for event in events] == [
+            AgentEventType.CONTEXT_COMPACTION_STARTED,
+            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+        ]
+        # 估算远低于阈值，触发只能来自真实值
+        assert events[0].data["estimated_tokens"] < 4_096
+        assert events[0].data["measured_tokens"] == 5_000
+        assert events[1].data["measured_tokens"] == 5_000
+        assert events[1].data["changed"] is True
+    finally:
+        manager.close()
+
+
+def test_compaction_stays_quiet_without_measurement_and_small_estimate(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    """老 thread 无真实记录时退回估算；估算没到阈值就不压缩。"""
+
+    manager = _manager(tmp_path, _TranscriptModel())
+    run = AgentRun(
+        run_id="run_no_measure",
+        thread_id="thread_no_measure",
+        input_message="question",
+        transcript_version=2,
+    )
+    try:
+        manager.store.create_run(run)
+        manager.store.append_model_message(
+            thread_id=run.thread_id,
+            run_id=run.run_id,
+            kind="user",
+            role="user",
+            content={"text": "a short question"},
+            message_key="old",
+        )
+        assert manager.store.last_prompt_tokens(run.thread_id) is None
+        _patch_compaction_policy(monkeypatch, manager, threshold=409_600)
+        manager._prepare_v2_transcript(
+            run,
+            "question",
+            WikiAgentContext(project_id="cellwiki", thread_id=run.thread_id),
+            adapter=object(),
+        )
+        assert _compaction_events(manager, run.run_id) == []
+    finally:
+        manager.close()
+
+
+def test_record_prompt_tokens_overwrites_so_the_baseline_can_fall(tmp_path: Path) -> None:
+    """压缩后 prompt 缩小，基线必须能回落，否则会连环触发压缩。"""
+
+    store = RuntimeStore(tmp_path)
+    assert store.last_prompt_tokens("thread_baseline") is None
+    store.record_prompt_tokens("thread_baseline", 500_000)
+    assert store.last_prompt_tokens("thread_baseline") == 500_000
+    store.record_prompt_tokens("thread_baseline", 12_000)
+    assert store.last_prompt_tokens("thread_baseline") == 12_000
 
 
 def test_transcript_compaction_boundary_hides_earlier_messages(tmp_path: Path):

@@ -1250,7 +1250,7 @@ class AgentRuntimeManager:
         self._forced_closes: dict[str, str] = {}
         # provider-native compaction 的开始只能按阈值预判；完成信号到达前
         # 保持 pending，以便流结束没有 opaque item 时给 UI 一个明确的收尾。
-        self._provider_compaction_pending: dict[str, dict[str, int]] = {}
+        self._provider_compaction_pending: dict[str, dict[str, Any]] = {}
         self._running_run_id: str | None = None
         self._watchdog = _StreamWatchdog(self._on_stream_watchdog_expire)
         self._watchdog.start()
@@ -1817,21 +1817,22 @@ class AgentRuntimeManager:
         mode: str,
         estimated_tokens: int,
         threshold: int,
+        measured_tokens: int | None = None,
     ) -> None:
+        data = {
+            "mode": mode,
+            "estimated_tokens": estimated_tokens,
+            "threshold": threshold,
+        }
+        if measured_tokens is not None:
+            data["measured_tokens"] = measured_tokens
         if mode == "provider_native":
-            self._provider_compaction_pending[run_id] = {
-                "estimated_tokens": estimated_tokens,
-                "threshold": threshold,
-            }
+            self._provider_compaction_pending[run_id] = dict(data)
         self.store.append_event(
             run_id,
             AgentEventType.CONTEXT_COMPACTION_STARTED,
             message="Compacting context.",
-            data={
-                "mode": mode,
-                "estimated_tokens": estimated_tokens,
-                "threshold": threshold,
-            },
+            data=data,
         )
 
     def _append_context_compaction_completed(
@@ -1844,8 +1845,19 @@ class AgentRuntimeManager:
         threshold: int,
         retained_messages: int = 0,
         new_epoch: int | None = None,
+        measured_tokens: int | None = None,
     ) -> None:
         self._provider_compaction_pending.pop(run_id, None)
+        data = {
+            "mode": mode,
+            "changed": changed,
+            "estimated_tokens": estimated_tokens,
+            "threshold": threshold,
+            "retained_messages": retained_messages,
+            "new_epoch": new_epoch,
+        }
+        if measured_tokens is not None:
+            data["measured_tokens"] = measured_tokens
         self.store.append_event(
             run_id,
             AgentEventType.CONTEXT_COMPACTION_COMPLETED,
@@ -1854,14 +1866,7 @@ class AgentRuntimeManager:
                 if changed
                 else "Context compaction not triggered."
             ),
-            data={
-                "mode": mode,
-                "changed": changed,
-                "estimated_tokens": estimated_tokens,
-                "threshold": threshold,
-                "retained_messages": retained_messages,
-                "new_epoch": new_epoch,
-            },
+            data=data,
         )
 
     def _prepare_v2_transcript(
@@ -1879,16 +1884,22 @@ class AgentRuntimeManager:
         records = self.store.list_model_messages(run.thread_id)
         threshold = policy.compact_threshold
         estimated_tokens = estimate_transcript_tokens(records) if records else 0
+        # 压缩基线优先用 provider 回报的真实 prompt 大小：chars/4 估算对中文与
+        # 工具结果会低估数倍（实测同一 thread 估算 19.6 万、真实 51.2 万），阈值
+        # 因此永远够不到、压缩形同虚设。老 thread 无记录时退回估算。
+        measured_tokens = self.store.last_prompt_tokens(run.thread_id)
+        baseline_tokens = measured_tokens or estimated_tokens
         if (
             not policy.provider_native_compaction
             and records
-            and estimated_tokens > threshold
+            and baseline_tokens > threshold
         ):
             self._append_context_compaction_started(
                 run.run_id,
                 mode="local",
                 estimated_tokens=estimated_tokens,
                 threshold=threshold,
+                measured_tokens=measured_tokens,
             )
             prefix, tail = split_for_compaction(
                 records,
@@ -1926,11 +1937,12 @@ class AgentRuntimeManager:
                 threshold=threshold,
                 retained_messages=len(tail) if summary else 0,
                 new_epoch=self.store.current_transcript_epoch(run.thread_id),
+                measured_tokens=measured_tokens,
             )
         elif (
             policy.provider_native_compaction
             and records
-            and estimated_tokens > threshold
+            and baseline_tokens > threshold
         ):
             # provider 不提供“开始压缩”回调；这是基于有效窗口的预判，真正
             # completed(changed=true) 只在收到 opaque compaction item 时发出。
@@ -1939,6 +1951,7 @@ class AgentRuntimeManager:
                 mode="provider_native",
                 estimated_tokens=estimated_tokens,
                 threshold=threshold,
+                measured_tokens=measured_tokens,
             )
 
         self.store.append_message(
@@ -2382,6 +2395,8 @@ class AgentRuntimeManager:
         assistant_text_parts: list[str] = []
         last_model_call_id: str | None = None
         call_usage: dict[str, list[int]] = {}
+        # model_call_id -> 已落账的真实 prompt 大小（去重流式重复上报）
+        recorded_prompt_tokens: dict[str, int] = {}
         call_started: dict[str, float] = {}
         call_seen_last: dict[str, float] = {}
         # Open tool calls keyed by tool_call_id -> (name, started_monotonic).
@@ -2496,6 +2511,19 @@ class AgentRuntimeManager:
                         usage[3] = max(
                             usage[3], signal.cache_creation_input_tokens
                         )
+                        if signal.input_tokens > recorded_prompt_tokens.get(
+                            signal.model_call_id, 0
+                        ):
+                            # v2 压缩基线：记 provider 回报的真实 prompt 大小（流式
+                            # 会重复报同一调用，按调用号取最大值去重）。记账失败不得
+                            # 顶替 run 错误。
+                            recorded_prompt_tokens[
+                                signal.model_call_id
+                            ] = signal.input_tokens
+                            with suppress(Exception):
+                                self.store.record_prompt_tokens(
+                                    thread_id, signal.input_tokens
+                                )
                     else:
                         input_tokens += signal.input_tokens
                         output_tokens += signal.output_tokens

@@ -472,6 +472,35 @@ class RuntimeStore:
             ).fetchone()
         return int(row[0]) if row is not None else 0
 
+    def record_prompt_tokens(self, thread_id: str, tokens: int) -> None:
+        """记住 provider 回报的 prompt 真实大小，供下一轮压缩判定当基线。
+
+        覆盖写而不是取最大值：同一 run 内 prompt 追加式增长，最后一次调用即最大
+        值；压缩后（epoch 变化）prompt 缩小，也必须落账，否则基线下不来会连环触发。
+        """
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._ensure_transcript_state_locked(connection, thread_id)
+            connection.execute(
+                "UPDATE agent_transcript_state SET last_prompt_tokens = ?, "
+                "updated_at = ? WHERE thread_id = ?",
+                (int(tokens), datetime.now(UTC).isoformat(), thread_id),
+            )
+
+    def last_prompt_tokens(self, thread_id: str) -> int | None:
+        """最近一次模型调用回报的 prompt 大小；无记录时 None（判定退回估算）。"""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT last_prompt_tokens FROM agent_transcript_state "
+                "WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return int(row[0])
+
     def append_model_message(
         self,
         *,
@@ -2030,6 +2059,7 @@ class RuntimeStore:
                     thread_id TEXT PRIMARY KEY,
                     current_epoch INTEGER NOT NULL,
                     bootstrapped_at TEXT,
+                    last_prompt_tokens INTEGER,
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS agent_spans (
@@ -2092,7 +2122,21 @@ class RuntimeStore:
             )
             self._ensure_thread_registry(connection)
             self._ensure_run_idempotency_schema(connection)
+            self._ensure_transcript_state_schema(connection)
             self._scrub_retired_payload_fields(connection)
+
+    def _ensure_transcript_state_schema(self, connection: sqlite3.Connection) -> None:
+        """v2 压缩基线列：provider 回报的真实 prompt 大小走内联守卫 ALTER。"""
+
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(agent_transcript_state)")
+        }
+        if "last_prompt_tokens" not in columns:
+            connection.execute(
+                "ALTER TABLE agent_transcript_state "
+                "ADD COLUMN last_prompt_tokens INTEGER"
+            )
 
     def _backfill_messages(self) -> None:
         """Backfill transcripts created before the durable message table existed.

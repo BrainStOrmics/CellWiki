@@ -104,6 +104,38 @@ describe("ModelSwitcher", () => {
     expect(screen.queryByText("Gateway A")).toBeNull();
   });
 
+  it("checks the currently effective model and moves the check on pick", async () => {
+    renderSwitcher();
+    fireEvent.click(screen.getByRole("button", { name: /切换模型/ }));
+    const popover = await waitFor(() => {
+      const dialog = screen.getByRole("dialog", { name: /切换模型/ });
+      expect(within(dialog).getByText("Gateway A")).toBeVisible();
+      return dialog;
+    });
+    const group = within(popover).getByText("Gateway A").parentElement as HTMLElement;
+
+    // 目录默认选择那一行打钩，且全列表只有一个钩
+    expect(popover.querySelectorAll(".model-option-check")).toHaveLength(1);
+    expect(
+      within(group).getByText("model-a1").closest("button")?.querySelector(".model-option-check"),
+    ).not.toBeNull();
+
+    // 选另一个模型后钩跟着挪到那一行
+    fireEvent.click(within(group).getByText("model-a2"));
+    fireEvent.click(screen.getByRole("button", { name: /切换模型/ }));
+    const reopened = await waitFor(() => {
+      const dialog = screen.getByRole("dialog", { name: /切换模型/ });
+      expect(within(dialog).getByText("Gateway A")).toBeVisible();
+      return dialog;
+    });
+    const picked = within(reopened).getByText("model-a2").closest("button");
+    expect(picked?.querySelector(".model-option-check")).not.toBeNull();
+    expect(reopened.querySelectorAll(".model-option-check")).toHaveLength(1);
+    expect(
+      within(reopened).getByText("model-a1").closest("button")?.querySelector(".model-option-check"),
+    ).toBeNull();
+  });
+
   it("prefers the display name for the button label and the option row", async () => {
     catalogResponse = {
       ...catalog,

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronDown } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
 import { getJson } from "../../lib/product-api";
 import { useUiStore } from "../../stores/ui-store";
 import type { ModelProviderCatalog, ModelSelection } from "../../types";
@@ -33,6 +33,8 @@ export function ModelSwitcher({ disabled }: { disabled?: boolean }) {
 
   const providers = catalog.data?.providers ?? [];
   const defaultSelection = catalog.data?.default_selection ?? null;
+  // 当前生效的模型（按钮上显示的那个）：钩只打在这一行上。
+  const current = selectedModel ?? defaultSelection;
 
   const selectable = useMemo(
     () =>
@@ -130,6 +132,8 @@ export function ModelSwitcher({ disabled }: { disabled?: boolean }) {
                       (item) => item.provider_id === entry.provider.id
                         && item.model_id === model.id,
                     );
+                    const isCurrent = current?.provider_id === entry.provider.id
+                      && current?.model_id === model.id;
                     return (
                       <button
                         key={model.id}
@@ -138,7 +142,8 @@ export function ModelSwitcher({ disabled }: { disabled?: boolean }) {
                         onMouseEnter={() => setActiveIndex(index)}
                         onClick={() => choose({ provider_id: entry.provider.id, model_id: model.id })}
                       >
-                        {model.display_name || model.id}
+                        <span className="model-option-label">{model.display_name || model.id}</span>
+                        {isCurrent && <Check size={13} className="model-option-check" aria-hidden />}
                       </button>
                     );
                   })}
