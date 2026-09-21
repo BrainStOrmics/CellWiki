@@ -125,6 +125,14 @@ logger = logging.getLogger(__name__)
 MAX_RUN_SECONDS_FLOOR = 10
 SCHEMA_GATE_ERROR_PREFIX = "schema_contract_failed: "
 
+# 代判策略（ADR-0007 决策 2 修订）：策略开启时，只有这两个终态的收尾发布由
+# 系统代发接受；failed 与其他终态保持待判（人工兜底）。字符串会写进单元的
+# data 快照，改动等于审计语义变化。
+AUTO_ACCEPT_POLICY = "succeeded+unfinished"
+AUTO_ACCEPT_STATUSES = frozenset(
+    {AgentRunStatus.SUCCEEDED, AgentRunStatus.UNFINISHED}
+)
+
 _TOOL_ACTIVITY_CODES = {
     "read_file": "reading_page",
     "write_file": "editing",
@@ -1543,13 +1551,23 @@ class AgentRuntimeManager:
             diff.snapshot_commit, enabled_refs=refs
         ).patch
 
-    def accept_pending_diff(self, diff_id: str) -> PendingDiff:
+    def accept_pending_diff(
+        self,
+        diff_id: str,
+        *,
+        resolved_by: str = "user",
+        data: dict[str, Any] | None = None,
+    ) -> PendingDiff:
         """Accept one approval unit: its commits stay, the verdict is recorded,
         then system maintenance runs.
 
         判定不可回退：只有 PENDING 单元可以接受。审批单元边界即 diff 行本身
         （ADR-0007 修订），预算暂停—"继续"后的新提交落在序号更大的新单元里，
         因此不存在"重发布把已批准 commit 装回待判范围"的窗口。
+
+        ``resolved_by`` 记录判定来源：人工点击为 ``"user"``，自动接受策略代发
+        为 ``"auto"``（策略快照随 ``data`` 落盘）。审计上必须可辨——代判不等于
+        人看过（ADR-0007 决策 2 修订）。
         """
         with self._maintenance_lock:
             current = self.store.get_pending_diff(diff_id)
@@ -1558,7 +1576,10 @@ class AgentRuntimeManager:
                     f"diff {diff_id} is already {current.status.value}"
                 )
             diff = self.store.update_pending_diff(
-                diff_id, status=PendingDiffStatus.ACCEPTED, resolution="accepted"
+                diff_id,
+                status=PendingDiffStatus.ACCEPTED,
+                resolution="accepted",
+                data={"resolved_by": resolved_by, **(data or {})},
             )
             self._run_maintenance_locked("accept", diff)
         return diff
@@ -1583,7 +1604,7 @@ class AgentRuntimeManager:
                 diff_id,
                 status=PendingDiffStatus.REJECTED,
                 resolution="rejected",
-                data={"revert_commits": revert_shas},
+                data={"revert_commits": revert_shas, "resolved_by": "user"},
             )
             self._run_maintenance_locked("reject", diff)
         return diff
@@ -1600,6 +1621,65 @@ class AgentRuntimeManager:
                 f"diff {diff_id} is already {current.status.value} and cannot be reopened"
             )
         return current
+
+    def _maybe_auto_accept_pending_diff(self, run_id: str) -> PendingDiff | None:
+        """代判策略：run 以 succeeded/unfinished 收尾后，其未判定单元由系统接受。
+
+        判定条件缺一不可：策略开启、run 终态 ∈ {succeeded, unfinished}、该 run
+        仍有未判定单元。策略关闭时零副作用（早退，不读库、不写事件）。策略在
+        进程内恒定（设置改动随重启生效），单元上的来源快照因此无歧义。
+
+        调用点在"发布 + 强制 lint 快照"之后，且按 run 终态判定而不是按"是否刚
+        发布"判定：挂起发布不判定（单元就地刷新），调过的 run 续跑后也只需在
+        终态判一次。失败不吞——单元保持 pending、另发可操作 error 事件，新 run
+        门禁照常生效；自动接受是便利，不是必须成功的链路。
+        """
+        if not settings.auto_accept_pending_diffs:
+            return None
+        try:
+            run = self.store.get_run(run_id)
+        except KeyError:
+            return None
+        if run.status not in AUTO_ACCEPT_STATUSES:
+            return None
+        try:
+            pending = [
+                diff
+                for diff in self.store.list_pending_diffs(run_id=run_id, limit=50)
+                if diff.status == PendingDiffStatus.PENDING
+            ]
+            if not pending:
+                return None
+            return self.accept_pending_diff(
+                pending[0].diff_id,
+                resolved_by="auto",
+                data={
+                    "auto_accept": {
+                        "at": datetime.now(UTC).isoformat(),
+                        "policy": AUTO_ACCEPT_POLICY,
+                    }
+                },
+            )
+        except Exception as error:  # noqa: BLE001 - 代判失败必须可见，人工作为兜底
+            with suppress(Exception):
+                self.store.append_event(
+                    run_id,
+                    AgentEventType.ERROR,
+                    message=(
+                        "Auto-accept failed; the pending diff still requires "
+                        f"manual review: {error}"
+                    ),
+                    data={
+                        "kind": "auto_accept_failed",
+                        "error": str(error)[:500],
+                        "remediation": (
+                            "Accept or reject the unit in the pending diff panel; "
+                            "the next run stays blocked until it is decided."
+                        ),
+                    },
+                    allow_terminal=True,
+                )
+            return None
 
     # ---- 内部执行 ----
     def _persist_run_checkpoint(self, run_id: str, thread_id: str) -> None:
@@ -1673,6 +1753,11 @@ class AgentRuntimeManager:
             # SUCCEEDED 落点前已被拦截，这里的兜底只保证不掩盖真实运行结果。
             if isinstance(error, RunVersioningError):
                 self._emit_versioning_failure_event(run_id, error)
+        # 中断收尾（预算/超时耗尽）的单元只在这里存在：它的发布就是上面那次
+        # 段尾兜底发布，终态收尾点在当时还没有单元可判。成功收尾与主动停止的
+        # 单元已在持串行门时判过，这里是幂等空读；failed/cancelled 由助手内部
+        # 排除，仍留给人看。
+        self._maybe_auto_accept_pending_diff(run_id)
 
     def _on_stream_watchdog_expire(self, run_id: str, escalated: bool) -> None:
         """看门狗到期：关掉模型的 HTTP client，让挂起的流式读抛错。
@@ -2207,6 +2292,9 @@ class AgentRuntimeManager:
             if published:
                 # 内容型 run：强制 lint 快照写入 audit_report.md（仅记录，不改门禁语义）
                 self._forced_lint_audit(run_id)
+            # 代判按 run 终态判定，不按"是否刚发布"判定：挂起过、收尾无新提交
+            # 的 run 也在这里补上判定（ADR-0007 决策 2 修订）。
+            self._maybe_auto_accept_pending_diff(run_id)
         except _RunTimeoutError as error:
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, str(error))
         except AgentBudgetExceeded as error:
@@ -2984,6 +3072,7 @@ class AgentRuntimeManager:
             if published:
                 # 与首段同一条门禁：续跑段发布的单元同样要留强制 lint 快照。
                 self._forced_lint_audit(run_id)
+            self._maybe_auto_accept_pending_diff(run_id)
         except _RunTimeoutError as error:
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, str(error))
         except AgentBudgetExceeded as error:
@@ -3655,6 +3744,7 @@ class AgentRuntimeManager:
             diff_id=diff.diff_id,
             commit=outcome.commit_sha,
             foreign_staged=warning,
+            auto=diff.data.get("resolved_by") == "auto",
         )
 
     def _mark_maintenance_failure(
@@ -3734,6 +3824,7 @@ class AgentRuntimeManager:
         commit: str | None = None,
         error: Exception | None = None,
         foreign_staged: list[str] | None = None,
+        auto: bool = False,
     ) -> None:
         """Append a maintenance outcome event even after the run is terminal."""
         try:
@@ -3758,6 +3849,10 @@ class AgentRuntimeManager:
                     "diff_id": diff_id,
                     "commit": commit,
                 }
+                if auto:
+                    # 代判可辨：时间线回执据此选用"已自动接受"文案，而不是
+                    # 让自动判定读起来像有人点过接受。
+                    data["auto"] = True
                 if foreign_staged:
                     # 可执行提示：外来暂存文件没有被系统提交，也不会被动过；
                     # 用户若不希望保留，需自行 unstage（系统不代替用户清 index）。
@@ -4006,6 +4101,8 @@ class AgentRuntimeManager:
                 message="Edit staged for approval.",
             ),
         )
+        # 该路径的发布（:3986 一带）早于终态落定，代判只能在 finalize 之后。
+        self._maybe_auto_accept_pending_diff(run.run_id)
         return self.store.get_run(run.run_id)
 
     def _attachment_manifest(self, run: AgentRun) -> list[dict[str, Any]]:

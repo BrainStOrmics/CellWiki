@@ -1193,16 +1193,17 @@ class RuntimeStore:
                 connection.execute(
                     """
                     INSERT OR REPLACE INTO pending_diff_tombstones (
-                        diff_id, run_id, thread_id, verdict, created_at, resolved_at,
-                        head_commit, commits, files_count, files_summary,
+                        diff_id, run_id, thread_id, verdict, resolved_by, created_at,
+                        resolved_at, head_commit, commits, files_count, files_summary,
                         revert_commits, recorded_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         diff.diff_id,
                         diff.run_id,
                         diff.thread_id,
                         status,
+                        diff.data.get("resolved_by"),
                         diff.created_at.isoformat(),
                         diff.resolved_at.isoformat() if diff.resolved_at else None,
                         diff.head_commit,
@@ -2091,6 +2092,7 @@ class RuntimeStore:
                     run_id TEXT NOT NULL,
                     thread_id TEXT NOT NULL,
                     verdict TEXT NOT NULL,
+                    resolved_by TEXT,
                     created_at TEXT NOT NULL,
                     resolved_at TEXT,
                     head_commit TEXT,
@@ -2129,7 +2131,24 @@ class RuntimeStore:
             self._ensure_thread_registry(connection)
             self._ensure_run_idempotency_schema(connection)
             self._ensure_transcript_state_schema(connection)
+            self._ensure_tombstone_schema(connection)
             self._scrub_retired_payload_fields(connection)
+
+    def _ensure_tombstone_schema(self, connection: sqlite3.Connection) -> None:
+        """判定来源列：代判（auto）与人工判定必须在 tombstone 上可辨。
+
+        ADR-0007 决策 2 修订要求删会话后仍能区分"人看过"与"策略代发"；旧库的
+        既有行留空，按人工判定解释，不回填。
+        """
+
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(pending_diff_tombstones)")
+        }
+        if "resolved_by" not in columns:
+            connection.execute(
+                "ALTER TABLE pending_diff_tombstones ADD COLUMN resolved_by TEXT"
+            )
 
     def _ensure_transcript_state_schema(self, connection: sqlite3.Connection) -> None:
         """v2 压缩基线列：provider 回报的真实 prompt 大小走内联守卫 ALTER。"""

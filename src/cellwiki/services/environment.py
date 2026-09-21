@@ -35,6 +35,7 @@ _DEFAULTS = {
     "ENABLE_AGENT_MEMORY": "false",
     "ENABLE_EXTERNAL_RESEARCH": "false",
     "MEMORY_RECALL_TOKEN_BUDGET": "800",
+    "AUTO_ACCEPT_PENDING_DIFFS": "false",
     "PROJECT_ROOT": "",
 }
 # 用户可编辑的配置键
@@ -105,6 +106,9 @@ class EnvironmentSettingsService:
             "memory_recall_token_budget": self._integer(
                 values["MEMORY_RECALL_TOKEN_BUDGET"], default=800
             ),
+            "auto_accept_pending_diffs": self._bool(
+                values["AUTO_ACCEPT_PENDING_DIFFS"]
+            ),
         }
 
     def runtime_environment(self) -> dict[str, str]:
@@ -138,6 +142,7 @@ class EnvironmentSettingsService:
         enable_agent_memory: bool = False,
         enable_external_research: bool = False,
         memory_recall_token_budget: int = 800,
+        auto_accept_pending_diffs: bool = False,
     ) -> bool:
         """Persist a validated settings draft and report whether runtime restart is needed."""
         current = self._effective_values()
@@ -164,6 +169,9 @@ class EnvironmentSettingsService:
             "ENABLE_AGENT_MEMORY": "true" if enable_agent_memory else "false",
             "ENABLE_EXTERNAL_RESEARCH": "true" if enable_external_research else "false",
             "MEMORY_RECALL_TOKEN_BUDGET": str(memory_recall_token_budget),
+            "AUTO_ACCEPT_PENDING_DIFFS": (
+                "true" if auto_accept_pending_diffs else "false"
+            ),
         }
         if not normalized["OPENAI_MODEL"]:
             raise ValueError("model name is required")
@@ -207,6 +215,7 @@ class EnvironmentSettingsService:
                 "ENABLE_AGENT_MEMORY",
                 "ENABLE_EXTERNAL_RESEARCH",
                 "MEMORY_RECALL_TOKEN_BUDGET",
+                "AUTO_ACCEPT_PENDING_DIFFS",
             )
         )
         persisted = dict(normalized)

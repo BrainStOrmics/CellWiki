@@ -127,6 +127,21 @@ def test_settings_roundtrip_and_test(tmp_path: Path):
     assert probe.json()["ok"] is False
 
 
+def test_settings_auto_accept_pending_diffs_roundtrip(tmp_path: Path):
+    """自动接受策略经设置 API 往返：默认关闭，开启后写盘并要求重启生效。"""
+    client = TestClient(create_app(tmp_path))
+    assert client.get("/api/settings").json()["auto_accept_pending_diffs"] is False
+
+    updated = client.post(
+        "/api/settings",
+        json={"openai_model": "test-model", "auto_accept_pending_diffs": True},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["auto_accept_pending_diffs"] is True
+    assert updated.json()["restart_required"] is True
+    assert client.get("/api/settings").json()["auto_accept_pending_diffs"] is True
+
+
 def test_settings_context_window_preset_roundtrip(tmp_path: Path):
     client = TestClient(create_app(tmp_path))
     current = client.get("/api/settings")

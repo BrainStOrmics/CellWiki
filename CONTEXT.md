@@ -34,9 +34,13 @@
   首单元基线 = `run.snapshot_commit`（retry 时重锚为重放段起点，resume 刻意
   不重锚以保住未判定工作与工程侧修复）；其后单元基线取"上一单元 head 与段
   起始快照中较新者"。删除会话时已判定单元的摘要以 tombstone
-  （`pending_diff_tombstones` 表）留存。详见 ADR-0007 决策 2（2026-09-03、
-  2026-09-19 修订）。
-- **审批**：用户对未判定审批单元的接受或拒绝；阻断式、一次一个。
+  （`pending_diff_tombstones` 表）留存。判定来源（自动/人工）随单元落库
+  （`data.resolved_by`），删除会话时随 tombstone 留存。详见 ADR-0007
+  决策 2（2026-09-03、2026-09-19、2026-09-21 修订）。
+- **审批**：用户对未判定审批单元的接受或拒绝；阻断式、一次一个。用户可在
+  设置页开启**自动接受策略**：run 以 `succeeded` 或 `unfinished` 收尾后的
+  发布由系统代发接受，`failed` 与其他终态不自动判定，仍留给人看。代判失败
+  时单元保持未判定并留可操作 error 事件，人工作为兜底。
 - **待审 diff 面板**：APP 侧边栏入口，展示当前未判定审批单元的 git 补丁并接受/拒绝；已判定单元以只读历史折叠区呈现。
 - **查询 run**：只读且不产生 diff 的 run；Agent 直接读 md 回答，引用即文件路径。
 - **会话（thread）**：点 `+` 或发出首条消息时登记的多轮对话身份，是 APP 历史
@@ -88,7 +92,7 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
 ## 不变式
 
 1. 知识库是 git 承载的 md 工作区；正式内容变更只能经 `Run -> 待确认 diff ->
-   用户接受`。
+   用户接受`（或用户显式授权策略下的系统代判）。
 2. git 历史永不改写；撤销只用 revert；禁止 `reset --hard` / `clean` / `rm` /
    `rebase` / `amend` / `push` / `fetch` / `checkout --`。
 3. Agent 可读写整个工作目录；`schema.md`、`log.md` 与 `audit_report.md` 只读，
@@ -103,6 +107,7 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
    续跑并继承剩余预算（ADR-0010 决策 6 取代了"带相同输入重新执行"的旧机制）。
    `cancelled` 只表示"放弃一个已中断的 run"，不是停止的落点，因此停止不等于释放
    工作区（见不变量 4）。审批单元边界 = 判定而非发布（见术语"待确认 diff"）。
-8. 内容归 Agent、派生与门禁归系统、人工负责接受/拒绝 diff。
+8. 内容归 Agent、派生与门禁归系统、人工负责接受/拒绝 diff（代判须由用户
+   显式授权，判定来源可辨）。
 9. 品牌与兼容术语不随重构改名。
 10. 系统维护文件（`overview.md`/`statistics.md` 系统重建，`log.md`/`audit_report.md` append-only）只在 run 判定事件由系统维护；accept 后合并为系统维护 commit 提交；Agent 工具对系统维护文件的写操作一律拒绝。

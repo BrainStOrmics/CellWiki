@@ -283,4 +283,42 @@ describe("approval units", () => {
     await screen.findByText("已判定 · 只读");
     expect(screen.queryByRole("button", { name: /拒绝本单元/ })).toBeNull();
   });
+
+  it("marks only system-decided units with the auto-accept badge", async () => {
+    const getJsonMock = vi.mocked(getJson);
+    const record = (diff_id: string, data: Record<string, unknown>) => ({
+      diff_id,
+      run_id: "run_u",
+      thread_id: "thread_u",
+      commits: ["c1"],
+      files: ["wiki/u.md"],
+      insertions: 1,
+      deletions: 0,
+      status: "accepted",
+      resolution: "accepted",
+      created_at: "2026-09-03T00:00:00Z",
+      data,
+    });
+    getJsonMock.mockImplementation((url: string) => {
+      if (url.endsWith("/patch")) {
+        return Promise.resolve({ diff_id: "diff_run_u_1", patch: "" });
+      }
+      return Promise.resolve({
+        pending_diffs: [
+          record("diff_run_u_2", { resolved_by: "auto" }),
+          record("diff_run_u_1", { resolved_by: "user" }),
+        ],
+      });
+    });
+
+    render(<DiffBrowser />);
+    const toggle = await screen.findByRole("button", { name: /历史判定单元/ });
+    expect(screen.queryByText("自动接受")).toBeNull();
+    fireEvent.click(toggle);
+
+    // 两条已判定单元里只有代判那条带徽章。
+    const badges = await screen.findAllByText("自动接受");
+    expect(badges).toHaveLength(1);
+    expect(badges[0].className).toContain("diff-auto-badge");
+  });
 });

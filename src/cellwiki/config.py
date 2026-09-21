@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     # 单次记忆召回查询的 token 预算上限，防止单个智能体回合导致上下文无限增长
     memory_recall_token_budget: int = 800
 
+    # ---- 工作区信任策略 ----
+    # 开启后，run 以 succeeded / unfinished 收尾后的发布由系统代发接受
+    # （ADR-0007 决策 2 修订）；failed 与其他终态保持待判。
+    # 随进程重启生效，策略在进程内恒定，单元记录的来源快照无歧义。
+    auto_accept_pending_diffs: bool = False
+
     # ---- 工作区版 Agent 运行时设置（阶段 4/5）----
     # 单次 run 的最大工具步数（阶段 4 使用）；超限进入 unfinished 状态
     agent_max_tool_steps: int = Field(default=100, ge=1, le=500)

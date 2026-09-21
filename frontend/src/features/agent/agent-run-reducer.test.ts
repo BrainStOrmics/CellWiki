@@ -21,6 +21,7 @@ const labels = {
   maintenance: {
     lint: "localized:maintenance-lint",
     accept: "localized:maintenance-accept",
+    auto_accept: "localized:maintenance-auto-accept",
     reject: "localized:maintenance-reject",
     unfinished: "localized:maintenance-unfinished",
     failed: "localized:maintenance-failed",
@@ -231,6 +232,37 @@ describe("reduceAgentRunMessages", () => {
     const node = (message.timeline ?? [])[0] as Extract<AgentTimelineNode, { kind: "status" }>;
     expect(node.label).toBe("localized:maintenance-lint");
     expect(node.tone).toBe("success");
+  });
+
+  it("marks a system-decided acceptance as auto-accepted", () => {
+    const [message] = reduceAgentRunMessages(
+      [],
+      event(1, "progress", { kind: "maintenance", verdict: "accept", auto: true }, "Workspace maintenance applied."),
+      labels,
+    );
+    const node = (message.timeline ?? [])[0] as Extract<AgentTimelineNode, { kind: "status" }>;
+    expect(node.label).toBe("localized:maintenance-auto-accept");
+    expect(node.tone).toBe("success");
+  });
+
+  it("keeps the manual receipt when the auto flag is absent or unrelated to accept", () => {
+    const [manual] = reduceAgentRunMessages(
+      [],
+      event(1, "progress", { kind: "maintenance", verdict: "accept" }, "Workspace maintenance applied."),
+      labels,
+    );
+    expect(
+      ((manual.timeline ?? [])[0] as Extract<AgentTimelineNode, { kind: "status" }>).label,
+    ).toBe("localized:maintenance-accept");
+
+    const [rejected] = reduceAgentRunMessages(
+      [],
+      event(1, "progress", { kind: "maintenance", verdict: "reject", auto: true }, "Workspace maintenance applied."),
+      labels,
+    );
+    expect(
+      ((rejected.timeline ?? [])[0] as Extract<AgentTimelineNode, { kind: "status" }>).label,
+    ).toBe("localized:maintenance-reject");
   });
 
   it("keeps a failed maintenance receipt visible as a warning", () => {

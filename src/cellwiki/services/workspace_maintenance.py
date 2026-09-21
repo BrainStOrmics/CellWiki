@@ -156,6 +156,22 @@ def _inject_index_stats(index_path: Path, stats_block: str) -> bool:
 # ---------------------------------------------------------------------------
 # 追加条目内容
 # ---------------------------------------------------------------------------
+def verdict_label(verdict: str, diff: PendingDiff | None) -> str:
+    """人读判定标签：代判在标题里可辨（``accepted (auto)``）。
+
+    维护 commit 的 verdict 参数与分支判定保持 ``accepted``——来源标记已经落在
+    该 commit 的内容（这几行）里，不引入新的 verdict 值。``_append_section`` 的
+    marker 用同一标签，两个标题互不为子串，替换幂等不受影响。
+    """
+    if (
+        verdict == "accepted"
+        and diff is not None
+        and diff.data.get("resolved_by") == "auto"
+    ):
+        return "accepted (auto)"
+    return verdict
+
+
 def _log_entry(
     verdict: str,
     run_id: str,
@@ -165,7 +181,8 @@ def _log_entry(
     note: str | None = None,
 ) -> str:
     suffix = f" (parent {parent_run_id})" if parent_run_id else ""
-    lines = [f"## [{_timestamp()}] {verdict} | run {run_id}{suffix}"]
+    label = verdict_label(verdict, diff)
+    lines = [f"## [{_timestamp()}] {label} | run {run_id}{suffix}"]
     if diff is not None:
         # B3 人读强化：判定记录在库中随会话删除后，log.md 仍可反查审批单元 id
         # （权威 tombstone 落在 pending_diff_tombstones 表）。
@@ -307,10 +324,11 @@ def maintain_after_accept(
     _write_text(root / "overview.md", _overview_content(stats, snapshot))
     _write_text(root / "statistics.md", _statistics_content(stats, snapshot))
     _inject_index_stats(root / "index.md", _stats_block(stats))
+    label = verdict_label("accepted", diff)
     _append_section(
         root / "log.md",
         _log_entry("accepted", run_id, parent_run_id, diff),
-        marker=f"accepted | run {run_id}",
+        marker=f"{label} | run {run_id}",
     )
     files = ("overview.md", "statistics.md", "index.md", "log.md")
     sha = _commit_maintenance(root, run_id, "accepted", files)

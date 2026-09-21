@@ -2176,6 +2176,8 @@ select:focus-visible {
 .diff-line-content { white-space: pre-wrap; word-break: break-word; }
 .diff-line-note { color: #8f969f; font-style: italic; }
 .diff-unit-badge { flex: 0 0 auto; padding: 1px 7px; border-radius: 8px; font-size: 9px; font-weight: 650; color: #8fb4f5; background: rgba(90, 130, 190, 0.14); border: 1px solid rgba(90, 130, 190, 0.35); white-space: nowrap; }
+/* 代判标记走中性灰：它是判定来源说明，不是强调色动作。 */
+.diff-auto-badge { flex: 0 0 auto; padding: 1px 7px; border-radius: 8px; font-size: 9px; font-weight: 650; color: #9aa2ad; background: rgba(140, 148, 160, 0.12); border: 1px solid rgba(140, 148, 160, 0.3); white-space: nowrap; }
 .diff-card.readonly { opacity: 0.78; }
 .diff-history { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid #242a33; padding-top: 8px; }
 .diff-history-toggle { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px; border: 0; border-radius: 4px; color: #8b93a0; background: transparent; font-size: 11px; cursor: pointer; text-align: left; }

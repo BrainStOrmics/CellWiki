@@ -19,6 +19,7 @@ const { productFetch } = vi.hoisted(() => ({
           enable_agent_memory: false,
           enable_external_research: false,
           memory_recall_token_budget: 800,
+          auto_accept_pending_diffs: false,
           agent_context_max_tokens: init?.method === "POST" ? 1000000 : 512000,
           agent_context_max_token_presets: [200000, 400000, 512000, 1000000],
           restart_required: init?.method === "POST",
@@ -76,6 +77,24 @@ describe("SettingsView workspace", () => {
       expect.objectContaining({ method: "POST" }),
     ));
     await waitFor(() => expect(screen.getByTestId("workspace-path")).toHaveValue("D:\\KB\\new"));
+  });
+
+  it("toggles auto-accept for pending diffs and saves it", async () => {
+    renderSettings();
+
+    fireEvent.click(screen.getByTestId("settings-workspace-nav"));
+    await waitFor(() => expect(screen.getByTestId("auto-accept-toggle")).not.toBeChecked());
+
+    fireEvent.click(screen.getByTestId("auto-accept-toggle"));
+    fireEvent.click(screen.getByRole("button", { name: /保存设置/ }));
+
+    await waitFor(() => expect(productFetch).toHaveBeenCalledWith(
+      "/api/settings",
+      expect.objectContaining({
+        method: "POST",
+        body: expect.stringContaining('"auto_accept_pending_diffs":true'),
+      }),
+    ));
   });
 
   it("saves a global context-window preset from the runtime section", async () => {

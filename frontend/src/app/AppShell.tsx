@@ -953,6 +953,7 @@ export function AppShell() {
       maintenance: {
         lint: t("chat.maintenance.lint"),
         accept: t("chat.maintenance.accept"),
+        auto_accept: t("chat.maintenance.autoAccept"),
         reject: t("chat.maintenance.reject"),
         unfinished: t("chat.maintenance.unfinished"),
         failed: t("chat.maintenance.failed"),

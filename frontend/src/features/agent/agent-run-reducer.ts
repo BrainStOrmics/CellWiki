@@ -421,9 +421,12 @@ function appendProcessEventNode(
       // 回执原文是一句英文，两条并排挂在气泡末尾读起来像报错：按 verdict 本地化，
       // 成功项给绿点；失败项保留警告色，与成功回执区分开。
       const verdict = String(progressData.verdict ?? "");
+      const autoAccepted = progressData.auto === true && verdict === "accept";
       const label = maintenanceKind === "maintenance_failed"
         ? labels.maintenance.failed
-        : labels.maintenance[verdict] ?? event.message;
+        : autoAccepted
+          ? labels.maintenance.auto_accept ?? labels.maintenance[verdict] ?? event.message
+          : labels.maintenance[verdict] ?? event.message;
       const maintenanceTone: AgentTimelineStatusTone = maintenanceKind === "maintenance_failed" ? "warning" : "success";
       return [...base, { kind: "status", tone: maintenanceTone, label, step }];
     }

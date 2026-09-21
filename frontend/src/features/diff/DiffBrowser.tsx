@@ -16,7 +16,13 @@ export type PendingDiffRecord = {
   resolution?: string | null;
   created_at: string;
   resolved_at?: string | null;
+  data?: Record<string, unknown>;
 };
+
+/** 代判（自动接受策略）的单元在历史区需要与人工判定区分开。 */
+export function isAutoAccepted(diff: PendingDiffRecord): boolean {
+  return diff.data?.resolved_by === "auto";
+}
 
 /**
  * 审批单元序号：`diff_<run_id>_<n>`（方案 B）。无后缀的旧行视为单元 1；
@@ -218,6 +224,7 @@ export function DiffBrowser({ onExit, onCountChange }: Props) {
                       <span className="diff-card-top">
                         <span className={`diff-status ${d.status}`}>{d.status}</span>
                         {unitBadge(d)}
+                        {isAutoAccepted(d) && <span className="diff-auto-badge">自动接受</span>}
                       </span>
                       <span className="diff-card-main">
                         <strong>{d.run_id}</strong>

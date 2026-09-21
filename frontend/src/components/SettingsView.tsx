@@ -12,6 +12,7 @@ import {
   RotateCcw,
   Save,
   Server,
+  ShieldCheck,
   XCircle,
 } from "lucide-react";
 import { useI18n } from "../i18n";
@@ -33,6 +34,7 @@ type SettingsDraft = {
   enable_external_research: boolean;
   memory_recall_token_budget: number;
   agent_context_max_tokens: number;
+  auto_accept_pending_diffs: boolean;
 };
 
 const emptyDraft: SettingsDraft = {
@@ -47,6 +49,7 @@ const emptyDraft: SettingsDraft = {
   enable_external_research: false,
   memory_recall_token_budget: 800,
   agent_context_max_tokens: 512000,
+  auto_accept_pending_diffs: false,
 };
 
 function formatContextWindow(value: number): string {
@@ -93,6 +96,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         enable_external_research: settings.enable_external_research,
         memory_recall_token_budget: settings.memory_recall_token_budget,
         agent_context_max_tokens: settings.agent_context_max_tokens,
+        auto_accept_pending_diffs: settings.auto_accept_pending_diffs,
       });
     } catch (error) {
       setNotice({ kind: "error", text: error instanceof Error ? error.message : t("settings.loadError") });
@@ -243,6 +247,10 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
               <div className="settings-card-title"><Server size={16} /><div><h3>{t("settings.workspaceTitle")}</h3></div></div>
               <label className="settings-field"><span>{t("settings.workspacePath")}</span><input data-testid="workspace-path" value={workspacePath} onChange={(event) => setWorkspacePath(event.target.value)} placeholder="D:\KB\my-kb" /></label>
               <div className="workspace-actions">{isDesktopRuntime && <button className="workspace-browse" type="button" onClick={() => void pickWorkspaceDirectory()}>{t("settings.workspaceBrowse")}</button>}<button className="workspace-select" type="button" onClick={() => void selectWorkspace()} disabled={workspaceSaving || !workspacePath.trim()}>{workspaceSaving ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}{t("settings.workspaceSelect")}</button></div>
+            </section>
+            <section className="settings-card">
+              <div className="settings-card-title"><ShieldCheck size={16} /><div><h3>{t("settings.approvalTitle")}</h3></div><span>{t("settings.defaultOff")}</span></div>
+              <label className="clear-secret"><input data-testid="auto-accept-toggle" type="checkbox" checked={draft.auto_accept_pending_diffs} onChange={(event) => updateDraft({ auto_accept_pending_diffs: event.target.checked })} /><span><ShieldCheck size={13} />{t("settings.autoAccept")}</span></label>
             </section>
           </div>
         ) : section === "model" ? (

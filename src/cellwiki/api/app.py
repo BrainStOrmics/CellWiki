@@ -96,6 +96,8 @@ class SettingsUpdateRequest(BaseModel):
     agent_context_max_tokens: int | None = Field(
         default=None, ge=8_000, le=2_000_000
     )
+    # 信任策略：开启后 run 终态（succeeded/unfinished）发布的单元由系统代判。
+    auto_accept_pending_diffs: bool = False
 
 
 # ---- 设置测试请求（仅用于连接测试，不持久化）----
