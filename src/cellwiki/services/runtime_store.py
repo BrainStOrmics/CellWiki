@@ -1990,10 +1990,16 @@ class RuntimeStore:
         return safe_span
 
     def list_spans(self, run_id: str) -> list[AgentSpan]:
+        """Return every span of a run, oldest first.
+
+        按插入顺序（rowid）而不是 started_at 排序：落盘顺序就是调用顺序，而
+        started_at 在 2026-09-21 之前是"落盘时刻 − 观测窗口"倒推的——三轮调用共享
+        同一个终点，按它排序会退化成按窗口长短排，诊断表的轮次整列倒过来。
+        """
         self.get_run(run_id)
         with self._connect() as connection:
             rows = connection.execute(
-                "SELECT payload FROM agent_spans WHERE run_id = ? ORDER BY started_at, span_id",
+                "SELECT payload FROM agent_spans WHERE run_id = ? ORDER BY rowid",
                 (run_id,),
             ).fetchall()
         return [AgentSpan.model_validate_json(row[0]) for row in rows]

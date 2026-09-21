@@ -12,11 +12,12 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
+import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
-from cellwiki.domain.runs import AgentEventType, AgentRunStatus
+from cellwiki.domain.runs import AgentEventType, AgentRun, AgentRunStatus
 from cellwiki.services.agent_runtime import (
     AgentRuntimeManager,
     RuntimeSignal,
@@ -529,6 +530,37 @@ def test_tool_spans_record_call_timing(tmp_path: Path):
         run = manager.store.get_run(started.run_id)
         assert run.usage.tool_calls_started == 2
         assert run.usage.tool_calls_completed == 1
+    finally:
+        manager.close()
+
+
+def test_model_spans_keep_each_calls_own_window(tmp_path: Path) -> None:
+    """每轮 span 的起止时刻来自它自己那次调用，而不是共享"落盘时刻 − 窗口"。
+
+    共享终点会让 started_at 退化成按窗口长短排序——诊断表的三轮于是整列倒过来
+    （2026-09-21 实测：首轮冷缓存被排到最后一行）。这里用"第一轮窗口短、第二轮
+    窗口长"的排布来钉住它：真实首 chunk 间隔 7 秒，倒推实现的间隔只有 1 秒。
+    """
+    manager = AgentRuntimeManager(tmp_path, adapter=_ScriptedAdapter([]))
+    try:
+        store = manager.store
+        store.create_run(AgentRun(run_id="run_windows", thread_id="t_windows", input_message="x"))
+        now = time.monotonic()
+        manager._record_model_spans(
+            "run_windows",
+            {"probe_1": [10, 1, 0, 0], "probe_2": [20, 2, 0, 0]},
+            {"probe_1": now - 10.0, "probe_2": now - 3.0},
+            {"probe_1": now - 9.0, "probe_2": now - 1.0},
+        )
+
+        spans = [s for s in store.list_spans("run_windows") if s.kind == "model"]
+        first, second = spans
+        assert (first.data["model_call_id"], second.data["model_call_id"]) == ("probe_1", "probe_2")
+        assert first.duration_ms == pytest.approx(1_000, abs=50)
+        assert second.duration_ms == pytest.approx(2_000, abs=50)
+        assert first.finished_at < second.finished_at, "两轮共享同一个终点说明窗口是倒推的"
+        gap = (second.started_at - first.started_at).total_seconds()
+        assert 6.0 < gap < 8.0, f"首 chunk 真实间隔约 7s，实测 {gap}s"
     finally:
         manager.close()
 

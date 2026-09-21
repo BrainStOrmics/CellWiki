@@ -2757,6 +2757,7 @@ class AgentRuntimeManager:
         if not call_usage:
             return
         finished_at = datetime.now(UTC)
+        monotonic_now = time.monotonic()
         # span 名跟随该 run 快照的模型（目录选中链路），而非当前全局配置。
         recorded = self.store.get_run(run_id)
         model_name = (
@@ -2768,10 +2769,19 @@ class AgentRuntimeManager:
             started = call_started.get(call_id, 0.0)
             last = call_seen_last.get(call_id, started)
             duration_ms = max(0.0, (last - started) * 1000.0)
-            started_at = (
-                finished_at - timedelta(seconds=duration_ms / 1000.0)
-                if duration_ms > 0
+            # 每个 span 用它自己那次调用的首/末 chunk 时刻（单调钟换算回墙钟）：
+            # 让所有 span 共享"落盘时刻 − 窗口"会把 started_at 退化成按窗口长短排序，
+            # 诊断表的轮次于是整列倒过来（2026-09-21 实测：16.2s/8.3s/2.3s 三轮被
+            # 排成 1/2/3 反向，首轮冷缓存反而排在最后）。
+            ended_at = (
+                finished_at - timedelta(seconds=max(0.0, monotonic_now - last))
+                if last > 0
                 else finished_at
+            )
+            started_at = (
+                ended_at - timedelta(seconds=duration_ms / 1000.0)
+                if duration_ms > 0
+                else ended_at
             )
             self.store.upsert_span(
                 AgentSpan(
@@ -2781,7 +2791,7 @@ class AgentRuntimeManager:
                     name=model_name,
                     status="completed",
                     started_at=started_at,
-                    finished_at=finished_at,
+                    finished_at=ended_at,
                     duration_ms=duration_ms,
                     input_tokens=tokens[0],
                     output_tokens=tokens[1],

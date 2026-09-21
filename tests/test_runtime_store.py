@@ -5,7 +5,7 @@
 from pathlib import Path
 import json
 import shutil
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -355,6 +355,40 @@ def test_runtime_store_scrubs_retired_payload_fields_from_legacy_rows(tmp_path: 
             ).fetchone()[0]
         )
     RuntimeStore(tmp_path)
+
+
+def test_list_spans_keeps_call_order_for_legacy_started_at(tmp_path: Path) -> None:
+    """读回按插入顺序（= 调用顺序），不按 started_at。
+
+    旧数据的 started_at 是"落盘时刻 − 观测窗口"倒推的：窗口最长的那一轮（实测常是
+    最后一轮）反而拿到最早的 started_at，按它排序会把诊断表的轮次整列倒过来
+    （2026-09-21 实测：16.2s/8.3s/2.3s 三轮被排成 1/2/3 反向）。
+    """
+
+    store = RuntimeStore(tmp_path)
+    store.create_run(AgentRun(run_id="run_spans", thread_id="t_spans", input_message="x"))
+    end = datetime.now(UTC)
+
+    def legacy_span(span_id: str, window_seconds: float) -> AgentSpan:
+        return AgentSpan(
+            span_id=span_id,
+            run_id="run_spans",
+            kind="model",
+            name="m",
+            status="completed",
+            started_at=end - timedelta(seconds=window_seconds),
+            finished_at=end,
+            duration_ms=window_seconds * 1000,
+            input_tokens=1,
+            output_tokens=1,
+            data={},
+        )
+
+    # 插入顺序 = 调用顺序：第一轮窗口短、第二轮窗口长（旧数据里第二轮的 started_at 更早）
+    store.upsert_span(legacy_span("s_first", 1.0))
+    store.upsert_span(legacy_span("s_second", 4.0))
+
+    assert [span.span_id for span in store.list_spans("run_spans")] == ["s_first", "s_second"]
 
 
 def test_reopening_the_store_backfills_streamed_reasoning_into_the_answer(tmp_path: Path):
