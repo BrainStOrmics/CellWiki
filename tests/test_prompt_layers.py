@@ -16,7 +16,6 @@ from cellwiki.services.prompt_layers import (
     calibration_ratio,
     classify_intent_hint,
     compact_transcript,
-    estimate_tokens,
     schema_prompt_block,
 )
 
@@ -209,11 +208,6 @@ def test_r1_r5_reinjection_block():
     )
     for marker in ("R1 (git status)", "R2 (page snapshot)", "R3 (pending question)", "R4 (recent lint)", "R5 (current run goal)"):
         assert marker in block
-
-
-def test_token_estimate():
-    assert estimate_tokens("abcd") == 1
-    assert estimate_tokens("a" * 100) == 25
 
 
 def test_calibration_ratio_clamps_and_defaults():

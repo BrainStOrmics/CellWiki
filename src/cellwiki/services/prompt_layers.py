@@ -129,12 +129,6 @@ tools beyond this whitelist. Answer in the user's language.
 LAYER_A_TEXT = LAYER_A_TEMPLATE.replace("{{tools}}", AGENT_TOOL_NAMES_TEXT)
 
 
-def estimate_tokens(text: str) -> int:
-
-    """Rough token estimate (en/zh mixed markdown): chars / 4."""
-    return max(0, (len(text) + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN)
-
-
 # 校准系数钳制范围：provider 实测/固定估算的比值一旦超出这个区间就按边界取值。
 CALIBRATION_MIN = 0.5
 CALIBRATION_MAX = 4.0
@@ -537,7 +531,6 @@ __all__ = [
     "calibration_ratio",
     "classify_intent_hint",
     "compact_transcript",
-    "estimate_tokens",
     "schema_prompt_block",
     "summarize_excerpts",
 ]
