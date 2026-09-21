@@ -245,18 +245,24 @@ def test_runtime_tool_schema_is_exactly_the_whitelist(tmp_path: Path):
     assert "ls" not in names
 
 
-def test_framework_exclusions_never_touch_whitelisted_tools(tmp_path: Path):
-    """框架排除清单与白名单必须互斥（防止白名单工具被自己人删掉复发）。"""
-    from cellwiki.domain.agent_tools import (
-        AGENT_VISIBLE_TOOL_NAMES,
-        FRAMEWORK_EXCLUDED_TOOL_NAMES,
+def test_unregistered_provider_profile_still_gets_the_whitelist(tmp_path: Path):
+    """provider 不匹配任何已注册 profile 时，模型可见工具面仍恰好等于白名单。
+
+    2026-09-21 七格隔离实验的 N2 格：profile 不匹配时框架自己的工具排除中间件
+    根本不安装，上游原始面是 16 个工具（含 ls / task / write_todos）。那一格只有
+    _CellWikiToolBoundaryMiddleware 的 allowlist 在兜底——这条回归锁住
+    "allowlist 是唯一承重防线"这个结论（上面的用例只覆盖 profile 匹配路径）。"""
+    from cellwiki.domain.agent_tools import AGENT_VISIBLE_TOOL_NAMES
+    from tests.tool_surface import model_visible_tool_names
+
+    names = model_visible_tool_names(
+        _workspace(tmp_path), ls_provider="unregistered-provider"
     )
 
-    overlap = FRAMEWORK_EXCLUDED_TOOL_NAMES & AGENT_VISIBLE_TOOL_NAMES
-    assert overlap == frozenset(), (
-        "framework excluded_tools strips tools by name without checking their "
-        f"origin; these whitelisted tools would be deleted: {sorted(overlap)}"
-    )
+    assert names == set(AGENT_VISIBLE_TOOL_NAMES)
+    assert "ls" not in names
+    assert "task" not in names
+    assert "write_todos" not in names
 
 
 # ---------------------------------------------------------------------------

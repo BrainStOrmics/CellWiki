@@ -28,17 +28,21 @@ def _name_of(tool: Any) -> str | None:
 
 
 class _ToolSurfaceProbeModel(BaseChatModel):
-    """Records the tool names of every ``bind_tools`` call, then answers."""
+    """Records the tool names of every ``bind_tools`` call, then answers.
+
+    ``ls_provider`` 决定框架能否匹配已注册的 HarnessProfile；不匹配时框架自己的
+    工具排除中间件不安装，正好用来验证 allowlist 是否单独承重。
+    """
 
     bound_tool_names: list[list[str]] = Field(default_factory=list)
+    ls_provider: str = "openai"
 
     @property
     def _llm_type(self) -> str:
         return "tool-surface-probe"
 
     def _get_ls_params(self, **kwargs: Any) -> dict[str, str]:
-        # 让框架匹配已注册的 HarnessProfile（provider 影响排除清单是否生效）。
-        return {"ls_provider": "openai", "ls_model_name": "build-only"}
+        return {"ls_provider": self.ls_provider, "ls_model_name": "build-only"}
 
     def bind_tools(self, tools: Any, **kwargs: Any) -> "_ToolSurfaceProbeModel":
         names = [_name_of(tool) for tool in tools]
@@ -59,10 +63,12 @@ class _ToolSurfaceProbeModel(BaseChatModel):
         yield ChatGenerationChunk(message=AIMessageChunk(content="ok"))
 
 
-def model_visible_tool_names(workspace_root: Path) -> set[str]:
+def model_visible_tool_names(
+    workspace_root: Path, *, ls_provider: str = "openai"
+) -> set[str]:
     """Run one real graph turn and return the tool names bound for the model."""
 
-    model = _ToolSurfaceProbeModel()
+    model = _ToolSurfaceProbeModel(ls_provider=ls_provider)
     graph = build_wiki_agent(workspace_root, model=model, checkpointer=None)
     graph.invoke({"messages": [HumanMessage(content="工具面探针")]})
 

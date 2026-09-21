@@ -56,44 +56,25 @@ CANONICAL_TOOL_ORDER: tuple[str, ...] = tuple(spec.name for spec in AGENT_TOOL_S
 AGENT_TOOL_NAMES_TEXT: str = ", ".join(CANONICAL_TOOL_ORDER)
 
 
-# 框架残留排除清单：框架（deepagents/langchain）真实注入、且没有同名 CellWiki
-# 工具覆盖的通用工具名，交给 HarnessProfile.excluded_tools 剥离。
-#
-# 两套惯例的分界（务必看清，别再混）：
-# - 这里只放"框架注入且无同名 CellWiki 工具"的残留。框架排除按名字匹配、
-#   不区分工具来源，所以任何名字一旦出现在本清单，同名的 CellWiki 工具也会被
-#   一起剥掉——这就是 2026-09-21 白名单工具被自己人删掉的根因。
-# - 框架同名工具（read_file / write_file / edit_file / glob / grep）刻意不入
-#   本清单，改由 _CellWikiToolBoundaryMiddleware 的 allowlist 单层过滤：
-#   ToolNode 按名覆盖同名项，放进排除清单只会把 CellWiki 自己的实现删掉。
-# - ls 留在本清单：CellWiki 的 ls 已退役（能力由 glob + run_powershell 覆盖），
-#   框架同名 ls 失去"被同名工具覆盖"的天然遮蔽，必须显式排除。
-FRAMEWORK_EXCLUDED_TOOL_NAMES: frozenset[str] = frozenset(
-    {"write_todos", "ls", "task", "execute"}
-)
-
-# 提示词里逐字列出的"不可用"清单（规范化顺序，保证文本确定可复现）。
-FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT: str = ", ".join(
-    sorted(FRAMEWORK_EXCLUDED_TOOL_NAMES)
-)
-
-# 不变量：框架排除清单与白名单不得有交集（框架排除按名匹配、不区分来源）。
-_OVERLAP = FRAMEWORK_EXCLUDED_TOOL_NAMES & AGENT_VISIBLE_TOOL_NAMES
-if _OVERLAP:
-    raise RuntimeError(
-        "framework excluded_tools and the CellWiki whitelist overlap: "
-        f"{sorted(_OVERLAP)}. deepagents strips excluded tools by name without "
-        "checking their origin, so listing a whitelisted tool here deletes the "
-        "CellWiki tool itself."
-    )
-
+# 关于“框架通用工具”的边界（2026-09-21 复核后的结论，别再引入第二层）：
+# 本注册表**不**再声明 excluded_tools。曾有一段 HarnessProfile.excluded_tools =
+# {write_todos, ls, task, execute}，本机七格隔离实验（每格独立进程，避免框架
+# register_harness_profile 的 additive merge 把“清空”并回去）证明它零独有职责：
+# - profile 匹配时栈序为 boundary(14->13) -> _ToolExclusionMiddleware(13->13)，
+#   框架排除排在边界之后，轮到它已无活可干；task/execute/write_todos 根本不会被注入
+#   （task 由 general_purpose_subagent 关闭、TodoList 由 excluded_middleware 移除）。
+# - ls 被 allowlist 重复覆盖；只有 allowlist 与 excluded_tools 同时撤掉，ls 才会漏进
+#   请求（14 个工具）。
+# - profile 不匹配任何注册项时，框架排除中间件根本不安装，上游原始面是 16 个工具
+#   （含 ls/task/write_todos），此时**只有** _CellWikiToolBoundaryMiddleware 的
+#   allowlist 在兜底，剥离到 13 个。
+# 因此 allowlist 是唯一承重防线，调用拦截（wrap_tool_call/awrap_tool_call）是零成本的
+# 最后一道；两者都在 agent/app.py。
 
 __all__ = [
     "AGENT_TOOL_NAMES_TEXT",
     "AGENT_TOOL_SPECS",
     "AGENT_VISIBLE_TOOL_NAMES",
     "CANONICAL_TOOL_ORDER",
-    "FRAMEWORK_EXCLUDED_TOOL_NAMES",
-    "FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT",
     "AgentToolSpec",
 ]

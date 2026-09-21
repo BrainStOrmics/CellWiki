@@ -39,11 +39,7 @@ from cellwiki.domain.model_provider import (
 )
 from cellwiki.domain.model_providers import ResolvedModelSpec
 from cellwiki.domain.contracts import WikiAgentContext
-from cellwiki.domain.agent_tools import (
-    AGENT_TOOL_NAMES_TEXT,
-    FRAMEWORK_EXCLUDED_TOOL_NAMES,
-    FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT,
-)
+from cellwiki.domain.agent_tools import AGENT_TOOL_NAMES_TEXT
 from cellwiki.agent.executor import (
     WHITELISTED_TOOL_NAMES,
 
@@ -84,12 +80,15 @@ approval boundary. Never use generic filesystem, shell, or publication tools.
 Return concise results appropriate to your assigned role.
 """
 
-# 工具名清单由注册表生成，不再手写：手写清单会与代码脱节（2026-09-21 修复前
-# 这里列着模型根本看不到的 ls，而 delete_file 也一并被框架排除掉）。
+# 可用清单仍由注册表生成（手写清单会与代码脱节：2026-09-21 修复前这里列着模型
+# 根本看不到的 ls）。
+# “不可用”清单改回独立散文常量、文本逐字保持不变：它描述的是框架通用工具的
+# 风险面，不是 CellWiki 自己的注册表；从注册表派生会在它们脱钩后把提醒变成
+# 空词，而且会改变稳定前缀与 cache_prefix_hash（ADR-0014）。
 CELLWIKI_BOUNDARY_REMINDER = (
     "CellWiki tool boundary: only the whitelisted CellWiki tools are "
     f"available ({AGENT_TOOL_NAMES_TEXT}). Generic "
-    f"deep-agent tools such as {FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT} are "
+    "deep-agent tools such as execute, ls, task, write_todos are "
     "unavailable. Emit calls only for tool schemas visible in this request."
 )
 
@@ -176,17 +175,21 @@ _DEFAULT_CHECKPOINTER = object()
 class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
     """Keep non-whitelisted generic tools out of every CellWiki model request.
 
-    Deep Agents normally injects generic filesystem tools into the coordinator.
-    The registered HarnessProfile also excludes them, but this local boundary is
-    deliberately defense in depth because provider-built model instances do not
-    always preserve profile filtering. The whitelist enforcement is expanded in
-    phase 3 when the File/Git/PowerShell tools become CellWiki-owned.
+    这是**唯一承重的工具面防线**（2026-09-21 七格隔离实验结论）：Deep Agents 会往
+    协调器注入通用文件系统工具，而模型实例并不总能命中已注册的 HarnessProfile
+    ——**不命中时框架自己的工具排除中间件根本不安装**，上游会把 ls / task / write_todos
+    一起交上来（实测 16 个工具）。那一格靠的就是本地 allowlist，所以它不是
+    可选的“多一层”。
+
+    历史说明：HarnessProfile.excluded_tools 已于 2026-09-21 退役（它零独有职责，且曾把
+    白名单自己的 ls / delete_file 删掉）；同名命中不到 profile 时框架排除不生效，这正是
+    本边界存在的理由。未登记的工具名由本类的调用拦截（wrap_tool_call）兜底。
     """
 
     name = "cellwiki_tool_boundary"
     # 白名单（allowlist）：只有这些 CellWiki 自有工具名能进入模型请求；其余
-    # 框架通用工具（execute/task/write_todos/ls 等）一律过滤，并拦截模型若
-    # 仍尝试调用它们的情形（返回可恢复错误，不执行）。
+    # 框架工具一律在这里被剥离（请求面过滤），模型若仍发出越权调用，
+    # 由 wrap_tool_call / awrap_tool_call 拦下并返回可恢复错误。
     _allowed_tools = WHITELISTED_TOOL_NAMES
     def __init__(
         self,
@@ -344,17 +347,13 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
     profile = HarnessProfile(
         base_system_prompt=HARNESS_PROMPT,
         general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
-        # 框架残留工具名来自 domain/agent_tools.py 的
-        # FRAMEWORK_EXCLUDED_TOOL_NAMES，与白名单的互斥关系在注册表里断言。
-        #
-        # 主导惯例是"不把白名单工具放进 excluded_tools"：框架排除按名字匹配、
-        # 不区分来源，写进去等于删掉 CellWiki 自己的注册（2026-09-21 缺陷：ls 与
-        # delete_file 就这样被自己人删掉——白名单声明 14 个、模型只见 12 个）。
-        # 框架同名工具（read_file 等）因此改由 _CellWikiToolBoundaryMiddleware 的
-        # allowlist 单层过滤；只有框架真实注入、且无同名 CellWiki 工具覆盖的残留
-        # 才留在本清单。ls 例外地留在清单里：它刚退役，框架同名 ls 失去了"被同名
-        # 工具覆盖"的天然遮蔽，必须显式排除。
-        excluded_tools=FRAMEWORK_EXCLUDED_TOOL_NAMES,
+        # excluded_tools 已退役（2026-09-21）：本机七格隔离实验（每格独立进程）证明
+        # 它零独有职责——stack 里 _ToolExclusionMiddleware 排在边界中间件之后，轮到它时工具面已是 13个；
+        # task 由 general_purpose_subagent 关闭、TodoList 由 excluded_middleware 移除，都不靠它。
+        # 反而是它在 2026-09-21 把白名单自己的 ls / delete_file 一起删掉。
+        # profile 不匹配任何注册项时它根本不安装，那时靠的是
+        # _CellWikiToolBoundaryMiddleware 的 allowlist（唯一承重防线）。
+        # 详情与实测结论见 domain/agent_tools.py 文末。
         excluded_middleware=frozenset(
             {
                 cast(Any, TodoListMiddleware),

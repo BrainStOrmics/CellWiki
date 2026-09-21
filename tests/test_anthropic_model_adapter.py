@@ -175,7 +175,11 @@ def test_harness_profile_registers_for_anthropic_provider() -> None:
         assert profile.base_system_prompt == HARNESS_PROMPT
         assert profile.general_purpose_subagent is not None
         assert profile.general_purpose_subagent.enabled is False
-        assert "execute" in profile.excluded_tools
+        # 2026-09-21：excluded_tools 退役（零独有职责，且曾误删白名单工具）。
+        # 真正承载“不给通用子 Agent”语义的是下面这两项，它们不能被退役：
+        # task 由 general_purpose_subagent 关闭，TodoList/Summarization 由 excluded_middleware 移除。
+        assert profile.excluded_tools == frozenset()
+        assert profile.excluded_middleware
     finally:
         model.root_client.close()
 

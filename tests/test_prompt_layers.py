@@ -40,7 +40,6 @@ def test_prompt_tool_name_lists_come_from_the_registry():
     from cellwiki.domain.agent_tools import (
         AGENT_TOOL_NAMES_TEXT,
         AGENT_VISIBLE_TOOL_NAMES,
-        FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT,
     )
 
     # 两处清单逐字等于注册表文本（不是"包含某些名字"，而是恰好这一串）。
@@ -53,9 +52,12 @@ def test_prompt_tool_name_lists_come_from_the_registry():
         assert name in LAYER_A_TEXT, name
         assert name in CELLWIKI_BOUNDARY_REMINDER, name
 
-    # 边界提醒的"不可用"清单也来自注册表，不再是手写散文（此前它还写着
-    # 框架里不存在的 bash，同时又把手写的 ls 列进"可用"）。
-    assert FRAMEWORK_EXCLUDED_TOOL_NAMES_TEXT in CELLWIKI_BOUNDARY_REMINDER
+    # 边界提醒的"不可用"清单是独立散文常量，描述框架通用工具的风险面，
+    # 不是 CellWiki 注册表的投影；文本逐字固定（它参与 stable prefix 与 cache_prefix_hash）。
+    assert (
+        "Generic deep-agent tools such as execute, ls, task, write_todos are "
+        "unavailable." in CELLWIKI_BOUNDARY_REMINDER
+    )
 
     # 已退役与框架残留的工具名不得出现在 Layer A 的可用工具清单里。
     for retired in ("ls", "ingest_sources", "move_file", "move_folder", "read_wiki_page"):
