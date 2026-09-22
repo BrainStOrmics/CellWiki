@@ -86,9 +86,6 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
   实测/估算比值（钳制 0.5–4.0）折算后累计，使标称窗口接近真实 token 预算。
 - **promote**：用户经 ask_user_question 同意后，把附件提升为 raw/<source_id>/ 正式源
   （原件 + 提取文本 + meta.json），登记 data/runtime/sources/<source_id>.json，并提交 git。
-- **预置源登记（raw scan）**：用户从产品侧发起的"扫描并登记 raw/"动作，按目录名
-  登记用户直接放进 `raw/<目录名>/` 的源（source_id = 目录名，幂等，不复制、不产生
-  git 变更）；无提取文本的 PDF 登记为 needs_extraction。Agent 工具白名单不因此扩大。
 - **schema.md**：用户拥有的工作区页面提取契约；Agent 只读。lint 解析一个
   `yaml cellwiki-schema` 元数据块和每种页面的 `markdown cellwiki-template` 模板块。
 缺失或无效时不发布新的 `wiki/` 变更，不回退内置 schema。

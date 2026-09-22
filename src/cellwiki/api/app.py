@@ -616,19 +616,6 @@ def create_app(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
 
-    @app.post("/api/workspace/raw/scan")
-    def scan_raw_sources_endpoint() -> dict:
-        """登记用户直接放进 raw/ 的预置源（产品侧动作，不产生 git 变更）。
-
-        返回新增/更新/跳过/待提取四类计数；幂等，可安全重复调用。
-        """
-        from cellwiki.services.promotion import scan_raw_sources
-
-        try:
-            return scan_raw_sources(root)
-        except OSError as error:
-            raise HTTPException(status_code=500, detail=f"raw scan failed: {error}") from None
-
     # ==================== 智能体线程管理 ====================
     @app.post("/api/agent/threads", status_code=status.HTTP_201_CREATED)
     def create_agent_thread() -> dict[str, str]:

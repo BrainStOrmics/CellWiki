@@ -18,7 +18,6 @@ from cellwiki.agent.executor import (
 )
 from cellwiki.agent.source_tools import build_source_tools
 from cellwiki.services.attachment_store import AttachmentFileStore
-from cellwiki.services.promotion import scan_raw_sources
 
 
 def _git_init(root: Path) -> None:
@@ -174,98 +173,3 @@ def test_agent_file_tools_can_read_raw_and_write_contract_page(tmp_path: Path):
     )
     assert written.get("ok") is True
     assert (root / "wiki" / "cell_types" / "cd8_t_cell.md").is_file()
-
-
-def test_scan_registers_preplaced_markdown_dir(tmp_path: Path):
-    root = tmp_path
-    source_dir = root / "raw" / "Fu_2025_NatMethods"
-    source_dir.mkdir(parents=True)
-    (source_dir / "paper.md").write_text("# Paper\n\nCD8 T cells.", encoding="utf-8")
-    counts = scan_raw_sources(root)
-    assert counts["added"] == 1
-    assert counts["sources"] == ["Fu_2025_NatMethods"]
-    record = json.loads(
-        (root / "data" / "runtime" / "sources" / "Fu_2025_NatMethods.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert record["status"] == "registered"
-    assert record["metadata"]["registration"] == "preplaced_scan"
-    assert "promoted_from" not in record["metadata"]
-
-
-def test_scan_is_idempotent_and_no_git_changes(tmp_path: Path):
-    root = tmp_path
-    _git_init(root)
-    source_dir = root / "raw" / "paper_one"
-    source_dir.mkdir(parents=True)
-    (source_dir / "body.txt").write_text("text body", encoding="utf-8")
-    subprocess.run(["git", "-C", str(root), "add", "raw"], check=True, capture_output=True)
-    subprocess.run(
-        ["git", "-C", str(root), "commit", "-m", "baseline"], check=True, capture_output=True
-    )
-    head_before = subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    first = scan_raw_sources(root)
-    assert first["added"] == 1
-    second = scan_raw_sources(root)
-    assert second["added"] == 0
-    assert second["updated"] == 1
-    assert subprocess.run(
-        ["git", "-C", str(root), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip() == head_before
-    staged = subprocess.run(
-        ["git", "-C", str(root), "diff", "--cached", "--name-only"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-    assert staged == "", staged
-
-
-def test_scan_registers_pdf_without_sidecar_as_needs_extraction(tmp_path: Path):
-    root = tmp_path
-    source_dir = root / "raw" / "locked_pdf"
-    source_dir.mkdir(parents=True)
-    (source_dir / "paper.pdf").write_bytes(b"%PDF-1.7 not a real pdf")
-    counts = scan_raw_sources(root)
-    assert counts["needs_extraction"] == 1
-    record = json.loads(
-        (root / "data" / "runtime" / "sources" / "locked_pdf.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    assert record["status"] == "needs_extraction"
-
-
-def test_scan_skips_existing_attachment_promoted_record(tmp_path: Path):
-    root = tmp_path
-    hash_id = "src_" + "c" * 20
-    raw = root / "raw" / hash_id
-    raw.mkdir(parents=True)
-    stored = raw / "paper.md"
-    stored.write_text("attachment body", encoding="utf-8")
-    record = {
-        "source_id": hash_id,
-        "source_type": "paper",
-        "original_name": "paper.md",
-        "stored_path": str(stored),
-        "status": "registered",
-        "metadata": {"file_name": "paper.md", "promoted_from": "att_1234__paper.md"},
-    }
-    registry = root / "data" / "runtime" / "sources"
-    registry.mkdir(parents=True, exist_ok=True)
-    path = registry / f"{hash_id}.json"
-    path.write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
-    counts = scan_raw_sources(root)
-    assert counts["skipped"] == 1
-    assert counts["added"] == 0
-    after = json.loads(path.read_text(encoding="utf-8"))
-    assert after["metadata"]["promoted_from"] == "att_1234__paper.md"

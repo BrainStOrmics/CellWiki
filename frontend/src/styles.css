@@ -2192,16 +2192,10 @@ select:focus-visible {
 .diff-rename { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid #333a45; border-radius: 4px; color: #aeb5bf; background: #161a20; font-size: 10.5px; cursor: pointer; }
 .diff-rename:hover { color: #d9dde3; border-color: #3b4552; }
 .diff-rename:disabled { opacity: 0.5; cursor: default; }
-.workspace-scan-row { display: flex; padding: 2px 0 6px; }
-.workspace-scan-raw { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid #333a45; border-radius: 4px; color: #aeb5bf; background: #161a20; font-size: 10.5px; cursor: pointer; }
-.workspace-scan-raw:hover { color: #d9dde3; border-color: #3b4552; }
-.workspace-scan-raw:disabled { opacity: 0.6; cursor: default; }
 
 :root[data-theme="light"] .diff-entry { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }
 :root[data-theme="light"] .diff-entry:hover { color: #1d2934; border-color: #b9c6d2; background: #edf2f6; }
 :root[data-theme="light"] .diff-entry.active { color: var(--accent-text-strong); border-color: var(--accent-line-strong); background: var(--accent-soft); }
-:root[data-theme="light"] .workspace-scan-raw { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }
-:root[data-theme="light"] .workspace-scan-raw:hover { color: #1d2934; border-color: #b9c6d2; background: #edf2f6; }
 :root[data-theme="light"] .diff-browser { color: #263643; }
 :root[data-theme="light"] .diff-browser-toolbar { border-bottom-color: #d7dfe6; }
 :root[data-theme="light"] .diff-browser-toolbar button { border-color: #cfd8e1; color: #35424e; background: #f8fafb; }
