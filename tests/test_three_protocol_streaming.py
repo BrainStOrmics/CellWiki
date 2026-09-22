@@ -3,7 +3,7 @@
 # =============================================================================
 # 覆盖：chat_completions 流式 chunk 的 reasoning_content 提取（provider 子类）、
 # anthropic 原生 thinking 块到 reasoning_delta 的映射，以及正文增量在两种形状下
-# 都不被吞掉。决策与范围见 design/archive/2026-09-15-three-protocol-token-streaming.md。
+# 都不被吞掉。
 # =============================================================================
 
 from __future__ import annotations

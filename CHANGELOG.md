@@ -23,7 +23,7 @@
 
 ## 2.0.0-beta
 
-> 本节保留该 beta 阶段的历史能力记录；其中 ChangeSet / CentralWriter / FTS5 / KnowledgeGraph 等旧治理链已在此后版本删除，当前能力以 README、`docs/architecture.md` 和 ADR-0007 为准。
+> 本节保留该 beta 阶段的历史能力记录；其中 ChangeSet / CentralWriter / FTS5 / KnowledgeGraph 等旧治理链已在此后版本删除，当前能力以 README 与代码为准。
 
 ### Added
 

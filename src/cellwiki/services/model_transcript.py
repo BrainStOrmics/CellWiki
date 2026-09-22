@@ -23,8 +23,7 @@ def _tool_calls_text(record: dict[str, Any]) -> str:
     """Serialize assistant tool_calls for token accounting.
 
     tool_calls 参数 JSON 与 content 文本一样按字面发给 provider，但旧估算只看
-    content.text，实测同一 thread 因此低估 2.4 倍（见
-    design/active/2026-09-21-measured-first-compaction-accounting.md）。
+    content.text，实测同一 thread 因此低估 2.4 倍。
     """
 
     content = record.get("content")

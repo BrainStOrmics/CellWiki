@@ -100,8 +100,8 @@ class Settings(BaseSettings):
     memory_recall_token_budget: int = 800
 
     # ---- 工作区信任策略 ----
-    # 开启后，run 以 succeeded / unfinished 收尾后的发布由系统代发接受
-    # （ADR-0007 决策 2 修订）；failed 与其他终态保持待判。
+    # 开启后，run 以 succeeded / unfinished 收尾后的发布由系统代发接受；
+    # failed 与其他终态保持待判。
     # 随进程重启生效，策略在进程内恒定，单元记录的来源快照无歧义。
     auto_accept_pending_diffs: bool = False
 
@@ -136,7 +136,7 @@ class Settings(BaseSettings):
     # ---- 附件感知与读取预算（附件驱动导入）----
     agent_attachment_preview_chars: int = Field(default=2000, ge=0, le=20_000)
     agent_attachment_read_budget_chars: int = Field(default=400_000, ge=0, le=20_000_000)  # 0 = 不限制
-    # ---- 协调器逐 token 流式输出（design/active/2026-08-27-agent-token-streaming.md）----
+    # ---- 协调器逐 token 流式输出 ----
     # 开启后 coordinator 模型以流式请求调用 Responses API，正文/思考按增量
     # 推送；置 0（AGENT_STREAMING=0）一键回退为整块返回。
     agent_streaming: bool = True
@@ -150,7 +150,7 @@ class Settings(BaseSettings):
             return None
         return value
 
-    # ---- Run 作用域持久化 checkpoint（ADR-0010 决策 1/14）----
+    # ---- Run 作用域持久化 checkpoint ----
     # sqlite：图状态落 data/runtime/checkpoints.sqlite，跨重启可续跑（默认）。
     # inmemory：仅作短期回滚闸，回到进程内图状态；稳定一个版本后删除该开关，
     # 不构成长期兼容承诺。

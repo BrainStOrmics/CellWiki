@@ -96,7 +96,7 @@ export type ChatMessage = {
   runId?: string;
   runStatus?: AgentRunStatus;
   streaming?: boolean;
-  /** ADR-0010 决策 9：每段流的用量。只喂给 AgentRunDiagnostics，
+  /** 每段流的用量。只喂给 AgentRunDiagnostics，
    *  绝不进聊天气泡的 text / timeline。 */
   usageSegments?: AgentUsageSegment[];
 };
@@ -277,7 +277,7 @@ export type AgentSpan = {
   data: Record<string, unknown>;
 };
 
-/** ADR-0010 决策 9：一段流结束时投递的用量（本段 + 累计）。 */
+/** 一段流结束时投递的用量（本段 + 累计）。 */
 export type AgentUsageSegment = {
   event_id?: string;
   segment: AgentRun["usage"];

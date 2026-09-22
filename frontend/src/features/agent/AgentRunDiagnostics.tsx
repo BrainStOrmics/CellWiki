@@ -5,7 +5,7 @@ import type { AgentDiagnostics, AgentSpan, AgentUsageSegment } from "../../types
 
 type AgentRunDiagnosticsProps = {
   runId: string;
-  /** ADR-0010 决策 9：每段流的用量，唯一允许的展示位置就是本诊断面板。 */
+  /** 每段流的用量，唯一允许的展示位置就是本诊断面板。 */
   usageSegments?: AgentUsageSegment[];
 };
 

@@ -2,9 +2,7 @@
 
 v2 是**旁路**建设的多轮评测体系：gate/diagnostic 双层共享同一套 suite、
 fixture、scorer 与报告格式。v1（`evals/agent/` + `agent_eval.py`）保持原样，
-继续作为现有 CI 门控；v2 验收之前不替换、不改动 v1。设计提案见
-`design/active/2026-09-13-agent-evaluation-system-v2.md`，实施计划见
-`docs/process/plans/2026-09-13-agent-evaluation-system-v2.md`。
+继续作为现有 CI 门控；v2 验收之前不替换、不改动 v1。
 
 ## 目录结构
 

@@ -17,10 +17,8 @@ Agentic CellWiki 是一个本地优先的 Windows 桌面科学 Wiki：**你选�
   -> 用户接受（审计生效）或拒绝（只 revert 本单元）
 ```
 
-正式知识只允许通过 `Run -> 待确认 diff -> 用户接受` 写入：git 承载版本与审批，历史永不改写
-（见 `docs/adr/0007-git-carries-versioning-and-approval.md`）。运行严格串行：同一时刻最多一个
-活动 run 与一个未判定 diff，未判定期间新 run（包括只读 run）不启动。当前实现说明见
-`docs/architecture.md`，长期决策理由见 `docs/adr/`。
+正式知识只允许通过 `Run -> 待确认 diff -> 用户接受` 写入：git 承载版本与审批，历史永不改写。运行严格串行：同一时刻最多一个
+活动 run 与一个未判定 diff，未判定期间新 run（包括只读 run）不启动。
 
 ## 已具备能力
 
@@ -43,7 +41,7 @@ Agentic CellWiki 是一个本地优先的 Windows 桌面科学 Wiki：**你选�
   日志级别与中英界面，API Key 优先存 Windows Credential Manager。
 
 **尚未落地，不要按这些预期使用**：子 Agent 委托（注册表为空）、安装包代码签名与
-干净 VM 外部验收。完整清单见 `docs/architecture.md`「当前限制」。
+干净 VM 外部验收。
 
 ## 开发环境
 

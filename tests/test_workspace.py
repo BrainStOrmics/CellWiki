@@ -95,7 +95,7 @@ def test_runtime_artifacts_stay_out_of_git_status(tmp_path: Path):
 
 
 def test_runtime_database_cannot_be_staged_into_history(tmp_path: Path):
-    # ADR-0007 让历史不可改写，所以"运行库进不了暂存区"必须在初始化层就成立。
+    # 历史不可改写，所以"运行库进不了暂存区"必须在初始化层就成立。
     root = tmp_path / "kb"
     ensure_workspace(root)
     (root / "wiki").mkdir(exist_ok=True)

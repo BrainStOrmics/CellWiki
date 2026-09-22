@@ -27,7 +27,7 @@ class AgentToolSpec:
 
 
 # 规范顺序 = 模型请求里的工具顺序，参与 tool_schema_fingerprint 与稳定前缀；
-# 顺序即注册顺序，改顺序等于改缓存指纹，须按 ADR-0014 的预期变更对待。
+# 顺序即注册顺序，改顺序等于改缓存指纹，按稳定前缀变更对待。
 AGENT_TOOL_SPECS: tuple[AgentToolSpec, ...] = (
     AgentToolSpec("glob", "File"),
     AgentToolSpec("grep", "File"),

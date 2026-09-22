@@ -259,7 +259,7 @@ def test_cancel_waits_for_safe_event_boundary(tmp_path: Path):
 
 
 def test_a_user_stop_pauses_the_run_instead_of_destroying_it(tmp_path: Path):
-    """ADR-0007 决策 10 把"用户停止后继续"列为可从 checkpoint 续跑的中断三态之一，
+    """"用户停止后继续"本应是从 checkpoint 续跑的中断三态之一，
     实现却一直把主动停止送进 ``CANCELLED`` —— 而 ``_TRANSITIONS[CANCELLED]`` 是空集，
     图状态明明还在载体里（取消路径不删 checkpoint），状态机却没有任何出路。
 
@@ -1574,7 +1574,7 @@ def test_pending_diff_blocks_new_run_until_resolved(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# ADR-0009：判定时维护 + 系统维护 commit
+# 判定时维护 + 系统维护 commit
 # ---------------------------------------------------------------------------
 
 
@@ -1890,7 +1890,7 @@ class _TypewriterFakeModel(BaseChatModel):
 
 
 def test_real_graph_streams_multiple_message_deltas(tmp_path: Path):
-    """逐 token 流式契约（design/active/2026-08-27-agent-token-streaming.md）：
+    """逐 token 流式契约：
     模型按多 chunk 流式输出时，事件表必须出现多条 message_delta，
     而不是旧行为里每次调用一条聚合块。"""
     from cellwiki.agent.app import build_wiki_agent

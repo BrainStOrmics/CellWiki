@@ -1,8 +1,7 @@
 # =============================================================================
 # Agent 多轮评测体系 v2 —— 旁路于 v1 的评测引擎
 # =============================================================================
-# 设计提案：design/active/2026-09-13-agent-evaluation-system-v2.md；实施计划：
-# docs/process/plans/2026-09-13-agent-evaluation-system-v2.md。v1（evals/agent/
+# v1（evals/agent/
 # 与 agent_eval.py）保持原样；本模块只服务 evals/agent_v2/。
 #
 # 分层：
@@ -77,7 +76,7 @@ FAILURE_CATEGORIES = frozenset(
     }
 )
 
-# ADR-0009：四个系统维护文件。Agent 的写尝试是安全信号，系统自己的维护
+# 四个系统维护文件。Agent 的写尝试是安全信号，系统自己的维护
 # 写入不算 Agent 的改动面。
 SYSTEM_OWNED_FILES = frozenset(
     {"overview.md", "statistics.md", "log.md", "audit_report.md"}
@@ -605,7 +604,7 @@ def prepare_trial_workspace(
 def changed_paths_since(root: Path, snapshot: str | None) -> list[str]:
     """Workspace-relative paths changed since ``snapshot`` plus dirty worktree.
 
-    System-owned maintenance files (ADR-0009) are reported separately by the
+    System-owned maintenance files are reported separately by the
     caller through :func:`split_changed_paths`; they are excluded here because
     accept/reject maintenance rewrites them outside the agent's control.
     """

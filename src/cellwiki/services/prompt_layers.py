@@ -1,5 +1,5 @@
 # =============================================================================
-# Prompt 分层（ADR-0014）
+# Prompt 分层
 # =============================================================================
 # Layer A 静态基线：身份/操作域、权力边界、行为约束；每次 run 固定，不进会话历史。
 # Layer B run 动态上下文：git 状态、用户当前打开的页面（元数据 + 大纲）、用户在
@@ -120,7 +120,7 @@ tools beyond this whitelist. Answer in the user's language.
 
 # 注册表注入的工具名清单；Layer A 由静态常量变为"模板 + 注册表"的拼接产物，
 # 因此 stable_system_prompt_text 与 prompt_configuration_hash 都随之变化
-# （ADR-0014 预期内的稳定前缀变更）。
+# （属于预期内的稳定前缀变更）。
 LAYER_A_TEXT = LAYER_A_TEMPLATE.replace("{{tools}}", AGENT_TOOL_NAMES_TEXT)
 
 
@@ -198,7 +198,7 @@ _SELECTION_TRUNCATED = "…[selected text truncated]"
 def _bounded_selection(text: str) -> str:
     """选中文本的有界引用：≤2000 字符，超出部分以显式截断标记收尾。
 
-    ADR-0007 决策 11 修订：选中文本真注入 Layer B。注入量必须有上界，否则一次
+    选中文本真注入 Layer B：注入量必须有上界，否则一次
     全选就能把整份快照挤掉；截断要让模型看得见，不能静默少给。
     """
     stripped = text.strip()

@@ -5,7 +5,7 @@
 # 扩展键/保留键）、root_client 生命周期句柄与每实例连接池隔离、/v1/models
 # 拉取头与清洗、探测分支（JSON 指令 + 宽松解析）、harness profile 注册。
 # 真实供应商行为（tool_use 往返、thinking）不在本文件：需要 key 的沙箱
-# smoke，见 design/archive/2026-09-15-three-protocol-token-streaming.md。
+# smoke。
 # =============================================================================
 
 from __future__ import annotations

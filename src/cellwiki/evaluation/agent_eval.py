@@ -17,7 +17,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-# 系统拥有的四个根级文件：内容写入由 ADR-0009 在工具层拦截，评测负责发现
+# 系统拥有的四个根级文件：内容写入在工具层被拦截，评测负责发现
 # Agent 是否还在徒劳尝试（每次尝试都白烧预算，也说明提示词没有被遵守）。
 _SYSTEM_OWNED_FILES = {"overview.md", "statistics.md", "log.md", "audit_report.md"}
 # 与运行时门禁保持一致：L1 警告不阻塞待确认 diff，只有 L0 错误算不通过。
@@ -150,7 +150,7 @@ def _tally_case(case: dict[str, Any], record: dict[str, Any], fixture_root: Path
                 cited_text[path] = ""
     tally["unresolved_citations"] += sum(1 for path in cited if not (root / path).is_file())
 
-    # ADR-0009：收尾与判定事件由系统写四个维护文件，产品把它们排除在待审 diff
+    # 收尾与判定事件由系统写四个维护文件，产品把它们排除在待审 diff
     # 之外；评测同理，另计入不门控的 system_maintenance_change_count。
     raw_changed = [
         _norm(item) for item in record.get("changed_paths") or [] if _norm(item)

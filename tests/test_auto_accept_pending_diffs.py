@@ -1,8 +1,7 @@
 # =============================================================================
 # 自动接受待确认 diff（用户授权的代判）契约测试
 # =============================================================================
-# 对应 design 提案 2026-09-21-auto-accept-pending-diffs.md 与 ADR-0007 决策 2
-# 修订：策略开启时，run 以 succeeded / unfinished 收尾后的发布由系统代发接受；
+# 策略开启时，run 以 succeeded / unfinished 收尾后的发布由系统代发接受；
 # failed 与其他终态保持待判（人工兜底，门禁照常）。判定来源必须可辨——单元
 # data.resolved_by、log.md 标题 `accepted (auto)`、删会话后的 tombstone 列。
 # 策略关闭时行为逐字不变，由既有审批单元契约测试（test_pending_diff_approval_units.py

@@ -84,7 +84,7 @@ Return concise results appropriate to your assigned role.
 # 根本看不到的 ls）。
 # “不可用”清单改回独立散文常量、文本逐字保持不变：它描述的是框架通用工具的
 # 风险面，不是 CellWiki 自己的注册表；从注册表派生会在它们脱钩后把提醒变成
-# 空词，而且会改变稳定前缀与 cache_prefix_hash（ADR-0014）。
+# 空词，而且会改变稳定前缀与 cache_prefix_hash。
 CELLWIKI_BOUNDARY_REMINDER = (
     "CellWiki tool boundary: only the whitelisted CellWiki tools are "
     f"available ({AGENT_TOOL_NAMES_TEXT}). Generic "
@@ -373,7 +373,7 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
 # 三种线协议（responses / chat_completions / anthropic）默认都开启逐 token
 # 流式，AGENT_STREAMING=0 一键回退为整块返回：coordinator 请求永远携带工具，
 # disable_streaming="tool_calling" 会在 HTTP 层直接退化为阻塞式单响应，正文与
-# 思考整块到达（design/archive/2026-09-15-three-protocol-token-streaming.md）。
+# 思考整块到达。
 # 推理增量按协议分工，但最终都落到运行时的 reasoning_delta：
 # - responses：网关的非标准 response.reasoning_text.delta 由 reasoning bridge
 #   翻译成 langchain 可识别的标准摘要事件；
@@ -448,7 +448,7 @@ def build_wiki_agent(
     coordinator_model = model or build_model()
     # 构建工具集：工作区工具 + 确定性 lint 报告 + 交互工具
     coordinator_tools = build_coordinator_tools(root, registry)
-    # ADR-0010 决策 1/14：产品图默认落 SqliteSaver（data/runtime/checkpoints.sqlite），
+    # 产品图默认落 SqliteSaver（data/runtime/checkpoints.sqlite），
     # 与 cellwiki.db 分文件；AGENT_CHECKPOINTER=inmemory 只是短期回滚闸。
     # 显式传入的 checkpointer 原样生效。
     active_checkpointer = (

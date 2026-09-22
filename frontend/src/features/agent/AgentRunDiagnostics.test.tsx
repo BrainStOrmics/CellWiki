@@ -211,7 +211,7 @@ describe("AgentRunDiagnostics", () => {
     expect(tokensRow.title).toBe("11977052 in · 43072 out · 11451136 cached");
   });
 
-  it("renders each stream segment's own usage (ADR-0010 决策 9)", async () => {
+  it("renders each stream segment's own usage", async () => {
     vi.mocked(getJson).mockResolvedValue(base);
     const { container } = renderDiagnostics([
       {

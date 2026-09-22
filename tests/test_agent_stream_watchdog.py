@@ -350,7 +350,7 @@ def test_a_silent_model_call_is_force_closed_and_the_run_lands_unfinished(
         assert any(span.kind == "model" for span in manager.store.list_spans(run_id))
         _wait_for_gate_release(manager)
         # 强制断开之后必须换掉懒建的 adapter 与模型：它们的连接已经关了，而编译图
-        # 还持有那条进程级 SqliteSaver 连接。这是在不重新加锁的前提下维持 ADR-0010
+        # 还持有那条进程级 SqliteSaver 连接。这是在不重新加锁的前提下维持
         # 单写方不变量的方式。
         assert manager._built_adapter is None
         assert manager._agent_model is None
@@ -369,7 +369,7 @@ def test_a_cancel_that_never_lands_is_escalated_into_a_forced_close(
     ``cancelling``（``_ensure_single_active_run`` 把它算作 active）。
 
     落点是 ``unfinished`` 而不是 ``cancelled``：用户按过停止，那是一次可续跑的暂停
-    （ADR-0007 决策 10 的"用户停止后继续"）。所以门禁仍被这个 run 占着，要靠第二次
+    （"用户停止后继续"）。所以门禁仍被这个 run 占着，要靠第二次
     取消（"放弃"）才放开——这一步也在这里钉住，否则两步语义会退化成新的死结。
     """
     monkeypatch.setattr(settings, "agent_stream_idle_seconds", 600)

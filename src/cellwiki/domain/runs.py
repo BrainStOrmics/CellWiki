@@ -119,20 +119,20 @@ class AgentRun(ContractModel):
     pending_diff_id: str | None = None      # 运行产出的待确认 diff 标识
     task_kind: str = "conversation"                           # 结构化任务类型
     task_payload: dict[str, Any] = Field(default_factory=dict) # 结构化任务参数
-    # ADR-0010 决策 4：每段流结束时写回的最新 checkpoint 标识。升级前产生的 run
+    # 每段流结束时写回的最新 checkpoint 标识。升级前产生的 run
     # 一律为 NULL，其"继续/回答问题"走显式失败，不在空图上静默重放。
     checkpoint_id: str | None = None
     # 决策 7：幂等提交键。同一 request_id 命中既有 run 时返回它并置 replayed=True。
     request_id: str | None = None
     # 决策 8：执行配置快照（Layer A + model + budget 短哈希），使历史 run 不受 .env 漂移影响。
     prompt_hash: str | None = None
-    # ADR-0014：模型 transcript 版本。旧 run 没有该字段，默认 1；新 run 显式写 2。
+    # 模型 transcript 版本。旧 run 没有该字段，默认 1；新 run 显式写 2。
     transcript_version: int = Field(default=1, ge=1)
-    # ADR-0014：完整稳定前缀与 canonical tool schema 的短哈希，用于缓存诊断。
+    # 完整稳定前缀与 canonical tool schema 的短哈希，用于缓存诊断。
     cache_prefix_hash: str | None = None
-    # ADR-0014：当前 run 所在模型 transcript epoch。
+    # 当前 run 所在模型 transcript epoch。
     transcript_epoch: int = Field(default=0, ge=0)
-    # ADR-0014：本次 run 采用的缓存模式（off/implicit/explicit）。
+    # 本次 run 采用的缓存模式（off/implicit/explicit）。
     cache_mode: str = ""
     model_role: str = "coordinator"                           # 模型角色
     model_name: str = ""                                      # 模型名称

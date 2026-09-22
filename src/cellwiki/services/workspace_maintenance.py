@@ -1,5 +1,5 @@
 # =============================================================================
-# 系统维护 —— 判定时维护 + 系统维护 commit（ADR-0009）
+# 系统维护 —— 判定时维护 + 系统维护 commit
 # =============================================================================
 # 工作区根级系统文件只在 run 状态机判定事件维护：
 #   强制 lint 完成 -> audit_report.md 追加一段（系统 commit，verdict=lint）
@@ -13,7 +13,7 @@
 # 绝不阻塞 run 判定。写入确定性、可重复执行（追加带 run 标记去重）。
 # =============================================================================
 
-"""System-owned maintenance of the workspace md files (ADR-0009)."""
+"""System-owned maintenance of the workspace md files."""
 
 from __future__ import annotations
 
@@ -268,7 +268,7 @@ def _commit_maintenance(
     verdict: str,
     files: tuple[str, ...],
 ) -> str | None:
-    """Path-scoped system maintenance commit (ADR-0009 + 方案 D).
+    """Path-scoped system maintenance commit.
 
     ``git commit --only -- <paths>`` 只提交维护自己的文件，index 里的外来暂存
     改动保持原样、不进本提交。旧实现的全局 staged 守卫会把维护永久饿死
@@ -293,7 +293,7 @@ def _commit_maintenance(
 
 
 # ---------------------------------------------------------------------------
-# 公开维护入口（按 ADR-0009 事件表）
+# 公开维护入口（按判定事件维护）
 # ---------------------------------------------------------------------------
 def maintain_after_lint(
     root: Path,

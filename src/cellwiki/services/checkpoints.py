@@ -1,4 +1,4 @@
-"""Run 作用域 checkpoint 载体（ADR-0010）。
+"""Run 作用域 checkpoint 载体。
 
 产品图默认把 LangGraph 图状态落到 ``data/runtime/checkpoints.sqlite``，与
 ``cellwiki.db`` 分文件，避免 WAL 与锁争用。状态键是 run 作用域的

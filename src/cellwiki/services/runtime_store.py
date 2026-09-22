@@ -84,15 +84,15 @@ _TRANSITIONS: dict[AgentRunStatus, set[AgentRunStatus]] = {
     AgentRunStatus.RETRYING: {AgentRunStatus.RUNNING, AgentRunStatus.FAILED, AgentRunStatus.UNFINISHED},
     # RETRYING 也在后继里：is_retryable_run 与 run payload 的 retryable 都宣布中断态
     # 可重试，前端更把 retry 当成「继续」撞上 checkpoint_missing 之后的兜底出路。
-    # ADR-0010 决策 5 只定 retry 的语义，没钉死"谁能 retry"。
+    # retry 语义（同 run_id、先删状态键、重放 transcript）没钉死"谁能 retry"。
     AgentRunStatus.UNFINISHED: {
         AgentRunStatus.RUNNING,
         AgentRunStatus.FAILED,
         AgentRunStatus.CANCELLED,
         AgentRunStatus.RETRYING,
     },
-    # CANCELLING 能落 UNFINISHED：主动停止是暂停而不是销毁（ADR-0007 决策 10 的
-    # "用户停止后继续"），图状态还在载体里。CANCELLED 仍是后继——那是"放弃一个已
+    # CANCELLING 能落 UNFINISHED：主动停止是暂停而不是销毁（"用户停止后继续"），
+    # 图状态还在载体里。CANCELLED 仍是后继——那是"放弃一个已
     # 中断的 run"，也是松开串行门禁的出口。
     AgentRunStatus.CANCELLING: {AgentRunStatus.CANCELLED, AgentRunStatus.FAILED, AgentRunStatus.UNFINISHED},
     AgentRunStatus.SUCCEEDED: set(),
@@ -182,7 +182,7 @@ class RuntimeStore:
     """Deep persistence module: schema, transitions, sequencing, and atomic event append live here."""
 
     def __init__(self, project_root: Path):
-        # ADR-0010 决策 11/12：checkpoint 载体与运行库同在 data/runtime 下，
+        # checkpoint 载体与运行库同在 data/runtime 下，
         # 删线程时要按 run 作用域键级联删掉它，因此这里记住工作区根。
         self.project_root = Path(project_root).resolve()
         self.path = self.project_root / "data" / "runtime" / "cellwiki.db"
@@ -220,7 +220,7 @@ class RuntimeStore:
         active_statuses: frozenset[AgentRunStatus] = ACTIVE_RUN_STATUSES,
         user_message_data: dict[str, Any] | None = None,
     ) -> tuple[AgentRun, bool]:
-        """ADR-0010 决策 7：把"查无活动 run + 建 run"合并进同一 ``BEGIN IMMEDIATE``。
+        """把"查无活动 run + 建 run"合并进同一 ``BEGIN IMMEDIATE``。
 
         返回 ``(run, replayed)``。检查与写入同事务是关键：分开做的话两个并发提交
         都能通过检查、各建一个 run，严格串行门禁与幂等门同时失效。命中已有
@@ -986,7 +986,7 @@ class RuntimeStore:
         )
 
     def _ensure_run_idempotency_schema(self, connection: sqlite3.Connection) -> None:
-        """ADR-0010 决策 7 + 裁决 #13：幂等键落在内联守卫 ALTER，不走 Alembic。
+        """幂等键落在内联守卫 ALTER，不走 Alembic。
 
         直连建库路径（测试与 ``scripts/serve_e2e.py``）不会跑 Alembic，只补 revision
         会让这些库静默缺列，幂等门形同虚设。SQLite 的 ``ADD COLUMN`` 不能带 UNIQUE，
@@ -1221,7 +1221,7 @@ class RuntimeStore:
                 "DELETE FROM agent_attachments WHERE thread_id = ?", (thread_id,)
             )
             connection.execute("DELETE FROM agent_threads WHERE thread_id = ?", (thread_id,))
-        # ADR-0010 决策 11：图状态是不可重建的持久数据，删线程必须级联删掉它，
+        # 图状态是不可重建的持久数据，删线程必须级联删掉它，
         # 否则删除承诺只覆盖了运行库。放在闸门之后、事务之外：载体是独立文件。
         delete_thread_checkpoints(self.project_root, thread_id)
         return int(run_count)
@@ -1566,7 +1566,7 @@ class RuntimeStore:
         return updated
 
     def set_run_checkpoint(self, run_id: str, checkpoint_id: str | None) -> AgentRun:
-        """ADR-0010 决策 4：每段流结束时写回最新 checkpoint 标识。
+        """每段流结束时写回最新 checkpoint 标识。
 
         这是字段回写而不是生命周期推进，因此不走 ``_assert_run_transition``、
         也不产生事件。写回后 ``checkpoint_id`` 成为可查询字段：为空的 run
@@ -1858,8 +1858,8 @@ class RuntimeStore:
         ``is_retryable_run`` 对 unfinished+{system,rate_limit,timeout} 返回真、run
         payload 因此给 ``retryable: true``，前端更把 retry 当成「继续」撞上
         ``checkpoint_missing`` 之后唯一的兜底出路。只放行 FAILED 时那条出路是死的
-        ——用户点「重试」必然 409，等于没有兜底。ADR-0010 决策 5 只定 retry 的语义
-        （同 run_id、先删状态键、从有界 transcript 重放），没有钉死"谁能 retry"。
+        ——用户点「重试」必然 409，等于没有兜底。retry 的语义
+        （同 run_id、先删状态键、从有界 transcript 重放）没有钉死"谁能 retry"。
         ``snapshot_commit`` 提供时重锚段基线（B1，语义同 claim_resume_unfinished）。
         """
 
@@ -2137,7 +2137,7 @@ class RuntimeStore:
     def _ensure_tombstone_schema(self, connection: sqlite3.Connection) -> None:
         """判定来源列：代判（auto）与人工判定必须在 tombstone 上可辨。
 
-        ADR-0007 决策 2 修订要求删会话后仍能区分"人看过"与"策略代发"；旧库的
+        删会话后仍要能区分"人看过"与"策略代发"；旧库的
         既有行留空，按人工判定解释，不回填。
         """
 

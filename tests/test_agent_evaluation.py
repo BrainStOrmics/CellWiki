@@ -204,7 +204,7 @@ def test_maintenance_output_is_validated_against_the_post_run_workspace(tmp_path
 
 
 def test_system_maintenance_file_changes_are_not_attributed_to_the_agent():
-    # ADR-0009：run 收尾由系统追加 audit_report.md。产品把它排除在待审 diff 之外，
+    # run 收尾由系统追加 audit_report.md。产品把它排除在待审 diff 之外，
     # 评测也不能把它算成 Agent 的越界改动。
     predictions = _load("reference_predictions.json")
     case = _case(predictions, "maintenance_ingest_subset_page")

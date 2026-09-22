@@ -34,7 +34,7 @@ AGENT_GIT_IDENTITY_EMAIL = "cellwiki-agent@cellwiki.local"
 # log/audit_report 系统 append-only）。
 SYSTEM_OWNED_FILES = frozenset({"overview.md", "statistics.md", "log.md", "audit_report.md"})
 
-# 运行时产物与工作区版本库的边界。ADR-0007 规定历史永不改写，所以一次
+# 运行时产物与工作区版本库的边界。历史永不改写，所以一次
 # `git add data/runtime/cellwiki.db` 就会把消息正文、工具输出与检查点永久留在
 # 知识库历史里；这些文件本来就可由 SQLite 重建，进历史只有害处。git 的忽略规则
 # 对未跟踪文件即刻生效，因此这里只创建文件、不做提交——创建根提交会破坏

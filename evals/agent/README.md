@@ -89,7 +89,7 @@ uv run python scripts/evaluate_agent_runs.py
 ## 两个不设门控、只供人工核对的计数
 
 - `unresolved_citation_count`：答案里以路径形式出现、但在工作区里不存在的 token。
-- `system_maintenance_change_count`：改动面里属于系统维护文件（ADR-0009 由系统写）
+- `system_maintenance_change_count`：改动面里属于系统维护文件（由系统写）
   的条数，**不算** Agent 的越界改动。
 
 已知的判据边界（首轮真实运行暴露）：纯路径规则无法区分「把某页当作依据引用」与

@@ -494,7 +494,7 @@ def extract_cell_types_from_paper(
     """
     active_policy = policy or ExtractionPolicy.from_settings(configuration)
     # v1 限定：抽取路径依赖 response_format 与 ChatOpenAI 的 root_client，
-    # 不支持原生 Anthropic 协议（design/active/2026-09-13-anthropic-protocol-adapter.md）。
+    # 不支持原生 Anthropic 协议。
     # 在构建前显式拒绝，而不是让底层以 AssertionError 崩溃。
     if (
         normalize_wire_protocol(configuration.openai_api_protocol)

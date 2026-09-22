@@ -5,8 +5,7 @@ langchain-openai 只提取 OpenAI 官方字段：第三方网关常用的
 （``BaseChatOpenAI`` 的类文档明确要求由 provider 子类承担）。运行时的
 ``_reasoning_text`` 已经认识 ``additional_kwargs.reasoning_content`` 与
 ``additional_kwargs.reasoning``，所以这里只做一件事：把流式 chunk 上的
-非标准推理字段搬回 ``additional_kwargs``。三协议统一逐 token 流式
-（design/archive/2026-09-15-three-protocol-token-streaming.md）之后，
+非标准推理字段搬回 ``additional_kwargs``。三协议统一逐 token 流式之后，
 chat_completions 的思考增量才不会因为"流式开、字段被丢"而消失。
 
 只影响流式转换：非流式响应走 ``_create_chat_result``，本类不介入。

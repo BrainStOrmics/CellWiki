@@ -122,7 +122,7 @@ logger = logging.getLogger(__name__)
 MAX_RUN_SECONDS_FLOOR = 10
 SCHEMA_GATE_ERROR_PREFIX = "schema_contract_failed: "
 
-# 代判策略（ADR-0007 决策 2 修订）：策略开启时，只有这两个终态的收尾发布由
+# 代判策略：策略开启时，只有这两个终态的收尾发布由
 # 系统代发接受；failed 与其他终态保持待判（人工兜底）。字符串会写进单元的
 # data 快照，改动等于审计语义变化。
 AUTO_ACCEPT_POLICY = "succeeded+unfinished"
@@ -143,7 +143,7 @@ _TOOL_ACTIVITY_CODES = {
 
 
 def prompt_configuration_hash(budget: RunBudget, model_name: str | None = None) -> str:
-    """ADR-0010 决策 8：Layer A + model + budget 的短哈希，作为执行配置快照。
+    """Layer A + model + budget 的短哈希，作为执行配置快照。
 
     历史 run 因此能说明自己是在哪份提示词与预算下跑的，不受之后的 .env 漂移影响。
     公式不变：``model`` 取该 run 的生效模型名（供应商目录选中或 legacy 全局配置），
@@ -194,7 +194,7 @@ class RunTranscriptVersionError(AgentRuntimeError):
     """run 声明的 model transcript 版本高于本实现支持的版本，拒绝静默重放。"""
 
 
-# 唯一的 model transcript 组装版本（ADR-0014，legacy 组装器 2026-09-22 退役）。
+# 唯一的 model transcript 组装版本（legacy 组装器 2026-09-22 退役）。
 # `AgentRun.transcript_version` 字段保留为历史标记：v1 存量 run 由 v2 组装器重建。
 SUPPORTED_TRANSCRIPT_VERSION = 2
 
@@ -577,8 +577,7 @@ def _tool_result_summary(tool_name: str, content: str) -> str:
     return f"{tool_name} → {one_line[:140]}"
 
 
-# Bounded display projections for timeline tool cards (proposal
-# design/active/2026-08-28-agent-timeline-tool-cards.md). These extend the P4
+# Bounded display projections for timeline tool cards. These extend the P4
 # audit payload with whitelisted, size-capped views of tool input/output; they
 # never dump raw arguments or full results beyond the documented bounds.
 _ARGS_COMMAND_MAX = 2_000
@@ -1141,7 +1140,7 @@ class _StreamWatchdog:
     关掉模型的 HTTP client。httpcore 的连接池关闭**包含忙连接**，于是在飞的 socket 被
     关掉、阻塞读抛错、LangGraph 的任务 future 完成，生成器得以沿既有的
     ``_iterate_safe`` finally 路径退栈——记账落盘、checkpoint 回写、门禁释放。所以
-    不需要僵尸线程、不需要第二个 checkpoint 写方（ADR-0010 明令禁止的退化），也不需要
+    不需要僵尸线程、不需要第二个 checkpoint 写方（第二个写方会退化成双写竞态），也不需要
     抛弃工作线程——抛弃会让 Agent 在用户以为已停止之后继续写文件甚至 commit。
 
     一个 manager 一条线程就够：run 严格串行，同时至多一段流在跑。
@@ -1307,7 +1306,7 @@ class AgentRuntimeManager:
         model_spec: ResolvedModelSpec | None = None,
         model_name: str | None = None,
     ) -> tuple[AgentRun, bool]:
-        """ADR-0010 决策 7/8：幂等提交 + 执行配置快照，返回 ``(run, replayed)``。
+        """幂等提交 + 执行配置快照，返回 ``(run, replayed)``。
 
         命中同一 ``request_id`` 时返回既有 run 且 ``replayed=True``，调用方仍回 202。
         串行门禁的权威判定在 ``create_run_if_idle`` 的同一事务里；事务外的快速检查
@@ -1387,7 +1386,7 @@ class AgentRuntimeManager:
         return created, False
 
     def retry(self, run_id: str, *, reason: str = "retry") -> AgentRun:
-        """ADR-0010 决策 5：retry = 先删该 run 的状态键，再从有界 transcript 重放。
+        """retry = 先删该 run 的状态键，再从有界 transcript 重放。
 
         仍是同一 ``run_id``（守 ``CONTEXT.md`` 不变量 7）；累计用量、已产生的 commit
         与审批单元关联保留。与 resume 分道：resume 不清状态、从 checkpoint 续跑。
@@ -1431,7 +1430,7 @@ class AgentRuntimeManager:
         return False
 
     def resume(self, run_id: str, *, reason: str = "resume") -> AgentRun:
-        """ADR-0010 决策 6：resume = 同一 run 回到 RUNNING、继承剩余预算，从 checkpoint 续跑。"""
+        """resume = 同一 run 回到 RUNNING、继承剩余预算，从 checkpoint 续跑。"""
         run = self.store.get_run(run_id)
         if run is None:
             raise KeyError(f"unknown run: {run_id}")
@@ -1566,13 +1565,13 @@ class AgentRuntimeManager:
         """Accept one approval unit: its commits stay, the verdict is recorded,
         then system maintenance runs.
 
-        判定不可回退：只有 PENDING 单元可以接受。审批单元边界即 diff 行本身
-        （ADR-0007 修订），预算暂停—"继续"后的新提交落在序号更大的新单元里，
+        判定不可回退：只有 PENDING 单元可以接受。审批单元边界即 diff 行本身，
+        预算暂停—"继续"后的新提交落在序号更大的新单元里，
         因此不存在"重发布把已批准 commit 装回待判范围"的窗口。
 
         ``resolved_by`` 记录判定来源：人工点击为 ``"user"``，自动接受策略代发
         为 ``"auto"``（策略快照随 ``data`` 落盘）。审计上必须可辨——代判不等于
-        人看过（ADR-0007 决策 2 修订）。
+        人看过。
         """
         with self._maintenance_lock:
             current = self.store.get_pending_diff(diff_id)
@@ -1688,7 +1687,7 @@ class AgentRuntimeManager:
 
     # ---- 内部执行 ----
     def _persist_run_checkpoint(self, run_id: str, thread_id: str) -> None:
-        """ADR-0010 决策 4：每段结束后把最新 checkpoint 标识写回 run。
+        """每段结束后把最新 checkpoint 标识写回 run。
 
         必须等图流真正关闭之后再读：中断段的 checkpoint 是底层流收敛时才落盘的，
         在记账钩子里读会拿到空值，于是可续跑的 run 反而被决策 4 判成无状态。
@@ -1797,7 +1796,7 @@ class AgentRuntimeManager:
 
         模型的 HTTP client 已经关了，而编译图还持有它，以及那条进程级的 ``SqliteSaver``
         连接（``build_checkpointer`` 开了从不关）。丢掉两者，下一个 run 重新装配——这
-        也是在"不重新加锁"的前提下维持 ADR-0010 单写方不变量的方式：万一还有线程挂在
+        也是在"不重新加锁"的前提下维持单写方不变量的方式：万一还有线程挂在
         旧连接上，它写的是已经被丢弃的那一份。注入的 ``self.adapter`` 不动。
         """
         self._built_adapter = None
@@ -2196,7 +2195,7 @@ class AgentRuntimeManager:
 
         self._equip_run_scope(run)
         adapter = self._ensure_adapter_for_run(run)
-        # ADR-0010 决策 8：墙钟预算跨段累计——续跑段继承已消耗的时间而不是重新计时，
+        # 墙钟预算跨段累计——续跑段继承已消耗的时间而不是重新计时，
         # "崩溃恢复继承剩余预算"因此可测。
         started_at = time.monotonic() - (
             run.usage.elapsed_seconds if continue_from_checkpoint else 0.0
@@ -2205,13 +2204,13 @@ class AgentRuntimeManager:
         prompt_token = None
         try:
             if continue_from_checkpoint:
-                # ADR-0010 决策 3/6：续跑段从该 run 自己的 checkpoint 继续，
+                # 续跑段从该 run 自己的 checkpoint 继续，
                 # 不重放 transcript，也不再落一条重复的用户消息。
                 stream = self._open_stream_continue(
                     adapter, thread_id, message, context, run_id=run_id
                 )
             elif run.transcript_version > SUPPORTED_TRANSCRIPT_VERSION:
-                # legacy 组装器已于 2026-09-22 退役（ADR-0014）：未知的更高版本
+                # legacy 组装器已于 2026-09-22 退役：未知的更高版本
                 # 说明这份数据来自更新的实现，宁可直接失败也不要静默按 v2 重放。
                 raise RunTranscriptVersionError(
                     f"run {run_id} declares transcript_version="
@@ -2262,7 +2261,7 @@ class AgentRuntimeManager:
                 # 内容型 run：强制 lint 快照写入 audit_report.md（仅记录，不改门禁语义）
                 self._forced_lint_audit(run_id)
             # 代判按 run 终态判定，不按"是否刚发布"判定：挂起过、收尾无新提交
-            # 的 run 也在这里补上判定（ADR-0007 决策 2 修订）。
+            # 的 run 也在这里补上判定。
             self._maybe_auto_accept_pending_diff(run_id)
         except _RunTimeoutError as error:
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, str(error))
@@ -2895,7 +2894,7 @@ class AgentRuntimeManager:
     ) -> Any:
         """以用户答案续跑：graph adapter 用 Command(resume)，协议 adapter 用 execute(resume=)。
 
-        ADR-0010 决策 2/3：续跑段在该 run 自己的作用域键上、从记录的 checkpoint
+        续跑段在该 run 自己的作用域键上、从记录的 checkpoint
         继续，不重放 transcript。决策 4 的显式拒绝在 ``answer_question`` 里、
         早于任何状态变更，因此到这里 ``checkpoint_id`` 对图 adapter 必定非空。
         """
@@ -2959,7 +2958,7 @@ class AgentRuntimeManager:
         if question.get("required") and not answers_list:
             raise ValueError("required question needs at least one answer")
         adapter = self._ensure_adapter_for_run(run)
-        # ADR-0010 决策 4：图 adapter 的续跑依赖该 run 自己的 checkpoint。升级前
+        # 图 adapter 的续跑依赖该 run 自己的 checkpoint。升级前
         # 产生的 run 一律 checkpoint_id=NULL，必须在登记答案与转 RUNNING 之前显式
         # 失败，否则 run 会停在 RUNNING 而没有执行者。协议型 adapter 没有图状态。
         checkpoint_id = run.checkpoint_id
@@ -3077,7 +3076,7 @@ class AgentRuntimeManager:
 
         返回 Generator 而不是 Iterable：调用方必须能 ``close()`` 它。挂起段是从
         循环里 break 出去的，不显式关闭就要等 GC，那时 checkpoint 还没落盘，
-        决策 4 的回写与其后的续跑都读不到（ADR-0010）。
+        checkpoint 标识的回写与其后的续跑都读不到。
         """
         try:
             yield from self._iterate_bounded(stream, budget, started_at)
@@ -3194,7 +3193,7 @@ class AgentRuntimeManager:
     def _finalize_user_stop(self, run_id: str) -> AgentRun:
         """主动停止的落点：可续跑落 ``unfinished``，续不了才落 ``cancelled``。
 
-        ADR-0007 决策 10 把"用户停止后继续"与崩溃恢复、提问态并列为可从 checkpoint
+        "用户停止后继续"与崩溃恢复、提问态本应并列为可从 checkpoint
         续跑的中断三态，但实现一直把停止送进 ``CANCELLED`` —— 那是个后继集合为空的
         终态，于是图状态明明还在载体里（取消路径不删 checkpoint，
         ``delete_run_checkpoints`` 全仓只有 ``retry()`` 一个调用点），用户却没有任何
@@ -3658,7 +3657,7 @@ class AgentRuntimeManager:
         )
         return True
 
-    # ---- 系统维护（ADR-0009：判定时维护 + 系统维护 commit）----
+    # ---- 系统维护（判定时维护 + 系统维护 commit）----
     def _run_maintenance(self, verdict: str, diff: PendingDiff) -> None:
         """Post-verdict maintenance for accept/reject; failures never block it."""
         if self._git_executor() is None:
@@ -3933,7 +3932,7 @@ class AgentRuntimeManager:
             )
         # build_wiki_agent 返回的编译图：stream_mode=["messages","updates"]，
         # 输出交给 _signals_from_stream_item 归一化；输入必须是 dict 形状。
-        # ADR-0010 决策 2：图状态键是 run 作用域的，add_messages 不再跨 run 叠加。
+        # 图状态键是 run 作用域的，add_messages 不再跨 run 叠加。
         graph_input: Any = {"messages": messages_in}
         return adapter.stream(
             graph_input,
@@ -3958,7 +3957,7 @@ class AgentRuntimeManager:
         *,
         run_id: str,
     ) -> Any:
-        """ADR-0010 决策 3/6：从该 run 的 checkpoint 续跑，不重放 transcript。
+        """从该 run 的 checkpoint 续跑，不重放 transcript。
 
         图 adapter 用 ``None`` 输入在自己的作用域键上继续；协议型 adapter 没有图
         状态，只能按原输入重新执行（调用方已保证不会重复落用户消息）。

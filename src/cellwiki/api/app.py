@@ -196,7 +196,7 @@ class AgentRunRequest(BaseModel):
     page_id: str | None = Field(default=None, max_length=256)
     selected_text: str | None = Field(default=None, max_length=4000)  # 用户选中的文本
     attachment_ids: list[str] = Field(default_factory=list)       # 线程附件（临时 Agent 上下文）
-    # ADR-0010 决策 7：幂等提交键。重试同一次提交（网络抖动/重复点击）带上同一个
+    # 幂等提交键。重试同一次提交（网络抖动/重复点击）带上同一个
     # request_id，服务端命中既有 run 并原样返回；省略则每次提交都新建 run。
     request_id: str | None = Field(default=None, max_length=128)
     # 省略即 None -> 运行时回退 settings（AGENT_MAX_TOOL_STEPS / AGENT_RUN_MAX_SECONDS）。

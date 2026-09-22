@@ -167,7 +167,7 @@ function usageEvent(eventId: string, inputTokens: number, outputTokens: number):
   };
 }
 
-describe("usage_updated 只进诊断面板（ADR-0010 决策 9）", () => {
+describe("usage_updated 只进诊断面板", () => {
   it("累积每段用量到 usageSegments，不动气泡的 text 与 timeline", () => {
     const base: ChatMessage[] = [
       { role: "user", text: "help" },

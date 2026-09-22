@@ -5,8 +5,7 @@ The configured gateway streams reasoning text as
 These are *not* part of the Responses streaming contract langchain-openai
 converts (it only understands ``response.reasoning_summary_part.added`` /
 ``response.reasoning_summary_text.delta``), so without a bridge the reasoning
-text is silently dropped the moment request-level streaming is enabled
-(design/active/2026-08-27-agent-token-streaming.md, evidence 4).
+text is silently dropped the moment request-level streaming is enabled.
 
 The bridge installs a proxy on the ChatOpenAI root clients' ``responses``
 resource (verified shadowable as an instance attribute over the SDK's

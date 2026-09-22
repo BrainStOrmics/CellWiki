@@ -1,5 +1,5 @@
 # =============================================================================
-# Run 作用域持久化 checkpoint —— ADR-0010 逐条决策的验收测试
+# Run 作用域持久化 checkpoint —— 逐条决策的验收测试
 # =============================================================================
 # 每条决策配一个可失败的锁。另外两条是工作单阶段 C 的核心回归锁：
 #   * 同线程连续多个 run 互不读取对方的图状态（决策 2/3/15）；
@@ -256,7 +256,7 @@ def _turn(manager: AgentRuntimeManager, thread_id: str, message: str) -> AgentRu
         context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
     )
     run = _wait_for_status(manager, run.run_id, TERMINAL | {AgentRunStatus.UNFINISHED})
-    # 2026-09-13 收口语义（ADR-0007 决策 14）：run 产出的提交（含系统对种子/
+    # 2026-09-13 收口语义：run 产出的提交（含系统对种子/
     # 脚手架脏区的自动收口）会发布审批单元，未判定单元会挡住下一个 run。
     # 发布发生在终态之后的执行器线程里，等它落地再判定，让位于下个 run。
     diffs = manager.store.list_pending_diffs(run_id=run.run_id)
@@ -565,8 +565,8 @@ def test_retry_accepts_an_unfinished_run(tmp_path: Path):
     且 ``_TRANSITIONS[UNFINISHED]`` 里没有 RETRYING，于是点「重试」必然 409 ——
     三处既有意图都指着同一个出口，只有闸门不通。
 
-    ADR-0010 决策 5 只定 retry 的语义（同 run_id、先删状态键、从有界 transcript
-    重放），没有钉死"谁能 retry"；放宽闸门是让实现对齐既有意图，不是改合同。
+    retry 的语义（同 run_id、先删状态键、从有界 transcript
+    重放）没有钉死"谁能 retry"；放宽闸门是让实现对齐既有意图，不是改合同。
     """
     store = RuntimeStore(tmp_path)
     store.create_run(
@@ -1008,7 +1008,7 @@ def test_consecutive_runs_in_one_thread_do_not_read_each_other_state(tmp_path: P
             f"第 {index} 轮的输入被重复注入：{_count_occurrences(last_input, marker)} 次"
         )
 
-    # ADR-0014：v2 没有消息条数上界，历史长度由 token 预算（压缩阈值）约束。
+    # v2 没有消息条数上界，历史长度由 token 预算（压缩阈值）约束。
     # 保留一条防跑飞的形状锁：进入模型的 messages 恰好是"有界 transcript 的渲染
     # 结果 + 一条系统提示"，渲染不额外注入历史。
     rendered = render_model_messages(manager.store.list_model_messages(thread_id))

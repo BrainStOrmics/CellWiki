@@ -11,8 +11,7 @@
 # 2026-09-15 起协调器对 Anthropic 协议也逐 token 流式，桩因此实现 Messages
 # API 的 SSE 形状：正文拆成多个 text_delta，首轮额外带一个 thinking 块，
 # 用来验证 thinking 增量真的走到 reasoning_delta。**不代表真实供应商行为**
-# ——真实 tool_use 往返与 thinking 需要 key 的沙箱 smoke
-# （design/archive/2026-09-15-three-protocol-token-streaming.md）。
+# ——真实 tool_use 往返与 thinking 需要 key 的沙箱 smoke。
 # =============================================================================
 
 from __future__ import annotations
