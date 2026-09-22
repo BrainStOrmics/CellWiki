@@ -110,7 +110,7 @@ class TerminalRunError(RuntimeError):
 
 
 class SerialGateViolationError(RuntimeError):
-    """决策 7：在同一个 BEGIN IMMEDIATE 事务里发现已有活动 run。
+    """在同一个 BEGIN IMMEDIATE 事务里发现已有活动 run。
 
     检查与建 run 必须同事务，否则两个并发提交都能通过检查、各建一个 run，
     严格串行门禁形同虚设。由 agent_runtime 翻译成对外的 AgentRunInProgressError。
@@ -1226,7 +1226,7 @@ class RuntimeStore:
         delete_thread_checkpoints(self.project_root, thread_id)
         return int(run_count)
 
-    # ---- 待确认 diff 持久化（阶段 4；审批单元 = 一行一次判定）----
+    # ---- 待确认 diff 持久化（审批单元 = 一行一次判定）----
     def save_pending_diff(self, diff: PendingDiff) -> PendingDiff:
         """Insert a new approval unit, or refresh one that is still pending.
 
@@ -1476,10 +1476,10 @@ class RuntimeStore:
                     message="Run paused (restart). Resume to continue.",
                     finished_at=now,
                 )
-                # 决策 4（2026-09-07 修订）：字段回写只发生在流关闭/分段边界，进程被
+                # 字段回写只发生在流关闭/分段边界，进程被
                 # 硬杀时钩子没机会跑，于是字段停在 NULL 而载体里图状态完好。启动收敛是
                 # 唯一无竞争的回填时机——manager 在构造执行器之前就调本方法。续跑闸门
-                # 只问存在性、不读该字段，回填是为了兑现决策 4"成为可查询字段"的承诺。
+                # 只问存在性、不读该字段，回填是为了兑现"成为可查询字段"的承诺。
                 if not converged.checkpoint_id:
                     backfilled = latest_run_checkpoint_id(
                         self.project_root, converged.thread_id, converged.run_id
@@ -1488,11 +1488,11 @@ class RuntimeStore:
                         converged = self.set_run_checkpoint(converged.run_id, backfilled)
                 recovered.append(converged)
             elif run.status == AgentRunStatus.WAITING_CONFIRMATION and graph_state_durable:
-                # 决策 10：挂在提问上的 run 重启后仍停在 WAITING_CONFIRMATION。
+                # 挂在提问上的 run 重启后仍停在 WAITING_CONFIRMATION。
                 # checkpoint 还在就原样留着，用户直接作答即可续跑；丢了就关掉未回答
-                # 的问题并落到 UNFINISHED，让"继续"按决策 4 明确拒绝并要求重发，
+                # 的问题并落到 UNFINISHED，让"继续"明确拒绝并要求重发，
                 # 而不是在空图上静默 Command(resume=...)。
-                # 决策 4（2026-09-07 修订）：判定只看载体，不再以字段为空短路——硬杀
+                # 判定只看载体，不再以字段为空短路——硬杀
                 # 同样会让这里的字段停在 NULL，短路会白白关掉一个其实还能作答的问题。
                 if has_run_checkpoint(self.project_root, run.thread_id, run.run_id):
                     if not run.checkpoint_id:

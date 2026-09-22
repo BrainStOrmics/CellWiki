@@ -431,7 +431,7 @@ function SearchCard({ node, preview, legacy }: ToolCardBodyProps) {
   );
 }
 
-/** edit_file：真行级 diff（裁决 #11 的有界投影），旧/新行号 + +/- 标记。 */
+/** edit_file：真行级 diff（有界投影），旧/新行号 + +/- 标记。 */
 function EditCard({ node, preview, legacy }: ToolCardBodyProps) {
   const { t } = useI18n();
   const diff = node.editDiff;

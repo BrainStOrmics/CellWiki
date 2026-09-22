@@ -1,5 +1,5 @@
 # =============================================================================
-# 简化 Agent 运行时 —— 工作区版（阶段 4）
+# 简化 Agent 运行时 —— 工作区版
 # =============================================================================
 # 生命周期：QUEUED -> RUNNING -> SUCCEEDED / FAILED / UNFINISHED / CANCELLED；
 # 预算/超时进入 UNFINISHED（记录 checkpoint，可继续/恢复），失败可 retry。
@@ -584,7 +584,7 @@ _ARGS_COMMAND_MAX = 2_000
 _RESULT_PREVIEW_LINE_MAX = 40
 _RESULT_PREVIEW_BYTES = 8_000
 _RESULT_TITLE_MAX = 120
-# 裁决 #11：edit_file 真行级 diff 走**独立新字段** edit_diff_display，自带下面这组
+# edit_file 真行级 diff 走**独立新字段** edit_diff_display，自带下面这组
 # 上界与截断标记；上面 args_display 的 200 字符上界一字未动。
 _EDIT_DIFF_CONTEXT = 2          # 每处改动保留的上下文行数
 _EDIT_DIFF_LINE_MAX = 80        # 最多下发行数
@@ -657,7 +657,7 @@ def _tool_args_display(tool_name: str, args: Any) -> dict[str, Any] | None:
 
 
 def _tool_edit_diff_display(tool_name: str, args: Any) -> dict[str, Any] | None:
-    """裁决 #11 批准的**新增有界投影**：``edit_file`` 的真行级 diff。
+    """新增的有界投影：``edit_file`` 的真行级 diff。
 
     卡片此前只有一个路径，用户看不到 Agent 到底改了什么。这里从工具自己的
     ``old_string`` / ``new_string`` 参数算 diff（stdlib difflib，不新增依赖），
@@ -1239,7 +1239,7 @@ class AgentRuntimeManager:
         # create_app 注入与设置页共享的 settings 根实例（.env 同级）。
         self._model_catalog = model_catalog or ModelCatalogService(self.project_root)
         # 启动时收敛孤儿运行（重启窗口：running -> unfinished 可继续/恢复）。
-        # 决策 10：协议型 adapter 没有图状态，挂起态归外部服务，不参与 checkpoint 收敛。
+        # 协议型 adapter 没有图状态，挂起态归外部服务，不参与 checkpoint 收敛。
         self.store.recover_stale_runs(
             graph_state_durable=adapter is None or not hasattr(adapter, "execute")
         )
@@ -1319,7 +1319,7 @@ class AgentRuntimeManager:
         执行者稍后按 run 记录里的 provider/model 重建编译图，因此这里只需
         把快照写进 run 记录，不必传 spec 进执行器。
         """
-        # 决策 7：带 request_id 时不在事务外做任何预检。重试风暴里原 run 往往还是
+        # 带 request_id 时不在事务外做任何预检。重试风暴里原 run 往往还是
         # 活动的，预检会把"命中既有 run"误判成 409；权威判定（先查 replay、再查
         # 活动 run、最后插入）全在 create_run_if_idle 的同一 BEGIN IMMEDIATE 里。
         if request_id is None:
@@ -1365,7 +1365,7 @@ class AgentRuntimeManager:
             # empty even though model spans carry the name.
             model_name=effective_model_name,
             model_provider_id=model_spec.provider_id if model_spec else "",
-            # 决策 8：执行配置快照，使历史 run 不受 .env 漂移影响。
+            # 执行配置快照，使历史 run 不受 .env 漂移影响。
             # 公式不变；模型项取本次 run 的生效模型（目录选中或 legacy 全局）。
             prompt_hash=prompt_configuration_hash(budget, effective_model_name),
             transcript_version=2,
@@ -1398,7 +1398,7 @@ class AgentRuntimeManager:
         return self._claim_and_submit(run_id, AgentRunStatus.RETRYING, reason)
 
     def _run_checkpoint_is_resumable(self, run: AgentRun) -> bool:
-        """决策 4（2026-09-07 修订）：判定的是"载体里有没有该 run 的图状态"。
+        """判定的是"载体里有没有该 run 的图状态"。
 
         三类都要正确落地：清过 ``data/`` 或换了机器的是"字段在、状态没了"；升级前
         产生的 run 是"字段空、载体也空"（那时用进程内 ``InMemorySaver``）；被硬杀的
@@ -1441,7 +1441,7 @@ class AgentRuntimeManager:
         adapter = self.adapter or self._built_adapter
         # adapter 为空意味着稍后会构建产品图，因此同样按图路径判定。
         graph_path = adapter is None or not hasattr(adapter, "execute")
-        # 决策 4（2026-09-07 修订）：闸门问的是"载体里有没有该 run 的图状态"，不是
+        # 闸门问的是"载体里有没有该 run 的图状态"，不是
         # "字段有没有记下来"——硬杀会让字段停在 NULL 而载体完好。载体里也没有才显式
         # 失败（API 映射 409 并给出可操作提示），禁止在空图上静默重放。协议型 adapter
         # 没有图状态，续跑就是按原输入重放，不受这道闸门约束。
@@ -1690,7 +1690,7 @@ class AgentRuntimeManager:
         """每段结束后把最新 checkpoint 标识写回 run。
 
         必须等图流真正关闭之后再读：中断段的 checkpoint 是底层流收敛时才落盘的，
-        在记账钩子里读会拿到空值，于是可续跑的 run 反而被决策 4 判成无状态。
+        在记账钩子里读会拿到空值，于是可续跑的 run 反而被判成无状态。
         best-effort——写回失败绝不能顶替真正的 run 错误。协议型 adapter 没有图状态。
         """
         adapter = self.adapter or self._built_adapter
@@ -2514,7 +2514,7 @@ class AgentRuntimeManager:
                     # 每段只报自己的计数；跨 resume/retry 累加才是 run 生命周期总量。
                     accumulate=True,
                 )
-                # 决策 9：每 run 用量进事件流，只在诊断面板展示，不进聊天气泡。
+                # 每 run 用量进事件流，只在诊断面板展示，不进聊天气泡。
                 self.store.append_event(
                     run_id,
                     AgentEventType.USAGE_UPDATED,
@@ -2686,13 +2686,13 @@ class AgentRuntimeManager:
                     break
         finally:
             # 挂起/取消段是从循环里 break 出去的：底层图流必须显式关闭，
-            # checkpoint 才落盘，决策 4 的回写与其后的续跑才读得到它；
+            # checkpoint 才落盘，标识回写与其后的续跑才读得到它；
             # 等 GC 关闭会晚到不可用。
             segments.close()
             close_stream = getattr(stream, "close", None)
             if callable(close_stream):
                 close_stream()
-            # 决策 4：图流一关就回写，别等到 _execute 的 finally——那时 run 早已
+            # 图流一关就回写，别等到 _execute 的 finally——那时 run 早已
             # 是 WAITING_CONFIRMATION，快速作答的用户会撞上还没落盘的 checkpoint。
             if adapter is not None and not hasattr(adapter, "execute"):
                 with suppress(Exception):
@@ -2895,7 +2895,7 @@ class AgentRuntimeManager:
         """以用户答案续跑：graph adapter 用 Command(resume)，协议 adapter 用 execute(resume=)。
 
         续跑段在该 run 自己的作用域键上、从记录的 checkpoint
-        继续，不重放 transcript。决策 4 的显式拒绝在 ``answer_question`` 里、
+        继续，不重放 transcript。显式拒绝在 ``answer_question`` 里、
         早于任何状态变更，因此到这里 ``checkpoint_id`` 对图 adapter 必定非空。
         """
         if hasattr(adapter, "execute"):
@@ -2981,7 +2981,7 @@ class AgentRuntimeManager:
             # 否则续跑段无法在安全边界上被取消。
             self._cancellations[run_id] = _CancellationGate()
         # 续跑交给执行器：HTTP 线程只登记答案与状态迁移。此前整段模型调用都在请求
-        # 线程里跑完，一次答题就能把 API 占住几分钟（工作单阶段 E）。
+        # 线程里跑完，一次答题就能把 API 占住几分钟。
         self._executor.submit(self._execute_resume, run_id, answers_list, checkpoint_id)
         return self.store.get_run(run_id).model_dump(mode="json")  # type: ignore[union-attr]
 
@@ -3016,7 +3016,7 @@ class AgentRuntimeManager:
                 checkpoint_id=checkpoint_id,
             )
             seen: set[tuple[str, AgentEventType]] = set()
-            # 决策 8：墙钟预算跨段累计——续跑段继承已消耗的时间，而不是重新计时，
+            # 墙钟预算跨段累计——续跑段继承已消耗的时间，而不是重新计时，
             # "崩溃恢复继承剩余预算"因此可测。
             outcome = self._consume_stream(
                 run_id,
@@ -3698,7 +3698,7 @@ class AgentRuntimeManager:
                 "commit": outcome.commit_sha,
             }
             if warning:
-                # 方案 D：外来暂存不再中止维护，但必须可见——用户需要知道
+                # 外来暂存不再中止维护，但必须可见——用户需要知道
                 # 自己的 staged 文件没有被系统动过。
                 marker["foreign_staged"] = warning[:20]
             self.store.update_pending_diff(

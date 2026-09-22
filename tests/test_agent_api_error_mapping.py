@@ -4,7 +4,7 @@
 # as-built：`cancel` 与 pending-diff `reopen` 已经捕获 InvalidRunTransitionError，
 # 而 `retry` / `resume` 只捕获 KeyError / ValueError。两个异常类都继承
 # RuntimeError（不是 ValueError），于是门禁冲突漏成 500。
-# 本文件同时锁定阶段 A 的三项"顺带修"在 API 边界上的可见结果：
+# 本文件同时锁定三项"顺带修"在 API 边界上的可见结果：
 # composer 附件删除端点存在且语义正确（F2）、run 预算走 settings 回退、
 # page_id / selected_text 落库（F8 记账侧），以及死枚举不再存在于事件合同。
 # =============================================================================

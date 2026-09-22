@@ -139,7 +139,7 @@ export type AgentToolEditDiffLine = {
   count?: number;
 };
 
-/** 裁决 #11：edit_file 的真行级 diff，独立有界字段，带截断标记。 */
+/** edit_file 的真行级 diff，独立有界字段，带截断标记。 */
 export type AgentToolEditDiff = {
   lines: AgentToolEditDiffLine[];
   removed: number;
@@ -158,7 +158,7 @@ export type AgentTimelineNode =
       step: AgentProcessStep;
       argsDisplay?: AgentToolArgsDisplay;
       resultPreview?: AgentToolResultPreview;
-      /** 裁决 #11：edit_file 的真行级 diff（独立有界字段，带截断标记）。 */
+      /** edit_file 的真行级 diff（独立有界字段，带截断标记）。 */
       editDiff?: AgentToolEditDiff;
     }
   | { kind: "status"; tone: AgentTimelineStatusTone; label: string; step?: AgentProcessStep }
@@ -296,7 +296,7 @@ export type AgentDiagnostics = {
   usage: AgentRun["usage"];
   spans: AgentSpan[];
   thread_summary?: AgentThreadSummary;
-  /** 决策 4/12：该 run 的 checkpoint 标识、载体类型与 checkpoints.sqlite 体积。 */
+  /** 该 run 的 checkpoint 标识、载体类型与 checkpoints.sqlite 体积。 */
   checkpoint?: {
     id: string | null;
     backend: string;

@@ -2,7 +2,7 @@
 # 智能体运行时测试 —— 工作区版运行的契约测试
 # =============================================================================
 # 覆盖：run 生命周期（成功/失败/重试/取消）、预算门控、事件与用量持久化、
-# 会话上下文注入、线程删除、流信号解析。阶段 4 将补充 unfinished / 继续 /
+# 会话上下文注入、线程删除、流信号解析，以及 unfinished / 继续 /
 # 超时预算与严格串行门禁的契约测试。
 # =============================================================================
 
@@ -457,7 +457,7 @@ def test_a_first_segment_with_no_answer_is_still_a_failure(tmp_path: Path):
 
 
 def test_budget_gate_marks_run_as_unfinished_and_resume_advances(tmp_path: Path):
-    # 阶段 4：预算耗尽进入 unfinished（非 failed），可继续/恢复推进会话
+    # 预算耗尽进入 unfinished（非 failed），可继续/恢复推进会话
     signals = [
         RuntimeSignal(
             type=AgentEventType.MESSAGE_DELTA,
@@ -727,7 +727,7 @@ def test_classify_agent_error_maps_timeout_and_rate_limit():
     assert classify_agent_error(RuntimeError("429 rate limit")) == AgentErrorType.RATE_LIMIT
 
 # =============================================================================
-# 阶段 4 契约：严格串行门禁 + pending diff 生命周期（真实 git 工作区）
+# 严格串行门禁 + pending diff 生命周期契约（真实 git 工作区）
 # =============================================================================
 def test_strict_serial_gate_rejects_second_active_run(tmp_path: Path):
     adapter = BlockingAdapter()
@@ -851,7 +851,7 @@ def test_budget_park_publishes_one_approval_unit_per_verdict(tmp_path: Path):
     回归：diff 固定一行、基线停在 run 起点，于是"暂停 -> 接受 -> 继续"的 run
     第二次发布的 diff 仍包含第一段已批准的 commit（实测 4 段 run 的待判 diff
     列出 7 个 commit、其中 5 个已批准过），点"拒绝"连带回滚已批准页面。
-    方案 B 下每次判定后的重发布生成 `diff_<run_id>_<n+1>` 新行，基线 = 上一单元
+    每次判定后的重发布生成 `diff_<run_id>_<n+1>` 新行，基线 = 上一单元
     head；拒绝严格限定在自己的提交上。
     """
     repo = tmp_path / "repo"
@@ -1101,7 +1101,7 @@ class QuestionCapableAdapter:
 
 
 def test_ask_user_question_pauses_waits_and_resumes(tmp_path: Path):
-    # 阶段 4：5+1 契约 —— interrupt 挂起 -> WAITING_CONFIRMATION -> 回复 -> 续跑到成功
+    # 5+1 契约 —— interrupt 挂起 -> WAITING_CONFIRMATION -> 回复 -> 续跑到成功
     adapter = QuestionCapableAdapter(
         scripts=[
             [
@@ -1158,7 +1158,7 @@ def test_ask_user_question_pauses_waits_and_resumes(tmp_path: Path):
         runtime.answer_question(started.run_id, [])
 
     result = runtime.answer_question(started.run_id, ["是"])
-    # 阶段 E：答题只登记答案并把 run 转回 RUNNING 就返回，续跑在执行器线程上跑完。
+    # 答题只登记答案并把 run 转回 RUNNING 就返回，续跑在执行器线程上跑完。
     assert result["status"] == AgentRunStatus.RUNNING.value
     deadline = time.monotonic() + WAIT_TIMEOUT
     while time.monotonic() < deadline:
@@ -1474,7 +1474,7 @@ def test_real_graph_interrupt_pause_and_command_resume(tmp_path: Path):
     assert question is not None and question["question"] == "继续吗？"
 
     result = runtime.answer_question(run.run_id, "是")
-    # 阶段 E：答题立即返回，续跑段在执行器线程上跑完。
+    # 答题立即返回，续跑段在执行器线程上跑完。
     assert result["status"] == AgentRunStatus.RUNNING.value
     deadline = time.monotonic() + WAIT_TIMEOUT
     while time.monotonic() < deadline:
@@ -1807,7 +1807,7 @@ def test_maintenance_failure_does_not_block_verdict_and_retries_at_next_start(
 def test_foreign_staged_does_not_block_accept_and_warning_is_actionable(
     tmp_path: Path,
 ):
-    """方案 D 现场回归：中止 run 留下的外来暂存不再卡死接受判定与维护。
+    """现场回归：中止 run 留下的外来暂存不再卡死接受判定与维护。
 
     实测：批量 ingest 预算中止时 index 里留有 staged 文件，之后每次接受都
     maintenance_failed（"unexpected staged changes"），派生文件永久过期。

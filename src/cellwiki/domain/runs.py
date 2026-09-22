@@ -122,9 +122,9 @@ class AgentRun(ContractModel):
     # 每段流结束时写回的最新 checkpoint 标识。升级前产生的 run
     # 一律为 NULL，其"继续/回答问题"走显式失败，不在空图上静默重放。
     checkpoint_id: str | None = None
-    # 决策 7：幂等提交键。同一 request_id 命中既有 run 时返回它并置 replayed=True。
+    # 幂等提交键。同一 request_id 命中既有 run 时返回它并置 replayed=True。
     request_id: str | None = None
-    # 决策 8：执行配置快照（Layer A + model + budget 短哈希），使历史 run 不受 .env 漂移影响。
+    # 执行配置快照（Layer A + model + budget 短哈希），使历史 run 不受 .env 漂移影响。
     prompt_hash: str | None = None
     # 模型 transcript 版本。旧 run 没有该字段，默认 1；新 run 显式写 2。
     transcript_version: int = Field(default=1, ge=1)

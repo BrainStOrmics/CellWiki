@@ -102,7 +102,7 @@ test("a refused resume clears busy and keeps the continue affordance", async ({ 
   const continueButton = page.getByRole("button", { name: /继续|Resume|Continue/ });
   await expect(continueButton).toBeVisible();
 
-  // 门禁冲突按 409 返回（阶段 A）：前端必须收敛 busy 并留下可重试出口，
+  // 门禁冲突按 409 返回：前端必须收敛 busy 并留下可重试出口，
   // 而不是让"继续"消失、思考指示器永远转下去。
   await continueButton.click();
 
@@ -131,7 +131,7 @@ test("a permanently refused resume swaps the dead end for a way out", async ({ p
       }),
     });
   });
-  // 永久性拒绝：detail 是带稳定码的 dict（决策 4 修订后的形状）。与上一条测试的
+  // 永久性拒绝：detail 是带稳定码的 dict。与上一条测试的
   // 裸字符串 detail 形成对照——那个是门禁冲突，可重试，必须把「继续」还回来。
   await page.route(`**/api/agent/runs/${SEEDED_RUN_ID}/resume`, (route) => (
     route.fulfill({

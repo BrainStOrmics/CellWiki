@@ -158,7 +158,7 @@ describe("未知事件类型 fail-open", () => {
   });
 });
 
-/** 决策 9 的用量事件：event_id 必须可区分，否则回放去重会被测成假绿。 */
+/** 用量事件：event_id 必须可区分，否则回放去重会被测成假绿。 */
 function usageEvent(eventId: string, inputTokens: number, outputTokens: number): AgentEvent {
   const usage = { input_tokens: inputTokens, output_tokens: outputTokens, elapsed_seconds: 1.5 };
   return {

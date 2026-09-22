@@ -56,7 +56,7 @@ def test_application_layout_and_upgrade_backup_preserve_project_data(tmp_path: P
 
 
 def test_upgrade_backup_carries_the_checkpoint_carrier(tmp_path: Path):
-    """裁决 #8：``checkpoints.sqlite`` 同进备份承诺。
+    """``checkpoints.sqlite`` 同进备份承诺。
 
     它装着消息与工具输出原文，只备份 ``cellwiki.db`` 会既丢续跑能力、也丢那段
     内容的本地副本。

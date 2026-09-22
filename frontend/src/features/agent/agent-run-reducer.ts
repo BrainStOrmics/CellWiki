@@ -209,7 +209,7 @@ export function reduceAgentRunMessages(
   }
 
   if (event.type === "usage_updated") {
-    // 决策 9：用量只累积到诊断专用字段，不碰 text / timeline，也不新建气泡
+    // 用量只累积到诊断专用字段，不碰 text / timeline，也不新建气泡
     // （fallback 传 null）——聊天气泡里永远看不到"用量"这段文本。
     const payload = event.data as Partial<AgentUsageSegment>;
     if (!payload.segment || !payload.cumulative) return next;

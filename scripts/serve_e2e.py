@@ -86,7 +86,7 @@ Activation state must be considered before interpreting a single marker.
         "Fixture source: regulatory T-cell marker context and activation caveats.",
         encoding="utf-8",
     )
-    # 阶段 0 后无独立 source registry：fixture 源文件直接写入即可
+    # 无独立 source registry：fixture 源文件直接写入即可
     seed_agent_history()
     # Reset only the generated fixture settings so repeated local runs always
     # exercise the documented default-Chinese then switch-to-English flow.

@@ -1,5 +1,5 @@
 # =============================================================================
-# 工具卡片有界投影 —— edit_file 真行级 diff（裁决 #11）与 lint / 附件投影
+# 工具卡片有界投影 —— edit_file 真行级 diff 与 lint / 附件投影
 # =============================================================================
 # 这些是纯函数：投影必须在运行时边界内完成，卡片只拿到有界结果。
 # 关键约束：新增 edit_diff_display **不放宽** args_display 既有的 200 字符上界。
@@ -74,7 +74,7 @@ def test_edit_diff_is_only_projected_for_edit_file():
 
 
 def test_argument_cap_is_unchanged_by_the_new_projection():
-    """裁决 #11 只批准**新增字段**；既有 200 字符上界一个字都不能动。"""
+    """只**新增字段**，既有 200 字符上界一个字都不能动。"""
     display = _tool_args_display(
         "edit_file", {"path": "p" * 500, "old_string": "o" * 500, "new_string": "n" * 500}
     )

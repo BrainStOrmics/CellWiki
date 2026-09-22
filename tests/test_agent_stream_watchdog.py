@@ -462,13 +462,13 @@ def test_the_resume_entry_point_is_bounded_too(tmp_path: Path, monkeypatch):
 
 
 def test_the_answer_entry_point_is_bounded_too(tmp_path: Path, monkeypatch):
-    """答题续跑段以前整段跑在 HTTP 线程上（阶段 E 已改到执行器），界同样要在。"""
+    """答题续跑段以前整段跑在 HTTP 线程上（已改到执行器），界同样要在。"""
     monkeypatch.setattr(settings, "agent_stream_idle_seconds", 0.25)
     store = RuntimeStore(tmp_path)
     _park_on_question(store, "run_answer", "thread_answer")
 
     adapter = _HangingAdapter(_RecordingClient())
-    # 协议型 adapter 没有图状态，构造 manager 的启动收敛不动它的挂起态（决策 10）。
+    # 协议型 adapter 没有图状态，构造 manager 的启动收敛不动它的挂起态。
     manager = _manager(tmp_path, adapter)
     try:
         assert manager.store.get_run("run_answer").status == (

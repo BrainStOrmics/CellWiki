@@ -105,8 +105,8 @@ class Settings(BaseSettings):
     # 随进程重启生效，策略在进程内恒定，单元记录的来源快照无歧义。
     auto_accept_pending_diffs: bool = False
 
-    # ---- 工作区版 Agent 运行时设置（阶段 4/5）----
-    # 单次 run 的最大工具步数（阶段 4 使用）；超限进入 unfinished 状态
+    # ---- 工作区版 Agent 运行时设置 ----
+    # 单次 run 的最大工具步数；超限进入 unfinished 状态
     agent_max_tool_steps: int = Field(default=100, ge=1, le=500)
     # 单次 run 的墙钟超时（秒），防止模型调用卡死
     agent_run_max_seconds: int = Field(default=7200, ge=60, le=86_400)
@@ -125,7 +125,7 @@ class Settings(BaseSettings):
     # 这两个值是**活性界**而不是预算语义，因此不套 MAX_RUN_SECONDS_FLOOR：测试需要
     # 亚秒值才能确定性地验证看门狗。
     agent_stream_idle_seconds: int = Field(default=300, ge=1, le=3600)
-    # 会话上下文上限（token）；阶段 5 的分层 prompt 按 512K/80%/32K 压缩
+    # 会话上下文上限（token）；分层 prompt 按 512K/80%/32K 压缩
     agent_context_max_tokens: int = Field(
         default=AGENT_CONTEXT_MAX_TOKEN_PRESETS[2],
         ge=8_000,

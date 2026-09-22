@@ -1,12 +1,12 @@
 # =============================================================================
-# 阶段 E：提问续跑段的作用域与"checkpoint 写方唯一"
+# 提问续跑段的作用域与"checkpoint 写方唯一"
 # =============================================================================
 # 续跑段此前跑在 HTTP 请求线程上，而且只装了 attachment resolver、没装 scope：
 # workspace_root / thread_dir / 读预算全是空的。这里锁三件事——
 #   1. 答题接口登记完答案就返回，续跑在执行器线程上（HTTP 线程不被占住）；
 #   2. 续跑段读附件成功，且落在真正的工作区作用域里；
 #   3. 续跑段的读预算真实生效（不是"预算 0 = 无限"）。
-# 另加裁决 #5 的验收条件：阶段 C 的临时进程内写锁已删除，写方唯一由串行门禁保证。
+# 另加验收条件：临时进程内写锁已删除，写方唯一由串行门禁保证。
 # 全程用替身 adapter，不需要真实 provider，也不需要联网。
 # =============================================================================
 
@@ -35,7 +35,7 @@ ATTACHMENT_TEXT = "# Attachment\n\nFOXP3 marks regulatory T cells."
 
 
 class _ProbeCheckpointer:
-    """只回答"最新 checkpoint 标识"，让决策 4 的显式拒绝不误伤本用例。"""
+    """只回答"最新 checkpoint 标识"，让显式拒绝不误伤本用例。"""
 
     def get_tuple(self, config: Any) -> Any:
         return SimpleNamespace(config={"configurable": {"checkpoint_id": "cp_probe"}})
@@ -201,7 +201,7 @@ def test_the_resume_segment_enforces_the_attachment_read_budget(
 
 
 def test_the_stage_c_checkpoint_write_lock_is_deleted(tmp_path: Path, monkeypatch):
-    """裁决 #5 的验收条件：临时写锁与它的载体子类都不许再存在。"""
+    """验收条件：临时写锁与它的载体子类都不许再存在。"""
     monkeypatch.setattr(settings, "agent_checkpointer", "sqlite")
 
     assert not hasattr(checkpoints_module, "checkpoint_write_lock")

@@ -233,7 +233,7 @@ describe("AgentRunDiagnostics", () => {
     expect(detail).toContain("#2 500 in / 140 out (6.5s)");
   });
 
-  it("reports the checkpoint carrier and its on-disk size (决策 4/12)", async () => {
+  it("reports the checkpoint carrier and its on-disk size", async () => {
     vi.mocked(getJson).mockResolvedValue({
       ...base,
       checkpoint: { id: "1f1a95b7", backend: "sqlite", file_bytes: 24_576 },

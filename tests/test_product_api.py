@@ -207,7 +207,7 @@ def test_agent_thread_and_run_lifecycle(tmp_path: Path):
 
 
 def test_thread_attachments_upload_and_run_scope(tmp_path: Path):
-    # 阶段 6：线程附件 = 临时 Agent 上下文；上传、线程归属校验、随线程删除
+    # 线程附件 = 临时 Agent 上下文；上传、线程归属校验、随线程删除
     from cellwiki.services.attachment_store import AttachmentFileStore
 
     # 删除护栏只放行已收敛的会话：注入确定性 adapter 并等 run 落终态，
@@ -353,14 +353,14 @@ def test_consumer_endpoints_restored_or_removed(tmp_path: Path):
     assert client.get("/api/quality").status_code == 404
     assert client.get("/api/sources").status_code == 404
     assert client.get("/api/pipeline/status").status_code == 404
-    # 工作区信息与全局搜索（阶段 6 前端依赖的真实端点）
+    # 工作区信息与全局搜索（前端依赖的真实端点）
     workspace = client.get("/api/workspace").json()
     assert workspace["path"] == str(tmp_path.resolve())
     hits = client.get("/api/search", params={"q": "FOXP3"}).json()
     assert any(hit["document_id"] == "alpha" and hit["type"] == "page" for hit in hits)
 
 def test_agent_run_resume_via_api(tmp_path: Path):
-    # 预算耗尽 -> unfinished -> 继续/恢复 -> succeeded（阶段 4）
+    # 预算耗尽 -> unfinished -> 继续/恢复 -> succeeded
     from cellwiki.services.agent_runtime import RuntimeSignal
 
     signals = [
@@ -529,7 +529,7 @@ class _QuestionCapableApiAdapter:
 
 
 def test_agent_question_flow_via_api(tmp_path: Path):
-    # 阶段 4/6：ask_user_question 5+1 —— 挂起 -> GET question -> POST 回复 -> 续跑
+    # ask_user_question 5+1 —— 挂起 -> GET question -> POST 回复 -> 续跑
     adapter = _QuestionCapableApiAdapter()
     manager = AgentRuntimeManager(tmp_path, adapter=adapter)
     client = TestClient(create_app(tmp_path, agent_runtime=manager))
@@ -574,7 +574,7 @@ def test_agent_question_flow_via_api(tmp_path: Path):
         json={"answers": "仅回答"},
     )
     assert answered.status_code == 200, answered.text
-    # 阶段 E：接口登记完答案就返回（run 回到 RUNNING），续跑段在执行器线程上完成。
+    # 接口登记完答案就返回（run 回到 RUNNING），续跑段在执行器线程上完成。
     assert answered.json()["status"] == "running"
     finished = _wait_for_run(client, run_id, {AgentRunStatus.SUCCEEDED})
     assert finished["status"] == "succeeded"

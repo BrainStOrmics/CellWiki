@@ -103,7 +103,7 @@ def test_commit_requires_exactly_one_message(repo):
 
 
 def test_commit_only_pathspec_commits_only_named_paths(repo):
-    """系统维护的 `commit --only -- <paths>`（方案 D）：只收显式路径。
+    """系统维护的 `commit --only -- <paths>`：只收显式路径。
 
     前提与实现一致：`--only` 只认 git 已知的路径（未跟踪文件要先 add），
     且 pathspec 覆盖 index 与 worktree。

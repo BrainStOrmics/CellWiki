@@ -3,7 +3,7 @@
 # =============================================================================
 # 覆盖四个判定路径（lint / accept / reject / unfinished）的写入与 git 行为：
 # 派生文件重建、index 统计注入、log/audit 追加、固定 message 的系统 commit、
-# 幂等去重、以及方案 D 的"外来暂存不中止、不进入系统提交"语义。
+# 幂等去重、以及"外来暂存不中止、不进入系统提交"语义。
 # =============================================================================
 
 from __future__ import annotations
@@ -138,7 +138,7 @@ def test_maintain_after_lint_appends_audit_section_and_is_idempotent(tmp_path: P
 
 
 def test_maintenance_commits_own_files_despite_foreign_staged(tmp_path: Path):
-    """方案 D：外来暂存改动不再中止维护，也绝不进入系统维护 commit。
+    """外来暂存改动不再中止维护，也绝不进入系统维护 commit。
 
     旧守卫在 index 有未清理的暂存改动时每次判定都 maintenance_failed（现场：
     批量 ingest 中止留下的 staged 卡住整个工作区的维护重试）。现在维护用

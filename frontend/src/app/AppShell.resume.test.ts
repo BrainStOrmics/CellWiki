@@ -47,7 +47,7 @@ describe("terminalAgentStatuses", () => {
   });
 });
 
-describe("续跑出路不得是死结（决策 4 修订 / 实测交接问题 A）", () => {
+describe("续跑出路不得是死结", () => {
   function sliceBetween(start: string, end: string): string {
     const startIndex = appShellSource.indexOf(start);
     expect(startIndex, `missing anchor: ${start}`).toBeGreaterThan(-1);

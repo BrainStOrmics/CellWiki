@@ -3,8 +3,8 @@
 # =============================================================================
 # 提供工作区版产品 API：系统管理、设置、项目树浏览、Markdown 页面读取、
 # 智能体线程与运行管理、事件流。旧治理端点（来源、变更集、审批、任务、
-# 搜索/查询、扩展）已随阶段 1 的删除清单移除；阶段 2 会加入工作区
-# 目录浏览 API 与待确认 diff 审批端点。
+# 搜索/查询、扩展）已移除；工作区目录浏览 API 与待确认 diff 审批端点
+# 由本模块提供。
 # =============================================================================
 
 """FastAPI Product API for the workspace-based CellWiki application."""
@@ -70,7 +70,7 @@ from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 from cellwiki.services.runtime_store import RuntimeStore, ThreadDeletionBlockedError
 
 
-# 决策 4（2026-09-07 修订）：checkpoint 缺失是**永久性**拒绝——载体里没有该 run 的
+# checkpoint 缺失是**永久性**拒绝——载体里没有该 run 的
 # 图状态，「继续」不可能成功，正确的出路是 retry（清状态 + 从有界 transcript 重放）。
 # 而同一个端点的门禁冲突 409 是**可重试**拒绝。两者 HTTP 状态相同、消息都是英文，
 # 前端只能靠这个稳定码区分：否则要么把死结的「继续」按钮还回来，要么在门禁冲突时
@@ -754,7 +754,7 @@ def create_app(
             )
             payload = _agent_run_payload(run, store=runtime.store)
             if replayed:
-                # 决策 7：幂等命中不排队第二个 run，仍是 202，只多一个可辨识标记。
+                # 幂等命中不排队第二个 run，仍是 202，只多一个可辨识标记。
                 payload["replayed"] = True
             return payload
         except AgentRuntimeBusyError as error:
@@ -807,7 +807,7 @@ def create_app(
         except InvalidRunTransitionError:
             raise HTTPException(status_code=409, detail="run is not waiting for a question")
         except CheckpointMissingError as error:
-            # 决策 4（2026-09-07 修订）：载体里也没有该 run 的图状态，明确失败而不是在
+            # 载体里也没有该 run 的图状态，明确失败而不是在
             # 空图上静默重放。带稳定码，前端据此不再把用户留在一条走不通的路上。
             raise HTTPException(
                 status_code=409,
@@ -928,7 +928,7 @@ def create_app(
         except InvalidRunTransitionError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
         except CheckpointMissingError as error:
-            # 决策 4（2026-09-07 修订）：载体复核后仍没有该 run 的图状态，明确失败而不是
+            # 载体复核后仍没有该 run 的图状态，明确失败而不是
             # 在空图上静默重放。带稳定码让前端把「继续」换成「重试」——retry 清状态后从
             # 有界 transcript 重放，用的正是后端持久化的 input_message，是这条唯一走得通的
             # 恢复路径；而 UNFINISHED 仍占着串行门禁，所以单纯让用户"重发消息"是死路。
@@ -1028,7 +1028,7 @@ def create_app(
                     else 0.0
                 ),
             },
-            # 决策 12：载体不设 TTL/体积上限，膨胀只由删会话治理，所以把体积报出来，
+            # 载体不设 TTL/体积上限，膨胀只由删会话治理，所以把体积报出来，
             # 后续才能按实测数据重新评估要不要加上限。
             "checkpoint": {
                 "id": run.checkpoint_id,

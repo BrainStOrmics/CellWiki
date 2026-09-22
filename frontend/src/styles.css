@@ -1062,7 +1062,7 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .at-more:hover { color: var(--accent-strong); }
 .at-more:disabled { color: var(--subtle); cursor: default; }
 
-/* edit_file 的真行级 diff（裁决 #11）：两列行号 + 标记列 + 文本。
+/* edit_file 的真行级 diff：两列行号 + 标记列 + 文本。
    着色用低透明度 rgba，浅色与深色主题下都成立，不需要各写一份。 */
 .at-diff { display: flex; flex-direction: column; margin-top: 4px; font: 11.5px/1.6 var(--font-mono); }
 .at-diff-line { display: flex; gap: 6px; padding: 0 10px; white-space: pre-wrap; word-break: break-word; }

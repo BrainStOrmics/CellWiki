@@ -1,8 +1,8 @@
 # =============================================================================
 # Run 作用域持久化 checkpoint —— 逐条决策的验收测试
 # =============================================================================
-# 每条决策配一个可失败的锁。另外两条是工作单阶段 C 的核心回归锁：
-#   * 同线程连续多个 run 互不读取对方的图状态（决策 2/3/15）；
+# 每个机制点配一个可失败的锁。另外两条是核心回归锁：
+#   * 同线程连续多个 run 互不读取对方的图状态；
 #   * 后一个 run 进入模型的 messages 不超过"有界 transcript 的渲染结果 + 系统提示"。
 # 真实图路径用假模型（BaseChatModel），不需要真实 provider，也不需要联网。
 # =============================================================================
@@ -144,7 +144,7 @@ class _InterruptRecordingModel(BaseChatModel):
 class _StubGraph:
     """图形状的最小替身：没有 ``execute``，也没有可读的 checkpointer。
 
-    用来测决策 4 的拒绝路径——它必须在看不到 checkpoint 时明确失败，
+    用来测拒绝路径——它必须在看不到 checkpoint 时明确失败，
     而不是打开一个空图。
     """
 
@@ -158,7 +158,7 @@ class _PermissiveStubGraph:
     """图形状替身，但**允许**开流：用来验证闸门放行之后 ``resume`` 真的认领了 run。
 
     ``_StubGraph`` 是为拒绝路径准备的（它的 ``stream`` 直接断言失败），而修订后的
-    决策 4 还要测放行路径。返回空流，执行器随即收尾，不影响用例的同步断言。
+    该机制还要测放行路径。返回空流，执行器随即收尾，不影响用例的同步断言。
     """
 
     checkpointer = None
@@ -172,7 +172,7 @@ class _PermissiveStubGraph:
 
 
 class _RecordingProtocolAdapter:
-    """协议型 adapter：记录收到的 thread_id，用于验证它仍走会话键（决策 2）。"""
+    """协议型 adapter：记录收到的 thread_id，用于验证它仍走会话键。"""
 
     def __init__(self) -> None:
         self.thread_ids: list[str] = []
@@ -215,7 +215,7 @@ def _wait_for_status(
 def _wait_for_checkpoint(
     manager: AgentRuntimeManager, run_id: str, timeout: float = WAIT_TIMEOUT
 ) -> AgentRun:
-    """等决策 4 的回写落库。
+    """等标识回写落库。
 
     run 是在流循环**里**转成 WAITING_CONFIRMATION 的，而 checkpoint 标识在流关闭
     时才写回；状态一变就读字段会撞上还没落盘的 NULL。
@@ -282,7 +282,7 @@ def _count_occurrences(messages: list[Any], marker: str) -> int:
 
     系统消息不算：Layer B 是运行时自己写的上下文快照，本来就会引用最近一轮
     输入（实测：4 轮后 run 的输入 = Layer A + Layer B + 7 条有界 transcript）。
-    决策 2/3 要禁的是图状态叠在有界 transcript 之上，那只表现为会话消息重复。
+    要禁的是图状态叠在有界 transcript 之上，那只表现为会话消息重复。
     """
     return sum(
         1
@@ -319,16 +319,16 @@ def _park_on_question(store: RuntimeStore, run_id: str, thread_id: str) -> None:
 
 
 # ===========================================================================
-# 决策 1 / 14 / 15 —— 载体装配与回滚闸
+# 载体装配与回滚闸
 # ===========================================================================
 def test_default_carrier_is_sqlite_beside_the_runtime_db(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(settings, "agent_checkpointer", "sqlite")
 
     saver = build_checkpointer(tmp_path)
 
-    # 决策 15：装配回归锁——绝不能无声回落到进程内 saver。
+    # 装配回归锁——绝不能无声回落到进程内 saver。
     assert not isinstance(saver, InMemorySaver)
-    # 决策 1：与 cellwiki.db 同目录、分文件，避免 WAL 与锁争用。
+    # 与 cellwiki.db 同目录、分文件，避免 WAL 与锁争用。
     assert checkpoint_path(tmp_path) == tmp_path / "data" / "runtime" / "checkpoints.sqlite"
     assert checkpoint_path(tmp_path).exists()
     assert checkpoint_path(tmp_path).parent == RuntimeStore(tmp_path).path.parent
@@ -345,7 +345,7 @@ def test_product_graph_is_assembled_with_the_persistent_carrier(tmp_path: Path, 
 
 
 def test_rollback_gate_swaps_in_the_inmemory_checkpointer(tmp_path: Path, monkeypatch):
-    """决策 14：``AGENT_CHECKPOINTER=inmemory`` 是短期回滚闸，必须真的能换掉载体。"""
+    """``AGENT_CHECKPOINTER=inmemory`` 是短期回滚闸，必须真的能换掉载体。"""
     monkeypatch.setattr(settings, "agent_checkpointer", "inmemory")
 
     saver = build_checkpointer(tmp_path)
@@ -357,7 +357,7 @@ def test_rollback_gate_swaps_in_the_inmemory_checkpointer(tmp_path: Path, monkey
 
 
 # ===========================================================================
-# 决策 2 —— run 作用域状态键
+# run 作用域状态键
 # ===========================================================================
 def test_state_key_is_run_scoped_not_session_scoped():
     assert checkpoint_state_key("thread_a", "run_1") == "thread_a::run_1"
@@ -365,7 +365,7 @@ def test_state_key_is_run_scoped_not_session_scoped():
 
 
 def test_protocol_adapter_keeps_the_session_key(tmp_path: Path):
-    """决策 2：协议型 adapter 没有图状态，不套 run 作用域键。"""
+    """协议型 adapter 没有图状态，不套 run 作用域键。"""
     adapter = _RecordingProtocolAdapter()
     manager = AgentRuntimeManager(tmp_path, adapter=adapter)
     try:
@@ -378,10 +378,10 @@ def test_protocol_adapter_keeps_the_session_key(tmp_path: Path):
 
 
 # ===========================================================================
-# 决策 7 —— 幂等提交（内联守卫 ALTER，不走 Alembic）
+# 幂等提交（内联守卫 ALTER，不走 Alembic）
 # ===========================================================================
 def test_direct_construct_db_gets_the_request_id_column(tmp_path: Path):
-    """裁决 #13：直连建库路径（测试与 scripts/serve_e2e.py）不跑 Alembic，
+    """直连建库路径（测试与 scripts/serve_e2e.py）不跑 Alembic，
     只有内联守卫 ALTER 才能让这些库也拿到 request_id 列，否则幂等门形同虚设。"""
     store = RuntimeStore(tmp_path)
 
@@ -440,7 +440,7 @@ def test_create_run_if_idle_checks_the_serial_gate_in_the_same_transaction(tmp_p
 
 
 def test_api_replays_a_double_submit_at_202(tmp_path: Path):
-    """决策 7：重复提交命中既有 run，仍是 202，只多一个 replayed 标记。
+    """重复提交命中既有 run，仍是 202，只多一个 replayed 标记。
 
     原 run 往往还是活动的——预检若先跑就会把幂等命中误判成 409，所以这里
     不做任何等待，直接连着提交两次。
@@ -463,7 +463,7 @@ def test_api_replays_a_double_submit_at_202(tmp_path: Path):
 
 
 # ===========================================================================
-# 决策 8 —— 执行配置快照 + 墙钟跨段累计
+# 执行配置快照 + 墙钟跨段累计
 # ===========================================================================
 def test_prompt_hash_snapshots_layer_a_model_and_budget():
     baseline = prompt_configuration_hash(RunBudget())
@@ -485,7 +485,7 @@ def test_started_run_records_its_prompt_hash(tmp_path: Path):
 
 
 def test_usage_accumulates_across_segments_instead_of_overwriting(tmp_path: Path):
-    """决策 8 的记账前提：每段只报自己的计数，累加才是 run 生命周期总量。"""
+    """记账前提：每段只报自己的计数，累加才是 run 生命周期总量。"""
     store = RuntimeStore(tmp_path)
     store.create_run(AgentRun(run_id="run_usage", thread_id="t_usage", input_message="x"))
 
@@ -505,7 +505,7 @@ def test_usage_accumulates_across_segments_instead_of_overwriting(tmp_path: Path
 
 
 # ===========================================================================
-# 决策 9 —— USAGE_UPDATED 事件
+# USAGE_UPDATED 事件
 # ===========================================================================
 def test_flush_accounting_emits_usage_updated_with_segment_and_cumulative(tmp_path: Path):
     manager = AgentRuntimeManager(tmp_path, adapter=_RecordingProtocolAdapter())
@@ -526,7 +526,7 @@ def test_flush_accounting_emits_usage_updated_with_segment_and_cumulative(tmp_pa
 
 
 # ===========================================================================
-# 决策 5 / 6 —— retry 清状态重放，resume 不清状态续跑
+# retry 清状态重放，resume 不清状态续跑
 # ===========================================================================
 def test_retry_deletes_the_run_state_key_before_replaying(tmp_path: Path, monkeypatch):
     calls: list[tuple[str, str]] = []
@@ -550,7 +550,7 @@ def test_retry_deletes_the_run_state_key_before_replaying(tmp_path: Path, monkey
 
         manager.retry("run_retry")
 
-        # 决策 5：删的是**该 run** 的状态键，不是整个线程。
+        # 删的是**该 run** 的状态键，不是整个线程。
         assert calls == [("t_retry", "run_retry")]
     finally:
         manager.close()
@@ -589,7 +589,7 @@ def test_retry_accepts_an_unfinished_run(tmp_path: Path):
 
 
 def test_delete_run_checkpoints_only_removes_that_run(tmp_path: Path):
-    """决策 5 的机制侧：清状态必须精确到 run，兄弟 run 的状态不能一起没。"""
+    """机制侧：清状态必须精确到 run，兄弟 run 的状态不能一起没。"""
     _seed_workspace(tmp_path)
     model = _RecordingFakeModel()
     manager = AgentRuntimeManager(tmp_path, adapter=build_wiki_agent(tmp_path, model=model))
@@ -607,7 +607,7 @@ def test_delete_run_checkpoints_only_removes_that_run(tmp_path: Path):
 
 
 def test_resume_refuses_a_run_without_a_checkpoint(tmp_path: Path):
-    """决策 4/6：升级前产生的 run 一律 checkpoint_id=NULL，续跑必须显式失败。"""
+    """升级前产生的 run 一律 checkpoint_id=NULL，续跑必须显式失败。"""
     store = RuntimeStore(tmp_path)
     store.create_run(AgentRun(run_id="run_legacy", thread_id="t_legacy", input_message="x"))
     _drive_to_unfinished(store, "run_legacy")
@@ -623,7 +623,7 @@ def test_resume_refuses_a_run_without_a_checkpoint(tmp_path: Path):
 
 
 def test_answer_question_refuses_a_run_without_a_checkpoint(tmp_path: Path):
-    # 先建 manager 再挂起问题：构造时的重启收敛（决策 10）会把"没有 checkpoint 的
+    # 先建 manager 再挂起问题：构造时的重启收敛会把"没有 checkpoint 的
     # WAITING_CONFIRMATION"降级掉，那正是本用例要手工摆出来的前置状态。
     manager = AgentRuntimeManager(tmp_path, adapter=_StubGraph())
     try:
@@ -643,10 +643,10 @@ def test_answer_question_refuses_a_run_without_a_checkpoint(tmp_path: Path):
 
 
 # ===========================================================================
-# 决策 10 —— 重启收敛覆盖 WAITING_CONFIRMATION
+# 重启收敛覆盖 WAITING_CONFIRMATION
 # ===========================================================================
 def test_waiting_confirmation_survives_restart_when_its_checkpoint_is_durable(tmp_path: Path):
-    """决策 10 的正例：图状态还在，重启后 run 仍挂在原问题上，用户直接作答即可续跑。"""
+    """正例：图状态还在，重启后 run 仍挂在原问题上，用户直接作答即可续跑。"""
     _seed_workspace(tmp_path)
     model = _InterruptRecordingModel()
     manager = AgentRuntimeManager(tmp_path, adapter=build_wiki_agent(tmp_path, model=model))
@@ -656,7 +656,7 @@ def test_waiting_confirmation_survives_restart_when_its_checkpoint_is_durable(tm
         context=WikiAgentContext(project_id="cellwiki", thread_id="thread_restart"),
     )
     _wait_for_status(manager, run.run_id, {AgentRunStatus.WAITING_CONFIRMATION})
-    # 决策 4：挂起段结束就该把 checkpoint 标识回写成可查询字段。
+    # 挂起段结束就该把 checkpoint 标识回写成可查询字段。
     assert _wait_for_checkpoint(manager, run.run_id).checkpoint_id
     assert has_run_checkpoint(tmp_path, "thread_restart", run.run_id)
     manager.close()
@@ -678,7 +678,7 @@ def test_waiting_confirmation_survives_restart_when_its_checkpoint_is_durable(tm
 def test_waiting_confirmation_degrades_when_its_checkpoint_is_gone(
     tmp_path: Path, checkpoint_id: str | None
 ):
-    """决策 10 + 决策 4：图状态没了就关掉未回答的问题、落到 UNFINISHED，
+    """图状态没了就关掉未回答的问题、落到 UNFINISHED，
     并让"继续"明确拒绝，而不是在空图上静默 Command(resume=...)。
 
     两种"没了"都要覆盖：载体里查不到状态（文件被清/换机器），以及升级前
@@ -735,7 +735,7 @@ def _park_with_live_carrier(tmp_path: Path, thread_id: str) -> str:
 
 
 def test_resume_admits_a_hard_killed_run_whose_checkpoint_id_is_null(tmp_path: Path):
-    """决策 4（2026-09-07 修订）的 P0 回归：字段 NULL 不等于图状态不存在。
+    """P0 回归：字段 NULL 不等于图状态不存在。
 
     复现桌面端实测问题 A：进程被硬杀时 ``checkpoint_id`` 的回写钩子没机会跑，字段
     停在 NULL 而载体完好。修订前 ``resume`` 直接判死回 409，UI 的「继续」于是成了
@@ -761,7 +761,7 @@ def test_resume_admits_a_hard_killed_run_whose_checkpoint_id_is_null(tmp_path: P
 
 
 def test_recover_stale_runs_backfills_the_checkpoint_id_of_a_hard_killed_run(tmp_path: Path):
-    """决策 4（2026-09-07 修订）：启动收敛把标识回填成可查询字段。
+    """启动收敛把标识回填成可查询字段。
 
     收敛是唯一无竞争的回填时机——manager 在构造执行器**之前**就调
     ``recover_stale_runs``，那时没有执行者会与段末回写争这一行。``resume`` 跑在
@@ -790,7 +790,7 @@ def test_recover_stale_runs_backfills_the_checkpoint_id_of_a_hard_killed_run(tmp
 
 
 def test_waiting_confirmation_survives_restart_even_when_its_field_is_null(tmp_path: Path):
-    """决策 10 + 决策 4（2026-09-07 修订）：不以字段为空短路载体复核。
+    """不以字段为空短路载体复核。
 
     修订前是 ``if run.checkpoint_id and has_run_checkpoint(...)``，字段 NULL 时直接
     走降级分支——关掉一个其实还能作答的问题、把 run 打成 UNFINISHED。这条同时
@@ -850,7 +850,7 @@ def test_latest_run_checkpoint_id_reads_the_root_namespace_only(tmp_path: Path):
 
 
 def test_protocol_adapter_question_is_left_alone_on_restart(tmp_path: Path):
-    """决策 10 的边界：协议型 adapter 没有图状态，挂起态归外部服务，不参与收敛。"""
+    """边界：协议型 adapter 没有图状态，挂起态归外部服务，不参与收敛。"""
     store = RuntimeStore(tmp_path)
     store.create_run(AgentRun(run_id="run_proto", thread_id="t_proto", input_message="x"))
     _park_on_question(store, "run_proto", "t_proto")
@@ -863,7 +863,7 @@ def test_protocol_adapter_question_is_left_alone_on_restart(tmp_path: Path):
 
 
 # ===========================================================================
-# 决策 11 / 12 —— 线程级联与体积指标
+# 线程级联与体积指标
 # ===========================================================================
 def test_delete_thread_cascades_run_scoped_checkpoints(tmp_path: Path):
     _seed_workspace(tmp_path)
@@ -877,7 +877,7 @@ def test_delete_thread_cascades_run_scoped_checkpoints(tmp_path: Path):
 
     manager.store.delete_thread("thread_doomed")
 
-    # 决策 11：该线程**全部** run 作用域键都要删掉，兄弟线程一个不动。
+    # 该线程**全部** run 作用域键都要删掉，兄弟线程一个不动。
     assert not has_run_checkpoint(tmp_path, "thread_doomed", doomed_run.run_id)
     assert has_run_checkpoint(tmp_path, "thread_survivor", survivor_run.run_id)
     # 再删一次必须是无操作：键已经不在了，不能因此抛错。
@@ -886,7 +886,7 @@ def test_delete_thread_cascades_run_scoped_checkpoints(tmp_path: Path):
 
 
 def test_diagnostics_reports_the_checkpoint_carrier_size(tmp_path: Path):
-    """决策 12：载体不设 TTL/上限，膨胀只由删会话治理，所以体积必须可观测。"""
+    """载体不设 TTL/上限，膨胀只由删会话治理，所以体积必须可观测。"""
     manager = AgentRuntimeManager(tmp_path, adapter=_RecordingProtocolAdapter())
     try:
         client = TestClient(create_app(tmp_path, agent_runtime=manager))
@@ -906,7 +906,7 @@ def test_diagnostics_reports_the_checkpoint_carrier_size(tmp_path: Path):
 
 
 def test_resume_and_answer_map_a_missing_checkpoint_to_409(tmp_path: Path):
-    """决策 4 的 API 边界：``CheckpointMissingError`` 继承 RuntimeError，漏掉映射就是 500。
+    """API 边界：``CheckpointMissingError`` 继承 RuntimeError，漏掉映射就是 500。
 
     ``detail`` 是 ``{code, message}`` 而不是裸字符串：同一个端点的门禁冲突也是 409，
     前端只能靠这个稳定码把"永远续不了"与"稍后再试"分开——分不清就是实测交接
@@ -926,7 +926,7 @@ def test_resume_and_answer_map_a_missing_checkpoint_to_409(tmp_path: Path):
         assert detail["code"] == CHECKPOINT_MISSING_CODE
         assert "resend" in detail["message"]
 
-        # 先建 manager 再挂起问题：构造时的重启收敛（决策 10）会把"没有 checkpoint 的
+        # 先建 manager 再挂起问题：构造时的重启收敛会把"没有 checkpoint 的
         # WAITING_CONFIRMATION"降级掉，那正是本用例要手工摆出来的前置状态。
         store.create_run(AgentRun(run_id="run_409q", thread_id="t_409q", input_message="x"))
         _park_on_question(store, "run_409q", "t_409q")
@@ -940,7 +940,7 @@ def test_resume_and_answer_map_a_missing_checkpoint_to_409(tmp_path: Path):
 
 
 # ===========================================================================
-# 决策 13 —— 并发不变量（阶段 E 删掉临时写锁后本测试仍须绿）
+# 并发不变量（临时写锁删除后本测试仍须绿）
 # ===========================================================================
 def test_checkpoint_carrier_tolerates_concurrent_readers(tmp_path: Path):
     """锁的是不变量而不是机制：多线程同时读同一个载体不许炸，也不许读到别的 id。"""
@@ -978,7 +978,7 @@ def test_checkpoint_carrier_tolerates_concurrent_readers(tmp_path: Path):
 
 
 # ===========================================================================
-# 核心回归锁 —— 同线程连续 run 互不读取对方状态（决策 2/3/15）
+# 核心回归锁 —— 同线程连续 run 互不读取对方状态
 # ===========================================================================
 def test_consecutive_runs_in_one_thread_do_not_read_each_other_state(tmp_path: Path):
     """会话级状态键会让第 N 个 run 把前 N-1 轮已被图记住的内容重复注入，
@@ -997,7 +997,7 @@ def test_consecutive_runs_in_one_thread_do_not_read_each_other_state(tmp_path: P
         assert run.status == AgentRunStatus.SUCCEEDED, run.error_message
         runs.append(run)
 
-    # 决策 2：每个 run 只有自己的 run 作用域键。
+    # 每个 run 只有自己的 run 作用域键。
     for run in runs:
         assert has_run_checkpoint(tmp_path, thread_id, run.run_id), run.run_id
 
@@ -1018,7 +1018,7 @@ def test_consecutive_runs_in_one_thread_do_not_read_each_other_state(tmp_path: P
 
 
 def test_resumed_segment_continues_from_checkpoint_without_replaying_transcript(tmp_path: Path):
-    """决策 3 + 决策 4 + 决策 8：续跑段从该 run 自己的 checkpoint 继续，
+    """续跑段从该 run 自己的 checkpoint 继续，
     不重放 transcript；checkpoint 标识落库；墙钟跨段累计。"""
     _seed_workspace(tmp_path)
     model = _InterruptRecordingModel()
@@ -1039,16 +1039,16 @@ def test_resumed_segment_continues_from_checkpoint_without_replaying_transcript(
 
     result = manager.answer_question(run.run_id, "是")
 
-    # 阶段 E：答题立即返回，续跑段在执行器线程上跑完。
+    # 答题立即返回，续跑段在执行器线程上跑完。
     assert result["status"] == AgentRunStatus.RUNNING.value, result
     resumed = _wait_for_status(manager, run.run_id, {AgentRunStatus.SUCCEEDED})
     assert resumed.status == AgentRunStatus.SUCCEEDED
     assert len(model.seen) == 2
-    # 决策 3：续跑段里首段的输入只出现一次——checkpoint 里那一份，没有再注入一遍。
+    # 续跑段里首段的输入只出现一次——checkpoint 里那一份，没有再注入一遍。
     assert _count_occurrences(model.seen[1], marker) == 1
-    # 决策 6：resume 不清状态，该 run 的状态键续跑之后仍在。
+    # resume 不清状态，该 run 的状态键续跑之后仍在。
     assert has_run_checkpoint(tmp_path, thread_id, run.run_id)
-    # 决策 8：墙钟继承已消耗时间，而不是从 0 重新计时。
+    # 墙钟继承已消耗时间，而不是从 0 重新计时。
     finished = manager.store.get_run(run.run_id)
     assert finished.usage.elapsed_seconds >= elapsed_before
     messages = manager.store.list_context_messages(thread_id)

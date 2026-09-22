@@ -16,7 +16,7 @@ async function persistedActiveThreadId(page: Page) {
 // 工作区引导会在根目录生成 audit_report.md / overview.md 等系统文件，它们按名称排在
 // wiki 子树之前，所以用路径定位而不是 .first()，避免随工作区骨架漂移。
 const SEEDED_PAGE_PATH = "wiki/cell_types/regulatory_t_cell.md";
-// serve_e2e.py 的种子 run 输入消息；阶段 A 起会话标题由它确定性派生。
+// serve_e2e.py 的种子 run 输入消息；会话标题由它确定性派生。
 const SEEDED_THREAD_LABEL = "Which markers support this cell type?";
 
 async function clickSeededWikiTreeFile(page: Page) {

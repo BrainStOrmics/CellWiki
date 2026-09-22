@@ -5,7 +5,7 @@
 ``f"{thread_id}::{run_id}"``，所以同一会话里连续两个 run 不会读到对方的图状态；
 协议型 adapter 没有图状态，继续用会话键。
 
-不设 TTL、不设体积上限：膨胀只由用户删除会话治理（决策 12），
+不设 TTL、不设体积上限：膨胀只由用户删除会话治理，
 ``GET /api/agent/runs/{run_id}/diagnostics`` 暴露体积指标供后续按实测数据重新评估。
 """
 
@@ -25,7 +25,7 @@ CHECKPOINT_FILE_NAME = "checkpoints.sqlite"
 
 
 class CheckpointMissingError(RuntimeError):
-    """决策 4：可恢复态的 run 没有 checkpoint 时显式失败。
+    """可恢复态的 run 没有 checkpoint 时显式失败。
 
     升级前产生的 run 一律 ``checkpoint_id = NULL``；在空图上静默
     ``Command(resume=...)`` 行为不可预测，因此拒绝续跑并要求重发消息。
@@ -34,7 +34,7 @@ class CheckpointMissingError(RuntimeError):
 
 
 def checkpoint_state_key(thread_id: str, run_id: str) -> str:
-    """决策 2：图状态按 run 作用域隔离，而不是按会话。"""
+    """图状态按 run 作用域隔离，而不是按会话。"""
     return f"{thread_id}::{run_id}"
 
 
@@ -43,9 +43,9 @@ def checkpoint_path(project_root: Path | str) -> Path:
 
 
 def build_checkpointer(project_root: Path | str) -> Any:
-    """决策 1/14：默认 SqliteSaver；``AGENT_CHECKPOINTER=inmemory`` 是短期回滚闸。
+    """默认 SqliteSaver；``AGENT_CHECKPOINTER=inmemory`` 是短期回滚闸。
 
-    决策 13 的权宜写锁已删：**写方唯一由串行门禁保证**，不再靠进程内锁。
+    权宜写锁已删：**写方唯一由串行门禁保证**，不再靠进程内锁。
     一段运行的图状态只由执行器线程写（提问续跑也在执行器里，见
     ``AgentRuntimeManager._execute_resume``）；retry 的 ``delete_run_checkpoints``
     与删线程的级联删除都要求当时没有活动 run；``answer_question`` 只在
@@ -63,7 +63,7 @@ def build_checkpointer(project_root: Path | str) -> Any:
 
 
 def checkpoint_file_bytes(project_root: Path | str) -> int:
-    """决策 12：体积指标。文件还没建出来时按 0 报，不报错。"""
+    """体积指标。文件还没建出来时按 0 报，不报错。"""
     try:
         return checkpoint_path(project_root).stat().st_size
     except OSError:
@@ -87,13 +87,13 @@ def _with_saver(project_root: Path | str, action: Callable[[SqliteSaver], None])
 
 
 def delete_run_checkpoints(project_root: Path | str, thread_id: str, run_id: str) -> None:
-    """决策 5：retry 先删该 run 的状态键，再从有界 transcript 重跑。"""
+    """retry 先删该 run 的状态键，再从有界 transcript 重跑。"""
     key = checkpoint_state_key(thread_id, run_id)
     _with_saver(project_root, lambda saver: saver.delete_thread(key))
 
 
 def delete_thread_checkpoints(project_root: Path | str, thread_id: str) -> None:
-    """决策 11：删线程时按 run 作用域键级联删掉该线程全部 checkpoint。
+    """删线程时按 run 作用域键级联删掉该线程全部 checkpoint。
 
     状态键形如 ``{thread_id}::{run_id}``，线程 id 是 ``thread_<hex>``，
     不含 LIKE 通配符，因此前缀匹配不会越界到别的线程。
@@ -111,7 +111,7 @@ def delete_thread_checkpoints(project_root: Path | str, thread_id: str) -> None:
 
 
 def has_run_checkpoint(project_root: Path | str, thread_id: str, run_id: str) -> bool:
-    """决策 4/10：续跑前判断该 run 的图状态是否真的还在。"""
+    """续跑前判断该 run 的图状态是否真的还在。"""
     if settings.agent_checkpointer == "inmemory":
         return False
     path = checkpoint_path(project_root)
@@ -129,7 +129,7 @@ def has_run_checkpoint(project_root: Path | str, thread_id: str, run_id: str) ->
 
 
 def latest_checkpoint_id(adapter: Any, thread_id: str, run_id: str) -> str | None:
-    """决策 4：每段流结束时取回最新 checkpoint 标识，写回 ``AgentRun.checkpoint_id``。
+    """每段流结束时取回最新 checkpoint 标识，写回 ``AgentRun.checkpoint_id``。
 
     从编译图自己持有的 checkpointer 读，而不是另开一条连接：这样持久载体与
     ``AGENT_CHECKPOINTER=inmemory`` 回滚闸走同一条路径。
@@ -149,7 +149,7 @@ def latest_checkpoint_id(adapter: Any, thread_id: str, run_id: str) -> str | Non
 def latest_run_checkpoint_id(
     project_root: Path | str, thread_id: str, run_id: str
 ) -> str | None:
-    """决策 4（2026-09-07 修订）：从载体取回该 run 最新的 checkpoint 标识。
+    """从载体取回该 run 最新的 checkpoint 标识。
 
     与 ``latest_checkpoint_id`` 的差别只在入口：那个从编译图自己持有的 checkpointer
     读，需要活的 adapter；这个走 ``has_run_checkpoint`` 同一条短连接路径，因此

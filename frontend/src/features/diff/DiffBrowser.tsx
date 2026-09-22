@@ -25,7 +25,7 @@ export function isAutoAccepted(diff: PendingDiffRecord): boolean {
 }
 
 /**
- * 审批单元序号：`diff_<run_id>_<n>`（方案 B）。无后缀的旧行视为单元 1；
+ * 审批单元序号：`diff_<run_id>_<n>`。无后缀的旧行视为单元 1；
  * 无法识别的 id 返回 null（不展示徽章）。与后端 agent_runtime._unit_index 同步。
  */
 export function approvalUnitIndex(diffId: string, runId: string): number | null {
