@@ -15,6 +15,9 @@ CacheMode = Literal["off", "implicit", "explicit"]
 
 _OFFICIAL_OPENAI_HOSTS = {"api.openai.com"}
 FALLBACK_MODEL_INPUT_TOKENS = 65_536
+# 压缩预留：摘要输出 20,000 + 缓冲 13,000。绝对值、不随窗口缩放——
+# 与业界通用 Agent（Claude Code 20K 输出 + 13K 缓冲）同口径。
+COMPACTION_RESERVE_TOKENS = 33_000
 
 
 @dataclass(frozen=True)
@@ -76,7 +79,6 @@ def resolve_prompt_cache_policy(
     model_input_tokens: int | None = None,
     fallback_input_tokens: int = FALLBACK_MODEL_INPUT_TOKENS,
     context_max_tokens: int = 512_000,
-    auto_compact_ratio: float = 0.8,
 ) -> PromptCachePolicy:
     """Resolve cache mode and the single compaction threshold for one run.
 
@@ -105,8 +107,6 @@ def resolve_prompt_cache_policy(
         raise ValueError("fallback_input_tokens must be positive")
     if context_max_tokens <= 0:
         raise ValueError("context_max_tokens must be positive")
-    if not 0.0 < auto_compact_ratio <= 1.0:
-        raise ValueError("auto_compact_ratio must be between 0 and 1")
 
     input_window_source: Literal["configured", "fallback"] = (
         "configured" if model_input_tokens is not None else "fallback"
@@ -119,7 +119,9 @@ def resolve_prompt_cache_policy(
     if resolved_input_window <= 0:
         raise ValueError("model_input_tokens must be positive")
     effective_limit = min(context_max_tokens, resolved_input_window)
-    compact_threshold = max(1_024, int(effective_limit * auto_compact_ratio))
+    # 绝对值预留：窗口 − 33K（20K 摘要输出 + 13K 缓冲）。下限 1,024 只防御
+    # 极小窗口把阈值压成负数。最小档 200K 下阈值为 167K。
+    compact_threshold = max(1_024, int(effective_limit - COMPACTION_RESERVE_TOKENS))
 
     native_compaction = (
         mode != "off"
@@ -147,6 +149,7 @@ def resolve_prompt_cache_policy(
 
 
 __all__ = [
+    "COMPACTION_RESERVE_TOKENS",
     "CacheMode",
     "FALLBACK_MODEL_INPUT_TOKENS",
     "PromptCachePolicy",

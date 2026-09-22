@@ -1763,7 +1763,7 @@ export function AppShell() {
             </div>
 
             <div className="chat-area">
-              <ChatTimeline messages={messages} onJump={jumpToMessage} />
+              <ChatTimeline messages={messages} onJump={jumpToMessage} scrollRef={chatScrollRef} />
               <div className="chat-scroll" ref={chatScrollRef} onScroll={handleChatScroll}>
               <div className="chat-day">{t("chat.session")}</div>
               {messages.map((message, index) => (

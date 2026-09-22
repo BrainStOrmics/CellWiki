@@ -110,7 +110,6 @@ def prompt_cache_policy_for_spec(spec: ResolvedModelSpec) -> PromptCachePolicy:
         request_overrides=spec.request_overrides,
         model_input_tokens=spec.max_input_tokens,
         context_max_tokens=settings.agent_context_max_tokens,
-        auto_compact_ratio=settings.agent_context_auto_compact_ratio,
     )
 
 
@@ -124,7 +123,6 @@ def prompt_cache_policy_for_settings(
         request_overrides={},
         model_input_tokens=configuration.openai_max_input_tokens,
         context_max_tokens=configuration.agent_context_max_tokens,
-        auto_compact_ratio=configuration.agent_context_auto_compact_ratio,
     )
 
 

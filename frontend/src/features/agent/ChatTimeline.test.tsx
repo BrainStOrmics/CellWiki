@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatTimeline, chatTurns } from "./ChatTimeline";
+import { ChatTimeline, chatTurns, currentTurnIndex, dashWidth } from "./ChatTimeline";
 import { LanguageProvider } from "../../i18n";
 import type { ChatMessage } from "../../types";
 
@@ -41,6 +41,23 @@ describe("chatTurns", () => {
   });
 });
 
+describe("dashWidth / currentTurnIndex", () => {
+  it("刻度长度跟着该轮问答字数走，短轮最 12px、长轮封顶 28px", () => {
+    expect(dashWidth({ index: 0, question: "问", answer: "" })).toBe(12);
+    expect(dashWidth({ index: 0, question: "问".repeat(200), answer: "答".repeat(200) })).toBe(28);
+    const middle = dashWidth({ index: 0, question: "问".repeat(100), answer: "答".repeat(100) });
+    expect(middle).toBeGreaterThan(12);
+    expect(middle).toBeLessThan(28);
+  });
+
+  it("正在看的那一轮 = 视口顶部之前最近的一条锚点", () => {
+    expect(currentTurnIndex([], 24)).toBeNull();
+    expect(currentTurnIndex([{ index: 1, top: -300 }, { index: 4, top: 10 }, { index: 7, top: 500 }], 24)).toBe(4);
+    // 还没滚过任何一轮（都在视口下方）时不高亮
+    expect(currentTurnIndex([{ index: 0, top: 120 }], 24)).toBeNull();
+  });
+});
+
 describe("ChatTimeline", () => {
   it("只给用户消息出刻度，点击带着那条消息的下标跳转", () => {
     const { onJump } = renderTimeline([
@@ -71,6 +88,21 @@ describe("ChatTimeline", () => {
     expect(title.textContent?.length).toBeLessThanOrEqual(43);
     expect(answer.textContent?.endsWith("…")).toBe(true);
     expect(answer.textContent?.length).toBeLessThanOrEqual(65);
+  });
+
+  it("长轮的刻度更长（宽度按内容量内联）", () => {
+    const { container } = renderTimeline([
+      message("user", "短问题"),
+      message("agent", "短回答"),
+      message("user", `长问题${"等等".repeat(120)}`),
+      message("agent", `长回答${"细节".repeat(120)}`),
+    ]);
+
+    const dashes = [...container.querySelectorAll<HTMLElement>(".chat-timeline-dash")];
+    expect(dashes).toHaveLength(2);
+    const [short, long] = dashes.map((node) => Number.parseFloat(node.style.width));
+    expect(short).toBe(12);
+    expect(long).toBe(28);
   });
 
   it("没有任何用户消息时不渲染这条轨", () => {

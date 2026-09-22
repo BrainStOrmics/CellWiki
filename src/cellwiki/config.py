@@ -124,13 +124,14 @@ class Settings(BaseSettings):
     # 这两个值是**活性界**而不是预算语义，因此不套 MAX_RUN_SECONDS_FLOOR：测试需要
     # 亚秒值才能确定性地验证看门狗。
     agent_stream_idle_seconds: int = Field(default=300, ge=1, le=3600)
-    # 会话上下文上限（token）；分层 prompt 按 512K/80%/32K 压缩
+    # 会话上下文上限（token）；压缩阈值 = 有效窗口 − 33K 预留（绝对值），
+    # 摘要输出 20K + 缓冲 13K；保留窗口 32K。旧比例旋钮
+    # agent_context_auto_compact_ratio 已于 2026-09-22 退役。
     agent_context_max_tokens: int = Field(
         default=AGENT_CONTEXT_MAX_TOKEN_PRESETS[2],
         ge=8_000,
         le=2_000_000,
     )
-    agent_context_auto_compact_ratio: float = Field(default=0.8, ge=0.5, le=0.95)
     agent_context_retained_tokens: int = Field(default=32_768, ge=4_000, le=200_000)
     # ---- 附件感知与读取预算（附件驱动导入）----
     agent_attachment_preview_chars: int = Field(default=2000, ge=0, le=20_000)
