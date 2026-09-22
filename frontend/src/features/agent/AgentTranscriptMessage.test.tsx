@@ -39,7 +39,11 @@ const labels = {
   reasoningLiveLabel: "思考中…",
 };
 
-function renderMessage(message: ChatMessage, runActions?: AgentRunAction[]) {
+function renderMessage(
+  message: ChatMessage,
+  runActions?: AgentRunAction[],
+  anchorIndex?: number,
+) {
   return render(
     <LanguageProvider>
       <AgentTranscriptMessage
@@ -47,6 +51,7 @@ function renderMessage(message: ChatMessage, runActions?: AgentRunAction[]) {
         message={message}
         runActions={runActions}
         onQuestionAnswered={vi.fn()}
+        anchorIndex={anchorIndex}
       />
     </LanguageProvider>,
   );
@@ -300,6 +305,11 @@ describe("AgentTranscriptMessage", () => {
     renderMessage({ role: "agent", text: "answer", runId: "run_1", runStatus: "waiting_confirmation" });
     expect(await screen.findByTestId("question-card")).toBeInTheDocument();
     expect(screen.getByText("确认，开始 ingest")).toBeInTheDocument();
+  });
+
+  it("carries the transcript index as the timeline jump anchor", () => {
+    const { container } = renderMessage({ role: "user", text: "第一问" }, undefined, 3);
+    expect(container.querySelector('[data-chat-index="3"]')).not.toBeNull();
   });
 
   it("does not mount a question card for a settled run", async () => {

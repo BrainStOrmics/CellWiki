@@ -42,6 +42,8 @@ type AgentTranscriptMessageProps = {
   reasoningLiveLabel: string;
   runActions?: AgentRunAction[];
   onQuestionAnswered?: (runId: string) => void;
+  /** 该消息在转录里的下标：左侧时间线靠它定位跳转锚点。 */
+  anchorIndex?: number;
 };
 
 /**
@@ -55,12 +57,16 @@ export function AgentTranscriptMessage({
   reasoningLiveLabel,
   runActions,
   onQuestionAnswered,
+  anchorIndex,
 }: AgentTranscriptMessageProps) {
   const isAgent = message.role === "agent";
   const nodes = timelineNodes(message);
 
   return (
-    <div className={`message ${message.role} ${message.streaming ? "is-streaming" : ""}`}>
+    <div
+      className={`message ${message.role} ${message.streaming ? "is-streaming" : ""}`}
+      data-chat-index={anchorIndex}
+    >
       {!isAgent && message.attachments && message.attachments.length > 0 && (
         <div className="message-attachments">
           {message.attachments.map((attachment) => (

@@ -32,6 +32,7 @@ import { ThreadList } from "../features/agent/ThreadList";
 import { AgentRunFootnote, AgentTranscriptMessage, type AgentRunAction } from "../features/agent/AgentTranscriptMessage";
 import { reduceAgentRunMessages, type AgentRunReducerLabels } from "../features/agent/agent-run-reducer";
 import { createAgentEventScheduler, flushesChatImmediately } from "../features/agent/agent-event-scheduler";
+import { ChatTimeline } from "../features/agent/ChatTimeline";
 import { QuestionCard } from "../features/agent/QuestionCard";
 // 终态判定只有一份：unfinished 也是流终态（后端已关 SSE 停在预算上）。漏掉它会让
 // 订阅侧无限重连、agentBusy 永不清零，"继续"按钮因此从不出现——看起来就是卡死。
@@ -542,6 +543,18 @@ export function AppShell() {
     if (!node) return;
     chatPinnedToBottomRef.current =
       node.scrollHeight - node.scrollTop - node.clientHeight <= CHAT_BOTTOM_THRESHOLD_PX;
+  }
+
+  /** 时间线跳转：把那一轮滚到视口顶部。跳走时解除贴底跟随，否则下一个 delta 又把人拽回底部。 */
+  function jumpToMessage(index: number) {
+    const target = chatScrollRef.current?.querySelector<HTMLElement>(
+      `[data-chat-index="${index}"]`,
+    );
+    if (!target) return;
+    chatPinnedToBottomRef.current = false;
+    if (typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ block: "start", behavior: "smooth" });
+    }
   }
 
   const selectedPage = pages.find((page) => page.page_id === selectedId);
@@ -1749,12 +1762,15 @@ export function AppShell() {
               {selectedText && <blockquote>{selectedText}</blockquote>}
             </div>
 
-            <div className="chat-scroll" ref={chatScrollRef} onScroll={handleChatScroll}>
+            <div className="chat-area">
+              <ChatTimeline messages={messages} onJump={jumpToMessage} />
+              <div className="chat-scroll" ref={chatScrollRef} onScroll={handleChatScroll}>
               <div className="chat-day">{t("chat.session")}</div>
               {messages.map((message, index) => (
                 <AgentTranscriptMessage
                   key={`${message.role}-${message.runId ?? "message"}-${index}`}
                   message={message}
+                  anchorIndex={index}
                   reasoningTitle={t("chat.reasoning")}
                   reasoningLiveLabel={t("chat.reasoningLive")}
                   runActions={runActionsFor(message.runId ?? null)}
@@ -1775,6 +1791,7 @@ export function AppShell() {
               {waitingOnQuestion
                 && !messages.some((message) => message.role === "agent" && message.runId === activeAgentRunId)
                 && <QuestionCard runId={activeAgentRunId} onAnswered={(runId) => { void resumeAfterAnswer(runId); }} />}
+              </div>
             </div>
 
             <div className="composer-wrap">
