@@ -29,6 +29,9 @@ export type AgentRunReducerLabels = {
     started: string;
     completed: string;
     skipped: string;
+    overflowStarted?: string;
+    overflowCompleted?: string;
+    fallback?: string;
   };
   timelineContext?: { label: string; detail?: string } | null;
 };
@@ -74,20 +77,33 @@ function localizedError(event: AgentEvent, labels: AgentRunReducerLabels): strin
 }
 
 function compactionLabel(event: AgentEvent, labels: AgentRunReducerLabels): string {
+  const data = (event.data ?? {}) as Record<string, unknown>;
+  const overflow = data.reason === "overflow";
   if (event.type === "context_compaction_started") {
+    if (overflow) {
+      return labels.compaction?.overflowStarted ?? labels.compaction?.started ?? event.message;
+    }
     return labels.compaction?.started ?? event.message;
   }
-  const changed = (event.data as Record<string, unknown>).changed !== false;
-  return changed
-    ? labels.compaction?.completed ?? event.message
-    : labels.compaction?.skipped ?? event.message;
+  const changed = data.changed !== false;
+  if (!changed) {
+    return labels.compaction?.skipped ?? event.message;
+  }
+  if (data.summary_source === "deterministic") {
+    return labels.compaction?.fallback ?? labels.compaction?.completed ?? event.message;
+  }
+  if (overflow) {
+    return labels.compaction?.overflowCompleted ?? labels.compaction?.completed ?? event.message;
+  }
+  return labels.compaction?.completed ?? event.message;
 }
 
 function compactionTone(event: AgentEvent): AgentTimelineStatusTone {
   if (event.type === "context_compaction_started") return "info";
-  return (event.data as Record<string, unknown>).changed === false
-    ? "warning"
-    : "success";
+  const data = (event.data ?? {}) as Record<string, unknown>;
+  if (data.changed === false) return "warning";
+  if (data.summary_source === "deterministic") return "warning";
+  return "success";
 }
 
 /** Pure projection from durable run events to the user-visible transcript. */

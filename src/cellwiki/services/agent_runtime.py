@@ -31,7 +31,7 @@ from pathlib import Path
 from threading import Event, RLock, Thread
 from typing import Any, Callable, Generator, Iterable, cast
 
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage
 
 from cellwiki.agent.app import (
     build_coordinator_model,
@@ -65,11 +65,14 @@ from cellwiki.services.checkpoints import (
     latest_checkpoint_id,
 )
 from cellwiki.services.model_transcript import (
+    TOOL_RESULT_BATCH_CHAR_THRESHOLD,
+    TOOL_RESULT_CHAR_THRESHOLD,
     estimate_transcript_tokens,
+    preview_tool_result,
+    prune_transcript_for_model,
     render_model_messages,
-    split_for_compaction,
-    summarize_transcript,
 )
+from cellwiki.agent.compaction import SUMMARY_MESSAGE_ID
 from cellwiki.services.model_catalog import ModelCatalogService
 from cellwiki.services.unit_naming import UnitNamingService
 from cellwiki.services.run_scope import (
@@ -883,8 +886,8 @@ def _signals_from_stream_item(
     responses: list[RuntimeSignal] = []
     if not isinstance(item, tuple) or len(item) < 2:
         return responses
-    # LangGraph 子图流：(() , "messages"|"updates", payload) 三元组
-    if len(item) == 3 and isinstance(item[1], str) and item[1] in {"messages", "updates"}:
+    # LangGraph 子图流：(() , "messages"|"updates"|"custom", payload) 三元组
+    if len(item) == 3 and isinstance(item[1], str) and item[1] in {"messages", "updates", "custom"}:
         name, payload = item[1], item[2]
     else:
         name, payload = item[0], item[1]
@@ -893,11 +896,68 @@ def _signals_from_stream_item(
             payload = payload[0] if payload else None
         return _signals_from_interrupt(payload)
 
+    if name == "custom":
+        # 压缩中间件的水位通知：runtime 是唯一写者，这里把它转成压缩事件信号，
+        # 并在 completed 时携带 summary + retained tail，由消费循环落库。
+        if not isinstance(payload, dict) or payload.get("kind") != "context_compaction":
+            return responses
+        phase = str(payload.get("phase") or "")
+        if phase == "started":
+            responses.append(
+                RuntimeSignal(
+                    type=AgentEventType.CONTEXT_COMPACTION_STARTED,
+                    message="Compacting context.",
+                    data={
+                        "mode": "local",
+                        "reason": str(payload.get("reason") or "threshold"),
+                        "estimated_tokens": int(payload.get("estimated_tokens") or 0),
+                        "threshold": int(payload.get("threshold") or 0),
+                    },
+                )
+            )
+            return responses
+        if phase == "completed":
+            responses.append(
+                RuntimeSignal(
+                    type=AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+                    message="Context compacted.",
+                    data={
+                        "mode": "local",
+                        "changed": bool(payload.get("changed", True)),
+                        "reason": str(payload.get("reason") or "threshold"),
+                        "summary_source": str(payload.get("summary_source") or "llm"),
+                        "summary": str(payload.get("summary") or ""),
+                        "summary_usage": payload.get("summary_usage") or {},
+                        "tail": payload.get("tail") or [],
+                        "retained_messages": int(payload.get("retained_messages") or 0),
+                        "estimated_tokens": int(payload.get("estimated_tokens") or 0),
+                        "threshold": int(payload.get("threshold") or 0),
+                    },
+                )
+            )
+            return responses
+        return responses
+
     if name == "messages":
         if not isinstance(payload, tuple) or not payload:
             return responses
         message = payload[0]
         metadata = payload[1] if len(payload) > 1 and isinstance(payload[1], dict) else {}
+        # 受控摘要调用（压缩中间件的嵌套 LLM 调用）流经同一管道：按标签剔除，
+        # 否则摘要正文会进旁白、最终回答与模型历史（2026-09 事故的同类形态）。
+        tags = metadata.get("tags") or []
+        flow_role = metadata.get("cellwiki_role")
+        if flow_role == "summarizer" or "cellwiki:summarizer" in tags:
+            return responses
+        # 压缩中间件重注入的摘要/tail 会再次以 messages 条目出现：
+        # RemoveMessage 与摘要占位消息都不进事件流，避免重复旁白。
+        if isinstance(message, RemoveMessage):
+            return responses
+        message_id = str(getattr(message, "id", "") or "")
+        if message_id == SUMMARY_MESSAGE_ID or message_id.startswith(
+            f"{SUMMARY_MESSAGE_ID}:"
+        ):
+            return responses
         if isinstance(message, (AIMessage, AIMessageChunk)):
             model_call_id = str(getattr(message, "id", "") or "") or None
             input_tokens, output_tokens, cached_tokens, cache_creation_tokens = (
@@ -1277,6 +1337,8 @@ class AgentRuntimeManager:
         # provider-native compaction 的开始只能按阈值预判；完成信号到达前
         # 保持 pending，以便流结束没有 opaque item 时给 UI 一个明确的收尾。
         self._provider_compaction_pending: dict[str, dict[str, Any]] = {}
+        # 写入时预览化的轮次记账：run_id -> 本轮工具结果 (message_id, chars) 列表
+        self._round_tool_results: dict[str, list[tuple[str, int]]] = {}
         self._running_run_id: str | None = None
         self._watchdog = _StreamWatchdog(self._on_stream_watchdog_expire)
         self._watchdog.start()
@@ -1915,6 +1977,7 @@ class AgentRuntimeManager:
             self.project_root,
             model=model,
             cache_policy=cache_policy,
+            compaction_baseline_provider=self.store.last_prompt_tokens,
         )
 
     def _cache_policy_for_run(self, run: AgentRun) -> Any:
@@ -2021,83 +2084,22 @@ class AgentRuntimeManager:
         )
         policy = self._cache_policy_for_run(run)
         records = self.store.list_model_messages(run.thread_id)
-        threshold = policy.compact_threshold
-        estimated_tokens = estimate_transcript_tokens(records) if records else 0
-        # 压缩基线优先用 provider 回报的真实 prompt 大小：chars/4 估算对中文与
-        # 工具结果会低估数倍（实测同一 thread 估算 19.6 万、真实 51.2 万），阈值
-        # 因此永远够不到、压缩形同虚设。老 thread 无记录时退回估算。
-        measured_tokens = self.store.last_prompt_tokens(run.thread_id)
-        baseline_tokens = measured_tokens or estimated_tokens
-        calibration = calibration_ratio(measured_tokens, estimated_tokens)
-        if (
-            not policy.provider_native_compaction
-            and records
-            and baseline_tokens > threshold
-        ):
-            self._append_context_compaction_started(
-                run.run_id,
-                mode="local",
-                estimated_tokens=estimated_tokens,
-                threshold=threshold,
-                measured_tokens=measured_tokens,
-                calibration=calibration,
-            )
-            prefix, tail = split_for_compaction(
-                records,
-                retained_tokens=settings.agent_context_retained_tokens,
-                calibration=calibration,
-            )
-            summary = summarize_transcript(prefix)
-            if summary:
-                self.store.append_model_message(
-                    thread_id=run.thread_id,
-                    run_id=run.run_id,
-                    kind="compaction",
-                    role="user",
-                    content={"text": summary, "provider": "local"},
-                    message_key=f"local_compaction:{uuid.uuid4().hex}",
-                    new_epoch=True,
+        # 压缩判定已改由图内中间件在每次模型调用前完成（2026-09-22 对齐工作）：
+        # runtime 只保留 bootstrap、消息追加与渲染。provider-native 仍在这里发
+        # 一次预测性 started——服务端不提供“开始压缩”回调，事件语义见 ADR-0014。
+        if policy.provider_native_compaction and records:
+            estimated_tokens = estimate_transcript_tokens(records)
+            measured_tokens = self.store.last_prompt_tokens(run.thread_id)
+            calibration = calibration_ratio(measured_tokens, estimated_tokens)
+            if (measured_tokens or estimated_tokens) > policy.compact_threshold:
+                self._append_context_compaction_started(
+                    run.run_id,
+                    mode="provider_native",
+                    estimated_tokens=estimated_tokens,
+                    threshold=policy.compact_threshold,
+                    measured_tokens=measured_tokens,
+                    calibration=calibration,
                 )
-                for record in tail:
-                    self.store.append_model_message(
-                        thread_id=run.thread_id,
-                        run_id=run.run_id,
-                        kind=str(record.get("kind") or "user"),
-                        role=str(record.get("role") or "user"),
-                        content=record.get("content") or {"text": record.get("content_text", "")},
-                        message_key=(
-                            f"retained:{record.get('message_key')}:{uuid.uuid4().hex}"
-                        ),
-                        tool_call_id=record.get("tool_call_id"),
-                        name=record.get("name"),
-                    )
-            self._append_context_compaction_completed(
-                run.run_id,
-                mode="local",
-                changed=bool(summary),
-                estimated_tokens=estimated_tokens,
-                threshold=threshold,
-                retained_messages=len(tail) if summary else 0,
-                new_epoch=self.store.current_transcript_epoch(run.thread_id),
-                measured_tokens=measured_tokens,
-                calibration=calibration,
-            )
-        elif (
-            policy.provider_native_compaction
-            and records
-            and baseline_tokens > threshold
-        ):
-            # provider 不提供“开始压缩”回调；这是基于有效窗口的预判，真正
-            # completed(changed=true) 只在收到 opaque compaction item 时发出。
-            self._append_context_compaction_started(
-                run.run_id,
-                mode="provider_native",
-                estimated_tokens=estimated_tokens,
-                threshold=threshold,
-                measured_tokens=measured_tokens,
-                calibration=calibration,
-            )
-
         self.store.append_message(
             thread_id=run.thread_id,
             run_id=run.run_id,
@@ -2129,6 +2131,9 @@ class AgentRuntimeManager:
             content={"text": turn_context},
             message_key="run_context",
         )
+        # 冷点剪枝：缓存已经过期（run 间隔超过阈值）时才改写历史，此刻剪枝不
+        # 损失任何可命中的前缀；剪枝只在 run span 留痕，不进 UI 事件。
+        self._cold_prune_transcript(run)
         schema_version, schema_hash = self._workspace_schema_metadata()
         cache_prefix_hash = self._cache_prefix_hash(schema_hash)
         epoch = self.store.current_transcript_epoch(run.thread_id)
@@ -2451,7 +2456,12 @@ class AgentRuntimeManager:
         thread_id: str,
         payload: dict[str, Any],
     ) -> None:
-        """Persist one normalized model-visible message without touching UI rows."""
+        """Persist one normalized model-visible message without touching UI rows.
+
+        工具结果在**第一次进入上下文之前**完成预览化：单条超过阈值的输出把
+        全文落到工作区运行时目录，转录只留预览 + 取回路径。因此模型看到的
+        这条消息从诞生起就是小形态，缓存前缀不会在后续被改小。
+        """
 
         kind = str(payload.get("kind") or "").strip()
         if not kind:
@@ -2463,7 +2473,12 @@ class AgentRuntimeManager:
             payload.get("role")
             or ("assistant" if kind in {"assistant", "compaction"} else "tool")
         )
-        self.store.append_model_message(
+        if kind == "assistant" and isinstance(content, dict) and content.get("tool_calls"):
+            # 新一轮工具调用开始：重置本轮批量记账
+            self._round_tool_results.pop(run_id, None)
+        if kind == "tool_result" and isinstance(content, dict):
+            content = self._preview_tool_result_content(run_id, content)
+        message = self.store.append_model_message(
             thread_id=thread_id,
             run_id=run_id,
             kind=kind,
@@ -2476,6 +2491,206 @@ class AgentRuntimeManager:
             name=payload.get("name"),
             new_epoch=kind == "compaction",
         )
+        if kind == "tool_result" and isinstance(content, dict):
+            self._track_round_tool_result(run_id, thread_id, message, content)
+
+    def _preview_tool_result_content(
+        self, run_id: str, content: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Return the model-visible content for one tool result (preview if huge).
+
+        The full text is written to `data/runtime/tool-results/<run_id>/` first;
+        the transcript keeps a bounded preview plus the retrieval path. Failures
+        to write the sidecar file fall back to the original text: never lose the
+        only copy of a tool result.
+        """
+
+        text = content.get("text")
+        if not isinstance(text, str) or len(text) <= TOOL_RESULT_CHAR_THRESHOLD:
+            return content
+        tool_call_id = str(content.get("tool_call_id") or "unknown")
+        tool_name = str(content.get("name") or "tool")
+        try:
+            from cellwiki.services.model_transcript import PRUNE_RELATIVE_DIR
+
+            target_dir = self.project_root / PRUNE_RELATIVE_DIR / run_id
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / f"{tool_call_id}.txt").write_text(
+                text, encoding="utf-8"
+            )
+        except OSError:
+            logger.warning("could not persist oversized tool output sidecar", exc_info=True)
+            return content
+        return {
+            **content,
+            "text": preview_tool_result(
+                text,
+                run_id=run_id,
+                tool_name=tool_name,
+                tool_call_id=tool_call_id,
+            ),
+        }
+
+    def _track_round_tool_result(
+        self,
+        run_id: str,
+        thread_id: str,
+        message: dict[str, Any],
+        content: dict[str, Any],
+    ) -> None:
+        """Apply the per-round aggregate rule (batch > 200K chars).
+
+        All results of one round land before the next model call renders the
+        transcript, so previewing the round's earlier entries here still
+        happens before they are ever sent.
+        """
+
+        text = content.get("text")
+        size = len(text) if isinstance(text, str) else 0
+        entries = self._round_tool_results.setdefault(run_id, [])
+        entries.append((str(message.get("message_id") or ""), size))
+        if sum(size for _mid, size in entries) <= TOOL_RESULT_BATCH_CHAR_THRESHOLD:
+            return
+        # 批量超限：把本轮尚未预览化的条目按同一条规则重写为预览形态。
+        for message_id, chars in entries:
+            if chars <= TOOL_RESULT_CHAR_THRESHOLD:
+                continue
+            record = next(
+                (
+                    item
+                    for item in self.store.list_model_messages(thread_id)
+                    if str(item.get("message_id") or "") == message_id
+                ),
+                None,
+            )
+            if record is None:
+                continue
+            record_content = record.get("content")
+            if not isinstance(record_content, dict):
+                continue
+            record_text = record_content.get("text")
+            if not isinstance(record_text, str) or record_text.startswith(
+                "[tool result preview:"
+            ):
+                continue
+            rewritten = self._preview_tool_result_content(run_id, record_content)
+            if rewritten is not record_content:
+                self.store.replace_thread_model_messages(
+                    thread_id,
+                    [{"message_id": message_id, "content": rewritten}],
+                )
+
+    def _persist_local_compaction(
+        self,
+        run_id: str,
+        thread_id: str,
+        signal: RuntimeSignal,
+    ) -> None:
+        """Persist a middleware-driven compaction as the new transcript boundary.
+
+        Single-writer contract: the compaction middleware decides and summarizes,
+        the runtime writes. The summary becomes the boundary record; the retained
+        tail is re-appended verbatim so the next run replays exactly what this
+        run's model saw. Provider-native compactions arrive as opaque items on
+        separate signals and never reach this path.
+        """
+
+        data = signal.data or {}
+        if str(data.get("mode") or "") != "local":
+            return
+        if data.get("changed") is False:
+            return
+        summary = str(data.get("summary") or "").strip()
+        if not summary:
+            return
+        self.store.append_model_message(
+            thread_id=thread_id,
+            run_id=run_id,
+            kind="compaction",
+            role="user",
+            content={
+                "text": summary,
+                "provider": "local",
+                "summary_source": str(data.get("summary_source") or "llm"),
+                "reason": str(data.get("reason") or "threshold"),
+            },
+            message_key=f"local_compaction:{uuid.uuid4().hex}",
+            new_epoch=True,
+        )
+        tail = data.get("tail")
+        if isinstance(tail, list):
+            for record in tail:
+                if not isinstance(record, dict):
+                    continue
+                self.store.append_model_message(
+                    thread_id=thread_id,
+                    run_id=run_id,
+                    kind=str(record.get("kind") or "user"),
+                    role=str(record.get("role") or "user"),
+                    content=record.get("content")
+                    or {"text": str(record.get("text") or "")},
+                    message_key=f"retained:{uuid.uuid4().hex}",
+                    tool_call_id=record.get("tool_call_id"),
+                    name=record.get("name"),
+                )
+
+    # 冷点剪枝的缓存过期门槛（分钟）：缓存 TTL 远短于它，所以动手时前缀早已
+    # 失效，剪枝本身不再产生额外损失。
+    _COLD_PRUNE_GAP_MINUTES = 60
+
+    def _cold_prune_transcript(self, run: AgentRun) -> None:
+        """Prune old tool results when the prompt cache has certainly expired.
+
+        Only record content changes; message count and tool pairing are
+        untouched. Pruning is monotone (placeholders stay placeholders), and a
+        run span records how many entries were freed for diagnostics.
+        """
+
+        records = self.store.list_model_messages(run.thread_id)
+        if not records:
+            return
+        last_assistant = next(
+            (
+                record
+                for record in reversed(records)
+                if str(record.get("kind") or "") == "assistant"
+            ),
+            None,
+        )
+        if last_assistant is not None:
+            try:
+                created = datetime.fromisoformat(str(last_assistant["created_at"]))
+                now = datetime.now(UTC)
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=UTC)
+                gap_minutes = (now - created).total_seconds() / 60.0
+                if gap_minutes < self._COLD_PRUNE_GAP_MINUTES:
+                    return
+            except (KeyError, TypeError, ValueError):
+                return
+        pruned_records, pruned = prune_transcript_for_model(records)
+        if pruned <= 0:
+            return
+        self.store.replace_thread_model_messages(run.thread_id, pruned_records)
+        freed = estimate_transcript_tokens(records) - estimate_transcript_tokens(
+            pruned_records
+        )
+        logger.info("cold-spot pruned %d tool results (~%d tokens)", pruned, max(0, freed))
+        # 剪枝是对用户不可见的静默优化：只在 run span 留痕，不进 UI 事件
+        # （避免制造"数据被删"的错觉；需要诊断时从 span 查）。
+        with suppress(Exception):
+            self.store.upsert_span(
+                AgentSpan(
+                    span_id=f"prune:{run.run_id}:{uuid.uuid4().hex[:8]}",
+                    run_id=run.run_id,
+                    kind="compaction",
+                    name="cold_prune",
+                    status="completed",
+                    started_at=datetime.now(UTC),
+                    finished_at=datetime.now(UTC),
+                    data={"pruned_messages": pruned, "freed_tokens": max(0, freed)},
+                )
+            )
 
     def _consume_stream(
         self,
@@ -2698,6 +2913,54 @@ class AgentRuntimeManager:
                                     model_call_id=signal.model_call_id,
                                 ),
                             )
+                        continue
+                    if (
+                        signal.type
+                        in {
+                            AgentEventType.CONTEXT_COMPACTION_STARTED,
+                            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+                        }
+                        and str((signal.data or {}).get("mode") or "") == "local"
+                    ):
+                        # 本地压缩：runtime 是唯一写者。completed 先落边界与保留尾部，
+                        # 事件只带元数据（不暴露摘要正文与 tail），供时间线呈现。
+                        if signal.type == AgentEventType.CONTEXT_COMPACTION_COMPLETED:
+                            self._persist_local_compaction(run_id, thread_id, signal)
+                        epoch = self.store.current_transcript_epoch(thread_id)
+                        data = {
+                            "mode": "local",
+                            "changed": bool((signal.data or {}).get("changed", True)),
+                            "reason": str((signal.data or {}).get("reason") or "threshold"),
+                            "summary_source": str(
+                                (signal.data or {}).get("summary_source") or "llm"
+                            ),
+                            "compaction_id": (signal.data or {}).get("compaction_id"),
+                            "estimated_tokens": int(
+                                (signal.data or {}).get("estimated_tokens") or 0
+                            ),
+                            "threshold": int((signal.data or {}).get("threshold") or 0),
+                            "retained_messages": int(
+                                (signal.data or {}).get("retained_messages") or 0
+                            ),
+                            "generation": epoch,
+                        }
+                        summary_usage = (signal.data or {}).get("summary_usage")
+                        if isinstance(summary_usage, dict) and summary_usage:
+                            data["summary_usage"] = {
+                                k: int(v)
+                                for k, v in summary_usage.items()
+                                if isinstance(v, int)
+                            }
+                        key = _signal_key(segment, signal)
+                        if key in seen:
+                            continue
+                        self.store.append_event(
+                            run_id,
+                            signal.type,
+                            message=signal.message,
+                            data=data,
+                        )
+                        seen.add(key)
                         continue
                     key = _signal_key(segment, signal)
                     if key in seen:
@@ -2960,7 +3223,7 @@ class AgentRuntimeManager:
                 }
             },
             context=context,
-            stream_mode=["messages", "updates"],
+            stream_mode=["messages", "updates", "custom"],
             subgraphs=True,
         )
 
@@ -4000,7 +4263,7 @@ class AgentRuntimeManager:
             # build_wiki_agent 声明了 context_schema=WikiAgentContext：图这一侧
             # 也得拿到同一份 run 上下文，否则只有协议型 adapter 看得见它。
             context=context,
-            stream_mode=["messages", "updates"],
+            stream_mode=["messages", "updates", "custom"],
             subgraphs=True,
         )
 
@@ -4030,7 +4293,7 @@ class AgentRuntimeManager:
                 }
             },
             context=context,
-            stream_mode=["messages", "updates"],
+            stream_mode=["messages", "updates", "custom"],
             subgraphs=True,
         )
 

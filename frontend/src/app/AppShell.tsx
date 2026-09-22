@@ -974,6 +974,9 @@ export function AppShell() {
       compaction: {
         started: t("chat.compactionStarted"),
         completed: t("chat.compactionCompleted"),
+        overflowStarted: t("chat.compactionOverflowStarted"),
+        overflowCompleted: t("chat.compactionOverflowCompleted"),
+        fallback: t("chat.compactionFallback"),
         skipped: t("chat.compactionSkipped"),
       },
       timelineContext: context ?? buildTimelineContext(),

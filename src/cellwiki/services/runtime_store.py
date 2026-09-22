@@ -593,6 +593,38 @@ class RuntimeStore:
             "cache_epoch": epoch,
         }
 
+    def replace_thread_model_messages(
+        self,
+        thread_id: str,
+        records: list[dict[str, Any]],
+    ) -> int:
+        """Rewrite content of existing model messages in place (pruning support).
+
+        Only ``content_json`` / ``content_text`` are updated, matched by
+        ``message_id``; sequence, kind, role and tool pairing are never touched,
+        so the append-only ordering contract and cache-first prefix semantics
+        stay intact. Placeholders are monotone: callers must never restore
+        pruned text. Returns the number of rows updated.
+        """
+
+        updated = 0
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            for record in records:
+                message_id = str(record.get("message_id") or "")
+                content = record.get("content")
+                if not message_id or content is None:
+                    continue
+                content_json = json.dumps(content, ensure_ascii=False, default=str)
+                content_text = self._model_content_text(content)
+                cursor = connection.execute(
+                    "UPDATE agent_model_messages SET content_json = ?, "
+                    "content_text = ? WHERE message_id = ?",
+                    (content_json, content_text, message_id),
+                )
+                updated += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        return updated
+
     def list_model_messages(self, thread_id: str) -> list[dict[str, Any]]:
         """Return the active append-only transcript for one thread."""
 

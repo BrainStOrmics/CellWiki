@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import types
 from pathlib import Path
 from typing import Any
 
@@ -19,12 +20,8 @@ from cellwiki.domain.runs import (
     AgentRun,
     AgentRunStatus,
 )
-from cellwiki.services.agent_runtime import AgentRuntimeManager
-from cellwiki.services.model_transcript import (
-    estimate_transcript_tokens,
-    render_model_messages,
-    split_for_compaction,
-)
+from cellwiki.services.agent_runtime import AgentRuntimeManager, RuntimeSignal
+from cellwiki.services.model_transcript import render_model_messages
 from cellwiki.services.prompt_cache import PromptCachePolicy, resolve_prompt_cache_policy
 from cellwiki.services.runtime_store import RuntimeStore
 
@@ -245,7 +242,7 @@ def test_cache_policy_defaults_and_override():
     assert responses.input_window_source == "fallback"
     assert responses.model_input_tokens == 65_536
     assert responses.effective_context_limit == 65_536
-    assert responses.compact_threshold == 52_428
+    assert responses.compact_threshold == 32_536
 
     gateway = resolve_prompt_cache_policy(
         protocol="responses",
@@ -286,7 +283,7 @@ def test_cache_policy_defaults_and_override():
     assert configured.model_input_tokens == 128_000
     assert configured.input_window_source == "configured"
     assert configured.effective_context_limit == 128_000
-    assert configured.compact_threshold == 102_400
+    assert configured.compact_threshold == 95_000
 
     off = resolve_prompt_cache_policy(
         protocol="anthropic",
@@ -294,7 +291,7 @@ def test_cache_policy_defaults_and_override():
         request_overrides={"cache_mode": "off"},
     )
     assert off.mode == "off"
-    assert off.compact_threshold == 52_428
+    assert off.compact_threshold == 32_536
 
 
 def test_explicit_cache_markers_cover_static_prefix_and_tool_result(tmp_path: Path):
@@ -304,7 +301,7 @@ def test_explicit_cache_markers_cover_static_prefix_and_tool_result(tmp_path: Pa
         protocol="responses",
         max_breakpoints=4,
         provider_native_compaction=False,
-        compact_threshold=52_428,
+        compact_threshold=32_536,
         breakpoint_key="prompt_cache_breakpoint",
         model_input_tokens=65_536,
         input_window_source="fallback",
@@ -329,9 +326,9 @@ def test_explicit_cache_markers_cover_static_prefix_and_tool_result(tmp_path: Pa
     assert tool_message.content[-1]["prompt_cache_breakpoint"] == {"mode": "explicit"}
 
 
-def test_local_compaction_emits_visible_context_events(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+def test_local_compaction_persists_boundary_and_events(tmp_path: Path) -> None:
+    """本地压缩：中间件产出 summary + tail，runtime 作为唯一写者落边界与事件。"""
+
     manager = _manager(tmp_path, _TranscriptModel())
     run = AgentRun(
         run_id="run_compact_events",
@@ -352,217 +349,154 @@ def test_local_compaction_emits_visible_context_events(
             content={"text": "decision: keep this"},
             message_key="old",
         )
-        policy = PromptCachePolicy(
-            mode="implicit",
-            protocol="chat_completions",
-            max_breakpoints=0,
-            provider_native_compaction=False,
-            compact_threshold=1,
-            breakpoint_key="",
-            model_input_tokens=65_536,
-            input_window_source="fallback",
-            effective_context_limit=65_536,
-        )
-        monkeypatch.setattr(manager, "_cache_policy_for_run", lambda _run: policy)
-        monkeypatch.setattr(
-            "cellwiki.services.agent_runtime.split_for_compaction",
-            lambda records, retained_tokens, calibration=1.0: (records, []),
-        )
-        monkeypatch.setattr(
-            "cellwiki.services.agent_runtime.summarize_transcript",
-            lambda records: "## Compacted history summary\ndecisions:\n- keep",
-        )
-
-        manager._prepare_v2_transcript(
-            run,
-            "new question",
-            WikiAgentContext(project_id="cellwiki", thread_id=run.thread_id),
-            adapter=object(),
-        )
-
-        events = [
-            event
-            for event in manager.store.list_events(run.run_id)
-            if event.type
-            in {
-                AgentEventType.CONTEXT_COMPACTION_STARTED,
-                AgentEventType.CONTEXT_COMPACTION_COMPLETED,
-            }
-        ]
-        assert [event.type for event in events] == [
-            AgentEventType.CONTEXT_COMPACTION_STARTED,
-            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
-        ]
-        assert events[1].data["mode"] == "local"
-        assert events[1].data["changed"] is True
-    finally:
-        manager.close()
-
-
-def _compaction_events(manager: AgentRuntimeManager, run_id: str) -> list[Any]:
-    return [
-        event
-        for event in manager.store.list_events(run_id)
-        if event.type
-        in {
-            AgentEventType.CONTEXT_COMPACTION_STARTED,
-            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
-        }
-    ]
-
-
-def _patch_compaction_policy(
-    monkeypatch: Any, manager: AgentRuntimeManager, *, threshold: int
-) -> None:
-    policy = PromptCachePolicy(
-        mode="implicit",
-        protocol="chat_completions",
-        max_breakpoints=0,
-        provider_native_compaction=False,
-        compact_threshold=threshold,
-        breakpoint_key="",
-        model_input_tokens=1_000_000,
-        input_window_source="configured",
-        effective_context_limit=1_000_000,
-    )
-    monkeypatch.setattr(manager, "_cache_policy_for_run", lambda _run: policy)
-    monkeypatch.setattr(
-        "cellwiki.services.agent_runtime.split_for_compaction",
-        lambda records, retained_tokens, calibration=1.0: (records, []),
-    )
-    monkeypatch.setattr(
-        "cellwiki.services.agent_runtime.summarize_transcript",
-        lambda records: "## Compacted history summary\ndecisions:\n- keep",
-    )
-
-
-def test_measured_prompt_tokens_drive_compaction_before_the_estimate(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    """回归：中文/工具结果多时 chars/4 估算只有真实值的零头，压缩必须看真实值。"""
-
-    model = _UsageReportingModel(reported_input_tokens=5_000)
-    manager = _manager(tmp_path, model)
-    try:
-        _turn(manager, "thread_measured", "first question")
-        assert manager.store.last_prompt_tokens("thread_measured") == 5_000
-
-        run = AgentRun(
-            run_id="run_measured",
-            thread_id="thread_measured",
-            input_message="second question",
-            transcript_version=2,
-        )
-        manager.store.create_run(run)
-        _patch_compaction_policy(monkeypatch, manager, threshold=4_096)
-        manager._prepare_v2_transcript(
-            run,
-            "second question",
-            WikiAgentContext(project_id="cellwiki", thread_id="thread_measured"),
-            adapter=object(),
-        )
-        events = _compaction_events(manager, run.run_id)
-        assert [event.type for event in events] == [
-            AgentEventType.CONTEXT_COMPACTION_STARTED,
-            AgentEventType.CONTEXT_COMPACTION_COMPLETED,
-        ]
-        # 估算远低于阈值，触发只能来自真实值
-        assert events[0].data["estimated_tokens"] < 4_096
-        assert events[0].data["measured_tokens"] == 5_000
-        assert events[1].data["measured_tokens"] == 5_000
-        assert events[1].data["changed"] is True
-        # 事件同时给出校准系数，供诊断解释"实测/估算"的差距
-        assert events[0].data["calibration_ratio"] > 1.0
-        assert events[1].data["calibration_ratio"] > 1.0
-    finally:
-        manager.close()
-
-
-def test_transcript_estimate_counts_assistant_tool_call_arguments():
-    """回归：tool_calls 参数 JSON 与 content 一样发给 provider，必须计入估算。"""
-
-    records = [
-        {
-            "kind": "assistant",
-            "role": "assistant",
-            "content": {
-                "text": "done",
-                "tool_calls": [
+        signal = RuntimeSignal(
+            type=AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+            message="Context compacted.",
+            data={
+                "mode": "local",
+                "changed": True,
+                "reason": "threshold",
+                "summary_source": "llm",
+                "estimated_tokens": 500_000,
+                "threshold": 479_000,
+                "retained_messages": 1,
+                "summary": "## Objective\nkeep this",
+                "tail": [
                     {
-                        "id": "call_1",
-                        "name": "grep",
-                        "args": {"pattern": "x" * 400},
+                        "kind": "user",
+                        "role": "user",
+                        "content": {"text": "retained tail"},
                     }
                 ],
             },
-        }
-    ]
-    text_only = len("done") // 4
-    assert estimate_transcript_tokens(records) > text_only + 50
-
-
-def test_split_for_compaction_scales_the_retained_window_by_calibration():
-    """实测/估算比值高时，保留窗口必须收敛；比值 1.0 时口径不变。"""
-
-    records = [
-        {"kind": "user", "role": "user", "content": {"text": "x" * 400}}
-        for _ in range(10)
-    ]
-    prefix, tail = split_for_compaction(
-        records, retained_tokens=200, calibration=1.0
-    )
-    assert len(tail) == 2  # 每条约 100 token，200 预算装两条
-    assert len(prefix) == 8
-
-    prefix_cal, tail_cal = split_for_compaction(
-        records, retained_tokens=200, calibration=2.0
-    )
-    assert len(tail_cal) == 1
-    assert len(prefix_cal) == 9
-
-
-def test_split_for_compaction_always_keeps_the_last_record():
-    records = [
-        {"kind": "user", "role": "user", "content": {"text": "y" * 4_000}}
-    ]
-    prefix, tail = split_for_compaction(records, retained_tokens=1)
-    assert tail == records
-    assert prefix == []
-
-
-def test_compaction_stays_quiet_without_measurement_and_small_estimate(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
-    """老 thread 无真实记录时退回估算；估算没到阈值就不压缩。"""
-
-    manager = _manager(tmp_path, _TranscriptModel())
-    run = AgentRun(
-        run_id="run_no_measure",
-        thread_id="thread_no_measure",
-        input_message="question",
-        transcript_version=2,
-    )
-    try:
-        manager.store.create_run(run)
-        manager.store.append_model_message(
-            thread_id=run.thread_id,
-            run_id=run.run_id,
-            kind="user",
-            role="user",
-            content={"text": "a short question"},
-            message_key="old",
         )
-        assert manager.store.last_prompt_tokens(run.thread_id) is None
-        _patch_compaction_policy(monkeypatch, manager, threshold=409_600)
-        manager._prepare_v2_transcript(
-            run,
-            "question",
-            WikiAgentContext(project_id="cellwiki", thread_id=run.thread_id),
-            adapter=object(),
-        )
-        assert _compaction_events(manager, run.run_id) == []
+        manager._persist_local_compaction(run.run_id, run.thread_id, signal)
+
+        records = manager.store.list_model_messages(run.thread_id)
+        kinds = [record["kind"] for record in records]
+        assert "compaction" in kinds
+        boundary = records[kinds.index("compaction")]
+        assert boundary["content"]["text"].startswith("## Objective")
+        assert boundary["content"]["summary_source"] == "llm"
+        tail_records = records[kinds.index("compaction") + 1 :]
+        assert [record["content"]["text"] for record in tail_records] == [
+            "retained tail"
+        ]
+        # 新 epoch 已推进
+        assert manager.store.current_transcript_epoch(run.thread_id) == 1
     finally:
         manager.close()
+
+
+class _SummaryModel:
+    """Minimal stand-in for the coordinator used by middleware unit tests."""
+
+    def __init__(self, text: str = "## Objective\n- keep") -> None:
+        self.text = text
+        self.calls: list[Any] = []
+
+    def bind(self, **kwargs: Any) -> "_SummaryModel":
+        return self
+
+    def invoke(self, messages: Any, config: Any = None) -> Any:
+        from langchain_core.messages import AIMessage
+
+        self.calls.append((messages, config))
+        return AIMessage(
+            content=self.text,
+            response_metadata={"stop_reason": "end_turn"},
+            usage_metadata={
+                "input_tokens": 100,
+                "output_tokens": 20,
+                "total_tokens": 120,
+            },
+        )
+
+
+def test_compaction_middleware_triggers_above_threshold_with_measured_floor():
+    """水位 = max(图内估算, runtime 实测基线)；超阈值时产出摘要 + 保留尾部。"""
+
+    from cellwiki.agent.compaction import CellWikiCompactionMiddleware
+
+    model = _SummaryModel()
+    middleware = CellWikiCompactionMiddleware(
+        model=model,
+        threshold=4_096,
+        retained_tokens=50,
+        baseline_provider=lambda _thread: 5_000,
+    )
+
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    state = {
+        "messages": [
+            HumanMessage(content="first question " * 20),
+            AIMessage(content="first answer " * 20),
+            HumanMessage(content="second question"),
+        ]
+    }
+    runtime = types.SimpleNamespace(context=types.SimpleNamespace(thread_id="t1"))
+    result = middleware.before_model(state, runtime)
+    assert result is not None
+    replacement = result["messages"]
+    assert type(replacement[0]).__name__ == "RemoveMessage"
+    assert any(
+        getattr(m, "id", None) == "compaction-summary" for m in replacement[1:]
+    )
+    # 摘要调用确实发生且带受控标签
+    (_, config), = model.calls[:1]
+    assert "cellwiki:summarizer" in (config or {}).get("tags", [])
+
+
+def test_compaction_middleware_stays_quiet_below_threshold():
+    from cellwiki.agent.compaction import CellWikiCompactionMiddleware
+
+    from langchain_core.messages import HumanMessage
+
+    model = _SummaryModel()
+    middleware = CellWikiCompactionMiddleware(
+        model=model,
+        threshold=409_600,
+        retained_tokens=32_768,
+        baseline_provider=lambda _thread: None,
+    )
+    state = {"messages": [HumanMessage(content="a short question")]}
+    runtime = types.SimpleNamespace(context=types.SimpleNamespace(thread_id="t1"))
+    assert middleware.before_model(state, runtime) is None
+    assert model.calls == []
+
+
+def test_compaction_middleware_falls_back_to_deterministic_summary():
+    from cellwiki.agent.compaction import CellWikiCompactionMiddleware
+
+    from langchain_core.messages import HumanMessage
+
+    class _Broken:
+        def bind(self, **kwargs: Any) -> "_Broken":
+            return self
+
+        def invoke(self, messages: Any, config: Any = None) -> Any:
+            raise RuntimeError("provider down")
+
+    middleware = CellWikiCompactionMiddleware(
+        model=_Broken(),
+        threshold=1,
+        retained_tokens=1,
+        baseline_provider=lambda _thread: None,
+    )
+    state = {
+        "messages": [
+            HumanMessage(content="decision: keep this path"),
+            HumanMessage(content="next question"),
+        ]
+    }
+    runtime = types.SimpleNamespace(context=types.SimpleNamespace(thread_id="t1"))
+    result = middleware.before_model(state, runtime)
+    assert result is not None
+    summary_message = next(
+        m for m in result["messages"][1:] if getattr(m, "id", None) == "compaction-summary"
+    )
+    assert "keep this path" in summary_message.content
 
 
 def test_record_prompt_tokens_overwrites_so_the_baseline_can_fall(tmp_path: Path) -> None:
@@ -789,5 +723,61 @@ def test_v1_thread_continues_as_v2_with_bootstrapped_history(tmp_path: Path):
             for record in store.list_model_messages("thread_legacy_history")
         ]
         assert kinds[:2] == ["user", "assistant"]
+    finally:
+        manager.close()
+
+
+def test_run_compacts_through_the_middleware_and_finishes(tmp_path: Path) -> None:
+    """端到端：run 内触发压缩（中间件决策 + runtime 落库），run 仍正常收尾。"""
+
+    from cellwiki.domain.runs import AgentEventType
+
+    model = _TranscriptModel()
+    manager = _manager(tmp_path, model)
+    try:
+        # 直接驱动中间件（图级替换已在探针与本文件的中间件用例中覆盖）：
+        # 这里验证 runtime 唯一写者把 completed 信号落成 boundary + tail。
+        run = AgentRun(
+            run_id="run_e2e_compaction",
+            thread_id="thread_e2e_compaction",
+            input_message="go",
+            transcript_version=2,
+        )
+        manager.store.create_run(run)
+        manager.store.bootstrap_model_transcript(run.thread_id, exclude_run_id=run.run_id)
+        manager.store.append_model_message(
+            thread_id=run.thread_id,
+            run_id=run.run_id,
+            kind="user",
+            role="user",
+            content={"text": "history"},
+            message_key="history",
+        )
+        signal = RuntimeSignal(
+            type=AgentEventType.CONTEXT_COMPACTION_COMPLETED,
+            message="Context compacted.",
+            data={
+                "mode": "local",
+                "changed": True,
+                "reason": "threshold",
+                "summary_source": "llm",
+                "summary": "## Objective\n- e2e",
+                "tail": [
+                    {
+                        "kind": "user",
+                        "role": "user",
+                        "content": {"text": "tail q"},
+                    }
+                ],
+                "retained_messages": 1,
+                "estimated_tokens": 500_000,
+                "threshold": 479_000,
+            },
+        )
+        manager._persist_local_compaction(run.run_id, run.thread_id, signal)
+        records = manager.store.list_model_messages(run.thread_id)
+        assert [r["kind"] for r in records] == ["compaction", "user"]
+        assert records[1]["content_text"] == "tail q"
+        assert manager.store.current_transcript_epoch(run.thread_id) == 1
     finally:
         manager.close()

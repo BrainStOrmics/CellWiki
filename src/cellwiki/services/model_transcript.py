@@ -9,6 +9,20 @@ from cellwiki.services.prompt_layers import summarize_excerpts
 
 CHARS_PER_TOKEN = 4
 
+# 剪枝层（2026-09-22 对齐工作）：
+# - 创建时预览化：超大工具结果在**第一次进入上下文前**就截成预览 + 取回路径，
+#   因此从诞生起就是小形态，缓存零损失（对齐 Claude Code toolResultStorage）。
+# - 冷点剪枝：缓存已过期（run 空闲超过阈值）或压缩触发时，把保留窗口之外的旧
+#   工具结果替换为恒定占位符；剪枝集合只增不减、占位符恒定，保证前缀稳定。
+PREVIEW_CHAR_LIMIT = 2_000
+TOOL_RESULT_CHAR_THRESHOLD = 50_000
+TOOL_RESULT_BATCH_CHAR_THRESHOLD = 200_000
+PRUNE_KEEP_RECENT = 5
+PRUNE_MIN_CHARS = 100
+PRUNED_TOOL_PLACEHOLDER = "[Old tool result content cleared]"
+PRUNE_PROTECTED_TOOLS = frozenset({"ask_user_question"})
+PRUNE_RELATIVE_DIR = "data/runtime/tool-results"
+
 
 def _text(record: dict[str, Any]) -> str:
     content = record.get("content")
@@ -17,6 +31,85 @@ def _text(record: dict[str, Any]) -> str:
         if isinstance(text, str):
             return text
     return str(record.get("content_text") or "")
+
+
+def preview_tool_result(
+    text: str,
+    *,
+    run_id: str,
+    tool_name: str,
+    tool_call_id: str,
+    limit: int = PREVIEW_CHAR_LIMIT,
+) -> str:
+    """Return the model-visible form of one tool result.
+
+    Results at or below ``TOOL_RESULT_CHAR_THRESHOLD`` pass through unchanged;
+    oversized ones become a bounded head preview plus the retrieval path. The
+    caller writes the full text to disk before swapping it in, so the model can
+    still re-read or re-run the tool. Because this happens before the record is
+    ever sent, the cached prefix never shrinks later.
+    """
+
+    if len(text) <= TOOL_RESULT_CHAR_THRESHOLD:
+        return text
+    head = text[:limit]
+    relative = f"{PRUNE_RELATIVE_DIR}/{run_id}/{tool_call_id or tool_name}.txt"
+    return (
+        f"[tool result preview: {tool_name}]\n"
+        f"{head}\n\n"
+        f"[Output truncated: {len(text)} chars total. Full output: {relative} — "
+        f"re-run the tool or read the file when the full content is needed.]"
+    )
+
+
+def prune_transcript_for_model(
+    records: list[dict[str, Any]],
+    *,
+    keep_recent: int = PRUNE_KEEP_RECENT,
+) -> tuple[list[dict[str, Any]], int]:
+    """Replace old tool results with the constant placeholder (cold-spot pruning).
+
+    Only ``tool_result`` content is replaced; message count, order and the
+    tool_call/tool_result pairing are untouched. The pruning set only grows:
+    an already-placeholder record stays a placeholder, so the visible prefix
+    changes at most once per record. Returns the new records plus how many
+    entries were pruned.
+    """
+
+    results: list[int] = [
+        index
+        for index, record in enumerate(records)
+        if str(record.get("kind") or "") == "tool_result"
+    ]
+    protected = [
+        index
+        for index in results
+        if str(records[index].get("name") or "") in PRUNE_PROTECTED_TOOLS
+    ]
+    candidates = [index for index in results if index not in protected]
+    to_prune = candidates[:-keep_recent] if keep_recent > 0 else candidates
+    if not to_prune:
+        return records, 0
+    pruned = 0
+    updated: list[dict[str, Any]] = list(records)
+    for index in to_prune:
+        record = updated[index]
+        text = _text(record)
+        if text == PRUNED_TOOL_PLACEHOLDER:
+            continue
+        if len(text) <= PRUNE_MIN_CHARS:
+            continue
+        copied = dict(record)
+        copied["content"] = {**_content_dict(record), "text": PRUNED_TOOL_PLACEHOLDER}
+        copied["content_text"] = PRUNED_TOOL_PLACEHOLDER
+        updated[index] = copied
+        pruned += 1
+    return updated, pruned
+
+
+def _content_dict(record: dict[str, Any]) -> dict[str, Any]:
+    content = record.get("content")
+    return dict(content) if isinstance(content, dict) else {}
 
 
 def _tool_calls_text(record: dict[str, Any]) -> str:
@@ -195,7 +288,14 @@ def _synthetic_tool_result(call_id: str, tool_name: str) -> dict[str, Any]:
 
 
 __all__ = [
+    "PREVIEW_CHAR_LIMIT",
+    "PRUNED_TOOL_PLACEHOLDER",
+    "PRUNE_KEEP_RECENT",
+    "PRUNE_PROTECTED_TOOLS",
+    "TOOL_RESULT_CHAR_THRESHOLD",
     "estimate_transcript_tokens",
+    "preview_tool_result",
+    "prune_transcript_for_model",
     "render_model_messages",
     "split_for_compaction",
     "summarize_transcript",

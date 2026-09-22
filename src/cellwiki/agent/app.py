@@ -58,6 +58,7 @@ from cellwiki.services.prompt_layers import (
     LAYER_A_TEXT,
     schema_prompt_block,
 )
+from cellwiki.agent.compaction import CellWikiCompactionMiddleware
 from cellwiki.services.prompt_runtime import current_prompt_run_context
 from cellwiki.services.subagents import SubagentRegistry, build_delegation_tools
 from cellwiki.agent.source_tools import build_source_tools
@@ -435,11 +436,18 @@ def build_wiki_agent(
     checkpointer=_DEFAULT_CHECKPOINTER,
     registry: SubagentRegistry | None = None,
     cache_policy: PromptCachePolicy | None = None,
+    compaction_baseline_provider: Any = None,
 ):
-    """组装协调器 Deep Agent：模型 + 工具面 + 提示词 + checkpointer + 工具边界中间件。
+    """组装协调器 Deep Agent：模型 + 工具面 + 提示词 + checkpointer + 中间件。
 
     ``checkpointer`` 传默认哨兵时按工作区装配（默认 SqliteSaver，可退回内存）；
     显式传入的实例原样使用。
+
+    中间件顺序 = [工具边界, 压缩]：工具边界必须最外层，压缩只在白名单工具面
+    上工作；压缩中间件持有水位判定与 LLM 摘要，runtime 持有唯一写入权。
+    ``compaction_baseline_provider`` 是 ``callable(thread_id) -> int``，供压缩
+    中间件在 run 首次模型调用时拿到跨 run 的 provider 实测 prompt 基线（图状态
+    的 usage 锚点只覆盖本 run 内产生的 AI 消息）。
     """
     root = Path(project_root or settings.workspace_root).resolve()
     _register_cellwiki_harness_profile(settings.openai_model)
@@ -461,7 +469,18 @@ def build_wiki_agent(
             _CellWikiToolBoundaryMiddleware(
                 append_reminder=True,
                 cache_policy=cache_policy,
-            )
+            ),
+            CellWikiCompactionMiddleware(
+                model=coordinator_model,
+                threshold=(
+                    cache_policy.compact_threshold if cache_policy else 1_024
+                ),
+                retained_tokens=settings.agent_context_retained_tokens,
+                provider_native=bool(
+                    cache_policy and cache_policy.provider_native_compaction
+                ),
+                baseline_provider=compaction_baseline_provider,
+            ),
         ],
         backend=StateBackend(),
         checkpointer=active_checkpointer,

@@ -72,6 +72,12 @@ def _middleware_names(handler: Any) -> set[str]:
 
 
 def test_compiled_graph_has_cellwiki_as_the_only_compaction_owner(tmp_path: Path) -> None:
+    """唯一压缩决策者 = CellWiki 压缩中间件；框架摘要中间件仍被排除。
+
+    2026-09-22 对齐工作后语义收窄：压缩**决策**归 CellWiki 中间件，runtime
+    仍是模型转录的唯一**写入者**。两个 CellWiki 中间件都必须在线。
+    """
+
     graph = build_wiki_agent(
         tmp_path,
         model=_BuildOnlyModel(),
@@ -90,3 +96,4 @@ def test_compiled_graph_has_cellwiki_as_the_only_compaction_owner(tmp_path: Path
     assert SummarizationMiddleware.__name__ not in middleware_names
     assert not any("Summarization" in name for name in middleware_names)
     assert "_CellWikiToolBoundaryMiddleware" in middleware_names
+    assert "CellWikiCompactionMiddleware" in middleware_names

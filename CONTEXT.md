@@ -79,11 +79,25 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
   只加载该 boundary 及其后的消息，之前的记录保留用于审计但不进入当前 prompt。
 - **上下文压缩事件**：`context_compaction_started` 与
   `context_compaction_completed` 持久化事件，供 Agent 时间线显示“正在压缩”
-  和“已压缩/未触发压缩”；事件只携带模式、估算 token、阈值、provider 实测
-  token 与校准系数等元数据，不暴露摘要正文或 provider opaque item。
+  和“已压缩/未触发压缩”；2026-09-22 起事件另带 `reason`（threshold/overflow）、
+  `summary_source`（llm/deterministic/none）、`generation` 与 `summary_usage`，
+  仍不暴露摘要正文、保留尾部正文或 provider opaque item。
 - **压缩计量（compaction accounting）**：触发判定优先 provider 实测 prompt
   token，固定估算兜底且计入 assistant `tool_calls` 参数 JSON；保留窗口按
   实测/估算比值（钳制 0.5–4.0）折算后累计，使标称窗口接近真实 token 预算。
+  压缩阈值 = 有效窗口 − 33,000 预留（摘要输出 20K + 缓冲 13K，绝对值，
+  不随窗口缩放）。
+- **压缩决策者与写入者**：`CellWikiCompactionMiddleware` 是压缩**决策**的
+  唯一所有者（每次模型调用前检查水位，run 内可多次压缩）；runtime 是模型
+  转录的唯一**写入者**（把摘要与保留尾部落成新的 compaction boundary）。
+  受控摘要调用带 `cellwiki:summarizer` 标签，不进旁白、最终回答、事件与转录。
+- **工具输出剪枝（tool-output pruning）**：①写入时预览化——单条工具结果超过
+  50,000 字符（或一轮合计超过 200,000 字符）时，全文落
+  `data/runtime/tool-results/<run_id>/`，转录只留约 2,000 字符预览与取回路径，
+  从第一次发送起生效；②冷点剪枝——run 开始距上一条 assistant 消息超过 60
+  分钟时，把最近 5 条之外的旧结果替换为恒定占位符
+  `[Old tool result content cleared]`（`ask_user_question` 保护、≤100 字符
+  跳过、集合只增不减）。剪枝只改内容、不动消息数量与配对顺序，且不进 UI 事件。
 - **promote**：用户经 ask_user_question 同意后，把附件提升为 raw/<source_id>/ 正式源
   （原件 + 提取文本 + meta.json），登记 data/runtime/sources/<source_id>.json，并提交 git。
 - **schema.md**：用户拥有的工作区页面提取契约；Agent 只读。lint 解析一个
