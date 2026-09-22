@@ -37,8 +37,8 @@ class CredentialStore:
         safe_entry = re.sub(r"[^a-z0-9._-]", "-", entry.strip().lower())[:64] or "openai"
         self.account = f"project-{digest}-{safe_entry}"
 
-    # 获取凭据，如果 keyring 不可用则返回 None
     def get(self) -> str | None:
+        """获取凭据；keyring 不可用时返回 None。"""
         try:
             import keyring
 
@@ -46,8 +46,8 @@ class CredentialStore:
         except Exception:
             return None
 
-    # 设置凭据，成功返回 True，失败返回 False
     def set(self, value: str) -> bool:
+        """设置凭据；成功返回 True，失败返回 False。"""
         try:
             import keyring
 

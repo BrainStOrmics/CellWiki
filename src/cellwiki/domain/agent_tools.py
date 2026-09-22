@@ -56,20 +56,12 @@ CANONICAL_TOOL_ORDER: tuple[str, ...] = tuple(spec.name for spec in AGENT_TOOL_S
 AGENT_TOOL_NAMES_TEXT: str = ", ".join(CANONICAL_TOOL_ORDER)
 
 
-# 关于“框架通用工具”的边界（2026-09-21 复核后的结论，别再引入第二层）：
-# 本注册表**不**再声明 excluded_tools。曾有一段 HarnessProfile.excluded_tools =
-# {write_todos, ls, task, execute}，本机七格隔离实验（每格独立进程，避免框架
-# register_harness_profile 的 additive merge 把“清空”并回去）证明它零独有职责：
-# - profile 匹配时栈序为 boundary(14->13) -> _ToolExclusionMiddleware(13->13)，
-#   框架排除排在边界之后，轮到它已无活可干；task/execute/write_todos 根本不会被注入
-#   （task 由 general_purpose_subagent 关闭、TodoList 由 excluded_middleware 移除）。
-# - ls 被 allowlist 重复覆盖；只有 allowlist 与 excluded_tools 同时撤掉，ls 才会漏进
-#   请求（14 个工具）。
-# - profile 不匹配任何注册项时，框架排除中间件根本不安装，上游原始面是 16 个工具
-#   （含 ls/task/write_todos），此时**只有** _CellWikiToolBoundaryMiddleware 的
-#   allowlist 在兜底，剥离到 13 个。
-# 因此 allowlist 是唯一承重防线，调用拦截（wrap_tool_call/awrap_tool_call）是零成本的
-# 最后一道；两者都在 agent/app.py。
+# 关于“框架通用工具”的边界（2026-09-21 复核结论，别再引入第二层）：
+# 本注册表**不**声明 excluded_tools：本机七格隔离实验证明它零独有职责——框架排除
+# 排在 allowlist 边界之后，task/execute/write_todos 根本不会注入，ls 被 allowlist
+# 重复覆盖；profile 不匹配任何注册项时框架排除中间件根本不安装，也只有 allowlist
+# 在兜底。因此 allowlist（_CellWikiToolBoundaryMiddleware）是唯一承重防线，调用拦截
+# （wrap_tool_call/awrap_tool_call）是零成本的最后一道；两者都在 agent/app.py。
 
 __all__ = [
     "AGENT_TOOL_NAMES_TEXT",

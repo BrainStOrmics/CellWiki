@@ -36,10 +36,8 @@ def upgrade_runtime_database(db_path: Path) -> None:
     config = Config()
     config.set_main_option("script_location", str(script_location))
     config.set_main_option("sqlalchemy.url", f"sqlite:///{db_path.as_posix()}")
-    # 检查数据库是否已存在
     if db_path.exists():
         with sqlite3.connect(db_path) as connection:
-            # 查询已存在的所有表
             tables = {
                 row[0]
                 for row in connection.execute(

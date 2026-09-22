@@ -82,9 +82,7 @@ def merge_to_wiki(extractions: list[ExtractionResult]) -> dict[str, WikiCellType
     """
     wiki: dict[str, WikiCellType] = {}
 
-    # 遍历所有提取结果
     for extraction in extractions:
-        # 遍历每篇论文中提取的每个细胞类型
         for ct in extraction.cell_types:
             # 跳过没有标准名称的条目，它们不能作为合并键
             if not ct.standard_name:
@@ -330,7 +328,6 @@ class MultiOmicsMerger:
     """
 
     def __init__(self):
-        # 初始化各类实体的存储字典
         self.cell_types: dict = {}
         self.marker_genes: dict = {}
         self.tissues: dict = {}

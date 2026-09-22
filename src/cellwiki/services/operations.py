@@ -65,9 +65,9 @@ class OperationControl:
         self._additional_cancellation = additional_cancellation  # 附加取消信号
         self._progress = progress                   # 进度回调
 
-    # 检查是否已取消（两个信号中任意一个被设置）
     @property
     def cancelled(self) -> bool:
+        """任一取消信号被设置即视为已取消。"""
         return self._cancellation.is_set() or bool(
             self._additional_cancellation is not None
             and self._additional_cancellation.is_set()
@@ -143,14 +143,13 @@ class CancellationRegistry:
         self._events: dict[str, threading.Event] = {}     # run_id -> 取消事件
         self._lock = threading.Lock()
 
-    # 获取或创建项目范围的取消注册表实例
     @classmethod
     def for_project(cls, project_root: Path) -> "CancellationRegistry":
+        """获取或创建项目范围的取消注册表实例。"""
         root = Path(project_root).resolve()
         with cls._instances_lock:
             return cls._instances.setdefault(root, cls())
 
-    # 注册一个运行的取消令牌
     def register(self, run_id: str, *, reset: bool = True) -> threading.Event:
         with self._lock:
             event = self._events.get(run_id)
@@ -159,8 +158,8 @@ class CancellationRegistry:
                 self._events[run_id] = event
             return event
 
-    # 获取已有取消令牌（不重置）
     def token(self, run_id: str) -> threading.Event:
+        """获取已有取消令牌（不重置）。"""
         return self.register(run_id, reset=False)
 
     # 发送取消信号
@@ -210,6 +209,5 @@ def bind_agent_run(run_id: str) -> Iterator[None]:
         _CURRENT_AGENT_RUN_ID.reset(token)
 
 
-# 获取当前运行的 ID
 def current_agent_run_id() -> str | None:
     return _CURRENT_AGENT_RUN_ID.get()

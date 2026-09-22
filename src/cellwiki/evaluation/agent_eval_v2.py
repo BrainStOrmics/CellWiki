@@ -57,7 +57,7 @@ STEP_ACTIONS = frozenset(
     {"send", "answer_question", "accept_diff", "reject_diff", "assert"}
 )
 
-# 固定主因枚举（交接文档）：失败归因只能落在这里，不能自由发挥。
+# 固定主因枚举：失败归因只能落在这里，不能自由发挥。
 FAILURE_CATEGORIES = frozenset(
     {
         "intent",
@@ -1348,7 +1348,7 @@ class TrialResult:
 
 
 # 这些状态意味着这一 trial 没有正常完成产品语义下的任务；无论断言多绿，
-# 都不算通过（交接文档："invalid_run 不计通过，也不被重试洗绿"）。
+# 都不算通过（"invalid_run 不计通过，也不被重试洗绿"）。
 INVALID_RUN_STATUSES = frozenset(
     {AgentRunStatus.FAILED, AgentRunStatus.UNFINISHED, AgentRunStatus.CANCELLED}
 )

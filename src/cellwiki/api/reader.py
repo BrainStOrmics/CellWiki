@@ -32,14 +32,14 @@ class WikiReader:
         # Wiki 页面分布在 wiki/ 下的任意子目录（cell_types/、diseases/、marker_genes/ 等）
         self.wiki_dir = self.project_root / "wiki"
 
-    # 返回 wiki/ 下全部 Markdown 页面的稳定排序路径（递归扫描子目录）
     def _iter_pages(self) -> list[Path]:
+        """wiki/ 下全部 Markdown 页面的稳定排序路径（递归扫描子目录）。"""
         if not self.wiki_dir.is_dir():
             return []
         return sorted(self.wiki_dir.rglob("*.md"))
 
-    # 读取单个页面，返回前端元数据和 Markdown 内容
     def read_page(self, page_id: str) -> dict:
+        """读取单个页面，返回前端元数据和 Markdown 内容。"""
         path = self._page_path(page_id)
         if not path.exists():
             raise FileNotFoundError(page_id)
@@ -52,8 +52,8 @@ class WikiReader:
             "markdown": markdown,
         }
 
-    # 返回页面目录树（页面 ID、标题、路径）；page_id 同名时按稳定排序保留第一个
     def tree(self) -> list[dict]:
+        """返回页面目录树（页面 ID、标题、路径）；page_id 同名时按稳定排序保留第一个。"""
         result = []
         seen: set[str] = set()
         for path in self._iter_pages():
@@ -71,9 +71,8 @@ class WikiReader:
             )
         return result
 
-    # 全文搜索：在页面内容中查找查询字符串
-    # 返回匹配页面列表，按匹配次数排序，包含上下文摘要
     def search(self, query: str, limit: int = 20) -> list[dict]:
+        """全文搜索：在页面内容中查找查询字符串，按匹配次数排序返回匹配页面与上下文摘要。"""
         query = query.strip().lower()
         if not query:
             return []
@@ -115,9 +114,9 @@ class WikiReader:
             return resolved
         raise FileNotFoundError(page_id)
 
-    # 解析 YAML 前端元数据
     @staticmethod
     def _split_frontmatter(raw: str) -> tuple[dict, str]:
+        """解析 YAML 前端元数据。"""
         if not raw.startswith("---"):
             return {}, raw
         parts = raw.split("---", 2)

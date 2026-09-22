@@ -221,10 +221,12 @@ def create_app(
     local_token: str | None = None,
     shutdown_callback: Callable[[], None] | None = None,
 ) -> FastAPI:
-    # 解析项目根目录
+    """构造产品 API 应用：路由、桌面令牌中间件与延迟加载的 Agent 运行时。
+
+    ``agent_runtime`` 显式传入时直接使用（测试/嵌入方），否则按项目根延迟构造。
+    """
     root = Path(project_root or settings.workspace_root).resolve()
-    # 初始化服务依赖
-    reader = WikiReader(root)                    # Wiki Markdown 页面读取器
+    reader = WikiReader(root)
     # .env 定位：显式传入 project_root（测试/嵌入方）时跟随该根，生产默认固定应用根
     resolved_env_root = Path(env_root or (project_root if project_root is not None else settings.project_root)).resolve()
     environment = EnvironmentSettingsService(resolved_env_root)
@@ -254,7 +256,6 @@ def create_app(
                     ) from None
         return runtime
 
-    # 创建 FastAPI 应用
     app = FastAPI(title="CellWiki Product API", version="0.1.0")
     # 空 token 表示开发模式，打包桌面构建始终通过侧车环境注入随机 token
     app.add_middleware(
@@ -1081,7 +1082,7 @@ def _redacted_event_payload(event: AgentEvent) -> dict:
     """事件出口的统一脱敏：ERROR 的 message 与终态 RUN_STATUS 的 error_message。
 
     这两处原样携带 provider 的报错文本，而它可能把 ``Authorization: Bearer …`` 或
-    API key 一起带回来（实测交接问题 E：前端直接看到 ``Error code: 500 - {...}``）。
+    API key 一起带回来（此前前端直接看到 ``Error code: 500 - {...}``）。
     读侧脱敏而不是写侧：既覆盖已经落库的历史行，又让运行库保留完整原文供调试——与
     diagnostics 现有的读侧脱敏一致。
 

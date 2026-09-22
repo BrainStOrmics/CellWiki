@@ -384,7 +384,6 @@ def _register_cellwiki_harness_profile(model_name: str) -> None:
 # ---------------------------------------------------------------------------
 def build_model(configuration: Settings = settings) -> BaseChatModel:
     _register_cellwiki_harness_profile(configuration.openai_model)
-    # 三种线协议都流式构建；AGENT_STREAMING=0 是唯一的回退开关。
     streaming = bool(configuration.agent_streaming)
     policy = prompt_cache_policy_for_settings(configuration)
     prompt_cache_options, context_management = _cache_model_options(policy)
@@ -431,8 +430,6 @@ def build_coordinator_model(spec: ResolvedModelSpec) -> BaseChatModel:
 
 # ---------------------------------------------------------------------------
 # 构建完整的 Wiki 智能体
-# 组装协调器：模型 + 只读工具 + Lint 报告工具 + 最终回答工具 + 检查点器。
-# 返回 Deep Agent 实例，可直接用于 LangGraph 执行。
 # ---------------------------------------------------------------------------
 def build_wiki_agent(
     project_root: Path | None = None,
@@ -441,10 +438,13 @@ def build_wiki_agent(
     registry: SubagentRegistry | None = None,
     cache_policy: PromptCachePolicy | None = None,
 ):
-    # 解析项目根目录
+    """组装协调器 Deep Agent：模型 + 工具面 + 提示词 + checkpointer + 工具边界中间件。
+
+    ``checkpointer`` 传默认哨兵时按工作区装配（默认 SqliteSaver，可退回内存）；
+    显式传入的实例原样使用。
+    """
     root = Path(project_root or settings.workspace_root).resolve()
     _register_cellwiki_harness_profile(settings.openai_model)
-    # 如果未指定模型，使用默认构建
     coordinator_model = model or build_model()
     # 构建工具集：工作区工具 + 确定性 lint 报告 + 交互工具
     coordinator_tools = build_coordinator_tools(root, registry)
@@ -454,7 +454,6 @@ def build_wiki_agent(
     active_checkpointer = (
         build_checkpointer(root) if checkpointer is _DEFAULT_CHECKPOINTER else checkpointer
     )
-    # 组装 Deep Agent
     return create_deep_agent(
         name="cellwiki-agent",
         model=coordinator_model,

@@ -1129,7 +1129,7 @@ class _CancellationGate:
 
 
 class _StreamWatchdog:
-    """一条流式模型调用的活性看门狗（实测交接问题 C）。
+    """一条流式模型调用的活性看门狗。
 
     取消门与墙钟预算都只在**分段边界**检查，而边界要等模型调用返回才到得了一次；
     连接挂起时（SSE keepalive 会不断重置 httpx 的 read 超时）两者永远轮不到——实测
@@ -1505,8 +1505,7 @@ class AgentRuntimeManager:
                     gate.set()
             # 协作式取消只在分段边界生效，而边界要等模型调用返回才到得了一次。装上
             # 门的同时把看门狗收紧到宽限期：落不定就强制断开模型连接，让退栈沿既有的
-            # finally 路径走完（实测交接问题 C——一个 run 在 cancelling 上停了 8.5 小时，
-            # 一直占着串行门禁，连 sidecar 都无法优雅关闭）。
+            # finally 路径走完（事故背景见 _StreamWatchdog）。
             self._watchdog.escalate(run_id, settings.agent_cancel_grace_seconds)
             return cancelled
         raise InvalidRunTransitionError(
@@ -1808,7 +1807,7 @@ class AgentRuntimeManager:
 
         不能交给 ``_finish_failed``：它的僵尸守卫只放行 RUNNING/RETRYING，而取消升级
         时 run 已经是 CANCELLING——恰恰是最需要收尾的那个状态。漏掉它，run 就会永远
-        停在 ``cancelling`` 上并一直占着串行门禁，那正是实测那 8.5 小时的形状。
+        停在 ``cancelling`` 上并一直占着串行门禁——那正是看门狗要防的死结。
 
         落点由迁移表决定，不由意图决定。``cancel()`` 先把 run 转成 CANCELLING 再升级
         看门狗，所以 CANCELLING 就是"用户按过停止"：交给 ``_finalize_user_stop``，
@@ -2533,8 +2532,8 @@ class AgentRuntimeManager:
                     )
 
         # 看门狗在这段流开始时武装。取消门与墙钟预算都只在下面这个循环体里检查，而
-        # 循环体要等模型调用吐出东西才进得去——连接挂起时两者永远轮不到（实测交接
-        # 问题 C）。三个 _open_stream* 入口全部汇入这里，所以界不会漏装在某个入口上。
+        # 循环体要等模型调用吐出东西才进得去——连接挂起时两者永远轮不到。三个
+        # _open_stream* 入口全部汇入这里，所以界不会漏装在某个入口上。
         self._watchdog.arm(run_id, settings.agent_stream_idle_seconds)
         segments = self._iterate_safe(
             stream, budget, started_at, on_finish=_flush_accounting

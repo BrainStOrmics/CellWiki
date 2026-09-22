@@ -110,12 +110,11 @@ class Settings(BaseSettings):
     agent_max_tool_steps: int = Field(default=100, ge=1, le=500)
     # 单次 run 的墙钟超时（秒），防止模型调用卡死
     agent_run_max_seconds: int = Field(default=7200, ge=60, le=86_400)
-    # ---- 活性看门狗（实测交接问题 C）----
+    # ---- 活性看门狗 ----
     # 取消门与上面的墙钟预算都只在**分段边界**检查，而分段边界要等模型调用返回才到
     # 得了一次；连接挂起时（SSE keepalive 会不断重置 httpx 的 read 超时）两者永远轮
-    # 不到——实测一个 run 在 cancelling 上停了 8.5 小时并一直占着串行门禁。看门狗照
-    # adapters/openai_structured_output._watch_cancellation 的既有做法关掉模型的 HTTP
-    # client，让阻塞读抛错、生成器沿既有的 finally 路径退栈。
+    # 不到。看门狗照 adapters/openai_structured_output._watch_cancellation 的既有做法
+    # 关掉模型的 HTTP client，让阻塞读抛错、生成器沿既有的 finally 路径退栈。
     # 点停止后多久升级为强制断开模型连接。
     agent_cancel_grace_seconds: int = Field(default=15, ge=1, le=600)
     # 没有工具在跑时，多久收不到任何流式增量就判定模型连接挂起。必须显著高于 SDK
