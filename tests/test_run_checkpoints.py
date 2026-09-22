@@ -3,7 +3,7 @@
 # =============================================================================
 # 每条决策配一个可失败的锁。另外两条是工作单阶段 C 的核心回归锁：
 #   * 同线程连续多个 run 互不读取对方的图状态（决策 2/3/15）；
-#   * 后一个 run 进入模型的 messages 不超过 ConversationContextView 上界（决策 15）。
+#   * 后一个 run 进入模型的 messages 不超过"有界 transcript 的渲染结果 + 系统提示"。
 # 真实图路径用假模型（BaseChatModel），不需要真实 provider，也不需要联网。
 # =============================================================================
 
@@ -59,7 +59,7 @@ from cellwiki.services.checkpoints import (
     latest_checkpoint_id,
     latest_run_checkpoint_id,
 )
-from cellwiki.services.conversation_context import ConversationContextView
+from cellwiki.services.model_transcript import render_model_messages
 from cellwiki.services.runtime_store import RuntimeStore, SerialGateViolationError
 
 
@@ -1008,10 +1008,13 @@ def test_consecutive_runs_in_one_thread_do_not_read_each_other_state(tmp_path: P
             f"第 {index} 轮的输入被重复注入：{_count_occurrences(last_input, marker)} 次"
         )
 
-    # 决策 15：进入模型的 messages 不超过 ConversationContextView 上界
-    # （余量给系统提示、Layer B 与当前输入）。
-    bound = ConversationContextView.MAX_MESSAGES + 4
-    assert len(last_input) <= bound, f"{len(last_input)} 条消息超过上界 {bound}"
+    # ADR-0014：v2 没有消息条数上界，历史长度由 token 预算（压缩阈值）约束。
+    # 保留一条防跑飞的形状锁：进入模型的 messages 恰好是"有界 transcript 的渲染
+    # 结果 + 一条系统提示"，渲染不额外注入历史。
+    rendered = render_model_messages(manager.store.list_model_messages(thread_id))
+    assert len(last_input) <= len(rendered) + 1, (
+        f"{len(last_input)} 条消息超过渲染结果 {len(rendered)} + 1"
+    )
 
 
 def test_resumed_segment_continues_from_checkpoint_without_replaying_transcript(tmp_path: Path):

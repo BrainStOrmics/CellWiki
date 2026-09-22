@@ -64,7 +64,6 @@ from cellwiki.services.checkpoints import (
     has_run_checkpoint,
     latest_checkpoint_id,
 )
-from cellwiki.services.conversation_context import ConversationContextView
 from cellwiki.services.model_transcript import (
     estimate_transcript_tokens,
     render_model_messages,
@@ -79,11 +78,8 @@ from cellwiki.services.run_scope import (
 )
 from cellwiki.services.prompt_layers import (
     LAYER_A_TEXT,
-    build_layer_b_snapshot,
-    build_r1_r5_block,
     build_turn_context,
     calibration_ratio,
-    compact_transcript,
 )
 from cellwiki.services.prompt_runtime import (
     PromptRunContext,
@@ -192,6 +188,15 @@ class RunVersioningError(AgentRuntimeError):
 
     收尾点捕获后把 run 落 ``unfinished``，禁止"脏改动 + SUCCEEDED"状态存在。
     """
+
+
+class RunTranscriptVersionError(AgentRuntimeError):
+    """run 声明的 model transcript 版本高于本实现支持的版本，拒绝静默重放。"""
+
+
+# 唯一的 model transcript 组装版本（ADR-0014，legacy 组装器 2026-09-22 退役）。
+# `AgentRun.transcript_version` 字段保留为历史标记：v1 存量 run 由 v2 组装器重建。
+SUPPORTED_TRANSCRIPT_VERSION = 2
 
 
 # 系统维护文件不参与自动收口：它们由 workspace_maintenance 在判定事件维护，
@@ -1364,7 +1369,7 @@ class AgentRuntimeManager:
             # 决策 8：执行配置快照，使历史 run 不受 .env 漂移影响。
             # 公式不变；模型项取本次 run 的生效模型（目录选中或 legacy 全局）。
             prompt_hash=prompt_configuration_hash(budget, effective_model_name),
-            transcript_version=2 if settings.agent_prompt_transcript == "v2" else 1,
+            transcript_version=2,
             request_id=request_id,
         )
         try:
@@ -1390,8 +1395,7 @@ class AgentRuntimeManager:
         run = self.store.get_run(run_id)
         if run is not None:
             delete_run_checkpoints(self.project_root, run.thread_id, run_id)
-            if run.transcript_version >= 2:
-                self.store.delete_run_model_messages(run_id)
+            self.store.delete_run_model_messages(run_id)
         return self._claim_and_submit(run_id, AgentRunStatus.RETRYING, reason)
 
     def _run_checkpoint_is_resumable(self, run: AgentRun) -> bool:
@@ -2206,73 +2210,22 @@ class AgentRuntimeManager:
                 stream = self._open_stream_continue(
                     adapter, thread_id, message, context, run_id=run_id
                 )
-            elif run.transcript_version >= 2:
+            elif run.transcript_version > SUPPORTED_TRANSCRIPT_VERSION:
+                # legacy 组装器已于 2026-09-22 退役（ADR-0014）：未知的更高版本
+                # 说明这份数据来自更新的实现，宁可直接失败也不要静默按 v2 重放。
+                raise RunTranscriptVersionError(
+                    f"run {run_id} declares transcript_version="
+                    f"{run.transcript_version}, but this build only supports "
+                    f"{SUPPORTED_TRANSCRIPT_VERSION}"
+                )
+            else:
+                # 2026-09-22 起只有 v2 一条组装路径。v1 存量 run（历史数据）由 v2
+                # 组装器重建：`_prepare_v2_transcript` 先 bootstrap 一份 model
+                # transcript，再照常追加本轮消息。
                 messages_in, prompt_context = self._prepare_v2_transcript(
                     run, message, context, adapter
                 )
                 prompt_token = set_prompt_run_context(prompt_context)
-                stream = self._open_stream(
-                    adapter, thread_id, messages_in, context, run_id=run_id
-                )
-            else:
-                view = ConversationContextView(self.store)
-                # 会话上下文先持久化当前用户消息，再交给适配器（conversation-first）
-                self.store.append_message(
-                    thread_id=thread_id,
-                    run_id=run_id,
-                    role="user",
-                    content=message,
-                    data={"source": "agent_runtime"},
-                )
-                messages_in = view.build(
-                    thread_id=thread_id,
-                    current_run_id=run_id,
-                    current_content=message or "",
-                )
-                # 阶段 5：512K/80% 阈值压缩 -> 六类摘要 + 保留窗口 32K，并注入 R1-R5。
-                # 2026-09-21：与 v2 同一记账语义——有 provider 实测就优先按实测
-                # 判定，并用实测/估算比值校准保留窗口。
-                legacy_measured = self.store.last_prompt_tokens(thread_id)
-                compacted = compact_transcript(
-                    messages_in,
-                    max_tokens=settings.agent_context_max_tokens,
-                    auto_compact_ratio=settings.agent_context_auto_compact_ratio,
-                    retained_tokens=settings.agent_context_retained_tokens,
-                    measured_tokens=legacy_measured,
-                )
-                if compacted.compacted:
-                    r1_r5 = build_r1_r5_block(
-                        git_status=self._git_status_text(),
-                        pending_question=None,
-                        recent_lint=None,
-                        run_goal=message,
-                    )
-                    messages_in = [
-                        {
-                            "role": "system",
-                            "content": compacted.summary_text + "\n\n" + r1_r5,
-                        },
-                        *compacted.retained,
-                    ]
-                # 阶段 5：Layer B run 动态快照（git 状态 + 打开页面元数据/大纲 + 选中文本）
-                layer_b = build_layer_b_snapshot(
-                    current_message=message,
-                    git_status=self._git_status_text(),
-                    open_page=self._open_page_snapshot(context.page_id),
-                    recent_transcript=self.store.list_context_messages(thread_id)[-4:],
-                    attachments=self._attachment_manifest(run),
-                    selected_text=context.selected_text,
-                    gate_issues=self._previous_gate_issues(run),
-                )
-                if layer_b:
-                    # 快照每轮 run 都变，必须排在历史之后（当前用户消息之前）：provider
-                    # 前缀缓存逐字节匹配，排在历史前会把它之后的整段历史一并作废，
-                    # 跨 run 只剩静态头 ≈2K token 能命中（2026-09-15 真机对照）。
-                    messages_in = [
-                        *messages_in[:-1],
-                        {"role": "system", "content": layer_b},
-                        messages_in[-1],
-                    ]
                 stream = self._open_stream(
                     adapter, thread_id, messages_in, context, run_id=run_id
                 )
@@ -2379,16 +2332,14 @@ class AgentRuntimeManager:
                 content=answer,
                 data=message_data,
             )
-            run_record = self.store.get_run(run_id)
-            if run_record is not None and run_record.transcript_version >= 2:
-                self.store.append_model_message(
-                    thread_id=thread_id,
-                    run_id=run_id,
-                    kind="assistant",
-                    role="assistant",
-                    content={"text": answer},
-                    message_key="assistant_final",
-                )
+            self.store.append_model_message(
+                thread_id=thread_id,
+                run_id=run_id,
+                kind="assistant",
+                role="assistant",
+                content={"text": answer},
+                message_key="assistant_final",
+            )
         if outcome.cancelled:
             # 落到安全事件边界了：图流已关、checkpoint 已回写（见 _consume_stream 的
             # finally），所以这是一次可续跑的暂停，不是一个终态。
@@ -2516,8 +2467,6 @@ class AgentRuntimeManager:
         question_pending = False
         accounting_flushed = False
         saw_any_signal = False
-        run_record = self.store.get_run(run_id)
-        transcript_version = run_record.transcript_version if run_record else 1
 
         def _flush_accounting() -> None:
             """落盘本段 spans + usage，恰好一次，中止也不例外。
@@ -2600,7 +2549,7 @@ class AgentRuntimeManager:
                 saw_any_signal = True
                 for signal in signals:
                     steps_at_end = steps
-                    if signal.model_message and transcript_version >= 2:
+                    if signal.model_message:
                         self._persist_model_message(
                             run_id, thread_id, signal.model_message
                         )

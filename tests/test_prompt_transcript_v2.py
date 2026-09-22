@@ -13,7 +13,12 @@ from pydantic import Field
 
 from cellwiki.agent.app import build_wiki_agent
 from cellwiki.domain.contracts import WikiAgentContext
-from cellwiki.domain.runs import AgentEventType, AgentRun, AgentRunStatus
+from cellwiki.domain.runs import (
+    AgentErrorType,
+    AgentEventType,
+    AgentRun,
+    AgentRunStatus,
+)
 from cellwiki.services.agent_runtime import AgentRuntimeManager
 from cellwiki.services.model_transcript import (
     estimate_transcript_tokens,
@@ -689,3 +694,100 @@ def test_render_synthesizes_a_missing_tool_result():
     assert [message["role"] for message in rendered] == ["assistant", "tool"]
     assert rendered[1]["tool_call_id"] == "call_orphan"
     assert "was cancelled" in rendered[1]["content"]
+
+
+# ---------------------------------------------------------------------------
+# legacy 组装器退役（2026-09-22）：未知版本显式失败 + 旧线程继续走 v2
+# ---------------------------------------------------------------------------
+def test_unknown_transcript_version_fails_instead_of_silently_replaying(
+    tmp_path: Path,
+):
+    """更高的版本号说明数据来自更新的实现：宁可失败，不要静默按 v2 重放。"""
+
+    model = _TranscriptModel()
+    manager = _manager(tmp_path, model)
+    try:
+        store = manager.store
+        store.create_run(
+            AgentRun(
+                run_id="run_future_version",
+                thread_id="thread_future_version",
+                input_message="x",
+                transcript_version=3,
+            )
+        )
+        store.transition(
+            "run_future_version", AgentRunStatus.RUNNING, message="Started."
+        )
+        store.transition(
+            "run_future_version",
+            AgentRunStatus.FAILED,
+            error_type=AgentErrorType.SYSTEM,
+            error_message="boom",
+            message="Failed.",
+        )
+
+        manager.retry("run_future_version")
+        finished = _wait(manager, store.get_run("run_future_version"))
+
+        assert finished.status == AgentRunStatus.FAILED, finished.status
+        assert "transcript_version=3" in str(finished.error_message)
+        assert model.seen == [], "the graph must not run for an unsupported version"
+    finally:
+        manager.close()
+
+
+def test_v1_thread_continues_as_v2_with_bootstrapped_history(tmp_path: Path):
+    """v1 存量 thread 发新消息：新 run 恒 v2，历史由 UI 消息种子化。"""
+
+    model = _TranscriptModel()
+    manager = _manager(tmp_path, model)
+    try:
+        store = manager.store
+        store.create_run(
+            AgentRun(
+                run_id="run_legacy_history",
+                thread_id="thread_legacy_history",
+                input_message="旧问题",
+                transcript_version=1,
+            )
+        )
+        store.transition(
+            "run_legacy_history", AgentRunStatus.RUNNING, message="Started."
+        )
+        store.transition(
+            "run_legacy_history",
+            AgentRunStatus.SUCCEEDED,
+            message="Done.",
+        )
+        store.append_message(
+            thread_id="thread_legacy_history",
+            run_id="run_legacy_history",
+            role="user",
+            content="旧问题",
+            data={"source": "agent_runtime"},
+        )
+        store.append_message(
+            thread_id="thread_legacy_history",
+            run_id="run_legacy_history",
+            role="assistant",
+            content="旧回答",
+            data={"source": "agent_runtime"},
+        )
+
+        run = _turn(manager, "thread_legacy_history", "新问题")
+
+        assert run.transcript_version == 2
+        first_request = model.seen[-1]
+        texts = [_text(message) for message in first_request]
+        assert any("旧问题" in text for text in texts)
+        assert any("旧回答" in text for text in texts)
+        assert "新问题" in texts[-1]
+        assert "## Run context" in texts[-1]
+        kinds = [
+            record["kind"]
+            for record in store.list_model_messages("thread_legacy_history")
+        ]
+        assert kinds[:2] == ["user", "assistant"]
+    finally:
+        manager.close()

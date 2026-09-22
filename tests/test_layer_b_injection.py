@@ -1,9 +1,14 @@
 # =============================================================================
 # 选中文本真注入 —— ADR-0007 决策 11 修订（工作单裁决 #3）
 # =============================================================================
-# build_layer_b_snapshot 是纯函数，单元测试只能证明它"愿意"渲染选中文本。这三条锁
-# 证明 run 真的把 context.selected_text 送到了模型面前：真实产品图 + 假模型，
-# 检查进入模型的 SystemMessage 里那一份 Run context snapshot。
+# `build_turn_context` 是纯函数，单元测试只能证明它"愿意"渲染选中文本。这四条锁
+# 证明 run 真的把 context.selected_text 送到了模型面前：真实产品图 + 假模型。
+#
+# 2026-09-22（legacy 组装器退役）前，这四条跑在 `AGENT_PROMPT_TRANSCRIPT=legacy`
+# 下，断言的是 legacy 形状——一份独立的 `SystemMessage`，标题 `Run context
+# snapshot`。v2 没有那个系统消息：turn context 是**当前用户消息的尾部**
+# （`## Run context`）。因此断言随之改到 v2 形状；覆盖本身（选中文本进模型 +
+# 位置锁）一条不减。
 # =============================================================================
 
 from __future__ import annotations
@@ -18,7 +23,6 @@ from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResu
 from pydantic import Field
 
 from cellwiki.agent.app import build_wiki_agent
-from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.runs import AgentRunStatus
 from cellwiki.services.agent_runtime import AgentRuntimeManager
@@ -64,14 +68,19 @@ def _text(message: Any) -> str:
     return " ".join(str(part) for part in content)
 
 
-def _layer_b_seen_by_model(model: _RecordingFakeModel) -> str:
-    """取出进入模型的那份 Layer B 快照。Layer A 也是 SystemMessage，靠标题区分。"""
+def _turn_context_seen_by_model(model: _RecordingFakeModel) -> str:
+    """取出进入模型的 turn context：v2 里它是当前用户消息的尾部。"""
+
     assert model.seen, "the fake model was never called"
-    for message in model.seen[0]:
-        text = _text(message)
-        if type(message).__name__ == "SystemMessage" and "Run context snapshot" in text:
-            return text
-    raise AssertionError("Layer B snapshot never reached the model")
+    messages = model.seen[0]
+    assert type(messages[-1]).__name__ == "HumanMessage", _shape(messages)
+    text = _text(messages[-1])
+    assert "## Run context" in text, _shape(messages)
+    return text
+
+
+def _shape(messages: list[Any]) -> str:
+    return str([(type(message).__name__, _text(message)[:24]) for message in messages])
 
 
 def _finish_run(manager: AgentRuntimeManager, run: Any) -> None:
@@ -100,47 +109,42 @@ def _run_with_selection(root: Path, selected_text: str | None) -> str:
         ),
     )
     _finish_run(manager, run)
-    return _layer_b_seen_by_model(model)
+    return _turn_context_seen_by_model(model)
 
 
-def test_selected_text_reaches_the_model_inside_layer_b(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(settings, "agent_prompt_transcript", "legacy")
-    layer_b = _run_with_selection(tmp_path, "FOXP3 marks regulatory T cells.")
+def test_selected_text_reaches_the_model_inside_the_turn_context(tmp_path: Path):
+    context = _run_with_selection(tmp_path, "FOXP3 marks regulatory T cells.")
 
-    assert "user selected this text on the page:" in layer_b
-    assert "FOXP3 marks regulatory T cells." in layer_b
-    assert "current run goal (question): 这段说得对吗" in layer_b
+    assert "user selected this text on the page:" in context
+    assert "FOXP3 marks regulatory T cells." in context
+    assert "intent hint: question" in context
 
 
-def test_overlong_selection_arrives_bounded_with_its_marker(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(settings, "agent_prompt_transcript", "legacy")
+def test_overlong_selection_arrives_bounded_with_its_marker(tmp_path: Path):
     # 片段必须唯一：周期性文本会让"上界之外"的切片也出现在保留的前缀里。
     selection = "".join(f"[{index:05d}]" for index in range(700))   # 4900 字符
-    layer_b = _run_with_selection(tmp_path, selection)
+    context = _run_with_selection(tmp_path, selection)
 
-    assert selection[:2_000] in layer_b
-    assert selection[2_500:2_600] not in layer_b
-    assert "…[selected text truncated]" in layer_b
-    assert "current run goal (question): 这段说得对吗" in layer_b
-
-
-def test_run_without_a_selection_injects_no_selection_block(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(settings, "agent_prompt_transcript", "legacy")
-    layer_b = _run_with_selection(tmp_path, None)
-
-    assert "user selected this text on the page" not in layer_b
-    assert "current run goal (question): 这段说得对吗" in layer_b
+    assert selection[:2_000] in context
+    assert selection[2_500:2_600] not in context
+    assert "…[selected text truncated]" in context
 
 
-def test_layer_b_sits_after_history_and_before_the_current_user_message(
-    tmp_path: Path, monkeypatch
-):
-    monkeypatch.setattr(settings, "agent_prompt_transcript", "legacy")
-    # 位置锁（2026-09-15）：快照每轮 run 都变，必须排在历史之后。排在历史前会让
-    # provider 的逐字节前缀缓存从快照处断掉，其后的整段历史每轮重算（真机对照：
-    # 跨 run 只剩静态头 ≈2K token 命中）。跑同一个 thread 两轮，对第二轮 run 的
-    # 第一次模型调用断言消息序列的形状。工作区不放页面：不符合 schema 的页面会让
-    # 第一轮以 unfinished 收尾，占着串行门禁，第二轮就起不来。
+def test_run_without_a_selection_injects_no_selection_block(tmp_path: Path):
+    context = _run_with_selection(tmp_path, None)
+
+    assert "user selected this text on the page" not in context
+    assert "intent hint: question" in context
+
+
+def test_turn_context_rides_the_last_user_message_after_history(tmp_path: Path):
+    # 位置锁（2026-09-15，2026-09-22 改到 v2 形状）：动态上下文每轮都变，必须排在
+    # 历史之后——排在历史前会让 provider 的逐字节前缀缓存从它处断掉，其后的整段
+    # 历史每轮重算（真机对照：跨 run 只剩静态头 ≈2K token 命中）。v2 里它不再是
+    # 独立系统消息，而是当前用户消息的尾部：唯一的 SystemMessage 只装稳定前缀，
+    # 历史之后紧跟的那条消息就是"本次提问 + 本次上下文"。跑同一个 thread 两轮，
+    # 对第二轮 run 的第一次模型调用断言消息序列的形状。工作区不放页面：不符合
+    # schema 的页面会让第一轮以 unfinished 收尾，占着串行门禁，第二轮就起不来。
     (tmp_path / "wiki").mkdir()
     model = _RecordingFakeModel()
     manager = AgentRuntimeManager(tmp_path, adapter=build_wiki_agent(tmp_path, model=model))
@@ -160,18 +164,16 @@ def test_layer_b_sits_after_history_and_before_the_current_user_message(
     _finish_run(manager, second)
 
     messages = model.seen[calls_after_first_run]
-    shape = [(type(message).__name__, _text(message)[:24]) for message in messages]
-    snapshots = [
-        index
-        for index, message in enumerate(messages)
-        if type(message).__name__ == "SystemMessage" and "Run context snapshot" in _text(message)
+    shape = _shape(messages)
+    # 稳定前缀仍是唯一一条系统消息，且不再携带任何 run 动态上下文。
+    system_messages = [
+        message for message in messages if type(message).__name__ == "SystemMessage"
     ]
-    assert len(snapshots) == 1, f"expected exactly one snapshot, got shape: {shape}"
-    layer_b_index = snapshots[0]
-    # 紧贴当前用户消息之前（末尾是 user，倒数第二是快照）
-    assert layer_b_index == len(messages) - 2, f"unexpected tail: {shape[-4:]}"
-    assert _text(messages[-1]) == "第二问", f"unexpected tail: {shape[-4:]}"
-    # 位于历史之后：快照前面是上一轮的助手回答，而不是静态系统提示或列表开头
-    assert layer_b_index > 0 and _text(messages[layer_b_index - 1]) == "已回答", (
-        f"snapshot is not behind history: {shape}"
-    )
+    assert len(system_messages) == 1, f"expected exactly one system message: {shape}"
+    assert "Run context" not in _text(system_messages[0]), shape
+    # 动态上下文紧跟在历史之后：末尾是"本次提问 + 本次上下文"的用户消息。
+    tail = _text(messages[-1])
+    assert type(messages[-1]).__name__ == "HumanMessage", shape
+    assert "第二问" in tail and "## Run context" in tail, shape
+    # 它前面是上一轮的助手回答，而不是静态系统提示或列表开头。
+    assert _text(messages[-2]) == "已回答", f"turn context is not behind history: {shape}"

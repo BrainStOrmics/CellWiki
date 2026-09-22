@@ -1,28 +1,23 @@
 # =============================================================================
-# Prompt 分层与会话上下文（阶段 5）
+# Prompt 分层（ADR-0014）
 # =============================================================================
 # Layer A 静态基线：身份/操作域、权力边界、行为约束；每次 run 固定，不进会话历史。
-# Layer B run 动态上下文：git 状态、会话历史、当前消息、挂起问题、用户当前打开
-#   的页面（仅元数据 + 大纲）与用户在页面上选中的文本（有界引用）—— run 启动时
-#   快照注入为系统消息。
+# Layer B run 动态上下文：git 状态、用户当前打开的页面（元数据 + 大纲）、用户在
+#   页面上选中的文本（有界引用）与上一轮门禁问题—— 作为当前用户消息的尾部注入。
 # Layer C 按需注入：文件内容 / git diff / lint 报告 / run_powershell 输出由工具
 #   返回（不在启动时静态注入）。
 # 会话历史上限与压缩阈值由 prompt cache policy 统一解析；实际窗口来自模型
-# 配置声明或单一保守 fallback，不再按模型名匹配。压缩保留窗口 32K，六类摘要。
+# 配置声明或单一保守 fallback，不再按模型名匹配。
 # =============================================================================
 
-"""Phase 5 prompt layering: Layer A/B/C, bounded compaction, R1-R5, six summaries."""
+"""Prompt layering: Layer A/B/C, turn context, bounded selection, six summaries."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 from cellwiki.domain.agent_tools import AGENT_TOOL_NAMES_TEXT
 
-
-# 估算量：1 token ≈ 4 字符（英文为主的知识库文本的常用粗估）
-CHARS_PER_TOKEN = 4
 
 # 六类摘要标签（确定性抽取，不依赖额外 LLM 调用）
 _SUMMARY_CATEGORIES: dict[str, tuple[str, ...]] = {
@@ -299,59 +294,6 @@ def classify_intent_hint(message: str | None) -> str | None:
     return None
 
 
-def build_layer_b_snapshot(
-    *,
-    current_message: str,
-    git_status: str | None = None,
-    open_page: dict[str, Any] | None = None,
-    pending_question: str | None = None,
-    recent_transcript: list[dict[str, str]] | None = None,
-    attachments: list[dict[str, Any]] | None = None,
-    selected_text: str | None = None,
-    gate_issues: list[str] | None = None,
-    limit_transcript: int = 6,
-) -> str:
-    """Layer B：run 启动时快照的 run 动态上下文（纯文本、紧凑、不泄露原始内容）。"""
-    parts: list[str] = ["## Run context snapshot"]
-    if git_status is not None:
-        parts.append(f"- git status:\n{git_status[:1_500]}")
-    if gate_issues:
-        lines = "\n".join(f"  - {line}" for line in gate_issues[:30])
-        parts.append(
-            "- previous run was blocked by the schema gate; the changed pages"
-            f" must fix these before finishing:\n{lines}"
-        )
-    if open_page is not None:
-        page_id = open_page.get("page_id") or open_page.get("title") or "?"
-        parts.append(f"- user is viewing: {page_id}")
-        outline = _page_outline(str(open_page.get("markdown") or ""))
-        if outline:
-            parts.append("- page outline:\n" + "\n".join(outline[:16]))
-    if selected_text is not None and selected_text.strip():
-        parts.append(
-            "- user selected this text on the page:\n" + _bounded_selection(selected_text)
-        )
-    if pending_question is not None:
-        parts.append(f"- pending question: {pending_question[:500]}")
-    if recent_transcript:
-        transcript_lines = [
-            f"  {item.get('role', '?')}: {str(item.get('content') or '')[:220].replace(chr(10), ' ')}"
-            for item in recent_transcript[-limit_transcript:]
-        ]
-        parts.append("- recent transcript:\n" + "\n".join(transcript_lines))
-    if attachments:
-        block = _render_attachment_block(attachments)
-        if block:
-            parts.append(block)
-    hint = classify_intent_hint(current_message)
-    label = f" ({hint})" if hint else ""
-    goal = f"- current run goal{label}: {current_message[:800]}"
-    body = "\n".join(parts)
-    # 快照整体上界不变，但 run 目标是这次运行最不能丢的一行：先给它留位，
-    # 被截掉的只能是上面的上下文段。
-    return f"{body[: max(0, _LAYER_B_SNAPSHOT_MAX - len(goal) - 1)]}\n{goal}"
-
-
 def schema_prompt_block(schema_version: int, schema_contract_hash: str) -> str:
     """Stable workspace contract marker placed before the cache breakpoint."""
 
@@ -446,91 +388,13 @@ def summarize_excerpts(excerpts: list[str]) -> str:
     return _six_category_summary(excerpts)
 
 
-@dataclass
-class CompactedContext:
-    """Result of one compaction pass over a durable transcript."""
-
-    summary_text: str = ""
-    retained: list[dict[str, str]] = field(default_factory=list)
-    compacted: bool = False
-
-
-def compact_transcript(
-    messages: list[dict[str, str]],
-    *,
-    max_tokens: int = 512_000,
-    auto_compact_ratio: float = 0.8,
-    retained_tokens: int = 32_768,
-    measured_tokens: int | None = None,
-) -> CompactedContext:
-    """Compress an over-budget transcript into six-category summary + retained window.
-
-    触发判定与保留窗口都走实测优先口径：`measured_tokens`（provider 回报的真实
-    prompt）存在时优先用它判定超限，并按实测/估算比值校准保留窗口，使"32K"
-    更接近真实 token 预算；无实测时退回 chars/4 估算（校准系数 1.0）。
-    """
-    total_chars = sum(len(str(item.get("content") or "")) for item in messages)
-    estimated_tokens = max(
-        1, (total_chars + CHARS_PER_TOKEN - 1) // CHARS_PER_TOKEN
-    )
-    threshold = int(max_tokens * auto_compact_ratio)
-    over_budget = (
-        measured_tokens > threshold
-        if measured_tokens is not None
-        else estimated_tokens > threshold
-    )
-    if not over_budget:
-        return CompactedContext(retained=messages, compacted=False)
-    ratio = calibration_ratio(measured_tokens, estimated_tokens)
-    summary_excerpts: list[str] = []
-    retained: list[dict[str, str]] = []
-    used = 0.0
-    for item in reversed(messages):
-        content_text = str(item.get("content") or "")
-        # 单条代价按校准系数折算成"真实 token"，预算仍是标称的 retained_tokens；
-        # 若预算也乘系数，比值会在不等式两边约掉、校准形同虚设。
-        cost = (len(content_text) / CHARS_PER_TOKEN) * ratio
-        if not retained or used + cost <= retained_tokens:
-            retained.append(item)
-            used += cost
-        else:
-            summary_excerpts.append(content_text)
-    retained.reverse()
-    summary = _six_category_summary(summary_excerpts)
-    return CompactedContext(summary_text=summary, retained=retained, compacted=True)
-
-
-def build_r1_r5_block(
-    *,
-    git_status: str | None = None,
-    page_snapshot: str | None = None,
-    pending_question: str | None = None,
-    recent_lint: str | None = None,
-    run_goal: str = "",
-) -> str:
-    """压缩后重新注入 R1-R5（git 状态、页面快照、挂起问题、最近 lint、当前目标）。"""
-    blocks = [
-        "## Recovery context",
-        f"R1 (git status): {git_status or 'n/a'}"[:1_200],
-        f"R2 (page snapshot): {page_snapshot or 'n/a'}"[:1_200],
-        f"R3 (pending question): {pending_question or 'n/a'}"[:500],
-        f"R4 (recent lint): {recent_lint or 'n/a'}"[:1_200],
-        f"R5 (current run goal): {run_goal}"[:800],
-    ]
-    return "\n".join(blocks)
-
-
 __all__ = [
     "CALIBRATION_MAX",
     "CALIBRATION_MIN",
-    "CompactedContext",
     "LAYER_A_TEXT",
-    "build_layer_b_snapshot",
-    "build_r1_r5_block",
     "build_turn_context",
     "calibration_ratio",
     "classify_intent_hint",
-    "compact_transcript",
     "schema_prompt_block",
     "summarize_excerpts",
 ]
