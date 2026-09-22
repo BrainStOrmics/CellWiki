@@ -587,7 +587,7 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .chat-timeline {
   position: absolute; left: 6px; top: 16px; bottom: 16px; z-index: 2;
   display: flex; width: 30px; flex-direction: column; align-items: flex-start;
-  justify-content: space-between;
+  gap: 6px;
 }
 .chat-timeline-tick { position: relative; padding: 0; border: 0; background: transparent; cursor: pointer; }
 /* 长度随该轮内容量（内联 width）贴着左边排；只有颜色区分状态 */
