@@ -161,7 +161,14 @@ export type AgentTimelineNode =
       /** edit_file 的真行级 diff（独立有界字段，带截断标记）。 */
       editDiff?: AgentToolEditDiff;
     }
-  | { kind: "status"; tone: AgentTimelineStatusTone; label: string; step?: AgentProcessStep }
+  | {
+      kind: "status";
+      tone: AgentTimelineStatusTone;
+      label: string;
+      step?: AgentProcessStep;
+      /** 上下文压缩这类"系统记事"行：渲染成文档图标而不是状态点（对齐参考稿）。 */
+      glyph?: "document";
+    }
   | { kind: "text"; text: string };
 
 export type AgentRunStatus =

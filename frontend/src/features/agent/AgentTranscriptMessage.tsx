@@ -245,7 +245,7 @@ function TimelineNode({ node, streaming, reasoningTitle, reasoningLiveLabel }: T
     case "status":
       return (
         <div className={`agent-timeline-node tone-${node.tone}`}>
-          <span className="at-dot" />
+          {node.glyph === "document" ? <FileText size={12} /> : <span className="at-dot" />}
           <span className="at-label">{node.label}</span>
         </div>
       );

@@ -439,6 +439,7 @@ function appendProcessEventNode(
       kind: "status",
       tone: compactionTone(event),
       label: compactionLabel(event, labels),
+      glyph: "document",
       step,
     }];
   }

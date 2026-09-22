@@ -409,6 +409,8 @@ describe("reduceAgentRunMessages timeline", () => {
     if (completedNode?.kind === "status") {
       expect(completedNode.tone).toBe("success");
       expect(completedNode.label).toBe("上下文已压缩");
+      // 压缩行是"文档图标 + 灰字"，不是按 tone 上色的状态点（对齐参考稿）
+      expect(completedNode.glyph).toBe("document");
     }
 
     const skipped = reduceAgentRunMessages(
