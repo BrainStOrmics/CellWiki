@@ -321,4 +321,100 @@ describe("approval units", () => {
     expect(badges).toHaveLength(1);
     expect(badges[0].className).toContain("diff-auto-badge");
   });
+
+  it("shows the naming title and demotes the run id to the meta line", async () => {
+    const getJsonMock = vi.mocked(getJson);
+    getJsonMock.mockImplementation((url: string) => {
+      if (url.endsWith("/patch")) {
+        return Promise.resolve({ diff_id: "diff_run_t_1", patch: "" });
+      }
+      return Promise.resolve({
+        pending_diffs: [{
+          diff_id: "diff_run_t_1",
+          run_id: "run_t",
+          thread_id: "thread_t",
+          commits: ["c1"],
+          files: ["wiki/a.md"],
+          insertions: 3,
+          deletions: 1,
+          status: "pending",
+          created_at: "2026-09-22T00:00:00Z",
+          data: { unit_title: "扩张到 130 页", unit_summary: "把 24 篇论文展开" },
+        }],
+      });
+    });
+
+    render(<DiffBrowser />);
+    expect(await screen.findByText("扩张到 130 页")).toBeTruthy();
+    // 有真名字就不挂"未命名"；run id 与统计合并到次要行。
+    expect(screen.queryByText("未命名")).toBeNull();
+    expect(screen.getByText(/run_t · \+3 −1 · 1 文件/)).toBeTruthy();
+  });
+
+  it("falls back to the materialized title and flags unnamed units", async () => {
+    const getJsonMock = vi.mocked(getJson);
+    getJsonMock.mockImplementation((url: string) => {
+      if (url.endsWith("/patch")) {
+        return Promise.resolve({ diff_id: "diff_run_f_1", patch: "" });
+      }
+      return Promise.resolve({
+        pending_diffs: [{
+          diff_id: "diff_run_f_1",
+          run_id: "run_f",
+          thread_id: "thread_f",
+          commits: ["c1"],
+          files: ["wiki/a.md"],
+          insertions: 1,
+          deletions: 0,
+          status: "pending",
+          created_at: "2026-09-22T00:00:00Z",
+          data: { unit_title_fallback: "ingest: expand 5 sources" },
+        }],
+      });
+    });
+
+    render(<DiffBrowser />);
+    expect(await screen.findByText("ingest: expand 5 sources")).toBeTruthy();
+    expect(screen.getByText("未命名").className).toContain("diff-unnamed-badge");
+  });
+
+  it("regenerates a title from the detail toolbar", async () => {
+    const getJsonMock = vi.mocked(getJson);
+    const postJsonMock = vi.mocked(postJson);
+    const record = {
+      diff_id: "diff_run_d_1",
+      run_id: "run_d",
+      thread_id: "thread_d",
+      commits: ["c1"],
+      files: ["wiki/a.md"],
+      insertions: 1,
+      deletions: 0,
+      status: "accepted",
+      resolution: "accepted",
+      created_at: "2026-09-22T00:00:00Z",
+      data: { unit_title: "旧标题" },
+    };
+    getJsonMock.mockImplementation((url: string) => {
+      if (url.endsWith("/patch")) {
+        return Promise.resolve({ diff_id: "diff_run_d_1", patch: "" });
+      }
+      if (url.endsWith("/api/pending-diffs/diff_run_d_1")) {
+        return Promise.resolve({ ...record, data: { unit_title: "重新生成后的标题" } });
+      }
+      return Promise.resolve({ pending_diffs: [record] });
+    });
+    postJsonMock.mockResolvedValue({ status: "accepted" });
+
+    render(<DiffBrowser />);
+    // 已判定单元在折叠的历史区里：展开后仍可重新生成（提案要求对任意单元可用）。
+    fireEvent.click(await screen.findByRole("button", { name: /历史判定单元/ }));
+    fireEvent.click(await screen.findByText("旧标题"));
+    fireEvent.click(await screen.findByRole("button", { name: /重新生成标题/ }));
+
+    expect(await screen.findByText("重新生成后的标题")).toBeTruthy();
+    expect(postJsonMock).toHaveBeenCalledWith(
+      "/api/pending-diffs/diff_run_d_1/rename",
+      expect.anything(),
+    );
+  });
 });

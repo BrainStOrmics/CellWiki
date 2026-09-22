@@ -2144,7 +2144,7 @@ select:focus-visible {
 .diff-card:hover { border-color: #3b4552; }
 .diff-card.selected { border-color: rgba(90, 130, 190, 0.6); background: rgba(90, 130, 190, 0.1); }
 .diff-card strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #d9dde3; font-size: 11px; }
-.diff-card small { margin-left: auto; flex: 0 0 auto; color: #7d8794; font-size: 10px; }
+.diff-card small { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7d8794; font-size: 10px; }
 .diff-status { flex: 0 0 auto; padding: 1px 7px; border-radius: 8px; font-size: 9px; font-weight: 650; text-transform: uppercase; }
 .diff-status.pending { color: #e7c07a; background: rgba(184, 136, 62, 0.18); }
 .diff-status.accepted { color: #7fc59a; background: rgba(76, 164, 110, 0.16); }
@@ -2183,6 +2183,15 @@ select:focus-visible {
 .diff-history-toggle:hover { color: #d9dde3; }
 .diff-history-list { max-height: none; overflow-y: visible; }
 .diff-history-notice { color: #7d8794; font-size: 10px; }
+/* "未命名"与详情栏标题区走中性灰：命名状态是说明，不是强调色动作。 */
+.diff-unnamed-badge { flex: 0 0 auto; padding: 1px 7px; border-radius: 8px; font-size: 9px; font-weight: 650; color: #9aa2ad; background: rgba(140, 148, 160, 0.12); border: 1px solid rgba(140, 148, 160, 0.3); white-space: nowrap; }
+.diff-detail-heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.diff-detail-heading strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.diff-detail-heading small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #7d8794; font-size: 10px; }
+.diff-detail-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.diff-rename { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 1px solid #333a45; border-radius: 4px; color: #aeb5bf; background: #161a20; font-size: 10.5px; cursor: pointer; }
+.diff-rename:hover { color: #d9dde3; border-color: #3b4552; }
+.diff-rename:disabled { opacity: 0.5; cursor: default; }
 .workspace-scan-row { display: flex; padding: 2px 0 6px; }
 .workspace-scan-raw { display: inline-flex; align-items: center; gap: 5px; padding: 4px 8px; border: 1px solid #333a45; border-radius: 4px; color: #aeb5bf; background: #161a20; font-size: 10.5px; cursor: pointer; }
 .workspace-scan-raw:hover { color: #d9dde3; border-color: #3b4552; }

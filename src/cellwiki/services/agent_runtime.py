@@ -71,6 +71,7 @@ from cellwiki.services.model_transcript import (
     summarize_transcript,
 )
 from cellwiki.services.model_catalog import ModelCatalogService
+from cellwiki.services.unit_naming import UnitNamingService
 from cellwiki.services.run_scope import (
     clear_run_scope,
     porcelain_paths as _porcelain_dirty_paths,
@@ -1247,6 +1248,18 @@ class AgentRuntimeManager:
             max_workers=1,
             thread_name_prefix="cellwiki-agent",
         )
+        # 命名（展示性元数据）：单线程 + 指纹去重，避免同一单元反复调用模型；
+        # 不参与串行门禁、不写 git，失败只落 data 字段与服务日志。
+        self._naming = UnitNamingService(
+            self.project_root, self.store, self._model_catalog
+        )
+        self._naming_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="cellwiki-naming",
+        )
+        # diff_id -> commits 指纹：只在内容变化时重新命名（挂起发布会刷新单元）。
+        # 只在 run 工作线程里读写（run 严格串行），无需加锁。
+        self._named_units: dict[str, tuple[str, ...]] = {}
         self._thread_lock = RLock()
         self._built_adapter: Any | None = None
         self._built_cache_policy: Any | None = None
@@ -1684,6 +1697,36 @@ class AgentRuntimeManager:
                 )
             return None
 
+    # ---- 命名（展示性元数据；见 ADR-0007 决策 2 的 2026-09-22 修订说明）----
+    def name_pending_diff(self, diff_id: str) -> PendingDiff:
+        """Synchronously regenerate one unit's title + summary (panel action)."""
+        self._naming.name_pending_diff(diff_id, source="manual_regen")
+        return self.store.get_pending_diff(diff_id)
+
+    def _queue_unit_naming(self, diff: PendingDiff) -> None:
+        """Enqueue naming only when the unit's content changed (commits fingerprint)."""
+        fingerprint = tuple(diff.commits[:5])
+        if self._named_units.get(diff.diff_id) == fingerprint:
+            return
+        self._named_units[diff.diff_id] = fingerprint
+        self._naming_executor.submit(self._name_unit_safely, diff.diff_id)
+
+    def _name_unit_safely(self, diff_id: str) -> None:
+        try:
+            self._naming.name_pending_diff(diff_id)
+        except Exception:  # noqa: BLE001 - 后台任务绝不让异常逃逸
+            logger.exception("unit naming task crashed for %s", diff_id)
+
+    def _queue_thread_naming(self, thread_id: str) -> None:
+        """每段收尾都问一次；服务内部按 title_source 幂等，只会真命名一次。"""
+        self._naming_executor.submit(self._name_thread_safely, thread_id)
+
+    def _name_thread_safely(self, thread_id: str) -> None:
+        try:
+            self._naming.name_thread_once(thread_id)
+        except Exception:  # noqa: BLE001 - 后台任务绝不让异常逃逸
+            logger.exception("thread naming task crashed for %s", thread_id)
+
     # ---- 内部执行 ----
     def _persist_run_checkpoint(self, run_id: str, thread_id: str) -> None:
         """每段结束后把最新 checkpoint 标识写回 run。
@@ -1761,6 +1804,8 @@ class AgentRuntimeManager:
         # 单元已在持串行门时判过，这里是幂等空读；failed/cancelled 由助手内部
         # 排除，仍留给人看。
         self._maybe_auto_accept_pending_diff(run_id)
+        # 会话命名：同一服务，服务内部按 title_source 幂等（只对一个会话命名一次）。
+        self._queue_thread_naming(thread_id)
 
     def _on_stream_watchdog_expire(self, run_id: str, escalated: bool) -> None:
         """看门狗到期：关掉模型的 HTTP client，让挂起的流式读抛错。
@@ -3650,10 +3695,22 @@ class AgentRuntimeManager:
             # data 里此前的维护标记（若有）必须活过刷新，否则重试线索丢失。
             data=existing.data if existing is not None else {},
         )
+        # 确定性回退标题在发布时物化（提交 subject 要读 git，渲染时算不了）：
+        # LLM 命名失败、无模型或本功能上线前的单元，列表也照旧可读。
+        pending = pending.model_copy(
+            update={
+                "data": {
+                    **pending.data,
+                    "unit_title_fallback": self._naming.fallback_title(pending),
+                }
+            }
+        )
         self.store.save_pending_diff(pending)
         self.store.update_run(
             run.model_copy(update={"pending_diff_id": pending.diff_id})
         )
+        # 命名是展示性元数据：后台单线程跑，失败只落字段与日志，不阻塞门禁。
+        self._queue_unit_naming(pending)
         return True
 
     # ---- 系统维护（判定时维护 + 系统维护 commit）----
@@ -4153,6 +4210,9 @@ class AgentRuntimeManager:
         if running is not None:
             self._watchdog.escalate(running, 0.0)
         self._executor.shutdown(wait=True)
+        # 命名任务不做等待：它可能正卡在 20 秒超时的模型调用上，
+        # 而关闭路径不能因此被拖住（cancel_futures 只清掉还没开跑的）。
+        self._naming_executor.shutdown(wait=False, cancel_futures=True)
         self._watchdog.stop()
         if self.adapter is not None and hasattr(self.adapter, "close"):
             self.adapter.close()

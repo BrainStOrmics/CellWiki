@@ -24,6 +24,24 @@ export function isAutoAccepted(diff: PendingDiffRecord): boolean {
   return diff.data?.resolved_by === "auto";
 }
 
+function dataText(diff: PendingDiffRecord, key: string): string {
+  const value = diff.data?.[key];
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * 卡片主行：LLM 标题 → 发布时物化的确定性回退 → run id。
+ * 回退标题由后端在发布时算好（提交 subject 要读 git，渲染时算不了）。
+ */
+export function unitTitle(diff: PendingDiffRecord): string {
+  return dataText(diff, "unit_title") || dataText(diff, "unit_title_fallback") || diff.run_id;
+}
+
+/** 没有真名字（命名失败、无模型，或本功能上线前的历史单元）。 */
+export function isUnnamed(diff: PendingDiffRecord): boolean {
+  return !dataText(diff, "unit_title");
+}
+
 /**
  * 审批单元序号：`diff_<run_id>_<n>`。无后缀的旧行视为单元 1；
  * 无法识别的 id 返回 null（不展示徽章）。与后端 agent_runtime._unit_index 同步。
@@ -169,6 +187,21 @@ export function DiffBrowser({ onExit, onCountChange }: Props) {
     }
   }
 
+  async function regenerate(diffId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await postJson<{ status: string }>(`/api/pending-diffs/${encodeURIComponent(diffId)}/rename`, {});
+      const updated = await getJson<PendingDiffRecord>(`/api/pending-diffs/${encodeURIComponent(diffId)}`);
+      setSelected((current) => (current?.diff_id === diffId ? updated : current));
+      await load();
+    } catch (cause) {
+      setError(String(cause));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const files = patch ? parsePatch(patch) : [];
   const pending = diffs?.filter((d) => d.status === "pending") ?? [];
   const pendingCount = pending.length;
@@ -203,10 +236,11 @@ export function DiffBrowser({ onExit, onCountChange }: Props) {
                 <span className="diff-card-top">
                   <span className={`diff-status ${d.status}`}>{d.status}</span>
                   {unitBadge(d)}
+                  {isUnnamed(d) && <span className="diff-unnamed-badge" title={dataText(d, "unit_title_error") || "尚未命名"}>未命名</span>}
                 </span>
                 <span className="diff-card-main">
-                  <strong>{d.run_id}</strong>
-                  <small>+{d.insertions} −{d.deletions} · {d.files.length} 文件 · {d.commits.length} 提交</small>
+                  <strong>{unitTitle(d)}</strong>
+                  <small>{d.run_id} · +{d.insertions} −{d.deletions} · {d.files.length} 文件 · {d.commits.length} 提交</small>
                 </span>
               </button>
             ))}
@@ -225,10 +259,11 @@ export function DiffBrowser({ onExit, onCountChange }: Props) {
                         <span className={`diff-status ${d.status}`}>{d.status}</span>
                         {unitBadge(d)}
                         {isAutoAccepted(d) && <span className="diff-auto-badge">自动接受</span>}
+                        {isUnnamed(d) && <span className="diff-unnamed-badge" title={dataText(d, "unit_title_error") || "尚未命名"}>未命名</span>}
                       </span>
                       <span className="diff-card-main">
-                        <strong>{d.run_id}</strong>
-                        <small>+{d.insertions} −{d.deletions} · {d.files.length} 文件</small>
+                        <strong>{unitTitle(d)}</strong>
+                        <small>{d.run_id} · +{d.insertions} −{d.deletions} · {d.files.length} 文件</small>
                       </span>
                     </button>
                   ))}
@@ -239,21 +274,38 @@ export function DiffBrowser({ onExit, onCountChange }: Props) {
           {selected && (
             <div className="diff-detail">
               <div className="diff-detail-toolbar">
-                <strong>{selected.run_id}</strong>
+                <div className="diff-detail-heading">
+                  <strong>{unitTitle(selected)}</strong>
+                  <small>{selected.run_id}</small>
+                  {dataText(selected, "unit_summary") && <small>{dataText(selected, "unit_summary")}</small>}
+                  {isUnnamed(selected) && (
+                    <small className="diff-unnamed-reason">
+                      未命名{dataText(selected, "unit_title_error") ? ` · ${dataText(selected, "unit_title_error")}` : ""}
+                    </small>
+                  )}
+                </div>
                 {unitBadge(selected)}
                 {selected.status !== "pending" && (
                   <span className="diff-history-notice">已判定 · 只读</span>
                 )}
-                {selected.status === "pending" && (
-                  <div className="diff-actions">
-                    <button
-                      onClick={() => void resolve(selected.diff_id, "reject")}
-                      disabled={busy}
-                      title={`仅回滚本单元的 ${selected.commits.length} 个提交，不影响此前已判定的内容`}
-                    ><ShieldX size={13} /> 拒绝本单元（{selected.commits.length} 提交）</button>
-                    <button onClick={() => void resolve(selected.diff_id, "accept")} disabled={busy}><ShieldCheck size={13} /> 接受</button>
-                  </div>
-                )}
+                <div className="diff-detail-actions">
+                  <button
+                    className="diff-rename"
+                    onClick={() => void regenerate(selected.diff_id)}
+                    disabled={busy}
+                    title="让模型重新总结这个单元并起名"
+                  ><RefreshCw size={13} /> 重新生成标题</button>
+                  {selected.status === "pending" && (
+                    <div className="diff-actions">
+                      <button
+                        onClick={() => void resolve(selected.diff_id, "reject")}
+                        disabled={busy}
+                        title={`仅回滚本单元的 ${selected.commits.length} 个提交，不影响此前已判定的内容`}
+                      ><ShieldX size={13} /> 拒绝本单元（{selected.commits.length} 提交）</button>
+                      <button onClick={() => void resolve(selected.diff_id, "accept")} disabled={busy}><ShieldCheck size={13} /> 接受</button>
+                    </div>
+                  )}
+                </div>
               </div>
               {patch === null ? (
                 <div className="feature-state">加载中…</div>

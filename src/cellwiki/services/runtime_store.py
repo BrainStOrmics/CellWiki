@@ -957,6 +957,29 @@ class RuntimeStore:
             for row in rows
         ]
 
+    def get_thread_title_state(self, thread_id: str) -> tuple[str | None, str] | None:
+        """Return ``(title, title_source)``; None when the thread is unknown.
+
+        旧库或未命名会话的 ``title_source`` 为空 -> ``"derived"``：LLM 命名只对
+        仍然派生自首条消息的会话触发一次（见 ``unit_naming``）。
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT title, title_source FROM agent_threads WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return row[0], row[1] or "derived"
+
+    def set_thread_title(self, thread_id: str, title: str, *, source: str) -> None:
+        """Write a conversation title together with its source (derived / llm)."""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE agent_threads SET title = ?, title_source = ? WHERE thread_id = ?",
+                (title, source, thread_id),
+            )
+
     def _ensure_thread_registry(self, connection: sqlite3.Connection) -> None:
         """Upgrade the two-column ``agent_threads`` table into a real registry.
 
@@ -970,10 +993,17 @@ class RuntimeStore:
         """
 
         columns = {
-            row[1] for row in connection.execute("PRAGMA table_info(agent_threads)")
+            row[1]
+            for row in connection.execute("PRAGMA table_info(agent_threads)")
         }
         if "title" not in columns:
             connection.execute("ALTER TABLE agent_threads ADD COLUMN title TEXT")
+        if "title_source" not in columns:
+            # 命名来源：derived（首条消息确定性派生，默认）/ llm（一次性 LLM 命名）。
+            # 旧库留空按 derived 解释——LLM 命名只对 derived 的会话触发一次。
+            connection.execute(
+                "ALTER TABLE agent_threads ADD COLUMN title_source TEXT"
+            )
         connection.execute(
             """
             INSERT OR IGNORE INTO agent_threads(thread_id, created_at)
@@ -1295,6 +1325,37 @@ class RuntimeStore:
         with self._connect() as connection:
             rows = connection.execute(query, parameters).fetchall()
         return [PendingDiff.model_validate_json(row[0]) for row in rows]
+
+    def patch_pending_diff_data(
+        self, diff_id: str, data: dict[str, Any]
+    ) -> PendingDiff:
+        """Merge ``data`` into one unit **without touching its verdict fields**.
+
+        命名等判定后的展示性元数据必须走这条路：``update_pending_diff`` 会把
+        调用方读过的 status/resolution 一起写回，而单元在模型调用期间常已被
+        人工或代判接受（自动接受开启时是常态）——那条"不能回退为 pending"的
+        守卫会直接抛错，命名结果就此丢失。
+        """
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM pending_diffs WHERE diff_id = ?", (diff_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(diff_id)
+            current = PendingDiff.model_validate_json(row[0])
+            updated = current.model_copy(
+                update={"data": {**(current.data or {}), **data}}
+            )
+            connection.execute(
+                "UPDATE pending_diffs SET payload = ?, updated_at = ? WHERE diff_id = ?",
+                (
+                    updated.model_dump_json(),
+                    datetime.now(UTC).isoformat(),
+                    diff_id,
+                ),
+            )
+        return updated
 
     def update_pending_diff(
         self,
@@ -2113,7 +2174,8 @@ class RuntimeStore:
     CREATE TABLE IF NOT EXISTS agent_threads (
         thread_id TEXT PRIMARY KEY,
         created_at TEXT NOT NULL,
-        title TEXT
+        title TEXT,
+        title_source TEXT
     );
     CREATE TABLE IF NOT EXISTS agent_questions (
         question_id TEXT PRIMARY KEY,
@@ -2365,7 +2427,7 @@ class RuntimeStore:
         只在标题为空时写入：历史列表的标签不能随对话漂移，也不能被后续消息改名。
         """
         connection.execute(
-            "UPDATE agent_threads SET title = ? "
+            "UPDATE agent_threads SET title = ?, title_source = 'derived' "
             "WHERE thread_id = ? AND (title IS NULL OR title = '')",
             (_derive_thread_title(content), thread_id),
         )

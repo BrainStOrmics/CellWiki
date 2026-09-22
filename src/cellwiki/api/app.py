@@ -984,6 +984,15 @@ def create_app(
         except Exception as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
 
+    @app.post("/api/pending-diffs/{diff_id}/rename", status_code=status.HTTP_200_OK)
+    def rename_pending_diff(diff_id: str) -> dict:
+        """重新生成一个单元的标题与摘要；命名失败写入 data.unit_title_error。"""
+        runtime = get_agent_runtime()
+        try:
+            return runtime.name_pending_diff(diff_id).model_dump()
+        except KeyError:
+            raise HTTPException(status_code=404, detail="pending diff not found") from None
+
     @app.post("/api/pending-diffs/{diff_id}/reopen", status_code=status.HTTP_200_OK)
     def reopen_pending_diff(diff_id: str) -> dict:
         """重新打开当前未判定单元（幂等）；已判定单元不可回退 -> 409。"""

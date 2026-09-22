@@ -165,6 +165,22 @@ class GitExecutor:
             )
         return [line.strip() for line in output.splitlines() if line.strip()]
 
+    def commit_subjects(self, shas: Iterable[str]) -> list[str]:
+        """Return the subject line of each commit, in the given order, one git call.
+
+        系统内部只读查询（命名与回退标题用）：**不是** Agent 工具面的一部分，
+        sha 来自库里记录的 run commit，仍按 ref 规则校验后直传。
+        """
+        refs = [str(sha) for sha in shas if sha]
+        if not refs:
+            return []
+        for ref in refs:
+            self._validate_ref(ref, None)
+        output = self._run_unchecked(
+            "log", "--no-walk=unsorted", "--format=%s", *refs, label="log"
+        )
+        return [line.strip() for line in output.splitlines() if line.strip()]
+
     def diff_between(
         self,
         left: str | None,

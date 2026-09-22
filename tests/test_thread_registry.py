@@ -100,7 +100,8 @@ def test_registry_upgrade_adds_title_and_backfills_missing_rows(tmp_path: Path):
     columns = {
         row[1] for row in sqlite3.connect(database).execute("PRAGMA table_info(agent_threads)")
     }
-    assert columns == {"thread_id", "created_at", "title"}
+    # 升级补两列：title（标题）与 title_source（derived/llm，命名来源）。
+    assert columns == {"thread_id", "created_at", "title", "title_source"}
 
     by_id = {item["thread_id"]: item for item in store.list_threads()}
     assert set(by_id) == {"thread_known", "thread_legacy"}
@@ -136,6 +137,11 @@ def test_thread_title_is_derived_from_the_first_user_message(tmp_path: Path):
 
     entries = {item["thread_id"]: item for item in store.list_threads()}
     assert entries["thread_titled"]["title"] == "总结 CD8 T 细胞的标记基因"
+    # 来源随行落库：确定性派生（LLM 命名只对仍为 derived 的会话触发一次）。
+    assert store.get_thread_title_state("thread_titled") == (
+        "总结 CD8 T 细胞的标记基因",
+        "derived",
+    )
 
 
 def test_thread_title_collapses_whitespace_and_truncates_to_40_chars(tmp_path: Path):
