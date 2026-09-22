@@ -326,14 +326,16 @@ type ToolCardSpec = {
 const TOOL_CARDS: Record<string, ToolCardSpec> = {
   run_powershell: { label: "Pwsh", icon: Terminal, Body: PwshCard },
   read_file: { label: "Read", icon: FileCode2, Body: ReadCard },
+  // Retired tool (2026-09-22): retained only so historical transcripts still
+  // render readably. Not in the current agent whitelist.
   read_wiki_page: { label: "Read", icon: FileCode2, Body: ReadCard },
   grep: { label: "Grep", icon: Search, Body: SearchCard },
   glob: { label: "Glob", icon: Search, Body: SearchCard },
   // Retired tool (2026-09-21): retained only so historical transcripts still
   // render readably. Not in the current agent whitelist.
   ls: { label: "LS", icon: Search, Body: SearchCard },
+  // Retired tool (2026-09-22): retained only so historical transcripts still render.
   search_wiki: { label: "Search", icon: Search, Body: SearchCard },
-
 
   write_file: { label: "Write", icon: FileText, Body: GenericCard },
   edit_file: { label: "Edit", icon: FileCode2, Body: EditCard },
@@ -346,6 +348,7 @@ const TOOL_CARDS: Record<string, ToolCardSpec> = {
   // Retired tool: retained only so historical transcripts still render readably.
   ingest_sources: { label: "Legacy ingest", icon: FileText, Body: GenericCard },
   ask_user_question: { label: "Ask", icon: FileText, Body: GenericCard },
+  // Retired tool (2026-09-22): retained only so historical transcripts still render.
   get_project_status: { label: "Status", icon: FileText, Body: GenericCard },
 };
 

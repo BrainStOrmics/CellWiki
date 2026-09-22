@@ -60,7 +60,15 @@ def test_prompt_tool_name_lists_come_from_the_registry():
     )
 
     # 已退役与框架残留的工具名不得出现在 Layer A 的可用工具清单里。
-    for retired in ("ls", "ingest_sources", "move_file", "move_folder", "read_wiki_page"):
+    for retired in (
+        "ls",
+        "ingest_sources",
+        "move_file",
+        "move_folder",
+        "read_wiki_page",
+        "search_wiki",
+        "get_project_status",
+    ):
         assert not re.search(rf"\b{retired}\b", LAYER_A_TEXT), retired
 
     # 边界提醒里只允许把 ls 当作"不可用"提到（它是框架残留、仍需显式拦截）。
