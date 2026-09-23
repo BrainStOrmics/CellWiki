@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cacheCoversDurableHistory, rebuildAgentTranscript } from "./AppShell";
+import { cacheCoversDurableHistory, rebuildAgentTranscript, threadViewIsCurrent } from "./AppShell";
 import type { AgentRunReducerLabels } from "../features/agent/agent-run-reducer";
 import type { AgentEvent, AgentMessage, ChatMessage } from "../types";
 
@@ -187,5 +187,21 @@ describe("cacheCoversDurableHistory", () => {
     ];
     const history = [durable("run_1", "user"), durable("run_1"), durable("run_2")];
     expect(cacheCoversDurableHistory(truncated, history)).toBe(false);
+  });
+});
+
+describe("threadViewIsCurrent", () => {
+  it("只有全量重建到最新、且该 run 已定局时才能吃缓存", () => {
+    const succeeded = { run_id: "run_2", status: "succeeded" as const };
+    expect(threadViewIsCurrent("run_2", succeeded)).toBe(true);
+    // 服务端又长出了新 run：缓存不再是当前视图
+    expect(threadViewIsCurrent("run_1", succeeded)).toBe(false);
+    // 最新 run 还没定局（正在流式输出 / 等用户回答）：事件还会长，不能吃缓存
+    expect(threadViewIsCurrent("run_2", { run_id: "run_2", status: "running" })).toBe(false);
+    expect(threadViewIsCurrent("run_2", { run_id: "run_2", status: "waiting_confirmation" })).toBe(false);
+    expect(threadViewIsCurrent("run_2", { run_id: "run_2", status: "unfinished" })).toBe(false);
+    // 本次会话没重建过 / 服务端没有任何 run
+    expect(threadViewIsCurrent(undefined, succeeded)).toBe(false);
+    expect(threadViewIsCurrent("run_2", undefined)).toBe(false);
   });
 });

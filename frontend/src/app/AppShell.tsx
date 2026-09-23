@@ -162,6 +162,19 @@ function historyMessageToChatMessage(message: AgentMessage): ChatMessage {
  * 恢复时缓存是"最新视图"，但一次失败的历史加载会让它只剩欢迎语和此后几轮；这种
  * 残缺缓存一旦被当成权威，早先的轮次在本次会话里就再也显示不出来。缺 run 即不覆盖。
  */
+/**
+ * 视图是否已经"全量重建过且服务端没新东西"：缓存里的这条会话已经按事件重建到
+ * ``replayedRunId``，且服务端最新 run 就是它、并且已经定局——此时切回该会话可以
+ * 直接用缓存（不拉几十 MB 的事件流）。定局是硬条件：未定局的 run 还会长出新事件。
+ */
+export function threadViewIsCurrent(
+  replayedRunId: string | undefined,
+  latestRun: Pick<AgentRun, "run_id" | "status"> | undefined,
+): boolean {
+  if (!replayedRunId || !latestRun) return false;
+  return replayedRunId === latestRun.run_id && isSettledRunStatus(latestRun.status);
+}
+
 export function cacheCoversDurableHistory(
   messages: ChatMessage[],
   history: AgentMessage[],
@@ -351,6 +364,8 @@ export function AppShell() {
   const queryClient = useQueryClient();
   // 每个会话保留一份本地聊天视图，离开会话时不丢正在流式输出的部分回答与草稿
   const threadStateCacheRef = useRef(new Map<string, CachedThreadState>());
+  // 每个会话"已经全量重建到哪个 run"：命中它就能跳过事件流回放（切会话秒开）。
+  const threadReplayRef = useRef(new Map<string, string>());
   const threadRestorePrefRef = useRef<string | null>(null);
   const threadRestoreTokenRef = useRef(0);
   const renderedThreadIdRef = useRef<string | null>(null);
@@ -1063,9 +1078,27 @@ export function AppShell() {
     replaceAttachmentRecords(cacheUsable && cached ? cached.attachments : []);
     clearActiveAttachments();
     try {
+      // 快路：这条会话本次会话里已经全量重建过，且服务端最新 run 没变、已定局——
+      // 直接用缓存，省掉历史 + 事件流两趟（长会话的事件流是几十 MB 级别）。
+      const latestRuns = await getJson<AgentRun[]>(
+        `/api/agent/runs?thread_id=${encodeURIComponent(threadId)}&limit=1`,
+      );
+      if (token !== threadRestoreTokenRef.current) return;
+      const latestRun = latestRuns[0];
+      if (
+        cacheUsable
+        && cached
+        && threadViewIsCurrent(threadReplayRef.current.get(threadId), latestRun)
+      ) {
+        messagesRef.current = cached.messages;
+        setMessages(cached.messages);
+        renderedThreadIdRef.current = threadId;
+        return;
+      }
+
       const [history, runs] = await Promise.all([
         getJson<AgentMessage[]>(`/api/agent/threads/${encodeURIComponent(threadId)}/messages`),
-        getJson<AgentRun[]>(`/api/agent/runs?thread_id=${encodeURIComponent(threadId)}&limit=1`),
+        getJson<AgentRun[]>(`/api/agent/runs?thread_id=${encodeURIComponent(threadId)}&limit=200`),
       ]);
       if (token !== threadRestoreTokenRef.current) return;
       // 本地缓存仍是该会话的最新视图，但只有覆盖了服务端已落库的每个 run 才可信：
@@ -1077,12 +1110,44 @@ export function AppShell() {
         messagesRef.current = historyMessages;
         setMessages(historyMessages);
       }
+      // 首次打开：历史每条 run 也按事件重建——这样思考块（多块）、工具之间的旁白、
+      // 工具行次序都和直播一致；最新一条留给 restoreAgentRun（它还要处理活跃/暂停态
+      // 与订阅）。只回放 process 步骤的"拼接版"会丢掉旁白与思考块的位置。
+      const olderRuns = runs
+        .filter((run) => run.run_id !== latestRun?.run_id)
+        .reverse();
+      if (olderRuns.length > 0) {
+        const eventsByRun = await Promise.all(
+          olderRuns.map((run) =>
+            getJson<AgentEvent[]>(`/api/agent/runs/${encodeURIComponent(run.run_id)}/events`),
+          ),
+        );
+        if (token !== threadRestoreTokenRef.current) return;
+        let replayed = messagesRef.current;
+        olderRuns.forEach((run, index) => {
+          const labels = agentRunLabels(runRecordContext(run));
+          replayed = rebuildAgentTranscript(replayed, run.run_id, eventsByRun[index], labels);
+          if (
+            terminalAgentStatuses.has(run.status)
+            && !eventsByRun[index].some(
+              (event) => event.type === "run_status" && event.data.terminal === true,
+            )
+          ) {
+            replayed = reduceAgentRunMessages(
+              replayed,
+              legacyTerminalEvent(run, (eventsByRun[index].at(-1)?.sequence ?? 0) + 1),
+              labels,
+            );
+          }
+        });
+        messagesRef.current = replayed;
+        setMessages(replayed);
+      }
       const threadAttachments = await getJson<AttachmentRecord[]>(
         `/api/agent/threads/${encodeURIComponent(threadId)}/attachments`,
       );
       if (token !== threadRestoreTokenRef.current) return;
       if (!cacheUsable) replaceAttachmentRecords(threadAttachments);
-      const latestRun = runs[0];
       const runId = preferredRunId ?? latestRun?.run_id;
       if (runId) await restoreAgentRun(runId, { base: messagesRef.current, token });
     } catch {
@@ -1129,6 +1194,7 @@ export function AppShell() {
       }
       messagesRef.current = transcript;
       setMessages(transcript);
+      threadReplayRef.current.set(run.thread_id, runId);
       agentEventSequenceRef.current = events.at(-1)?.sequence ?? 0;
       renderedThreadIdRef.current = run.thread_id;
       const paused = pausedAgentStatuses.has(run.status);
