@@ -307,6 +307,30 @@ describe("AgentTranscriptMessage", () => {
     expect(screen.getByText("确认，开始 ingest")).toBeInTheDocument();
   });
 
+  it("folds paired tool steps and puts the run's reasoning first on restore", () => {
+    // 恢复路径（没有 timeline，只有 process）过去给 started/completed 各出一行：
+    // 一条 run 115 次调用渲染成 230 行，思考块被顶到看不见的地方（2026-09-23 实测）。
+    const steps = [
+      toolStep({ toolCallId: "c1", toolName: "read_file", phase: "running", message: "read_file · a.md" }),
+      toolStep({ toolCallId: "c1", toolName: "read_file", message: "read_file → 12 行" }),
+      toolStep({ toolCallId: "c2", toolName: "grep", phase: "running", message: "grep · pattern" }),
+      toolStep({ toolCallId: "c2", toolName: "grep", message: "grep → 3 命中" }),
+    ];
+
+    const { container } = renderMessage({
+      role: "agent",
+      text: "答案",
+      reasoning: "先看看这两个文件",
+      process: steps,
+    });
+
+    expect(container.querySelectorAll(".agent-timeline-card")).toHaveLength(2);
+    const rows = [...container.querySelectorAll(".agent-think, .agent-timeline-card")];
+    expect(rows[0]).toHaveClass("agent-think");
+    // 折叠保留完成态与结果预览
+    expect(container.querySelectorAll(".agent-timeline-card.completed")).toHaveLength(2);
+  });
+
   it("carries the transcript index as the timeline jump anchor", () => {
     const { container } = renderMessage({ role: "user", text: "第一问" }, undefined, 3);
     expect(container.querySelector('[data-chat-index="3"]')).not.toBeNull();

@@ -10,9 +10,9 @@ const CURRENT_OFFSET_PX = 24;
  * 刻度长度只由"离当前轮多远"决定：当前那枚最长、紧邻两枚次之，其余等长——
  * 像一排均匀短横上顶着一枚更长的表位（对齐参考稿的比例）。
  */
-const DASH_BASE_PX = 20;
-const DASH_NEAR_PX = 28;
-const DASH_CURRENT_PX = 36;
+const DASH_BASE_PX = 16;
+const DASH_NEAR_PX = 22;
+const DASH_CURRENT_PX = 30;
 
 export type ChatTurn = {
   /** 该轮用户消息在消息数组里的下标——跳转锚点就是它。 */
@@ -43,7 +43,7 @@ export function dashWidth(distance: number | null): number {
   if (distance === null) return DASH_BASE_PX;
   if (distance === 0) return DASH_CURRENT_PX;
   if (distance === 1) return DASH_NEAR_PX;
-  if (distance === 2) return 24;
+  if (distance === 2) return 19;
   return DASH_BASE_PX;
 }
 

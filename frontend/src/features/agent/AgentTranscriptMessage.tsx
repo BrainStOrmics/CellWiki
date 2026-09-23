@@ -195,12 +195,35 @@ function timelineNodes(message: ChatMessage): AgentTimelineNode[] {
   // Legacy fallback: rebuild nodes from persisted process steps, reusing the
   // bounded display projections when the durable events carry them.
   const nodes: AgentTimelineNode[] = [];
+  // 思考在直播里排在这轮工具之前（开场思考），恢复时也放开头——否则一屏工具行
+  // 会把思考块顶到看不见的地方。
+  if (message.reasoning) nodes.push({ kind: "thinking", text: message.reasoning });
+  const toolIndexByCall = new Map<string, number>();
   for (const step of message.process ?? []) {
     if (step.type === "tool_started" || step.type === "tool_completed" || step.type === "tool_failed") {
+      const data = (step.data ?? {}) as Record<string, unknown>;
+      const callId = String(data.tool_call_id ?? "");
+      const existing = callId ? toolIndexByCall.get(callId) : undefined;
+      if (existing !== undefined) {
+        // 完成/失败折进同一张卡（直播路径的同一语义）：不折的话恢复出来的工具行
+        // 是直播的两倍（实测一条 run 115 次调用渲染成 230 行）。
+        const previous = nodes[existing];
+        if (previous.kind === "tool") {
+          nodes[existing] = {
+            ...previous,
+            phase: step.phase,
+            summary: step.message || previous.summary,
+            step,
+            resultPreview: readResultPreview(step.data),
+          };
+        }
+        continue;
+      }
+      if (callId) toolIndexByCall.set(callId, nodes.length);
       nodes.push({
         kind: "tool",
         phase: step.phase,
-        toolName: String((step.data as Record<string, unknown>).tool_name ?? "tool"),
+        toolName: String(data.tool_name ?? "tool"),
         summary: step.message,
         step,
         argsDisplay: readArgsDisplay(step.data),
@@ -216,7 +239,6 @@ function timelineNodes(message: ChatMessage): AgentTimelineNode[] {
       });
     }
   }
-  if (message.reasoning) nodes.push({ kind: "thinking", text: message.reasoning });
   if (message.text) nodes.push({ kind: "text", text: message.text });
   return nodes;
 }

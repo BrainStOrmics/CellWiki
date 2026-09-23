@@ -43,12 +43,12 @@ describe("chatTurns", () => {
 
 describe("dashWidth / currentTurnIndex", () => {
   it("刻度长度只由离当前轮的距离决定：当前最长、紧邻次之、其余等长", () => {
-    expect(dashWidth(0)).toBe(36);
-    expect(dashWidth(1)).toBe(28);
-    expect(dashWidth(2)).toBe(24);
-    expect(dashWidth(7)).toBe(20);
+    expect(dashWidth(0)).toBe(30);
+    expect(dashWidth(1)).toBe(22);
+    expect(dashWidth(2)).toBe(19);
+    expect(dashWidth(7)).toBe(16);
     // 没有当前轮时整排等长
-    expect(dashWidth(null)).toBe(20);
+    expect(dashWidth(null)).toBe(16);
   });
 
   it("正在看的那一轮 = 视口顶部之前最近的一条锚点", () => {
@@ -124,8 +124,8 @@ describe("ChatTimeline", () => {
     const widths = [...container.querySelectorAll<HTMLElement>(".chat-timeline-dash")].map(
       (node) => Number.parseFloat(node.style.width),
     );
-    // 从远到近：隔两轮 24 → 紧邻 28 → 当前 36
-    expect(widths).toEqual([24, 28, 36]);
+    // 从远到近：隔两轮 19 → 紧邻 22 → 当前 30
+    expect(widths).toEqual([19, 22, 30]);
   });
 
   it("没有任何用户消息时不渲染这条轨", () => {
