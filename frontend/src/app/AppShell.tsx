@@ -1126,19 +1126,22 @@ export function AppShell() {
         let replayed = messagesRef.current;
         olderRuns.forEach((run, index) => {
           const labels = agentRunLabels(runRecordContext(run));
-          replayed = rebuildAgentTranscript(replayed, run.run_id, eventsByRun[index], labels);
-          if (
-            terminalAgentStatuses.has(run.status)
-            && !eventsByRun[index].some(
+          const events = eventsByRun[index];
+          // 老库里已定局的 run 可能没有终态 run_status 事件，补一条。必须**并进同一次
+          // 回放**：单独 reduce 时，一个没有可见事件的失败 run 会被追加到转录末尾，
+          // 而不是留在它那一轮的位置上。
+          const needsTerminal = terminalAgentStatuses.has(run.status)
+            && !events.some(
               (event) => event.type === "run_status" && event.data.terminal === true,
-            )
-          ) {
-            replayed = reduceAgentRunMessages(
-              replayed,
-              legacyTerminalEvent(run, (eventsByRun[index].at(-1)?.sequence ?? 0) + 1),
-              labels,
             );
-          }
+          replayed = rebuildAgentTranscript(
+            replayed,
+            run.run_id,
+            needsTerminal
+              ? [...events, legacyTerminalEvent(run, (events.at(-1)?.sequence ?? 0) + 1)]
+              : events,
+            labels,
+          );
         });
         messagesRef.current = replayed;
         setMessages(replayed);
@@ -1975,6 +1978,24 @@ export function AppShell() {
 }
 
 /** 从完整事件日志重建单个 run 的聊天内容（剔除同 run 的旧 agent 消息，避免重复追加）。 */
+/**
+ * Where a replay of ``runId`` belongs in the transcript.
+ *
+ * 首选该 run 已落库的回答行所在位置。超时/失败的 run 在 ``agent_messages`` 里只有提问
+ * 行、没有 assistant 行（实测 2026-09-23 两条 timeout run 就是这样），所以原位只能退到
+ * 它自己那条提问行的后面——两者都找不到时才落到末尾（直播中的新 run 正是这一种）。
+ */
+export function runReplayAnchor(base: ChatMessage[], runId: string): number {
+  const durableIndex = base.findIndex(
+    (message) => message.role === "agent" && message.runId === runId,
+  );
+  if (durableIndex >= 0) return durableIndex;
+  for (let index = base.length - 1; index >= 0; index -= 1) {
+    if (base[index].role === "user" && base[index].runId === runId) return index + 1;
+  }
+  return base.length;
+}
+
 export function rebuildAgentTranscript(
   base: ChatMessage[],
   runId: string,
@@ -1982,22 +2003,19 @@ export function rebuildAgentTranscript(
   labels: AgentRunReducerLabels,
 ): ChatMessage[] {
   const durable = base.filter((message) => message.role === "agent" && message.runId === runId);
-  const anchor = base.findIndex(
-    (message) => message.role === "agent" && message.runId === runId,
-  );
+  const anchor = runReplayAnchor(base, runId);
   const stripped = base.filter(
     (message) => !(message.role === "agent" && message.runId === runId),
   );
+  const at = Math.min(anchor, stripped.length);
   // 折叠历史 run 时必须在**原位**放一个空壳：reducer 找不到该 run 的消息就把新消息
   // 追加到末尾——直播正好等于末尾，但回放第 N 轮会把它的回答整条挪到最后，历史就
   // 成了"提问全在顶上、回答全在底下"（2026-09-23 实测）。空壳让 reducer 原地更新。
-  const seed = anchor >= 0
-    ? [
-        ...stripped.slice(0, anchor),
-        { role: "agent", text: "", runId } as ChatMessage,
-        ...stripped.slice(anchor),
-      ]
-    : stripped;
+  const seed = [
+    ...stripped.slice(0, at),
+    { role: "agent", text: "", runId } as ChatMessage,
+    ...stripped.slice(at),
+  ];
   let transcript = events.reduce(
     (next, event) => reduceAgentRunMessages(next, event, labels),
     seed,
@@ -2016,11 +2034,11 @@ export function rebuildAgentTranscript(
       (message) => !(message.role === "agent" && message.runId === runId),
     );
     if (!answer) return withoutRun;
-    const at = anchor >= 0 ? Math.min(anchor, withoutRun.length) : withoutRun.length;
+    const insertAt = Math.min(at, withoutRun.length);
     return [
-      ...withoutRun.slice(0, at),
+      ...withoutRun.slice(0, insertAt),
       { ...(durable[0] ?? { role: "agent" as const, text: "" }), runId, text: answer },
-      ...withoutRun.slice(at),
+      ...withoutRun.slice(insertAt),
     ];
   }
   // 事件日志不承载回答（无 final_response / message_delta）时，回放不能把

@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type RefObject } from "react";
 import { useI18n } from "../../i18n";
 import type { ChatMessage } from "../../types";
 
@@ -63,6 +63,22 @@ export function currentTurnIndex(
 }
 
 /**
+ * 视口顶部落在某条消息上时它属于哪一轮：起点不晚于它的最后一个刻度。
+ *
+ * ``currentTurnIndex`` 给的是**任意**消息的下标——视口顶部通常正落在某条回答中间，
+ * 直接拿它去刻度里找会找不到（返回 -1），镜头就从第 0 枚的左边开始衰减，表现为
+ * "第一条特别长"（实测 2026-09-23：切到长会话时 20 枚刻度宽度是 22/19/16…、
+ * 且没有任何一枚是 current）。
+ */
+export function activeTurnPosition(turns: ChatTurn[], activeIndex: number | null): number | null {
+  if (activeIndex === null) return null;
+  for (let position = turns.length - 1; position >= 0; position -= 1) {
+    if (turns[position].index <= activeIndex) return position;
+  }
+  return null;
+}
+
+/**
  * 转录左侧的时间线：一轮一枚等宽短横，**正在看的那一轮加长变深**（随滚动移动）；
  * 悬停或键盘聚焦显示预览（用户消息前几十字 + 该轮回答开头），点击跳回那一轮。
  * 刻度只按顺序均匀铺开、不按滚动比例，所以不需要量任何布局。
@@ -81,6 +97,8 @@ export function ChatTimeline({
   const turns = chatTurns(messages);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [activePosition, setActivePosition] = useState<number | null>(null);
+  const [hoveredPosition, setHoveredPosition] = useState<number | null>(null);
+  const navRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     const scroller = scrollRef?.current;
@@ -97,7 +115,7 @@ export function ChatTimeline({
       );
       const current = currentTurnIndex(anchors);
       setActiveIndex(current);
-      setActivePosition(current === null ? null : turns.findIndex((item) => item.index === current));
+      setActivePosition(activeTurnPosition(turns, current));
     };
     update();
     scroller.addEventListener("scroll", update, { passive: true });
@@ -108,18 +126,49 @@ export function ChatTimeline({
     };
   }, [scrollRef, messages, turns]);
 
+  // 悬停 = 预演"正在看的那一轮"：镜头跟着指针最近的那枚刻度走，刻度长度随它变，
+  // 宽度过渡由 CSS 补间，滑过整条轨时就是连续的变长/回落。
+  function handlePointerMove(event: ReactMouseEvent<HTMLElement>) {
+    const nav = navRef.current;
+    if (!nav) return;
+    let nearest: number | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+    [...nav.querySelectorAll<HTMLElement>(".chat-timeline-tick")].forEach((tick, position) => {
+      const rect = tick.getBoundingClientRect();
+      const distance = Math.abs(rect.top + rect.height / 2 - event.clientY);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearest = position;
+      }
+    });
+    setHoveredPosition(nearest);
+  }
+
   if (turns.length === 0) return null;
+  const focusPosition = hoveredPosition ?? activePosition;
+  const focusing = hoveredPosition !== null;
 
   return (
-    <nav className="chat-timeline" aria-label={t("chat.timeline")}>
+    <nav
+      className="chat-timeline"
+      aria-label={t("chat.timeline")}
+      ref={navRef}
+      onMouseMove={handlePointerMove}
+      onMouseLeave={() => setHoveredPosition(null)}
+    >
       {turns.map((turn, position) => {
-        const distance = activePosition === null ? null : Math.abs(position - activePosition);
-        const isCurrent = turn.index === activeIndex;
+        const distance = focusPosition === null ? null : Math.abs(position - focusPosition);
+        const isCurrent = activePosition !== null && position === activePosition;
+        const isHovered = focusing && position === hoveredPosition;
         return (
         <button
           key={turn.index}
           type="button"
-          className={isCurrent ? "chat-timeline-tick is-current" : "chat-timeline-tick"}
+          className={[
+            "chat-timeline-tick",
+            isCurrent ? "is-current" : "",
+            isHovered ? "is-hovered" : "",
+          ].filter(Boolean).join(" ")}
           aria-label={`${t("chat.timelineJump")}: ${snippet(turn.question, QUESTION_CHARS)}`}
           aria-current={isCurrent ? "true" : undefined}
           onClick={() => onJump(turn.index)}

@@ -1,6 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatTimeline, chatTurns, currentTurnIndex, dashWidth } from "./ChatTimeline";
+import {
+  ChatTimeline,
+  activeTurnPosition,
+  chatTurns,
+  currentTurnIndex,
+  dashWidth,
+} from "./ChatTimeline";
 import { LanguageProvider } from "../../i18n";
 import type { ChatMessage } from "../../types";
 
@@ -8,6 +14,14 @@ afterEach(cleanup);
 
 function message(role: "user" | "agent", text: string): ChatMessage {
   return { role, text };
+}
+
+/** jsdom 量不出布局：给节点钉一段假 rect，让"视口顶部落在哪条消息上"可控。 */
+function stubRect(node: HTMLElement, top: number) {
+  node.getBoundingClientRect = () => ({
+    top, bottom: top + 10, left: 0, right: 0, width: 0, height: 10, x: 0, y: top,
+    toJSON: () => ({}),
+  }) as DOMRect;
 }
 
 function renderTimeline(messages: ChatMessage[], onJump = vi.fn()) {
@@ -56,6 +70,30 @@ describe("dashWidth / currentTurnIndex", () => {
     expect(currentTurnIndex([{ index: 1, top: -300 }, { index: 4, top: 10 }, { index: 7, top: 500 }], 24)).toBe(4);
     // 还没滚过任何一轮（都在视口下方）时不高亮
     expect(currentTurnIndex([{ index: 0, top: 120 }], 24)).toBeNull();
+  });
+});
+
+describe("activeTurnPosition", () => {
+  const turns = chatTurns([
+    message("user", "第一问"),
+    message("agent", "第一答"),
+    message("user", "第二问"),
+    message("agent", "第二答"),
+  ]);
+
+  it("视口顶部落在回答中间时，算它所属的那一轮", () => {
+    // 实测 2026-09-23：顶部通常正落在 Agent 回答里（下标 3 = 第二答），
+    // 直接拿去刻度里 findIndex 会得 -1，镜头就从第 0 枚左边开始衰减。
+    expect(activeTurnPosition(turns, 3)).toBe(1);
+    expect(activeTurnPosition(turns, 0)).toBe(0);
+    expect(activeTurnPosition(turns, 1)).toBe(0);
+    expect(activeTurnPosition(turns, 2)).toBe(1);
+  });
+
+  it("还没有任何一轮在视口里 / 没有当前锚点时不聚焦", () => {
+    expect(activeTurnPosition(turns, null)).toBeNull();
+    // 开场白在第一条提问之前，不属于任何一轮
+    expect(activeTurnPosition([{ index: 2, question: "问", answer: "" }], 0)).toBeNull();
   });
 });
 
@@ -131,5 +169,62 @@ describe("ChatTimeline", () => {
   it("没有任何用户消息时不渲染这条轨", () => {
     const { container } = renderTimeline([message("agent", "只有开场白")]);
     expect(container.querySelector(".chat-timeline")).toBeNull();
+  });
+
+  it("视口顶部压在回答上时，它所属那一轮仍是 current（而不是第一条变长）", async () => {
+    const scroller = document.createElement("div");
+    // 顶部：前三条都滚过去了，第 3 条（第二答）压在视口顶部
+    [[0, -900], [1, -800], [2, -700], [3, 10]].forEach(([index, top]) => {
+      const node = document.createElement("div");
+      node.dataset.chatIndex = String(index);
+      stubRect(node, top);
+      scroller.appendChild(node);
+    });
+    const { container } = render(
+      <LanguageProvider>
+        <ChatTimeline
+          messages={[
+            message("user", "第一问"),
+            message("agent", "第一答"),
+            message("user", "第二问"),
+            message("agent", "第二答"),
+          ]}
+          onJump={vi.fn()}
+          scrollRef={{ current: scroller }}
+        />
+      </LanguageProvider>,
+    );
+
+    await waitFor(() =>
+      expect(container.querySelectorAll(".chat-timeline-tick")[1]).toHaveClass("is-current"),
+    );
+    const widths = [...container.querySelectorAll<HTMLElement>(".chat-timeline-dash")].map(
+      (node) => Number.parseFloat(node.style.width),
+    );
+    expect(widths).toEqual([22, 30]);
+  });
+
+  it("指针滑到刻度上时它预变长，移开后回落", async () => {
+    const { container } = renderTimeline([
+      message("user", "第一问"),
+      message("agent", "第一答"),
+      message("user", "第二问"),
+      message("agent", "第二答"),
+    ]);
+    const nav = container.querySelector(".chat-timeline") as HTMLElement;
+    const widths = () =>
+      [...container.querySelectorAll<HTMLElement>(".chat-timeline-dash")].map((node) =>
+        Number.parseFloat(node.style.width),
+      );
+
+    // 没有滚动容器 → 没有 current，整排等长
+    expect(widths()).toEqual([16, 16]);
+
+    fireEvent.mouseMove(nav, { clientY: 0 });
+    await waitFor(() => expect(widths()).toEqual([30, 22]));
+    expect(container.querySelectorAll(".chat-timeline-tick")[0]).toHaveClass("is-hovered");
+
+    fireEvent.mouseLeave(nav);
+    await waitFor(() => expect(widths()).toEqual([16, 16]));
   });
 });

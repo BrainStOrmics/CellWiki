@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { cacheCoversDurableHistory, rebuildAgentTranscript, threadViewIsCurrent } from "./AppShell";
+import {
+  cacheCoversDurableHistory,
+  rebuildAgentTranscript,
+  runReplayAnchor,
+  threadViewIsCurrent,
+} from "./AppShell";
 import type { AgentRunReducerLabels } from "../features/agent/agent-run-reducer";
 import type { AgentEvent, AgentMessage, ChatMessage } from "../types";
 
@@ -238,6 +243,94 @@ describe("rebuildAgentTranscript（历史折叠保持原位）", () => {
     ]);
     const node = rebuilt[1].timeline?.at(-1);
     expect(node).toMatchObject({ kind: "text", text: "第一答" });
+  });
+});
+
+describe("rebuildAgentTranscript（超时中断的 run：库里只有提问行）", () => {
+  // 真机形状（2026-09-23 thread_caea08…）：timeout 的 run 在 agent_messages 里没有
+  // assistant 行，回答只存在于事件日志里。
+  const base: ChatMessage[] = [
+    { role: "user", text: "对raw里前五篇论文进行ingest", runId: "run_timeout" },
+    { role: "user", text: "继续", runId: "run_2" },
+    { role: "agent", text: "第二答", runId: "run_2" },
+    { role: "user", text: "生成methods页", runId: "run_3" },
+    { role: "agent", text: "第三答", runId: "run_3" },
+  ];
+
+  // reducer 按 event.run_id 定位气泡，夹具必须带上被回放那条 run 的 id。
+  const interrupted = (
+    sequence: number,
+    type: AgentEvent["type"],
+    message = "",
+    data: Record<string, unknown> = {},
+  ): AgentEvent => ({ ...event(sequence, type, message, data), run_id: "run_timeout" });
+
+  it("中断的回放落在它自己那条提问之后，而不是整段跑到转录末尾", () => {
+    const rebuilt = rebuildAgentTranscript(
+      base,
+      "run_timeout",
+      [
+        interrupted(1, "tool_started", "Write leiden_clustering.md", { tool_name: "write_file", tool_call_id: "c1" }),
+        interrupted(2, "run_status", "模型响应超时", {
+          status: "failed",
+          terminal: true,
+          error_message: "timeout",
+        }),
+      ],
+      labels,
+    );
+
+    expect(rebuilt.map((message) => `${message.role}:${message.runId ?? "-"}`)).toEqual([
+      "user:run_timeout",
+      "agent:run_timeout",
+      "user:run_2",
+      "agent:run_2",
+      "user:run_3",
+      "agent:run_3",
+    ]);
+    expect(rebuilt[1]).toMatchObject({ runStatus: "failed", streaming: false });
+    expect(rebuilt[1].timeline?.some((node) => node.kind === "tool")).toBe(true);
+  });
+
+  it("只剩终态事件时，失败标记也留在原位", () => {
+    const rebuilt = rebuildAgentTranscript(
+      base,
+      "run_timeout",
+      [interrupted(1, "run_status", "Agent 运行失败 · timeout", { status: "failed", terminal: true })],
+      labels,
+    );
+
+    expect(rebuilt).toHaveLength(base.length + 1);
+    expect(rebuilt[1]).toMatchObject({ role: "agent", runId: "run_timeout", runStatus: "failed" });
+  });
+});
+
+describe("runReplayAnchor", () => {
+  it("优先用持久化回答的位置", () => {
+    const base: ChatMessage[] = [
+      { role: "user", text: "q1", runId: "run_1" },
+      { role: "agent", text: "a1", runId: "run_1" },
+    ];
+    expect(runReplayAnchor(base, "run_1")).toBe(1);
+  });
+
+  it("没有回答行时用它自己的提问行，且取最后一条", () => {
+    const base: ChatMessage[] = [
+      { role: "user", text: "q1", runId: "run_1" },
+      { role: "agent", text: "a1", runId: "run_1" },
+      { role: "user", text: "中断的提问", runId: "run_2" },
+      { role: "user", text: "同一条 run 上又追了一句", runId: "run_2" },
+      { role: "user", text: "q3", runId: "run_3" },
+    ];
+    expect(runReplayAnchor(base, "run_2")).toBe(4);
+  });
+
+  it("两样都没有时留在末尾（直播中的新 run 正是这种）", () => {
+    const base: ChatMessage[] = [
+      { role: "user", text: "刚敲下去、还没有 run_id 的一句" },
+      { role: "agent", text: "上一答", runId: "run_1" },
+    ];
+    expect(runReplayAnchor(base, "run_new")).toBe(2);
   });
 });
 
