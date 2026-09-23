@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatTimeline, chatTurns, currentTurnIndex, dashWidth } from "./ChatTimeline";
 import { LanguageProvider } from "../../i18n";
@@ -42,12 +42,13 @@ describe("chatTurns", () => {
 });
 
 describe("dashWidth / currentTurnIndex", () => {
-  it("刻度长度跟着该轮问答字数走，短轮最 12px、长轮封顶 28px", () => {
-    expect(dashWidth({ index: 0, question: "问", answer: "" })).toBe(12);
-    expect(dashWidth({ index: 0, question: "问".repeat(200), answer: "答".repeat(200) })).toBe(28);
-    const middle = dashWidth({ index: 0, question: "问".repeat(100), answer: "答".repeat(100) });
-    expect(middle).toBeGreaterThan(12);
-    expect(middle).toBeLessThan(28);
+  it("刻度长度只由离当前轮的距离决定：当前最长、紧邻次之、其余等长", () => {
+    expect(dashWidth(0)).toBe(36);
+    expect(dashWidth(1)).toBe(28);
+    expect(dashWidth(2)).toBe(24);
+    expect(dashWidth(7)).toBe(20);
+    // 没有当前轮时整排等长
+    expect(dashWidth(null)).toBe(20);
   });
 
   it("正在看的那一轮 = 视口顶部之前最近的一条锚点", () => {
@@ -90,19 +91,41 @@ describe("ChatTimeline", () => {
     expect(answer.textContent?.length).toBeLessThanOrEqual(65);
   });
 
-  it("长轮的刻度更长（宽度按内容量内联）", () => {
-    const { container } = renderTimeline([
-      message("user", "短问题"),
-      message("agent", "短回答"),
-      message("user", `长问题${"等等".repeat(120)}`),
-      message("agent", `长回答${"细节".repeat(120)}`),
-    ]);
+  it("当前那枚最长，紧邻的次之，其余等长", async () => {
+    // 锚点都在视口顶部之上（jsdom 量不出布局、全是 0）→ 当前轮 = 最后一轮
+    const scroller = document.createElement("div");
+    // 用户消息在消息数组里的下标：0、2、4
+    for (const chatIndex of [0, 2, 4]) {
+      const node = document.createElement("div");
+      node.dataset.chatIndex = String(chatIndex);
+      scroller.appendChild(node);
+    }
+    const scrollRef = { current: scroller };
+    const { container } = render(
+      <LanguageProvider>
+        <ChatTimeline
+          messages={[
+            message("user", "第一问"),
+            message("agent", "第一答"),
+            message("user", "第二问"),
+            message("agent", "第二答"),
+            message("user", "第三问"),
+            message("agent", "第三答"),
+          ]}
+          onJump={vi.fn()}
+          scrollRef={scrollRef}
+        />
+      </LanguageProvider>,
+    );
 
-    const dashes = [...container.querySelectorAll<HTMLElement>(".chat-timeline-dash")];
-    expect(dashes).toHaveLength(2);
-    const [short, long] = dashes.map((node) => Number.parseFloat(node.style.width));
-    expect(short).toBe(12);
-    expect(long).toBe(28);
+    await waitFor(() =>
+      expect(container.querySelectorAll(".chat-timeline-tick")[2]).toHaveClass("is-current"),
+    );
+    const widths = [...container.querySelectorAll<HTMLElement>(".chat-timeline-dash")].map(
+      (node) => Number.parseFloat(node.style.width),
+    );
+    // 从远到近：隔两轮 24 → 紧邻 28 → 当前 36
+    expect(widths).toEqual([24, 28, 36]);
   });
 
   it("没有任何用户消息时不渲染这条轨", () => {

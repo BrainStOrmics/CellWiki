@@ -6,10 +6,13 @@ const QUESTION_CHARS = 42;
 const ANSWER_CHARS = 64;
 /** 视口顶部往下留一点余量：贴顶那一轮才算"正在看"。 */
 const CURRENT_OFFSET_PX = 24;
-/** 刻度长度跟着该轮的问答字数走：短到 12px、长到 28px，400 字以上封顶。 */
-const DASH_MIN_PX = 12;
-const DASH_MAX_PX = 28;
-const DASH_FULL_CHARS = 400;
+/**
+ * 刻度长度只由"离当前轮多远"决定：当前那枚最长、紧邻两枚次之，其余等长——
+ * 像一排均匀短横上顶着一枚更长的表位（对齐参考稿的比例）。
+ */
+const DASH_BASE_PX = 20;
+const DASH_NEAR_PX = 28;
+const DASH_CURRENT_PX = 36;
 
 export type ChatTurn = {
   /** 该轮用户消息在消息数组里的下标——跳转锚点就是它。 */
@@ -35,11 +38,13 @@ export function chatTurns(messages: ChatMessage[]): ChatTurn[] {
   return turns;
 }
 
-/** 一枚刻度的长度：按该轮"问答字数"线性映射，够长的那轮一眼看得出来。 */
-export function dashWidth(turn: ChatTurn): number {
-  const chars = turn.question.length + turn.answer.length;
-  const ratio = Math.min(1, chars / DASH_FULL_CHARS);
-  return Math.round(DASH_MIN_PX + ratio * (DASH_MAX_PX - DASH_MIN_PX));
+/** 一枚刻度的长度：distance = 离当前轮隔了几轮（null = 没有当前轮）。 */
+export function dashWidth(distance: number | null): number {
+  if (distance === null) return DASH_BASE_PX;
+  if (distance === 0) return DASH_CURRENT_PX;
+  if (distance === 1) return DASH_NEAR_PX;
+  if (distance === 2) return 24;
+  return DASH_BASE_PX;
 }
 
 /**
@@ -75,6 +80,7 @@ export function ChatTimeline({
   const { t } = useI18n();
   const turns = chatTurns(messages);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
+  const [activePosition, setActivePosition] = useState<number | null>(null);
 
   useEffect(() => {
     const scroller = scrollRef?.current;
@@ -89,7 +95,9 @@ export function ChatTimeline({
             : [];
         },
       );
-      setActiveIndex(currentTurnIndex(anchors));
+      const current = currentTurnIndex(anchors);
+      setActiveIndex(current);
+      setActivePosition(current === null ? null : turns.findIndex((item) => item.index === current));
     };
     update();
     scroller.addEventListener("scroll", update, { passive: true });
@@ -98,30 +106,32 @@ export function ChatTimeline({
       scroller.removeEventListener("scroll", update);
       window.removeEventListener("resize", update);
     };
-  }, [scrollRef, messages]);
+  }, [scrollRef, messages, turns]);
 
   if (turns.length === 0) return null;
 
   return (
     <nav className="chat-timeline" aria-label={t("chat.timeline")}>
-      {turns.map((turn) => (
+      {turns.map((turn, position) => {
+        const distance = activePosition === null ? null : Math.abs(position - activePosition);
+        const isCurrent = turn.index === activeIndex;
+        return (
         <button
           key={turn.index}
           type="button"
-          className={
-            turn.index === activeIndex ? "chat-timeline-tick is-current" : "chat-timeline-tick"
-          }
+          className={isCurrent ? "chat-timeline-tick is-current" : "chat-timeline-tick"}
           aria-label={`${t("chat.timelineJump")}: ${snippet(turn.question, QUESTION_CHARS)}`}
-          aria-current={turn.index === activeIndex ? "true" : undefined}
+          aria-current={isCurrent ? "true" : undefined}
           onClick={() => onJump(turn.index)}
         >
-          <span className="chat-timeline-dash" aria-hidden style={{ width: dashWidth(turn) }} />
+          <span className="chat-timeline-dash" aria-hidden style={{ width: dashWidth(distance) }} />
           <span className="chat-timeline-preview" aria-hidden>
             <b>{snippet(turn.question, QUESTION_CHARS)}</b>
             {turn.answer && <small>{snippet(turn.answer, ANSWER_CHARS)}</small>}
           </span>
         </button>
-      ))}
+        );
+      })}
     </nav>
   );
 }
