@@ -1982,25 +1982,61 @@ export function rebuildAgentTranscript(
   labels: AgentRunReducerLabels,
 ): ChatMessage[] {
   const durable = base.filter((message) => message.role === "agent" && message.runId === runId);
-  const transcript = events.reduce(
-    (next, event) => reduceAgentRunMessages(next, event, labels),
-    base.filter((message) => !(message.role === "agent" && message.runId === runId)),
+  const anchor = base.findIndex(
+    (message) => message.role === "agent" && message.runId === runId,
   );
+  const stripped = base.filter(
+    (message) => !(message.role === "agent" && message.runId === runId),
+  );
+  // 折叠历史 run 时必须在**原位**放一个空壳：reducer 找不到该 run 的消息就把新消息
+  // 追加到末尾——直播正好等于末尾，但回放第 N 轮会把它的回答整条挪到最后，历史就
+  // 成了"提问全在顶上、回答全在底下"（2026-09-23 实测）。空壳让 reducer 原地更新。
+  const seed = anchor >= 0
+    ? [
+        ...stripped.slice(0, anchor),
+        { role: "agent", text: "", runId } as ChatMessage,
+        ...stripped.slice(anchor),
+      ]
+    : stripped;
+  let transcript = events.reduce(
+    (next, event) => reduceAgentRunMessages(next, event, labels),
+    seed,
+  );
+  const answer = durable.map((message) => message.text).find((text) => text.trim().length > 0) ?? "";
+  const rebuilt = transcript.filter(
+    (message) => message.role === "agent" && message.runId === runId,
+  );
+  const hasVisible = rebuilt.some(
+    (message) => message.text.trim().length > 0 || (message.timeline?.length ?? 0) > 0,
+  );
+  // 该 run 没有任何可见事件：空壳收掉，别在气泡里留一块空白；持久化的回答（若有）
+  // 放回**原位**——放末尾会把历史回答挪到整个转录的最后一条（2026-09-23 实测）。
+  if (!hasVisible) {
+    const withoutRun = transcript.filter(
+      (message) => !(message.role === "agent" && message.runId === runId),
+    );
+    if (!answer) return withoutRun;
+    const at = anchor >= 0 ? Math.min(anchor, withoutRun.length) : withoutRun.length;
+    return [
+      ...withoutRun.slice(0, at),
+      { ...(durable[0] ?? { role: "agent" as const, text: "" }), runId, text: answer },
+      ...withoutRun.slice(at),
+    ];
+  }
   // 事件日志不承载回答（无 final_response / message_delta）时，回放不能把
   // /messages 里已持久化的回答抹掉；回放有回答时仍以回放为准，避免重复文本。
-  const answer = durable.map((message) => message.text).find((text) => text.trim().length > 0) ?? "";
   if (!answer) return transcript;
   const index = transcript.findIndex((message) => message.role === "agent" && message.runId === runId);
-  if (index < 0) return [...transcript, ...durable];
-  const rebuilt = transcript[index];
-  if (rebuilt.text.trim()) return transcript;
+  if (index < 0) return transcript;
+  const current = transcript[index];
+  if (current.text.trim()) return transcript;
   // 气泡在有时间线节点时只渲染时间线，回答必须同时成为其中的 text 节点。
-  const timeline = rebuilt.timeline?.some((node) => node.kind === "text")
-    ? rebuilt.timeline
-    : [...(rebuilt.timeline ?? []), { kind: "text", text: answer } as AgentTimelineNode];
+  const timeline = current.timeline?.some((node) => node.kind === "text")
+    ? current.timeline
+    : [...(current.timeline ?? []), { kind: "text", text: answer } as AgentTimelineNode];
   return [
     ...transcript.slice(0, index),
-    { ...rebuilt, text: answer, timeline },
+    { ...current, text: answer, timeline },
     ...transcript.slice(index + 1),
   ];
 }

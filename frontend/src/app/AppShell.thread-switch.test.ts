@@ -190,6 +190,57 @@ describe("cacheCoversDurableHistory", () => {
   });
 });
 
+describe("rebuildAgentTranscript（历史折叠保持原位）", () => {
+  const base: ChatMessage[] = [
+    { role: "user", text: "第一问" },
+    { role: "agent", text: "第一答", runId: "run_1" },
+    { role: "user", text: "第二问" },
+    { role: "agent", text: "第二答", runId: "run_2" },
+  ];
+
+  it("折叠老 run 时回答留在原位，而不是被挪到最后", () => {
+    const rebuilt = rebuildAgentTranscript(
+      base,
+      "run_1",
+      [event(1, "message_delta", "第一答（回放）"), event(2, "run_status", "", { status: "succeeded", terminal: true })],
+      labels,
+    );
+    expect(rebuilt.map((message) => message.text)).toEqual([
+      "第一问",
+      "第一答（回放）",
+      "第二问",
+      "第二答",
+    ]);
+  });
+
+  it("没有可回放事件时，持久化回答也放回原位", () => {
+    const rebuilt = rebuildAgentTranscript(base, "run_1", [], labels);
+    expect(rebuilt.map((message) => message.text)).toEqual([
+      "第一问",
+      "第一答",
+      "第二问",
+      "第二答",
+    ]);
+  });
+
+  it("回放没有回答文本时，持久化回答补成 text 节点且留在原位", () => {
+    const rebuilt = rebuildAgentTranscript(
+      base,
+      "run_1",
+      [event(1, "tool_started", "glob started.", { tool_name: "glob", tool_call_id: "c1" })],
+      labels,
+    );
+    expect(rebuilt.map((message) => message.text)).toEqual([
+      "第一问",
+      "第一答",
+      "第二问",
+      "第二答",
+    ]);
+    const node = rebuilt[1].timeline?.at(-1);
+    expect(node).toMatchObject({ kind: "text", text: "第一答" });
+  });
+});
+
 describe("threadViewIsCurrent", () => {
   it("只有全量重建到最新、且该 run 已定局时才能吃缓存", () => {
     const succeeded = { run_id: "run_2", status: "succeeded" as const };
