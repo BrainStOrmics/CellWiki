@@ -19,6 +19,7 @@ import { getText } from "../../lib/product-api";
 import { AgentRunDiagnostics } from "./AgentRunDiagnostics";
 import { QuestionCard } from "./QuestionCard";
 import { isWaitingRunStatus } from "./run-status";
+import { formatMessageTime, formatMessageTimeFull } from "./message-time";
 import type {
   AgentProcessStep,
   AgentRunStatus,
@@ -61,6 +62,8 @@ export function AgentTranscriptMessage({
 }: AgentTranscriptMessageProps) {
   const isAgent = message.role === "agent";
   const nodes = timelineNodes(message);
+  const timeLabel = formatMessageTime(message.at);
+  const timeFull = formatMessageTimeFull(message.at);
 
   return (
     <div
@@ -103,12 +106,17 @@ export function AgentTranscriptMessage({
         )}
       </div>
       {message.meta && <small className="message-meta">{message.meta}</small>}
+      {/* 提问时刻：贴着用户那一小块（右对齐），回答时刻跟着 run 的脚注走 */}
+      {!isAgent && timeLabel && (
+        <small className="message-time" title={timeFull ?? undefined}>{timeLabel}</small>
+      )}
       {isAgent && message.runId && (
         <>
           {!message.streaming && (
             <AgentRunFootnote
               runId={message.runId}
               status={message.runStatus}
+              at={message.at}
               usageSegments={message.usageSegments}
               runActions={runActions}
             />
@@ -130,16 +138,22 @@ export function AgentTranscriptMessage({
 export function AgentRunFootnote({
   runId,
   status,
+  at,
   usageSegments,
   runActions,
 }: {
   runId: string;
   status?: AgentRunStatus;
+  /** 这条 run 定局的时刻。 */
+  at?: string;
   usageSegments?: AgentUsageSegment[];
   runActions?: AgentRunAction[];
 }) {
+  const timeLabel = formatMessageTime(at);
+  const timeFull = formatMessageTimeFull(at);
   return (
     <div className="message-footnote" data-testid="agent-footnote">
+      {timeLabel && <span className="footnote-time" title={timeFull ?? undefined}>{timeLabel}</span>}
       <RunStatusWord status={status} />
       <AgentRunDiagnostics runId={runId} usageSegments={usageSegments} />
       <RunActions actions={runActions} />

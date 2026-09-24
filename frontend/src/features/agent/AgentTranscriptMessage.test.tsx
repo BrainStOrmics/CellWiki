@@ -39,6 +39,19 @@ const labels = {
   reasoningLiveLabel: "思考中…",
 };
 
+/** 时间口径当天只给 HH:MM，夹具必须用"今天"造，断言才不随运行日期漂移。 */
+function todayAt(hours: number, minutes: number): string {
+  const date = new Date();
+  date.setHours(hours, minutes, 0, 0);
+  return date.toISOString();
+}
+
+function todayKey(): string {
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
 function renderMessage(
   message: ChatMessage,
   runActions?: AgentRunAction[],
@@ -385,6 +398,37 @@ describe("AgentTranscriptMessage", () => {
     expect(container.querySelector(".message.user .message-body")).not.toBeNull();
     // 对齐就是身份：作者行删了，"你"那个标签也不需要了。
     expect(container.querySelector(".message-author")).toBeNull();
+  });
+
+  it("把提问时刻放在用户那一块下面", () => {
+    const { container } = renderMessage({ role: "user", text: "现在几点了", at: todayAt(14, 32) });
+
+    const time = container.querySelector(".message.user .message-time");
+    expect(time?.textContent).toBe("14:32");
+    expect(time?.getAttribute("title")).toBe(`${todayKey()} 14:32`);
+  });
+
+  it("把最终回复时刻放进 run 的脚注（流式期间不出）", () => {
+    const settled = renderMessage({
+      role: "agent",
+      text: "答案",
+      runId: "run_1",
+      runStatus: "succeeded",
+      at: todayAt(14, 35),
+    });
+
+    const time = settled.container.querySelector("[data-testid='agent-footnote'] .footnote-time");
+    expect(time?.textContent).toBe("14:35");
+
+    // 还在流式输出：脚注整体不渲染，时间也不该提前出现
+    const live = renderMessage({
+      role: "agent",
+      text: "答案",
+      runId: "run_1",
+      runStatus: "running",
+      streaming: true,
+    });
+    expect(live.container.querySelector(".footnote-time")).toBeNull();
   });
 
   it("puts the run's exits in its footnote, each clickable exactly once", () => {

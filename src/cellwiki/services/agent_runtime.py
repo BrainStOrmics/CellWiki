@@ -35,6 +35,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, To
 
 from cellwiki.agent.app import (
     build_coordinator_model,
+    build_coordinator_tools,
     build_model,
     build_wiki_agent,
     coordinator_tool_schema_hash,
@@ -65,8 +66,10 @@ from cellwiki.services.checkpoints import (
     latest_checkpoint_id,
 )
 from cellwiki.services.model_transcript import (
+    CHARS_PER_TOKEN,
     TOOL_RESULT_BATCH_CHAR_THRESHOLD,
     TOOL_RESULT_CHAR_THRESHOLD,
+    estimate_records_tokens,
     estimate_transcript_tokens,
     preview_tool_result,
     prune_transcript_for_model,
@@ -96,6 +99,7 @@ from cellwiki.agent.executor import (
     clear_attachment_scope,
     set_attachment_scope,
     set_promotion_handler,
+    tool_schema_text,
 )
 from cellwiki.services.attachment_store import AttachmentFileStore
 from cellwiki.services.git_executor import GitCommandError, GitDiff, GitExecutor
@@ -2006,6 +2010,67 @@ class AgentRuntimeManager:
         )
         return digest.hexdigest()[:16]
 
+    def _last_call_output_tokens(self, thread_id: str) -> int:
+        """最近一次模型调用的输出大小，从最新 run 的最后一个模型 span 上取。
+
+        记录用的列是随本次改动新增的，升级前的会话还没有值；span 一直都在，于是
+        拿它当兜底，老会话第一次打开就能显示"上轮回答"那一段。
+        """
+
+        runs = self.store.list_runs(thread_id=thread_id, limit=1)
+        if not runs:
+            return 0
+        for span in reversed(self.store.list_spans(runs[0].run_id)):
+            if span.kind == "model" and span.output_tokens:
+                return int(span.output_tokens)
+        return 0
+
+    def context_composition(self, thread_id: str) -> dict[str, Any]:
+        """把"现在上下文里有什么"拆成几节，锚到上一次模型调用的实测用量。
+
+        总量 = 上次调用的**输入 + 输出**：那条回答下一轮会被连同 prompt 一起重发，
+        只报输入会让占用少一块。分节比例来自字符估算（与压缩基线同口径
+        ``CHARS_PER_TOKEN``），再用同一个校准系数（``calibration_ratio``，压缩判定也
+        在用）折到实测输入上——中文密度让固定估算系统性偏低（真机实测：估算 275K /
+        实测 371K），不折的话差额会以"其他"的名义吃掉三分之一。折完
+        ``used_tokens - estimated_tokens - last_output_tokens`` 只剩真正未归属的部分
+        （聊天模板开销、钳制到边界的偏差）。分节只报数字，不吐提示词原文。
+        """
+        schema_version, schema_contract_hash = self._workspace_schema_metadata()
+        records = self.store.list_model_messages(thread_id)
+        estimates = {
+            "messages": estimate_records_tokens(
+                [record for record in records if record.get("kind") != "run_context"]
+            ),
+            "injection": estimate_records_tokens(
+                [record for record in records if record.get("kind") == "run_context"]
+            ),
+            "tools": len(tool_schema_text(build_coordinator_tools(self.project_root)))
+            // CHARS_PER_TOKEN,
+            "system_prompt": len(
+                stable_system_prompt_text(schema_version, schema_contract_hash)
+            )
+            // CHARS_PER_TOKEN,
+        }
+        last_input_tokens = self.store.last_prompt_tokens(thread_id) or 0
+        last_output_tokens = self.store.last_completion_tokens(thread_id) or (
+            self._last_call_output_tokens(thread_id)
+        )
+        ratio = calibration_ratio(last_input_tokens, sum(estimates.values()))
+        sections = {
+            key: int(round(value * ratio)) for key, value in estimates.items()
+        }
+        summary = self.store.thread_usage_summary(thread_id)
+        return {
+            "thread_id": thread_id,
+            "used_tokens": last_input_tokens + last_output_tokens,
+            "last_input_tokens": last_input_tokens,
+            "last_output_tokens": last_output_tokens,
+            "estimated_tokens": sum(sections.values()),
+            "sections": sections,
+            "avg_cache_hit_rate": summary["avg_cache_hit_rate"],
+        }
+
     def _append_context_compaction_started(
         self,
         run_id: str,
@@ -2710,6 +2775,8 @@ class AgentRuntimeManager:
         call_usage: dict[str, list[int]] = {}
         # model_call_id -> 已落账的真实 prompt 大小（去重流式重复上报）
         recorded_prompt_tokens: dict[str, int] = {}
+        # 同一调用的输出大小（同样按调用号去重）；与输入合成上下文占用
+        recorded_completion_tokens: dict[str, int] = {}
         call_started: dict[str, float] = {}
         call_seen_last: dict[str, float] = {}
         # Open tool calls keyed by tool_call_id -> (name, started_monotonic).
@@ -2834,6 +2901,18 @@ class AgentRuntimeManager:
                             with suppress(Exception):
                                 self.store.record_prompt_tokens(
                                     thread_id, signal.input_tokens
+                                )
+                        if signal.output_tokens > recorded_completion_tokens.get(
+                            signal.model_call_id, 0
+                        ):
+                            # 上下文占用的另一半：这次调用生成的输出，下一轮会连同
+                            # prompt 一起重发（容量浮层 = 输入 + 输出）。
+                            recorded_completion_tokens[
+                                signal.model_call_id
+                            ] = signal.output_tokens
+                            with suppress(Exception):
+                                self.store.record_completion_tokens(
+                                    thread_id, signal.output_tokens
                                 )
                     else:
                         input_tokens += signal.input_tokens

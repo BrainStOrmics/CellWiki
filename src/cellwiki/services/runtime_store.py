@@ -501,6 +501,35 @@ class RuntimeStore:
             return None
         return int(row[0])
 
+    def record_completion_tokens(self, thread_id: str, tokens: int) -> None:
+        """记住最近一次模型调用生成的输出大小。
+
+        它和 ``last_prompt_tokens`` 合成"当前上下文占用"：那条输出下一轮会被连同
+        prompt 一起重发，只报输入会让占用看起来少一块。同样是覆盖写。
+        """
+
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._ensure_transcript_state_locked(connection, thread_id)
+            connection.execute(
+                "UPDATE agent_transcript_state SET last_completion_tokens = ?, "
+                "updated_at = ? WHERE thread_id = ?",
+                (int(tokens), datetime.now(UTC).isoformat(), thread_id),
+            )
+
+    def last_completion_tokens(self, thread_id: str) -> int | None:
+        """最近一次模型调用的输出大小；无记录时 None。"""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT last_completion_tokens FROM agent_transcript_state "
+                "WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        return int(row[0])
+
     def append_model_message(
         self,
         *,
@@ -2255,6 +2284,12 @@ class RuntimeStore:
             connection.execute(
                 "ALTER TABLE agent_transcript_state "
                 "ADD COLUMN last_prompt_tokens INTEGER"
+            )
+        if "last_completion_tokens" not in columns:
+            # 上下文占用的另一半：这次调用生成的输出，下一轮请求会连同 prompt 一起重发。
+            connection.execute(
+                "ALTER TABLE agent_transcript_state "
+                "ADD COLUMN last_completion_tokens INTEGER"
             )
 
     def _backfill_messages(self) -> None:

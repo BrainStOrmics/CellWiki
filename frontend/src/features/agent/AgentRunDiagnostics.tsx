@@ -208,7 +208,7 @@ function formatSeconds(ms: number): string {
 }
 
 /** 340 / 43.1K / 12M / 57.3M — K above 1000, M above 1M, one decimal below 100 units. */
-function formatTokens(value: number): string {
+export function formatTokens(value: number): string {
   if (value < 1000) return String(value);
   // 999,500 起四舍五入就是 1M，别显示成 1000K。
   const million = value >= 999_500;

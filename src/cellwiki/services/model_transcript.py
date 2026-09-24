@@ -128,13 +128,19 @@ def _tool_calls_text(record: dict[str, Any]) -> str:
     return json.dumps(calls, ensure_ascii=False, default=str)
 
 
-def estimate_transcript_tokens(records: list[dict[str, Any]]) -> int:
-    """Fixed fallback estimate: content text + assistant tool_calls JSON."""
+def estimate_records_tokens(records: list[dict[str, Any]]) -> int:
+    """Fixed estimate for any slice of the transcript: content text + tool_calls JSON."""
 
     total_chars = sum(
         len(_text(record)) + len(_tool_calls_text(record)) for record in records
     )
     return max(0, total_chars // CHARS_PER_TOKEN)
+
+
+def estimate_transcript_tokens(records: list[dict[str, Any]]) -> int:
+    """Fixed fallback estimate: content text + assistant tool_calls JSON."""
+
+    return estimate_records_tokens(records)
 
 
 def summarize_transcript(records: list[dict[str, Any]]) -> str:

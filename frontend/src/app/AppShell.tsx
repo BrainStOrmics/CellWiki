@@ -39,6 +39,7 @@ import { QuestionCard } from "../features/agent/QuestionCard";
 import { isSettledRunStatus, isWaitingRunStatus, terminalAgentStatuses } from "../features/agent/run-status";
 import { composerActionFor } from "../features/agent/composer-action";
 import { ModelSwitcher } from "../features/agent/ModelSwitcher";
+import { ContextUsage } from "../features/agent/ContextUsage";
 import { SearchWorkspace } from "../features/discovery/FeatureWorkspaces";
 import { WorkspaceFileBrowser, type WorkspaceTreeEntry } from "../features/workspace/WorkspaceFileBrowser";
 import { WorkspaceFileViewer } from "../features/workspace/WorkspaceFileViewer";
@@ -153,6 +154,8 @@ function historyMessageToChatMessage(message: AgentMessage): ChatMessage {
     // 历史 run 的思考随消息落库；恢复时照读，思考块才不会只剩最新一条 run 有。
     reasoning: typeof data.reasoning === "string" && data.reasoning ? data.reasoning : undefined,
     runId: message.run_id,
+    // 落库时间就是"提问时刻"：用户行在 run 建立时写，assistant 行在 run 定局时写。
+    at: message.created_at,
   };
 }
 
@@ -832,6 +835,9 @@ export function AppShell() {
         // Agent 运行结束（含 ingest 完成）后刷新文件树/页面/待审徽标
         void refreshWorkspaceState();
         queryClient.invalidateQueries({ queryKey: ["agent-threads"] });
+        // 上下文容量跟着这次 run 的最后一次模型调用一起变；不主动失效的话它会停在
+        // 打开会话那一刻的读数（实测 2026-09-24：run 完了一直显示上一轮留下的 105K）。
+        queryClient.invalidateQueries({ queryKey: ["agent-context-usage"] });
         if (status !== "waiting_approval") {
           setPendingInterrupt((current) => (
             current?.runId === event.run_id ? null : current
@@ -1302,6 +1308,7 @@ export function AppShell() {
             role: "user",
             text,
             attachments: messageAttachments.length > 0 ? messageAttachments : undefined,
+            at: new Date().toISOString(),
           }]);
         },
       });
@@ -1820,19 +1827,21 @@ export function AppShell() {
                 setActiveThreadId(thread.threadId);
               }}
             />
-            <div className="agent-context">
-              <span><i />{t("chat.agentContext")}</span>
-              {composerPageRef && (
-                <>
-                  <strong>{composerPageRef.title}</strong>
-                  <small>{composerPageRef.path ?? composerPageRef.page_id}</small>
-                </>
-              )}
-              {activeAttachments.length > 0 && (
-                <small>{t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length))}</small>
-              )}
-              {selectedText && <blockquote>{selectedText}</blockquote>}
-            </div>
+            {/* 只列真正挂在这次提问上的东西（引用页/附件/选中片段）；都没有时整条不占位 */}
+            {(composerPageRef || activeAttachments.length > 0 || selectedText) && (
+              <div className="agent-context">
+                {composerPageRef && (
+                  <>
+                    <strong>{composerPageRef.title}</strong>
+                    <small>{composerPageRef.path ?? composerPageRef.page_id}</small>
+                  </>
+                )}
+                {activeAttachments.length > 0 && (
+                  <small>{t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length))}</small>
+                )}
+                {selectedText && <blockquote>{selectedText}</blockquote>}
+              </div>
+            )}
 
             <div className="chat-area">
               <ChatTimeline messages={messages} onJump={jumpToMessage} scrollRef={chatScrollRef} />
@@ -1920,8 +1929,11 @@ export function AppShell() {
                     >
                       <CirclePlus size={14} />
                     </button>
-                    <span>{activeAttachments.length > 0 ? t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length)) : t("chat.agentContext")}</span>
+                    {activeAttachments.length > 0 && (
+                      <span>{t("chat.attachmentsAttached").replace("{count}", String(activeAttachments.length))}</span>
+                    )}
                   </div>
+                  <ContextUsage threadId={activeThreadId} />
                   <ModelSwitcher />
                   {composerAction.kind === "stop" && (
                     // 运行中把发送键**原位**换成停止键：同一个位置、同一个尺寸，只换

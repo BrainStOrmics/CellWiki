@@ -127,8 +127,8 @@ def canonical_tool_sort_key(tool_name: str) -> tuple[int, str]:
         return (len(CANONICAL_TOOL_ORDER), tool_name)
 
 
-def tool_schema_fingerprint(tools: list[Any]) -> str:
-    """Hash tool names, descriptions, schemas, and canonical ordering."""
+def tool_schema_text(tools: list[Any]) -> str:
+    """Canonical tool-definition text: fingerprint and context estimate share one rendering."""
 
     payload: list[dict[str, Any]] = []
     for tool_item in sorted(
@@ -151,14 +151,19 @@ def tool_schema_fingerprint(tools: list[Any]) -> str:
                 "schema": schema,
             }
         )
-    canonical = json.dumps(
+    return json.dumps(
         payload,
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
         default=str,
     )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def tool_schema_fingerprint(tools: list[Any]) -> str:
+    """Hash tool names, descriptions, schemas, and canonical ordering."""
+
+    return hashlib.sha256(tool_schema_text(tools).encode("utf-8")).hexdigest()
 
 # read_attachment 的线程作用域解析器与附件读取预算：由 AgentRuntimeManager 在每次 run 前安装
 # （严格串行执行，因此单一槽位即可；run 结束或异常后必须清除）。

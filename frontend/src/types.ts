@@ -96,6 +96,8 @@ export type ChatMessage = {
   runId?: string;
   runStatus?: AgentRunStatus;
   streaming?: boolean;
+  /** 提问时刻 / 回答定局时刻（ISO）。提问来自消息行，回答来自终态事件。 */
+  at?: string;
   /** 每段流的用量。只喂给 AgentRunDiagnostics，
    *  绝不进聊天气泡的 text / timeline。 */
   usageSegments?: AgentUsageSegment[];
@@ -316,6 +318,26 @@ export type AgentThreadSummary = {
   total_input_tokens: number;
   total_output_tokens: number;
   total_cached_input_tokens: number;
+  avg_cache_hit_rate: number;
+};
+
+/**
+ * 线程级上下文构成：总量 = 上一次模型调用的**输入 + 输出**（那条回答下一轮会被
+ * 连同 prompt 一起重发），两者都是 provider 实测；分节是字符估算、按实测输入校准，
+ * 所以分节只用来算**占比**；量与估算的差额由界面呈现为"其他"。
+ */
+export type AgentContextUsage = {
+  thread_id: string;
+  used_tokens: number;
+  last_input_tokens: number;
+  last_output_tokens: number;
+  estimated_tokens: number;
+  sections: {
+    messages: number;
+    injection: number;
+    tools: number;
+    system_prompt: number;
+  };
   avg_cache_hit_rate: number;
 };
 

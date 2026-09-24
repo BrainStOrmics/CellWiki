@@ -572,11 +572,9 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .agent-title small { color: var(--subtle); font-size: 10.5px; }
 
 .agent-context { flex: 0 0 auto; padding: 9px 12px; border-bottom: 1px solid var(--border-soft); background: var(--bg-panel-3); }
-.agent-context > span { display: flex; align-items: center; gap: 6px; color: var(--subtle); font-size: 10.5px; }
-.agent-context > span i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
 .agent-context strong,
 .agent-context small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-context strong { margin-top: 5px; color: var(--text); font-size: 11.5px; font-weight: 550; }
+.agent-context strong { color: var(--text); font-size: 11.5px; font-weight: 550; }
 .agent-context small { margin-top: 2px; color: var(--subtle); font-size: 10.5px; }
 
 .chat-scroll { padding: 18px 18px 24px 42px; }
@@ -631,6 +629,10 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 /* run 末的脚注：状态词 + 用量 + 出口动作，一行淡字，不抢答案。 */
 .message-footnote { display: flex; flex-wrap: wrap; align-items: baseline; gap: 3px 10px; margin-top: 12px; padding-top: 9px; border-top: 1px solid var(--border-soft); color: var(--subtle); font-size: 11px; line-height: 1.6; }
 .footnote-status { flex: 0 0 auto; color: var(--muted); }
+/* 时刻跟着 run 的脚注走：脚注本来就是这个 run 的收据行 */
+.footnote-time { flex: 0 0 auto; color: var(--subtle); font-variant-numeric: tabular-nums; }
+/* 提问时刻贴在用户那一块右下角，回答时刻在脚注里，两边都只留 HH:MM 一级的信息 */
+.message.user .message-time { text-align: right; font-variant-numeric: tabular-nums; }
 .footnote-status.is-failed { color: var(--danger); }
 .footnote-status.is-unfinished,
 .footnote-status.is-rejected { color: var(--warning); }
@@ -650,8 +652,25 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .composer-chip button:hover { color: var(--text); }
 .composer-chip.page-chip { border-color: var(--accent-line); color: var(--accent); background: var(--accent-soft-2); }
 .compose-actions { display: flex; align-items: center; gap: 7px; margin-top: 8px; color: var(--muted); font-size: 10.5px; }
-/* 模型切换器推到最右，紧邻发送键；左组（附件键 + 引用提示）留在左侧 */
-.compose-actions > .model-switcher { margin-left: auto; }
+/* 上下文容量键 + 模型切换器一起推到最右，容量键紧邻模型键；左组（附件键 + 附件数）留在左侧 */
+.compose-actions > .context-usage { margin-left: auto; }
+.context-usage { position: relative; display: flex; align-items: center; }
+.context-usage-button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 50%; color: var(--muted); background: transparent; }
+.context-usage-button:hover,
+.context-usage-button[aria-expanded="true"] { color: var(--text); background: var(--bg-hover); }
+/* 浮层往左上展开：锚在容量键右侧、贴着模型键那一带。宽度必须容得下"面板左边界到容量键"
+   这段（默认面板 ≈206px），否则会被 .agent-panel 的 overflow: hidden 裁掉左半边 */
+.context-usage-popover { position: absolute; right: 0; bottom: calc(100% + 8px); z-index: 6; width: 200px; padding: 10px 11px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-panel); box-shadow: var(--shadow-2); }
+.context-usage-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; color: var(--text-3); font-size: 11px; }
+.context-usage-total { color: var(--text); font-variant-numeric: tabular-nums; }
+.context-usage-bar { height: 4px; margin-top: 7px; overflow: hidden; border-radius: 999px; background: var(--bg-hover); }
+.context-usage-bar i { display: block; height: 100%; border-radius: 999px; background: var(--accent); }
+.context-usage-rows { display: grid; gap: 5px; margin: 9px 0 0; padding: 0; list-style: none; }
+.context-usage-rows li { display: flex; align-items: center; gap: 6px; color: var(--text-2); font-size: 11px; }
+.context-usage-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.context-usage-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.context-usage-value { color: var(--text); font-variant-numeric: tabular-nums; }
+.context-usage-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--border-soft); color: var(--text-3); font-size: 11px; }
 .compose-tool-button, .compose-actions > button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 50%; color: var(--muted); background: transparent; }
 .compose-tool-button:hover, .compose-actions > button:hover { color: var(--text); background: var(--bg-hover); }
 .compose-tool-button:disabled, .compose-actions > button:disabled { cursor: default; opacity: 0.3; }

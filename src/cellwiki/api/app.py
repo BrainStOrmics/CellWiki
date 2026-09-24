@@ -688,6 +688,17 @@ def create_app(
         """Return the complete persisted transcript for one conversation."""
         return get_agent_runtime().store.list_messages(thread_id)
 
+    @app.get("/api/agent/threads/{thread_id}/context-usage")
+    def get_agent_thread_context_usage(thread_id: str) -> dict:
+        """估算下次提问的上下文构成（只出数字，不出提示词原文）。
+
+        总量是上一次模型调用的实测 input_tokens；分节是字符估算，读数看占比。
+        """
+        runtime = get_agent_runtime()
+        if not runtime.store.thread_exists(thread_id):
+            raise HTTPException(status_code=404, detail="thread not found")
+        return runtime.context_composition(thread_id)
+
     @app.delete("/api/agent/threads/{thread_id}")
     def delete_agent_thread(thread_id: str) -> dict[str, int | str]:
         """Permanently delete a conversation and its LangGraph checkpoint."""

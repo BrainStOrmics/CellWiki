@@ -257,7 +257,7 @@ export function reduceAgentRunMessages(
       failed: localizedError(event, labels)
         ?? String(event.data.error_message || event.message || labels.failed),
       cancelled: event.message || labels.cancelled,
-    });
+    }, event.created_at);
   }
   return next;
 }
@@ -292,6 +292,8 @@ function settleRun(
   runId: string,
   status: AgentRunStatus,
   terminalText: { failed: string; cancelled: string },
+  /** 终态事件的时间：回答"最终回复是什么时候"就靠它，重放时也拿得到。 */
+  at?: string,
 ): ChatMessage[] {
   const phase: AgentProcessPhase = status === "failed"
     ? "failed"
@@ -301,6 +303,8 @@ function settleRun(
   return updateRunMessage(messages, runId, (message) => ({
     ...message,
     runStatus: status,
+    // 第一次定局就记下时间；续跑/重试复用的仍是同一条 run，不覆盖成后一次的时间。
+    at: message.at ?? at,
     // meta 只有失败分支会写（"Agent 运行失败 · system"）。retry/续跑复用同一条 run 与
     // 同一个气泡，救活之后第一次失败盖的标签必须让位，否则成功的答案底下永远挂着
     // 上一轮的失败字样（真机实测：重试成功后页脚仍显示运行失败）。
@@ -323,6 +327,7 @@ function settleRun(
     runId,
     runStatus: status,
     streaming: false,
+    at,
   } : null);
 }
 

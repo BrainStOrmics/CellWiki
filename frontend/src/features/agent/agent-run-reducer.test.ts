@@ -128,6 +128,37 @@ describe("reduceAgentRunMessages", () => {
     expect(message.text).not.toContain("429");
   });
 
+  it("把终态事件的时间记成这条回答的定局时刻", () => {
+    const streaming = reduceAgentRunMessages([], event(1, "message_delta", {}, "答"), labels);
+    const settled = reduceAgentRunMessages(
+      streaming,
+      event(2, "run_status", { status: "succeeded", terminal: true }, "Run completed."),
+      labels,
+    );
+    expect(settled[0].at).toBe("2026-07-29T00:00:00Z");
+  });
+
+  it("续跑救活同一个 run 时，保留第一次定局的时间", () => {
+    const streaming = reduceAgentRunMessages([], event(1, "message_delta", {}, "答"), labels);
+    const failed = reduceAgentRunMessages(
+      streaming,
+      {
+        ...event(2, "run_status", { status: "failed", terminal: true }, "Run failed."),
+        created_at: "2026-07-29T00:05:00Z",
+      },
+      labels,
+    );
+    const revived = reduceAgentRunMessages(
+      failed,
+      {
+        ...event(3, "run_status", { status: "succeeded", terminal: true }, "Run completed."),
+        created_at: "2026-07-29T00:09:00Z",
+      },
+      labels,
+    );
+    expect(revived[0].at).toBe("2026-07-29T00:05:00Z");
+  });
+
   it("drops the failure label once a retry of the same run succeeds", () => {
     // 真机实测：第一次失败后点「重试」，run 与气泡都是同一个；succeeded 只改了状态与
     // 正文，error 事件盖的 meta 留在成功答案底下，看着像又失败了一次。
