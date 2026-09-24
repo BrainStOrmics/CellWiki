@@ -31,7 +31,7 @@ from deepagents.backends import StateBackend
 from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
 
 from cellwiki.adapters.openai_model import (
@@ -205,9 +205,14 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
         *,
         append_reminder: bool = False,
         cache_policy: PromptCachePolicy | None = None,
+        reasoning_replay: str = "none",
     ):
         self.append_reminder = append_reminder
         self.cache_policy = cache_policy
+        # none：请求里的 assistant 消息压平成跨 run 重建后的形状（丢弃
+        # reasoning 与服务端 item id）；opaque：保留 provider 的 opaque
+        # reasoning 块，供支持该通道的端点续接前缀。默认 none。
+        self.reasoning_replay = reasoning_replay
         self._fingerprint_key = secrets.token_bytes(32)
         self._previous_request_items: OrderedDict[str, tuple[str, tuple[str, ...]]] = (
             OrderedDict()
@@ -411,6 +416,37 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
             context.request_fingerprint_sink.put(fingerprint)
         return fingerprint
 
+    @staticmethod
+    def _flatten_assistant_content(message: Any) -> Any:
+        """Collapse Responses-style assistant content to the rebuilt transcript shape.
+
+        run 内产生的 assistant 消息把 reasoning、text 与 function_call 都放进
+        ``content`` 列表，跨 run 重建后只剩纯文本加 ``tool_calls``。两者在 wire
+        上必须逐项一致，否则 provider 的 prefix cache 会在中间 assistant 处断开
+        （2026-09-24 诊断：公共前缀停在第 21 条 assistant）。
+
+        这里只改本次请求的副本：图内 state、checkpoint、UI 的 ``reasoning_delta``
+        事件都不受影响。
+
+        含 provider-native compaction item 的消息整条跳过：opaque item 是
+        ADR-0014 决策 7 允许跨 run 重放的例外，压平会把它丢掉。
+        """
+
+        if not isinstance(message, AIMessage) or not isinstance(message.content, list):
+            return message
+        if any(
+            isinstance(block, dict) and block.get("type") == "compaction"
+            for block in message.content
+        ):
+            return message
+        text = "".join(
+            str(block.get("text") or "")
+            for block in message.content
+            if isinstance(block, dict)
+            and block.get("type") in ("text", "output_text")
+        )
+        return message.model_copy(update={"content": text})
+
     def _filter_request(self, request: Any) -> Any:
         filtered_tools = sorted(
             (
@@ -432,6 +468,16 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
                 ]
             system_message = system_message.model_copy(update={"content": content})
         request = request.override(tools=filtered_tools, system_message=system_message)
+        if (
+            self.reasoning_replay == "none"
+            and self._model_identity(request.model).get("protocol") == "responses"
+        ):
+            request = request.override(
+                messages=[
+                    self._flatten_assistant_content(message)
+                    for message in request.messages
+                ]
+            )
         return self._apply_cache_markers(request)
 
     def wrap_model_call(self, request: Any, handler: Any) -> Any:
@@ -594,6 +640,7 @@ def build_wiki_agent(
     registry: SubagentRegistry | None = None,
     cache_policy: PromptCachePolicy | None = None,
     compaction_baseline_provider: Any = None,
+    reasoning_replay: str = "none",
 ):
     """组装协调器 Deep Agent：模型 + 工具面 + 提示词 + checkpointer + 中间件。
 
@@ -620,6 +667,7 @@ def build_wiki_agent(
     tool_boundary = _CellWikiToolBoundaryMiddleware(
         append_reminder=True,
         cache_policy=cache_policy,
+        reasoning_replay=reasoning_replay,
     )
     return create_deep_agent(
         name="cellwiki-agent",
