@@ -5,6 +5,7 @@
 from pathlib import Path
 import json
 import shutil
+import sqlite3
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -515,3 +516,36 @@ def test_runtime_store_projects_displayable_events_into_assistant_history(tmp_pa
         ("progress", "completed"),
         ("tool_completed", "completed"),
     ]
+
+
+def test_last_model_call_timestamp_round_trips_in_transcript_state(tmp_path: Path):
+    store = RuntimeStore(tmp_path)
+    run = AgentRun(run_id="run_model_time", thread_id="thread_model_time")
+    store.create_run(run)
+
+    assert store.last_model_call_at(run.thread_id) is None
+    expected = datetime(2026, 9, 24, 1, 2, tzinfo=UTC)
+    store.record_model_call_at(run.thread_id, expected)
+
+    assert store.last_model_call_at(run.thread_id) == expected
+
+
+def test_runtime_store_adds_model_call_timestamp_to_existing_transcript_state(
+    tmp_path: Path,
+):
+    database = tmp_path / "data" / "runtime" / "cellwiki.db"
+    database.parent.mkdir(parents=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE agent_transcript_state ("
+            "thread_id TEXT PRIMARY KEY, current_epoch INTEGER NOT NULL, "
+            "bootstrapped_at TEXT, updated_at TEXT NOT NULL)"
+        )
+
+    RuntimeStore(tmp_path)
+
+    with sqlite3.connect(database) as connection:
+        columns = {row[1] for row in connection.execute(
+            "PRAGMA table_info(agent_transcript_state)"
+        )}
+    assert "last_model_call_at" in columns

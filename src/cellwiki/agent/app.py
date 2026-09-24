@@ -10,8 +10,15 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import secrets
+from collections import OrderedDict
+from datetime import UTC, datetime
 from functools import lru_cache
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, cast
 
 from deepagents import (
@@ -59,7 +66,10 @@ from cellwiki.services.prompt_layers import (
     schema_prompt_block,
 )
 from cellwiki.agent.compaction import CellWikiCompactionMiddleware
-from cellwiki.services.prompt_runtime import current_prompt_run_context
+from cellwiki.services.prompt_runtime import (
+    ModelRequestFingerprint,
+    current_prompt_run_context,
+)
 from cellwiki.services.subagents import SubagentRegistry, build_delegation_tools
 from cellwiki.agent.source_tools import build_source_tools
 from cellwiki.agent.tools import build_lint_tools
@@ -198,6 +208,10 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
     ):
         self.append_reminder = append_reminder
         self.cache_policy = cache_policy
+        self._fingerprint_key = secrets.token_bytes(32)
+        self._previous_request_items: OrderedDict[str, tuple[str, tuple[str, ...]]] = (
+            OrderedDict()
+        )
 
     @staticmethod
     def _content_blocks(content: Any) -> list[dict[str, Any]]:
@@ -273,6 +287,130 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
             return cast(str | None, tool.get("name"))
         return cast(str | None, getattr(tool, "name", None))
 
+    @staticmethod
+    def _request_message_payload(message: Any) -> Any:
+        if hasattr(message, "model_dump"):
+            return message.model_dump(
+                mode="json",
+                exclude={"id", "response_metadata", "usage_metadata"},
+            )
+        return message
+
+    @staticmethod
+    def _request_tool_payload(tool: Any) -> Any:
+        if isinstance(tool, dict):
+            return tool
+        args_schema = getattr(tool, "args_schema", None)
+        schema = (
+            args_schema.model_json_schema()
+            if args_schema is not None and hasattr(args_schema, "model_json_schema")
+            else {}
+        )
+        return {
+            "name": str(getattr(tool, "name", "") or ""),
+            "description": str(getattr(tool, "description", "") or ""),
+            "schema": schema,
+        }
+
+    @staticmethod
+    def _model_identity(model: Any) -> dict[str, str]:
+        model_name = str(
+            getattr(model, "model_name", None)
+            or getattr(model, "model", None)
+            or type(model).__name__
+        )
+        base_url = str(
+            getattr(model, "openai_api_base", None)
+            or getattr(model, "base_url", None)
+            or ""
+        )
+        host = (urlparse(base_url).hostname or "").lower() if base_url else ""
+        if isinstance(model, ChatOpenAI):
+            protocol = (
+                "responses"
+                if bool(getattr(model, "use_responses_api", False))
+                else "chat_completions"
+            )
+        elif type(model).__module__.startswith("langchain_anthropic"):
+            protocol = "anthropic"
+        else:
+            protocol = type(model).__module__ + "." + type(model).__name__
+        return {"model": model_name, "host": host, "protocol": protocol}
+
+    def _fingerprint_request(self, request: Any) -> ModelRequestFingerprint:
+        context = current_prompt_run_context()
+        system_message = request.system_message
+        components: list[dict[str, Any]] = [
+            {
+                "kind": "identity",
+                "stable_prefix_hash": context.cache_prefix_hash if context else "",
+                "transcript_epoch": context.transcript_epoch if context else 0,
+                "cache_mode": context.cache_mode if context else "",
+                **self._model_identity(request.model),
+            },
+            {
+                "kind": "system",
+                "message": (
+                    self._request_message_payload(system_message)
+                    if system_message is not None
+                    else None
+                ),
+            },
+            {
+                "kind": "tools",
+                "tools": [self._request_tool_payload(tool) for tool in request.tools],
+            },
+        ]
+        components.extend(
+            {"kind": "message", "message": self._request_message_payload(message)}
+            for message in request.messages
+        )
+        item_hashes = tuple(
+            hmac.new(
+                self._fingerprint_key,
+                json.dumps(
+                    component,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            for component in components
+        )
+        thread_id = context.thread_id if context else ""
+        previous = self._previous_request_items.get(thread_id) if thread_id else None
+        previous_hash, previous_items = previous if previous else ("", ())
+        common = 0
+        for old_item, new_item in zip(previous_items, item_hashes):
+            if old_item != new_item:
+                break
+            common += 1
+        request_hash = hmac.new(
+            self._fingerprint_key,
+            "\n".join(item_hashes).encode("ascii"),
+            hashlib.sha256,
+        ).hexdigest()[:32]
+        if thread_id:
+            self._previous_request_items[thread_id] = (request_hash, item_hashes)
+            self._previous_request_items.move_to_end(thread_id)
+            while len(self._previous_request_items) > 128:
+                self._previous_request_items.popitem(last=False)
+        fingerprint = ModelRequestFingerprint(
+            request_hash=request_hash,
+            request_item_count=len(item_hashes),
+            previous_request_hash=previous_hash or None,
+            previous_request_item_count=len(previous_items),
+            common_prefix_item_count=common,
+            previous_request_is_prefix=bool(previous_items)
+            and common == len(previous_items),
+            request_started_at=datetime.now(UTC),
+        )
+        if context is not None:
+            context.request_fingerprint_sink.put(fingerprint)
+        return fingerprint
+
     def _filter_request(self, request: Any) -> Any:
         filtered_tools = sorted(
             (
@@ -331,6 +469,25 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
         if request.tool_call.get("name") not in self._allowed_tools:
             return self._blocked_tool_response(request)
         return await handler(request)
+
+
+
+class _ModelRequestDiagnosticsMiddleware(AgentMiddleware):
+    """Fingerprint the final request after compaction and tool-boundary rewrites."""
+
+    name = "cellwiki_model_request_diagnostics"
+
+    def __init__(self, fingerprinter: _CellWikiToolBoundaryMiddleware):
+        self._fingerprinter = fingerprinter
+
+    def wrap_model_call(self, request: Any, handler: Any) -> Any:
+        self._fingerprinter._fingerprint_request(request)
+        return handler(request)
+
+    async def awrap_model_call(self, request: Any, handler: Any) -> Any:
+        self._fingerprinter._fingerprint_request(request)
+        return await handler(request)
+
 
 
 @lru_cache(maxsize=None)
@@ -460,16 +617,17 @@ def build_wiki_agent(
     active_checkpointer = (
         build_checkpointer(root) if checkpointer is _DEFAULT_CHECKPOINTER else checkpointer
     )
+    tool_boundary = _CellWikiToolBoundaryMiddleware(
+        append_reminder=True,
+        cache_policy=cache_policy,
+    )
     return create_deep_agent(
         name="cellwiki-agent",
         model=coordinator_model,
         system_prompt=SYSTEM_PROMPT,
         tools=coordinator_tools,
         middleware=[
-            _CellWikiToolBoundaryMiddleware(
-                append_reminder=True,
-                cache_policy=cache_policy,
-            ),
+            tool_boundary,
             CellWikiCompactionMiddleware(
                 model=coordinator_model,
                 threshold=(
@@ -481,6 +639,7 @@ def build_wiki_agent(
                 ),
                 baseline_provider=compaction_baseline_provider,
             ),
+            _ModelRequestDiagnosticsMiddleware(tool_boundary),
         ],
         backend=StateBackend(),
         checkpointer=active_checkpointer,

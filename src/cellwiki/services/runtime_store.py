@@ -517,6 +517,41 @@ class RuntimeStore:
                 (int(tokens), datetime.now(UTC).isoformat(), thread_id),
             )
 
+    def record_model_call_at(
+        self, thread_id: str, when: datetime | None = None
+    ) -> None:
+        """Persist the latest observed model invocation time for cold-prune gating."""
+
+        timestamp_value = when or datetime.now(UTC)
+        if timestamp_value.tzinfo is None:
+            timestamp_value = timestamp_value.replace(tzinfo=UTC)
+        timestamp = timestamp_value.astimezone(UTC).isoformat()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self._ensure_transcript_state_locked(connection, thread_id)
+            connection.execute(
+                "UPDATE agent_transcript_state SET last_model_call_at = ?, "
+                "updated_at = ? WHERE thread_id = ?",
+                (timestamp, timestamp, thread_id),
+            )
+
+    def last_model_call_at(self, thread_id: str) -> datetime | None:
+        """Return the most recently observed model invocation time, if recorded."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT last_model_call_at FROM agent_transcript_state "
+                "WHERE thread_id = ?",
+                (thread_id,),
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        try:
+            value = datetime.fromisoformat(str(row[0]))
+        except (TypeError, ValueError):
+            return None
+        return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
     def last_completion_tokens(self, thread_id: str) -> int | None:
         """最近一次模型调用的输出大小；无记录时 None。"""
 
@@ -2189,6 +2224,8 @@ class RuntimeStore:
                     current_epoch INTEGER NOT NULL,
                     bootstrapped_at TEXT,
                     last_prompt_tokens INTEGER,
+                    last_completion_tokens INTEGER,
+                    last_model_call_at TEXT,
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS agent_spans (
@@ -2274,7 +2311,7 @@ class RuntimeStore:
             )
 
     def _ensure_transcript_state_schema(self, connection: sqlite3.Connection) -> None:
-        """v2 压缩基线列：provider 回报的真实 prompt 大小走内联守卫 ALTER。"""
+        """Keep v2 transcript usage and model-call timestamp columns available."""
 
         columns = {
             row[1]
@@ -2291,6 +2328,12 @@ class RuntimeStore:
                 "ALTER TABLE agent_transcript_state "
                 "ADD COLUMN last_completion_tokens INTEGER"
             )
+        if "last_model_call_at" not in columns:
+            connection.execute(
+                "ALTER TABLE agent_transcript_state "
+                "ADD COLUMN last_model_call_at TEXT"
+            )
+
 
     def _backfill_messages(self) -> None:
         """Backfill transcripts created before the durable message table existed.

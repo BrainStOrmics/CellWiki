@@ -24,6 +24,7 @@ import logging
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from queue import Empty
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -89,7 +90,9 @@ from cellwiki.services.prompt_layers import (
     calibration_ratio,
 )
 from cellwiki.services.prompt_runtime import (
+    ModelRequestFingerprint,
     PromptRunContext,
+    current_prompt_run_context,
     reset_prompt_run_context,
     set_prompt_run_context,
 )
@@ -2148,6 +2151,7 @@ class AgentRuntimeManager:
             run.thread_id, exclude_run_id=run.run_id
         )
         policy = self._cache_policy_for_run(run)
+        self._cold_prune_transcript(run)
         records = self.store.list_model_messages(run.thread_id)
         # 压缩判定已改由图内中间件在每次模型调用前完成（2026-09-22 对齐工作）：
         # runtime 只保留 bootstrap、消息追加与渲染。provider-native 仍在这里发
@@ -2196,9 +2200,6 @@ class AgentRuntimeManager:
             content={"text": turn_context},
             message_key="run_context",
         )
-        # 冷点剪枝：缓存已经过期（run 间隔超过阈值）时才改写历史，此刻剪枝不
-        # 损失任何可命中的前缀；剪枝只在 run span 留痕，不进 UI 事件。
-        self._cold_prune_transcript(run)
         schema_version, schema_hash = self._workspace_schema_metadata()
         cache_prefix_hash = self._cache_prefix_hash(schema_hash)
         epoch = self.store.current_transcript_epoch(run.thread_id)
@@ -2214,6 +2215,7 @@ class AgentRuntimeManager:
             transcript_epoch=epoch,
             cache_prefix_hash=cache_prefix_hash,
             cache_mode=policy.mode,
+            thread_id=run.thread_id,
         )
         return render_model_messages(self.store.list_model_messages(run.thread_id)), prompt_context
 
@@ -2320,6 +2322,18 @@ class AgentRuntimeManager:
             if continue_from_checkpoint:
                 # 续跑段从该 run 自己的 checkpoint 继续，
                 # 不重放 transcript，也不再落一条重复的用户消息。
+                schema_version, schema_hash = self._workspace_schema_metadata()
+                cache_policy = self._cache_policy_for_run(run)
+                prompt_token = set_prompt_run_context(
+                    PromptRunContext(
+                        schema_version=schema_version,
+                        schema_contract_hash=schema_hash,
+                        transcript_epoch=run.transcript_epoch,
+                        cache_prefix_hash=run.cache_prefix_hash or "",
+                        cache_mode=run.cache_mode or cache_policy.mode,
+                        thread_id=thread_id,
+                    )
+                )
                 stream = self._open_stream_continue(
                     adapter, thread_id, message, context, run_id=run_id
                 )
@@ -2704,35 +2718,24 @@ class AgentRuntimeManager:
     _COLD_PRUNE_GAP_MINUTES = 60
 
     def _cold_prune_transcript(self, run: AgentRun) -> None:
-        """Prune old tool results when the prompt cache has certainly expired.
+        """Prune old tool results only after a known cold interval.
 
-        Only record content changes; message count and tool pairing are
-        untouched. Pruning is monotone (placeholders stay placeholders), and a
-        run span records how many entries were freed for diagnostics.
+        Older databases have no model-call timestamp. In that case we skip one
+        prune cycle rather than infer cache expiry from transcript shape.
         """
 
         records = self.store.list_model_messages(run.thread_id)
         if not records:
             return
-        last_assistant = next(
-            (
-                record
-                for record in reversed(records)
-                if str(record.get("kind") or "") == "assistant"
-            ),
-            None,
-        )
-        if last_assistant is not None:
-            try:
-                created = datetime.fromisoformat(str(last_assistant["created_at"]))
-                now = datetime.now(UTC)
-                if created.tzinfo is None:
-                    created = created.replace(tzinfo=UTC)
-                gap_minutes = (now - created).total_seconds() / 60.0
-                if gap_minutes < self._COLD_PRUNE_GAP_MINUTES:
-                    return
-            except (KeyError, TypeError, ValueError):
-                return
+        last_model_call = self.store.last_model_call_at(run.thread_id)
+        if last_model_call is None:
+            return
+        now = datetime.now(UTC)
+        if last_model_call.tzinfo is None:
+            last_model_call = last_model_call.replace(tzinfo=UTC)
+        gap_minutes = (now - last_model_call).total_seconds() / 60.0
+        if gap_minutes < self._COLD_PRUNE_GAP_MINUTES:
+            return
         pruned_records, pruned = prune_transcript_for_model(records)
         if pruned <= 0:
             return
@@ -2741,8 +2744,6 @@ class AgentRuntimeManager:
             pruned_records
         )
         logger.info("cold-spot pruned %d tool results (~%d tokens)", pruned, max(0, freed))
-        # 剪枝是对用户不可见的静默优化：只在 run span 留痕，不进 UI 事件
-        # （避免制造"数据被删"的错觉；需要诊断时从 span 查）。
         with suppress(Exception):
             self.store.upsert_span(
                 AgentSpan(
@@ -2773,6 +2774,7 @@ class AgentRuntimeManager:
         assistant_text_parts: list[str] = []
         last_model_call_id: str | None = None
         call_usage: dict[str, list[int]] = {}
+        call_diagnostics: dict[str, ModelRequestFingerprint] = {}
         # model_call_id -> 已落账的真实 prompt 大小（去重流式重复上报）
         recorded_prompt_tokens: dict[str, int] = {}
         # 同一调用的输出大小（同样按调用号去重）；与输入合成上下文占用
@@ -2805,12 +2807,24 @@ class AgentRuntimeManager:
             if accounting_flushed:
                 return
             accounting_flushed = True
+            request_context = current_prompt_run_context()
+            if request_context is not None:
+                while True:
+                    try:
+                        fingerprint = request_context.request_fingerprint_sink.get_nowait()
+                    except Empty:
+                        break
+                    with suppress(Exception):
+                        self.store.record_model_call_at(
+                            thread_id, fingerprint.request_started_at
+                        )
             try:
                 self._record_model_spans(
                     run_id,
                     call_usage,
                     call_started,
                     call_seen_last,
+                    call_diagnostics,
                 )
                 # Any tool call that never reported completion (cancelled/failed
                 # run) still gets a span so the timeline totals reflect the time
@@ -2880,7 +2894,26 @@ class AgentRuntimeManager:
                         )
                     if signal.model_call_id:
                         now = time.monotonic()
-                        call_started.setdefault(signal.model_call_id, now)
+                        if signal.model_call_id not in call_started:
+                            call_started[signal.model_call_id] = now
+                            with suppress(Exception):
+                                self.store.record_model_call_at(thread_id)
+                            request_context = current_prompt_run_context()
+                            if request_context is not None:
+                                try:
+                                    fingerprint = (
+                                        request_context.request_fingerprint_sink.get_nowait()
+                                    )
+                                except Empty:
+                                    pass
+                                else:
+                                    call_diagnostics.setdefault(
+                                        signal.model_call_id, fingerprint
+                                    )
+                                    with suppress(Exception):
+                                        self.store.record_model_call_at(
+                                            thread_id, fingerprint.request_started_at
+                                        )
                         call_seen_last[signal.model_call_id] = now
                         usage = call_usage.setdefault(signal.model_call_id, [0, 0, 0, 0])
                         usage[0] = max(usage[0], signal.input_tokens)
@@ -3197,6 +3230,7 @@ class AgentRuntimeManager:
         call_usage: dict[str, list[int]],
         call_started: dict[str, float],
         call_seen_last: dict[str, float],
+        call_diagnostics: dict[str, ModelRequestFingerprint] | None = None,
     ) -> None:
         """Write one redacted span per model call so diagnostics has per-round rows."""
         if not call_usage:
@@ -3242,7 +3276,14 @@ class AgentRuntimeManager:
                     output_tokens=tokens[1],
                     cached_input_tokens=tokens[2],
                     cache_creation_input_tokens=tokens[3] if len(tokens) > 3 else 0,
-                    data={"model_call_id": call_id},
+                    data={
+                        "model_call_id": call_id,
+                        **(
+                            call_diagnostics[call_id].__dict__
+                            if call_diagnostics and call_id in call_diagnostics
+                            else {}
+                        ),
+                    },
                 )
             )
 

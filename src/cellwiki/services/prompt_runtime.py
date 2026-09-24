@@ -3,18 +3,37 @@
 from __future__ import annotations
 
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import datetime
+from queue import SimpleQueue
+
+
+@dataclass(frozen=True)
+class ModelRequestFingerprint:
+    """Opaque request-prefix comparison data; contains no prompt content."""
+
+    request_hash: str
+    request_item_count: int
+    previous_request_hash: str | None
+    previous_request_item_count: int
+    common_prefix_item_count: int
+    previous_request_is_prefix: bool
+    request_started_at: datetime
 
 
 @dataclass(frozen=True)
 class PromptRunContext:
-    """Stable workspace metadata that belongs before the cached breakpoint."""
+    """Per-run metadata shared with model middleware and runtime accounting."""
 
     schema_version: int
     schema_contract_hash: str
     transcript_epoch: int
     cache_prefix_hash: str
     cache_mode: str
+    thread_id: str = ""
+    request_fingerprint_sink: SimpleQueue[ModelRequestFingerprint] = field(
+        default_factory=SimpleQueue, compare=False, repr=False
+    )
 
 
 _CURRENT: ContextVar[PromptRunContext | None] = ContextVar(
@@ -36,6 +55,7 @@ def reset_prompt_run_context(token: Token[PromptRunContext | None]) -> None:
 
 
 __all__ = [
+    "ModelRequestFingerprint",
     "PromptRunContext",
     "current_prompt_run_context",
     "reset_prompt_run_context",

@@ -4,15 +4,16 @@ from __future__ import annotations
 
 import time
 import types
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessageChunk, ToolMessage
+from langchain_core.messages import AIMessageChunk, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 from pydantic import Field
 
-from cellwiki.agent.app import build_wiki_agent
+from cellwiki.agent.app import _CellWikiToolBoundaryMiddleware, build_wiki_agent
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.runs import (
     AgentErrorType,
@@ -23,6 +24,11 @@ from cellwiki.domain.runs import (
 from cellwiki.services.agent_runtime import AgentRuntimeManager, RuntimeSignal
 from cellwiki.services.model_transcript import render_model_messages
 from cellwiki.services.prompt_cache import PromptCachePolicy, resolve_prompt_cache_policy
+from cellwiki.services.prompt_runtime import (
+    PromptRunContext,
+    reset_prompt_run_context,
+    set_prompt_run_context,
+)
 from cellwiki.services.runtime_store import RuntimeStore
 
 WAIT_TIMEOUT = 30.0
@@ -173,6 +179,173 @@ def test_v2_turn_context_is_a_user_tail_without_duplicate_goal(tmp_path: Path):
     assert "current run goal" not in _text(messages[-1])
 
 
+def test_cold_prune_skips_when_no_model_call_timestamp_exists(tmp_path: Path):
+    model = _TranscriptModel()
+    manager = _manager(tmp_path, model)
+    try:
+        run = AgentRun(
+            run_id="run_prune_no_call_time",
+            thread_id="thread_prune_no_call_time",
+            input_message="question",
+            transcript_version=2,
+        )
+        manager.store.create_run(run)
+        manager.store.bootstrap_model_transcript(run.thread_id, exclude_run_id=run.run_id)
+        for index in range(6):
+            manager.store.append_model_message(
+                thread_id=run.thread_id,
+                run_id=run.run_id,
+                kind="tool_result",
+                role="tool",
+                content={"text": f"result-{index} " * 30},
+                message_key=f"tool-{index}",
+                tool_call_id=f"call-{index}",
+                name="read_file",
+            )
+
+        manager._cold_prune_transcript(run)
+
+        assert all(
+            "Old tool result content cleared" not in record["content_text"]
+            for record in manager.store.list_model_messages(run.thread_id)
+        )
+    finally:
+        manager.close()
+
+
+def test_cold_prune_uses_last_model_call_not_last_assistant(tmp_path: Path):
+    model = _TranscriptModel()
+    manager = _manager(tmp_path, model)
+    try:
+        run = AgentRun(
+            run_id="run_prune_call_time",
+            thread_id="thread_prune_call_time",
+            input_message="question",
+            transcript_version=2,
+        )
+        manager.store.create_run(run)
+        manager.store.bootstrap_model_transcript(run.thread_id, exclude_run_id=run.run_id)
+        for index in range(6):
+            manager.store.append_model_message(
+                thread_id=run.thread_id,
+                run_id=run.run_id,
+                kind="tool_result",
+                role="tool",
+                content={"text": f"result-{index} " * 30},
+                message_key=f"tool-{index}",
+                tool_call_id=f"call-{index}",
+                name="read_file",
+            )
+        manager.store.append_model_message(
+            thread_id=run.thread_id,
+            run_id=run.run_id,
+            kind="assistant",
+            role="assistant",
+            content={"text": "recent assistant record"},
+            message_key="assistant",
+        )
+        manager.store.record_model_call_at(
+            run.thread_id, datetime.now(UTC) - timedelta(minutes=61)
+        )
+
+        manager._cold_prune_transcript(run)
+
+        assert any(
+            "Old tool result content cleared" in record["content_text"]
+            for record in manager.store.list_model_messages(run.thread_id)
+        )
+    finally:
+        manager.close()
+
+
+def test_cold_prune_runs_before_current_turn_is_appended(tmp_path: Path):
+    model = _TranscriptModel()
+    manager = _manager(tmp_path, model)
+    try:
+        previous = AgentRun(
+            run_id="run_prune_order_previous",
+            thread_id="thread_prune_order",
+            input_message="previous question",
+            transcript_version=2,
+        )
+        current = AgentRun(
+            run_id="run_prune_order_current",
+            thread_id="thread_prune_order",
+            input_message="current question",
+            transcript_version=2,
+        )
+        manager.store.create_run(previous)
+        manager.store.append_message(
+            thread_id=previous.thread_id,
+            run_id=previous.run_id,
+            role="assistant",
+            content="previous answer",
+        )
+        manager.store.create_run(current)
+        observed: list[list[dict[str, Any]]] = []
+        manager._cold_prune_transcript = lambda _run: observed.append(
+            manager.store.list_model_messages(current.thread_id)
+        )
+
+        manager._prepare_v2_transcript(
+            current,
+            "current question",
+            WikiAgentContext(project_id="cellwiki", thread_id=current.thread_id),
+            None,
+        )
+
+        assert len(observed) == 1
+        assert all(record["run_id"] != current.run_id for record in observed[0])
+    finally:
+        manager.close()
+
+
+def test_request_fingerprint_distinguishes_append_from_history_rewrite():
+    middleware = _CellWikiToolBoundaryMiddleware()
+    model = _TranscriptModel()
+    context = PromptRunContext(
+        schema_version=2,
+        schema_contract_hash="schema-hash",
+        transcript_epoch=0,
+        cache_prefix_hash="stable-prefix",
+        cache_mode="implicit",
+        thread_id="fingerprint-thread",
+    )
+    token = set_prompt_run_context(context)
+    try:
+        first = types.SimpleNamespace(
+            model=model,
+            system_message=SystemMessage(content="stable system"),
+            messages=[HumanMessage(content="old turn")],
+            tools=[],
+        )
+        first_fingerprint = middleware._fingerprint_request(first)
+        appended = types.SimpleNamespace(
+            model=model,
+            system_message=SystemMessage(content="stable system"),
+            messages=[HumanMessage(content="old turn"), HumanMessage(content="new turn")],
+            tools=[],
+        )
+        append_fingerprint = middleware._fingerprint_request(appended)
+        rewritten = types.SimpleNamespace(
+            model=model,
+            system_message=SystemMessage(content="stable system"),
+            messages=[HumanMessage(content="edited old turn"), HumanMessage(content="new turn")],
+            tools=[],
+        )
+        rewrite_fingerprint = middleware._fingerprint_request(rewritten)
+    finally:
+        reset_prompt_run_context(token)
+
+    assert first_fingerprint.previous_request_hash is None
+    assert append_fingerprint.previous_request_is_prefix is True
+    assert append_fingerprint.common_prefix_item_count == append_fingerprint.previous_request_item_count
+    assert rewrite_fingerprint.previous_request_is_prefix is False
+    assert rewrite_fingerprint.common_prefix_item_count == 3
+    assert "old turn" not in first_fingerprint.request_hash
+    assert "edited old turn" not in rewrite_fingerprint.request_hash
+
+
 def test_v2_second_turn_prefix_contains_the_first_turn(tmp_path: Path):
     model = _TranscriptModel()
     manager = _manager(tmp_path, model)
@@ -189,6 +362,18 @@ def test_v2_second_turn_prefix_contains_the_first_turn(tmp_path: Path):
         for message in second_request[: len(first_request)]
     ] == [_cache_prefix_signature(message) for message in first_request]
     assert "第二问" in _text(second_request[-1])
+    second_run = manager.store.list_runs(thread_id="thread_v2_prefix")[0]
+    model_spans = [
+        span for span in manager.store.list_spans(second_run.run_id)
+        if span.kind == "model"
+    ]
+    assert model_spans
+    request_data = model_spans[0].data
+    assert request_data["request_item_count"] > 0
+    assert request_data["common_prefix_item_count"] == request_data["previous_request_item_count"]
+    assert request_data["previous_request_is_prefix"] is True
+    assert "第一问" not in str(request_data)
+    assert "第二问" not in str(request_data)
 
 
 def test_v2_tool_result_is_replayed_in_the_next_run(tmp_path: Path):
