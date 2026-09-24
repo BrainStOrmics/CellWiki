@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, File, FileCode, FileText, Folder, FolderOpen } from "lucide-react";
 import { getJson } from "../../lib/product-api";
+import { useI18n } from "../../i18n";
 
 export type WorkspaceTreeEntry = {
   name: string;
@@ -94,6 +95,7 @@ type Props = {
 };
 
 export function WorkspaceFileBrowser({ filter = "", selectedPath = null, onOpenFile, refreshSignal = 0 }: Props) {
+  const { t } = useI18n();
   const [entries, setEntries] = useState<WorkspaceTreeEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<string, boolean>>({ wiki: true });
@@ -156,11 +158,11 @@ export function WorkspaceFileBrowser({ filter = "", selectedPath = null, onOpenF
     );
   }
 
-  if (error) return <div className="tree-empty">工作区文件加载失败: {error}</div>;
-  if (!entries) return <div className="tree-empty">加载中…</div>;
+  if (error) return <div className="tree-empty">{t("explorer.loadFailed")}: {error}</div>;
+  if (!entries) return <div className="tree-empty">{t("common.loading")}</div>;
 
   if (tree.length === 0) {
-    return <div className="tree-empty">{filterActive ? "无匹配文件" : "工作区为空"}</div>;
+    return <div className="tree-empty">{filterActive ? t("explorer.noFiles") : t("explorer.workspaceEmpty")}</div>;
   }
 
   return <div className="workspace-tree">{tree.map((node) => renderNode(node, 0))}</div>;

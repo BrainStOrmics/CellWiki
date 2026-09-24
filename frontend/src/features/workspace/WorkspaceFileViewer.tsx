@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ExternalLink, Pencil, Save, X } from "lucide-react";
 import { getText, postJson } from "../../lib/product-api";
 import { apiUrl } from "../../runtime";
+import { useI18n } from "../../i18n";
 import { MarkdownReader } from "../wiki/MarkdownReader";
 import type { WorkspaceTreeEntry } from "./WorkspaceFileBrowser";
 
@@ -16,6 +17,7 @@ type Props = {
  * 二进制外部打开；md/txt 支持受控编辑（提交后走 pending diff 审批）。
  */
 export function WorkspaceFileViewer({ entry, onStagedEdit, onWikiLink }: Props) {
+  const { t } = useI18n();
   const [content, setContent] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
@@ -29,7 +31,7 @@ export function WorkspaceFileViewer({ entry, onStagedEdit, onWikiLink }: Props) 
     if (entry.type === "pdf" || entry.type === "binary") return;
     getText(`/api/workspace/file?path=${encodeURIComponent(entry.path)}`)
       .then(setContent)
-      .catch((cause) => setNotice(`读取失败: ${String(cause)}`));
+      .catch((cause) => setNotice(`${t("viewer.readFailed")}: ${String(cause)}`));
   }, [entry]);
 
   async function saveEdit() {
@@ -42,10 +44,10 @@ export function WorkspaceFileViewer({ entry, onStagedEdit, onWikiLink }: Props) 
       });
       setEditing(false);
       setContent(draft);
-      setNotice(`已提交审批${result.pending_diff_id ? ` (${result.pending_diff_id})` : ""}`);
+      setNotice(result.pending_diff_id ? `${t("viewer.editSubmitted")} (${result.pending_diff_id})` : t("viewer.editSubmitted"));
       onStagedEdit?.(result.pending_diff_id ?? "");
     } catch (cause) {
-      setNotice(`提交失败: ${String(cause)}`);
+      setNotice(`${t("viewer.editFailed")}: ${String(cause)}`);
     } finally {
       setBusy(false);
     }
@@ -59,8 +61,8 @@ export function WorkspaceFileViewer({ entry, onStagedEdit, onWikiLink }: Props) 
         <strong>{entry.path}</strong>
         <span className="workspace-viewer-type">{entry.type.toUpperCase()}</span>
         {(entry.type === "md" || entry.type === "txt") && !editing && (
-          <button onClick={() => { setDraft(content ?? ""); setEditing(true); }} title="编辑">
-            <Pencil size={13} /> 编辑
+          <button onClick={() => { setDraft(content ?? ""); setEditing(true); }} title={t("viewer.edit")}>
+            <Pencil size={13} /> {t("viewer.edit")}
           </button>
         )}
       </div>
@@ -68,15 +70,15 @@ export function WorkspaceFileViewer({ entry, onStagedEdit, onWikiLink }: Props) 
       {entry.type === "pdf" && (
         <div className="workspace-pdf-wrap">
           <object data={fileUrl} type="application/pdf" className="workspace-pdf-object">
-            <p>当前视图无法内嵌 PDF。</p>
-            <a href={fileUrl} target="_blank" rel="noreferrer"><ExternalLink size={13} /> 用外部程序打开</a>
+            <p>{t("viewer.pdfNotEmbeddable")}</p>
+            <a href={fileUrl} target="_blank" rel="noreferrer"><ExternalLink size={13} /> {t("viewer.openExternally")}</a>
           </object>
         </div>
       )}
       {entry.type === "binary" && (
         <div className="workspace-binary">
-          <p>二进制文件，不支持内嵌预览。</p>
-          <a href={fileUrl} target="_blank" rel="noreferrer"><ExternalLink size={13} /> 用外部程序打开</a>
+          <p>{t("viewer.binaryNotPreviewable")}</p>
+          <a href={fileUrl} target="_blank" rel="noreferrer"><ExternalLink size={13} /> {t("viewer.openExternally")}</a>
         </div>
       )}
       {(entry.type === "md" || entry.type === "txt") && (
@@ -89,8 +91,8 @@ export function WorkspaceFileViewer({ entry, onStagedEdit, onWikiLink }: Props) 
               rows={18}
             />
             <div className="workspace-editor-actions">
-              <button onClick={() => void saveEdit()} disabled={busy}><Save size={13} /> {busy ? "提交中…" : "保存并提交审批"}</button>
-              <button onClick={() => setEditing(false)}><X size={13} /> 取消</button>
+              <button onClick={() => void saveEdit()} disabled={busy}><Save size={13} /> {busy ? t("viewer.submitting") : t("viewer.saveAndSubmit")}</button>
+              <button onClick={() => setEditing(false)}><X size={13} /> {t("viewer.cancel")}</button>
             </div>
           </>
         ) : content !== null ? (
