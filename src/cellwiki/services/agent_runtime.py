@@ -2801,6 +2801,10 @@ class AgentRuntimeManager:
         last_model_call_id: str | None = None
         call_usage: dict[str, list[int]] = {}
         call_diagnostics: dict[str, ModelRequestFingerprint] = {}
+        # 分段边界或缺失信号会让指纹留在队列里；它们在 flush 时暂存，
+        # 落 span 前按调用顺序补齐，避免诊断只剩第一轮（2026-09-24 实测：
+        # run_20260924140428 的 39 次调用只有 1 次带诊断）。
+        pending_diagnostics: list[ModelRequestFingerprint] = []
         # model_call_id -> 已落账的真实 prompt 大小（去重流式重复上报）
         recorded_prompt_tokens: dict[str, int] = {}
         # 同一调用的输出大小（同样按调用号去重）；与输入合成上下文占用
@@ -2844,6 +2848,10 @@ class AgentRuntimeManager:
                         self.store.record_model_call_at(
                             thread_id, fingerprint.request_started_at
                         )
+                    pending_diagnostics.append(fingerprint)
+            backfilled = self._assign_pending_diagnostics(
+                call_usage, call_diagnostics, pending_diagnostics
+            )
             try:
                 self._record_model_spans(
                     run_id,
@@ -2851,6 +2859,7 @@ class AgentRuntimeManager:
                     call_started,
                     call_seen_last,
                     call_diagnostics,
+                    backfilled=backfilled,
                 )
                 # Any tool call that never reported completion (cancelled/failed
                 # run) still gets a span so the timeline totals reflect the time
@@ -3250,6 +3259,30 @@ class AgentRuntimeManager:
             )
         )
 
+    @staticmethod
+    def _assign_pending_diagnostics(
+        call_usage: dict[str, list[int]],
+        call_diagnostics: dict[str, ModelRequestFingerprint],
+        pending: list[ModelRequestFingerprint],
+    ) -> set[str]:
+        """Fill diagnostics for calls the stream loop could not pair in time.
+
+        主循环按 `model_call_id` 的出现顺序取指纹；分段边界、缺失信号或早到的
+        指纹会让部分调用没配上。这里按调用顺序补齐，保证每个 model span 都带
+        诊断，而不是只剩第一轮。返回被补齐的调用 id，供 span 标记来源。
+        """
+
+        if not pending:
+            return set()
+        unassigned = [
+            call_id for call_id in call_usage if call_id not in call_diagnostics
+        ]
+        backfilled: set[str] = set()
+        for call_id, fingerprint in zip(unassigned, pending):
+            call_diagnostics[call_id] = fingerprint
+            backfilled.add(call_id)
+        return backfilled
+
     def _record_model_spans(
         self,
         run_id: str,
@@ -3257,6 +3290,7 @@ class AgentRuntimeManager:
         call_started: dict[str, float],
         call_seen_last: dict[str, float],
         call_diagnostics: dict[str, ModelRequestFingerprint] | None = None,
+        backfilled: set[str] | None = None,
     ) -> None:
         """Write one redacted span per model call so diagnostics has per-round rows."""
         if not call_usage:
@@ -3304,6 +3338,11 @@ class AgentRuntimeManager:
                     cache_creation_input_tokens=tokens[3] if len(tokens) > 3 else 0,
                     data={
                         "model_call_id": call_id,
+                        **(
+                            {"diagnostics_backfilled": True}
+                            if backfilled and call_id in backfilled
+                            else {}
+                        ),
                         **(
                             call_diagnostics[call_id].__dict__
                             if call_diagnostics and call_id in call_diagnostics

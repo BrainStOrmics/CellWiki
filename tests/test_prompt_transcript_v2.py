@@ -25,6 +25,7 @@ from cellwiki.services.agent_runtime import AgentRuntimeManager, RuntimeSignal
 from cellwiki.services.model_transcript import render_model_messages
 from cellwiki.services.prompt_cache import PromptCachePolicy, resolve_prompt_cache_policy
 from cellwiki.services.prompt_runtime import (
+    ModelRequestFingerprint,
     PromptRunContext,
     reset_prompt_run_context,
     set_prompt_run_context,
@@ -1048,3 +1049,70 @@ def test_assistant_final_excludes_tool_turn_text(tmp_path: Path):
         "过渡句。" in str(record["content"].get("text") or "")
         for record in transitional
     )
+
+
+def test_model_spans_carry_diagnostics_for_every_call(tmp_path: Path):
+    """每次模型调用的 span 都要带请求指纹，否则诊断只能看到第一轮。"""
+
+    model = _TranscriptModel(tool_calls_remaining=2)
+    manager = _manager(tmp_path, model)
+    try:
+        run = _turn(manager, "thread_diagnostics", "做点事")
+        spans = [
+            span
+            for span in manager.store.list_spans(run.run_id)
+            if span.kind == "model"
+        ]
+    finally:
+        manager.close()
+
+    assert len(spans) >= 3
+    missing = [span.span_id for span in spans if not (span.data or {}).get("request_hash")]
+    assert missing == [], f"{len(missing)} of {len(spans)} model spans lack diagnostics"
+
+
+def _fingerprint(tag: str) -> ModelRequestFingerprint:
+    return ModelRequestFingerprint(
+        request_hash=tag,
+        request_item_count=10,
+        previous_request_hash=None,
+        previous_request_item_count=0,
+        common_prefix_item_count=0,
+        previous_request_is_prefix=False,
+        request_started_at=datetime.now(UTC),
+    )
+
+
+def test_pending_diagnostics_are_assigned_in_call_order():
+    """主循环没配上的指纹在落 span 前按调用顺序补齐，而不是被丢掉。"""
+
+    call_usage = {
+        "call_a": [1, 1, 0, 0],
+        "call_b": [1, 1, 0, 0],
+        "call_c": [1, 1, 0, 0],
+    }
+    call_diagnostics = {"call_a": _fingerprint("a")}
+    pending = [_fingerprint("b"), _fingerprint("c")]
+
+    backfilled = AgentRuntimeManager._assign_pending_diagnostics(
+        call_usage, call_diagnostics, pending
+    )
+
+    assert list(call_diagnostics) == ["call_a", "call_b", "call_c"]
+    assert call_diagnostics["call_b"].request_hash == "b"
+    assert call_diagnostics["call_c"].request_hash == "c"
+    assert backfilled == {"call_b", "call_c"}
+
+
+def test_pending_diagnostics_never_overwrite_paired_calls():
+    """多余的指纹不会覆盖已经配好的调用。"""
+
+    call_usage = {"call_a": [1, 1, 0, 0]}
+    call_diagnostics = {"call_a": _fingerprint("a")}
+
+    backfilled = AgentRuntimeManager._assign_pending_diagnostics(
+        call_usage, call_diagnostics, [_fingerprint("stale")]
+    )
+
+    assert call_diagnostics["call_a"].request_hash == "a"
+    assert backfilled == set()
