@@ -2,26 +2,11 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { ModelSelection } from "../types";
 
-export type WorkspaceView =
-  | "wiki"
-  | "sources"
-  | "changesets"
-  | "reviews"
-  | "lint"
-  | "search"
-  | "graph"
-  | "memory"
-  | "research"
-  | "settings";
+export type WorkspaceView = "wiki" | "search" | "settings";
 
-const primaryWorkspaceViews = new Set<WorkspaceView>([
-  "wiki",
-  "sources",
-  "search",
-  "settings",
-]);
+const primaryWorkspaceViews = new Set<WorkspaceView>(["wiki", "search", "settings"]);
 
-/** Keep page-local and legacy feature views out of persisted first-level navigation. */
+/** 持久化里可能留着已退役面板的视图名（来源/变更集/审批/lint/图谱/memory/research），一律归回 wiki。 */
 export function normalizePersistedView(view: unknown): WorkspaceView {
   return typeof view === "string" && primaryWorkspaceViews.has(view as WorkspaceView)
     ? view as WorkspaceView
@@ -134,7 +119,7 @@ export const useUiStore = create<UiState>()(persist(
   }),
   {
     name: "cellwiki.ui.v2",
-    version: 4,
+    version: 5,
     migrate: (persistedState, version) => {
       const state = persistedState as Partial<PersistedUiState>;
       return {

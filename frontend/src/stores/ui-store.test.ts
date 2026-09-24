@@ -90,6 +90,9 @@ describe("UI state boundaries", () => {
     expect(normalizePersistedView("lint")).toBe("wiki");
     expect(normalizePersistedView("research")).toBe("wiki");
     expect(normalizePersistedView("graph")).toBe("wiki");
+    expect(normalizePersistedView("sources")).toBe("wiki");
+    expect(normalizePersistedView("changesets")).toBe("wiki");
+    expect(normalizePersistedView("memory")).toBe("wiki");
     expect(normalizePersistedView("search")).toBe("search");
   });
 });
