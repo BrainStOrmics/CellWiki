@@ -113,6 +113,57 @@ class _UsageReportingModel(_TranscriptModel):
         )
 
 
+class _TwoStageModel(BaseChatModel):
+    """First call says a transitional line and calls one tool; the second answers."""
+
+    model_name: str = "gpt-4.1"
+    calls: int = 0
+    seen: list[list[Any]] = Field(default_factory=list)
+
+    @property
+    def _llm_type(self) -> str:
+        return "two-stage-fake"
+
+    def _get_ls_params(self, **kwargs: Any) -> dict[str, Any]:
+        return {"ls_provider": "openai", "ls_model_name": self.model_name}
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+        return self
+
+    def _bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+        return self
+
+    def _generate(
+        self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any
+    ) -> ChatResult:
+        return ChatResult(
+            generations=[ChatGeneration(message=AIMessageChunk(content="最终回答。"))]
+        )
+
+    def _stream(
+        self, messages: Any, stop: Any = None, run_manager: Any = None, **kwargs: Any
+    ):
+        self.seen.append(list(messages))
+        self.calls += 1
+        if self.calls == 1:
+            yield ChatGenerationChunk(message=AIMessageChunk(content="过渡句。"))
+            yield ChatGenerationChunk(
+                message=AIMessageChunk(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "glob",
+                            "args": {"pattern": "**/*.md"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            )
+            return
+        yield ChatGenerationChunk(message=AIMessageChunk(content="最终回答。"))
+
+
 def _wait(manager: AgentRuntimeManager, run: AgentRun) -> AgentRun:
     deadline = time.monotonic() + WAIT_TIMEOUT
     while time.monotonic() < deadline:
@@ -966,3 +1017,34 @@ def test_run_compacts_through_the_middleware_and_finishes(tmp_path: Path) -> Non
         assert manager.store.current_transcript_epoch(run.thread_id) == 1
     finally:
         manager.close()
+
+
+def test_assistant_final_excludes_tool_turn_text(tmp_path: Path):
+    """assistant_final 只落没有独立 assistant 记录的那段文本。
+
+    2026-09-24 诊断：run_20260924133343_e01987e2 的 final 是 809 字，其中前 400
+    余字是已经各自落库的过渡句；重建历史因此把同一段话说了两遍。
+    """
+
+    model = _TwoStageModel()
+    manager = AgentRuntimeManager(
+        tmp_path, adapter=build_wiki_agent(tmp_path, model=model)
+    )
+    try:
+        _turn(manager, "thread_final_text", "做点事")
+        records = manager.store.list_model_messages("thread_final_text")
+    finally:
+        manager.close()
+
+    assistants = [record for record in records if record["kind"] == "assistant"]
+    final = next(
+        record for record in assistants if record["message_key"] == "assistant_final"
+    )
+    assert final["content"]["text"] == "最终回答。"
+    transitional = [
+        record for record in assistants if record["message_key"] != "assistant_final"
+    ]
+    assert any(
+        "过渡句。" in str(record["content"].get("text") or "")
+        for record in transitional
+    )

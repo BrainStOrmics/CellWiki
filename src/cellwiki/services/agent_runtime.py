@@ -2417,6 +2417,32 @@ class AgentRuntimeManager:
             if event.type == AgentEventType.MESSAGE_DELTA
         )
 
+    def _unpersisted_answer(self, run_id: str, thread_id: str) -> str:
+        """Return the tail of the run's streamed text that has no assistant record yet.
+
+        `_replayed_answer` 拼接整个 run 的 `message_delta`：带 tool_calls 的中间轮
+        已经各自落成 assistant 记录，只有最后一段（或被停止/续跑留下的尾部）没有
+        独立记录。`assistant_final` 只应保存这段尾部，否则重建历史会把中间文本
+        重复一遍（实测 run_20260924133343_e01987e2：809 字的 final 里有 400 余字
+        是已落库的过渡句）。
+        """
+
+        full = self._replayed_answer(run_id)
+        if not full:
+            return ""
+        persisted = "".join(
+            str(content.get("text") or "")
+            for record in self.store.list_model_messages(thread_id)
+            if record.get("run_id") == run_id
+            and record.get("kind") == "assistant"
+            and record.get("message_key") != "assistant_final"
+            for content in [record.get("content")]
+            if isinstance(content, dict)
+        )
+        if persisted and full.startswith(persisted):
+            return full[len(persisted) :]
+        return full
+
     def _replayed_reasoning(self, run_id: str) -> str:
         """Concat the run's reasoning_delta events: the thought stream behind the answer.
 
@@ -2441,7 +2467,7 @@ class AgentRuntimeManager:
         # 落库以事件流为准：final_answer 只含最后一段流的累积，被提问/停止打断后又续跑
         # 的 run，打断前说过的段落只活在 message_delta 里；只落最后一段会让模型历史
         # 丢掉它自己在 run 中途说过的话（实测 6fbd4609：2423 字只落了 1481 字）。
-        answer = self._replayed_answer(run_id) or outcome.final_answer or ""
+        answer = self._unpersisted_answer(run_id, thread_id) or outcome.final_answer or ""
         # 答案一旦产生就落盘，与这段流是正常结束还是被停止打断无关：停止可以正好发生
         # 在最终答案之后（实测：用户看到答案按了 Esc），不落盘线程里就永远没有这条
         # 回答，而续跑时图已无事可做，答案就此丢失。

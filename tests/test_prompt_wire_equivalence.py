@@ -184,3 +184,17 @@ def test_provider_native_compaction_items_are_preserved() -> None:
     message = AIMessage(content=[item])
     filtered = _filter(model, [message])
     assert filtered[0].content == [item]
+
+
+def test_normalization_clears_the_coordinator_name() -> None:
+    """图内消息带协调器名，重建形状没有；它不进 wire，但会让请求指纹误报。"""
+
+    model = _responses_model()
+    run_in = _run_in_assistant("answer", TOOL_CALLS).model_copy(
+        update={"name": "cellwiki-agent"}
+    )
+    filtered = _filter(model, [run_in])
+    assert filtered[0].name is None
+    assert _construct_responses_api_input(filtered) == _construct_responses_api_input(
+        [_rebuilt_assistant("answer", TOOL_CALLS)]
+    )

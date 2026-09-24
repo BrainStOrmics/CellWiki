@@ -430,6 +430,10 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
 
         含 provider-native compaction item 的消息整条跳过：opaque item 是
         ADR-0014 决策 7 允许跨 run 重放的例外，压平会把它丢掉。
+
+        ``name`` 一并清空：图内消息带协调器名（``cellwiki-agent``），重建形状
+        没有；Responses 序列化会显式丢弃该字段（不影响 wire），但请求指纹用
+        ``model_dump`` 比对，留着会让诊断把已命中的前缀报成不匹配。
         """
 
         if not isinstance(message, AIMessage) or not isinstance(message.content, list):
@@ -445,7 +449,7 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
             if isinstance(block, dict)
             and block.get("type") in ("text", "output_text")
         )
-        return message.model_copy(update={"content": text})
+        return message.model_copy(update={"content": text, "name": None})
 
     def _filter_request(self, request: Any) -> Any:
         filtered_tools = sorted(
