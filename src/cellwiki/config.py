@@ -99,6 +99,16 @@ class Settings(BaseSettings):
     # 单次记忆召回查询的 token 预算上限，防止单个智能体回合导致上下文无限增长
     memory_recall_token_budget: int = 800
 
+    # ---- 工作区记忆（ADR-0016）----
+    # 默认关闭；开启后 run 终态触发候选提取，摘要有界注入 Turn Context。
+    agent_memory_enabled: bool = False
+    agent_memory_generate: bool = True          # 是否允许 run 贡献未来记忆
+    agent_memory_use: bool = True               # 是否注入已有记忆摘要
+    # 终态后的去抖窗口（分钟）：窗口内同线程的新 run 会重置计时。
+    agent_memory_debounce_minutes: int = Field(default=10, ge=1, le=720)
+    # 每个工作区每日提取次数上限，防止成本失控。
+    agent_memory_daily_extractions: int = Field(default=24, ge=1, le=500)
+
     # ---- 工作区信任策略 ----
     # 开启后，run 以 succeeded / unfinished 收尾后的发布由系统代发接受；
     # failed 与其他终态保持待判。

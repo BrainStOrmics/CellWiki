@@ -79,6 +79,8 @@ from cellwiki.services.model_transcript import (
 from cellwiki.agent.compaction import SUMMARY_MESSAGE_ID
 from cellwiki.services.model_catalog import ModelCatalogService
 from cellwiki.services.unit_naming import UnitNamingService
+from cellwiki.services.agent_memory import WorkspaceMemoryStore
+from cellwiki.services.agent_memory_extract import MemoryExtractionService
 from cellwiki.services.run_scope import (
     clear_run_scope,
     porcelain_paths as _porcelain_dirty_paths,
@@ -1320,6 +1322,15 @@ class AgentRuntimeManager:
         self._naming = UnitNamingService(
             self.project_root, self.store, self._model_catalog
         )
+        # 工作区记忆（ADR-0016）：候选队列与成型文件共用同一 store；提取服务在
+        # run 终态后按信号门 + 去抖窗口排期，失败只记日志，不影响 run 收尾。
+        self._memory_store = WorkspaceMemoryStore(self.project_root, self.store.path)
+        self._memory_extraction = MemoryExtractionService(
+            self.project_root,
+            self.store,
+            self._memory_store,
+            self._model_catalog,
+        )
         self._naming_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="cellwiki-naming",
@@ -2515,6 +2526,7 @@ class AgentRuntimeManager:
                     message="Run completed.",
                 ),
             )
+            self._notify_memory_settled(run_id)
             return
         if continued and not outcome.saw_any_signal:
             # 续跑一个其实已经跑完的图：图直接结束，一个信号都不产出。那不是系统故障，
@@ -2535,6 +2547,7 @@ class AgentRuntimeManager:
                     message="Run had already completed; nothing left to continue.",
                 ),
             )
+            self._notify_memory_settled(run_id)
             return
         try:
             self._ensure_run_versioned(run_id)
@@ -2598,6 +2611,20 @@ class AgentRuntimeManager:
         )
         if kind == "tool_result" and isinstance(content, dict):
             self._track_round_tool_result(run_id, thread_id, message, content)
+
+    def _notify_memory_settled(self, run_id: str) -> None:
+        """Offer a settled run to the memory pipeline (ADR-0016, best effort).
+
+        只在终态调用；记忆关闭时服务自身直接返回。任何失败都不得影响 run 收尾。
+        """
+
+        try:
+            run = self.store.get_run(run_id)
+            self._memory_extraction.notify_run_settled(
+                run_id, run.thread_id, run.input_message or ""
+            )
+        except Exception:  # noqa: BLE001 - 记忆失败不改变任何 run 语义
+            logger.warning("memory settle notification failed for %s", run_id, exc_info=True)
 
     def _preview_tool_result_content(
         self, run_id: str, content: dict[str, Any]
@@ -3663,6 +3690,7 @@ class AgentRuntimeManager:
             finished_at=datetime.now(UTC),
         )
         self._maintain_unfinished(run)
+        self._notify_memory_settled(run_id)
         return run
 
     def _stopped_run_is_resumable(self, run: AgentRun) -> bool:
@@ -3719,6 +3747,7 @@ class AgentRuntimeManager:
             finished_at=datetime.now(UTC),
         )
         self._maintain_unfinished(stopped)
+        self._notify_memory_settled(run_id)
         return stopped
 
     def _finish_failed(self, run_id: str, error: Exception) -> AgentRun:
@@ -3730,7 +3759,7 @@ class AgentRuntimeManager:
         }:
             return current
         error_type = classify_agent_error(error)
-        return self.store.finalize_run(
+        failed = self.store.finalize_run(
             run_id,
             AgentRunOutcome(
                 status=AgentRunStatus.FAILED,
@@ -3742,6 +3771,8 @@ class AgentRuntimeManager:
                 ),
             ),
         )
+        self._notify_memory_settled(run_id)
+        return failed
 
     # ---- pending diff 发布（审批单元 = 一行一次判定）----
     def _unit_id(self, run_id: str, index: int) -> str:
@@ -4578,6 +4609,7 @@ class AgentRuntimeManager:
         )
         # 该路径的发布（:3986 一带）早于终态落定，代判只能在 finalize 之后。
         self._maybe_auto_accept_pending_diff(run.run_id)
+        self._notify_memory_settled(run.run_id)
         return self.store.get_run(run.run_id)
 
     def _attachment_manifest(self, run: AgentRun) -> list[dict[str, Any]]:
