@@ -68,6 +68,7 @@ from cellwiki.services.model_catalog import (
 )
 from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 from cellwiki.services.runtime_store import RuntimeStore, ThreadDeletionBlockedError
+from cellwiki.services.agent_memory import WorkspaceMemoryStore
 
 
 # checkpoint 缺失是**永久性**拒绝——载体里没有该 run 的
@@ -173,6 +174,13 @@ class AnswerQuestionRequest(BaseModel):
 
     answers: str | list[str] | None = None
     timed_out: bool = False
+
+
+class MemoryUpdateRequest(BaseModel):
+    """Panel edit of one memory body (ADR-0016): writes through the store."""
+
+    body: str = Field(max_length=20_000)
+    reenable_auto_update: bool = False
 
 
 class WorkspaceEditRequest(BaseModel):
@@ -343,6 +351,77 @@ def create_app(
             return environment.test_connection(**request.model_dump())
         except (ValueError, RuntimeError) as error:
             return {"ok": False, "message": str(error)}
+
+    # ==================== 工作区记忆（ADR-0016）====================
+    def _memory_store() -> WorkspaceMemoryStore:
+        """Memory artifacts of the current workspace, sharing the runtime DB."""
+
+        return WorkspaceMemoryStore(root, RuntimeStore(root).path)
+
+    def _memory_payload(store: WorkspaceMemoryStore, entry) -> dict:
+        return {
+            "memory_id": entry.memory_id,
+            "kind": entry.kind.value,
+            "topic_family": entry.topic_family.value,
+            "title": entry.title,
+            "file_name": entry.file_name,
+            "user_edited": entry.user_edited,
+            "auto_update": entry.auto_update,
+            "updated_at": entry.updated_at.isoformat(),
+        }
+
+    @app.get("/api/memory")
+    def list_memory() -> dict:
+        """List workspace memories; empty when the user has none yet."""
+
+        store = _memory_store()
+        entries = [_memory_payload(store, entry) for entry in store.list_entries()]
+        return {"entries": entries, "count": len(entries)}
+
+    @app.get("/api/memory/{memory_id}")
+    def read_memory(memory_id: str) -> dict:
+        store = _memory_store()
+        entry = store.get_entry(memory_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="memory entry not found")
+        payload = _memory_payload(store, entry)
+        payload["body"] = store.read_entry_body(entry.file_name)
+        return payload
+
+    @app.put("/api/memory/{memory_id}")
+    def update_memory(memory_id: str, request: MemoryUpdateRequest) -> dict:
+        """Panel edit: one body write through the store so derived_hash stays valid."""
+
+        store = _memory_store()
+        entry = store.get_entry(memory_id)
+        if entry is None:
+            raise HTTPException(status_code=404, detail="memory entry not found")
+        derived = store.write_entry_file(entry, request.body)
+        store.upsert_entry(
+            memory_id=entry.memory_id,
+            kind=entry.kind,
+            topic_family=entry.topic_family,
+            title=entry.title,
+            file_name=entry.file_name,
+            derived_hash=derived,
+            user_edited=not request.reenable_auto_update,
+            auto_update=request.reenable_auto_update or entry.auto_update,
+        )
+        updated = store.get_entry(memory_id)
+        assert updated is not None
+        payload = _memory_payload(store, updated)
+        payload["body"] = store.read_entry_body(updated.file_name)
+        return payload
+
+    @app.delete("/api/memory/{memory_id}", status_code=status.HTTP_200_OK)
+    def delete_memory(memory_id: str) -> dict:
+        """Delete one memory entry plus its file; never touches formal knowledge."""
+
+        store = _memory_store()
+        if store.get_entry(memory_id) is None:
+            raise HTTPException(status_code=404, detail="memory entry not found")
+        store.delete_entry(memory_id)
+        return {"deleted": memory_id}
 
     # ==================== 供应商目录（免重启生效）====================
     def _catalog_response() -> dict:
