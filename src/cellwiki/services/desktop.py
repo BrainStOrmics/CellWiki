@@ -140,6 +140,8 @@ def backup_before_upgrade(paths: ApplicationPaths, *, version: str) -> Path | No
         paths.project_root / ".env",
         paths.project_root / "data" / "runtime" / "cellwiki.db",
         paths.project_root / "data" / "runtime" / "memory.sqlite",
+        # 工作区记忆（ADR-0016）：用户可见的协作记录，按目录进备份。
+        paths.project_root / "data" / "runtime" / "memory",
         # 图状态载体同进备份承诺。里面是消息与工具输出原文，
         # 丢了既丢掉续跑能力，也丢掉那段内容的本地副本。
         paths.project_root / "data" / "runtime" / CHECKPOINT_FILE_NAME,
