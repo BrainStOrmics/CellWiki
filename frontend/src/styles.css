@@ -2446,3 +2446,18 @@ select:focus-visible {
 }
 
 
+
+/* ---- 工作区记忆面板 (ADR-0016) ---- */
+.memory-panel { display: flex; flex-direction: column; gap: 10px; }
+.memory-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.memory-list li { border: 1px solid var(--border-soft, #2b3644); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.memory-entry-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.memory-entry-head strong { font-size: 12px; }
+.memory-entry-head span { font-size: 10px; color: var(--muted, #8b98a8); }
+.memory-entry-actions { display: flex; gap: 8px; }
+.memory-entry-actions button { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
+.memory-editor { display: flex; flex-direction: column; gap: 8px; }
+.memory-editor textarea { min-height: 140px; width: 100%; font-family: inherit; font-size: 12px; resize: vertical; }
+.memory-families { color: var(--muted, #8b98a8); }
+.settings-empty { color: var(--muted, #8b98a8); font-size: 12px; }
+.settings-loading { display: flex; align-items: center; gap: 6px; color: var(--muted, #8b98a8); font-size: 12px; }
