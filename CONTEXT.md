@@ -110,6 +110,17 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
 - **应用根 / 工作区根**：应用根是代码仓库（含 .venv 与 frontend 工具链），固定由代码位置推断；工作区根是用户选择的知识库目录，持久化在 .env 的 PROJECT_ROOT，未选择时回退应用根。wiki/ data/ raw/ 与 Agent 工作区都基于工作区根。
 - **保留术语（品牌与兼容）**：CewiPilot、`WikiAgentContext`、
   `build_wiki_agent`、`cellwiki-agent`。
+- **工作区记忆（workspace memory）**：工作区级的协作记忆，保存用户偏好、
+  项目约定、操作经验与决策指针；跨线程可召回，默认关闭。Markdown 真相源位于
+  `data/runtime/memory/`（`memory_summary.md` + `MEMORY.md` + 话题文件），
+  候选与索引在 `cellwiki.db`。它不是知识权威：提供不了 Evidence Tier 1–4 需要的
+  `raw/<paper_id>/` 绑定，也不能绕过待确认 diff。
+- **记忆摘要（memory summary）**：`memory_summary.md` 截断后的注入结果，上限
+  2,500 tokens。它只在"新线程第一次 run"注入一次，随该线程的 Turn Context 快照
+  持久化；同线程后续 run 复用快照，不重读文件。
+- **记忆候选（memory candidate）**：run 终态后由信号门 + 去抖窗口提取、尚未合并的
+  记忆条目；用户明确 remember/forget/correct 时写出的 append-only note 也落在
+  候选队列里，由单写方合并消费。
 
 ## 不变式
 
@@ -133,3 +144,6 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
    显式授权，判定来源可辨）。
 9. 品牌与兼容术语不随重构改名。
 10. 系统维护文件（`overview.md`/`statistics.md` 系统重建，`log.md`/`audit_report.md` append-only）只在 run 判定事件由系统维护；accept 后合并为系统维护 commit 提交；Agent 工具对系统维护文件的写操作一律拒绝。
+11. 工作区记忆不进入正式知识的 git 与审批路径：它写在 `data/runtime/memory/`，
+    不受 pending diff 管辖，也不能作为页面 claim 的证据。用户手动编辑过的记忆条目
+    优先于自动合并，`consolidation` 只能追加或跳过，除非用户显式放行该条。
