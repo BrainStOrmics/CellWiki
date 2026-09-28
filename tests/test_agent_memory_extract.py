@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 from cellwiki.domain.memory import MemoryCandidateStatus, MemoryKind, MemoryTopicFamily
@@ -166,6 +167,33 @@ def test_extraction_daily_limit_blocks_further_runs(monkeypatch, tmp_path: Path)
     assert len(first) == 1
     assert second == []
     assert len(memory.list_candidates(status=None)) == 1
+
+
+def test_extraction_daily_limit_survives_a_new_service_instance(
+    monkeypatch, tmp_path: Path
+):
+    _enable(monkeypatch)
+    import cellwiki.config as config_module
+
+    monkeypatch.setattr(config_module.settings, "agent_memory_daily_extractions", 1)
+    response = json.dumps(
+        {
+            "candidates": [
+                {
+                    "kind": "lesson",
+                    "topic_family": MemoryTopicFamily.EVALUATION.value,
+                    "title": "先跑确定性变体",
+                    "body": "评估卷先跑确定性变体。",
+                }
+            ]
+        }
+    )
+    first_service, memory = _service(tmp_path, completer=lambda prompt: response)
+    second_service, _ = _service(tmp_path, completer=lambda prompt: response)
+
+    assert len(first_service.extract("thread_1", ["run_1"])) == 1
+    assert second_service.extract("thread_2", ["run_2"]) == []
+    assert memory.extraction_count(datetime.now(UTC).date().isoformat()) == 1
 
 
 def test_extraction_tolerates_malformed_model_output(monkeypatch, tmp_path: Path):

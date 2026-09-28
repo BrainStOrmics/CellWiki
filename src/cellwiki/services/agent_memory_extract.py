@@ -16,7 +16,7 @@ import logging
 import threading
 import time
 from collections import defaultdict
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -168,7 +168,6 @@ class MemoryExtractionService:
         self._lock = threading.Lock()
         self._pending_at: dict[str, float] = {}
         self._pending_runs: dict[str, list[str]] = defaultdict(list)
-        self._extractions_by_day: dict[date, int] = defaultdict(int)
         self._log = logging.getLogger(__name__)
 
     # -- terminal hook ---------------------------------------------------
@@ -240,19 +239,19 @@ class MemoryExtractionService:
             return []
         if not run_ids:
             return []
-        today = datetime.now(UTC).date()
-        if self._extractions_by_day[today] >= settings.agent_memory_daily_extractions:
-            self._log.info("memory extraction skipped: daily limit reached")
-            return []
         prompt = self._build_prompt(thread_id, run_ids)
         if not prompt.strip():
+            return []
+        today = datetime.now(UTC).date().isoformat()
+        if not self.memory.try_consume_extraction_slot(
+            today, settings.agent_memory_daily_extractions
+        ):
+            self._log.info("memory extraction skipped: daily limit reached")
             return []
         raw = self._complete(prompt)
         if not raw.strip():
             return []
-        candidates = self._parse_candidates(raw, thread_id, run_ids)
-        self._extractions_by_day[today] += 1
-        return candidates
+        return self._parse_candidates(raw, thread_id, run_ids)
 
     def _parse_candidates(
         self, raw: str, thread_id: str, run_ids: list[str]

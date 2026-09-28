@@ -278,6 +278,50 @@ class WorkspaceMemoryStore:
             )
         return candidate
 
+    def extraction_count(self, day: str) -> int:
+        """Return the persisted extraction count for one workspace-day."""
+
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT count FROM memory_extraction_counters "
+                "WHERE workspace = ? AND day = ?",
+                (self._workspace_key, day),
+            ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def try_consume_extraction_slot(self, day: str, limit: int) -> bool:
+        """Atomically reserve one extraction slot for this workspace-day.
+
+        ``BEGIN IMMEDIATE`` keeps the count check and increment in one write
+        transaction, so a process restart no longer resets the daily budget.
+        """
+
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT count FROM memory_extraction_counters "
+                "WHERE workspace = ? AND day = ?",
+                (self._workspace_key, day),
+            ).fetchone()
+            count = int(row["count"]) if row else 0
+            if count >= limit:
+                connection.rollback()
+                return False
+            connection.execute(
+                """
+                INSERT INTO memory_extraction_counters(workspace, day, count)
+                VALUES (?, ?, 1)
+                ON CONFLICT(workspace, day) DO UPDATE SET
+                    count = memory_extraction_counters.count + 1
+                """,
+                (self._workspace_key, day),
+            )
+            connection.commit()
+            return True
+        finally:
+            connection.close()
+
     def list_candidates(
         self, *, status: MemoryCandidateStatus | None = MemoryCandidateStatus.PENDING
     ) -> list[MemoryCandidate]:

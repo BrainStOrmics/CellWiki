@@ -70,6 +70,21 @@ def test_memory_schema_guard_is_idempotent(tmp_path: Path):
     assert _memory_columns(store.path, "memory_candidates") == first
 
 
+def test_extraction_counter_is_persisted_per_workspace_day(tmp_path: Path):
+    store = RuntimeStore(tmp_path)
+    memory = WorkspaceMemoryStore(tmp_path, store.path)
+
+    assert memory.extraction_count("2026-09-28") == 0
+    assert memory.try_consume_extraction_slot("2026-09-28", 1)
+    assert memory.extraction_count("2026-09-28") == 1
+    assert not memory.try_consume_extraction_slot("2026-09-28", 1)
+    assert memory.extraction_count("2026-09-28") == 1
+
+    reopened = WorkspaceMemoryStore(tmp_path, RuntimeStore(tmp_path).path)
+    assert not reopened.try_consume_extraction_slot("2026-09-28", 1)
+    assert reopened.extraction_count("2026-09-28") == 1
+
+
 def test_candidate_queue_round_trip(tmp_path: Path):
     RuntimeStore(tmp_path)
     memory = WorkspaceMemoryStore(tmp_path, RuntimeStore(tmp_path).path)

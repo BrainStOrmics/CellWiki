@@ -2340,7 +2340,13 @@ class RuntimeStore:
     );
     CREATE INDEX IF NOT EXISTS ix_memory_entries_workspace
         ON memory_entries(workspace, topic_family, updated_at);
-    PRAGMA user_version=9;
+    CREATE TABLE IF NOT EXISTS memory_extraction_counters (
+        workspace TEXT NOT NULL,
+        day TEXT NOT NULL,
+        count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (workspace, day)
+    );
+    PRAGMA user_version=10;
                 """
             )
             self._ensure_thread_registry(connection)
@@ -2403,6 +2409,16 @@ class RuntimeStore:
         connection.execute(
             "CREATE INDEX IF NOT EXISTS ix_memory_entries_workspace "
             "ON memory_entries(workspace, topic_family, updated_at)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_extraction_counters (
+                workspace TEXT NOT NULL,
+                day TEXT NOT NULL,
+                count INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (workspace, day)
+            )
+            """
         )
 
     def _ensure_tombstone_schema(self, connection: sqlite3.Connection) -> None:
