@@ -118,7 +118,7 @@ class MemoryConsolidationService:
                     candidate.memory_id, MemoryCandidateStatus.REJECTED
                 )
             return []
-        entries = self._apply(payload)
+        entries = self._apply(payload, candidates)
         for candidate in candidates:
             self.memory.mark_candidate(
                 candidate.memory_id, MemoryCandidateStatus.MERGED
@@ -221,11 +221,32 @@ class MemoryConsolidationService:
 
     # -- apply -----------------------------------------------------------
 
-    def _apply(self, payload: dict[str, Any]) -> list[MemoryEntry]:
+    def _apply(
+        self, payload: dict[str, Any], candidates: list[MemoryCandidate]
+    ) -> list[MemoryEntry]:
         written: list[MemoryEntry] = []
         existing_by_file = {
             entry.file_name: entry for entry in self.memory.list_entries()
         }
+        origin_thread_ids = sorted(
+            {candidate.origin_thread_id for candidate in candidates if candidate.origin_thread_id}
+        )
+        origin_run_ids = sorted(
+            {candidate.origin_run_id for candidate in candidates if candidate.origin_run_id}
+        )
+        source_refs = sorted(
+            {
+                *(
+                    ref
+                    for candidate in candidates
+                    for ref in candidate.source_refs
+                ),
+                *(f"thread:{value}" for value in origin_thread_ids),
+                *(f"run:{value}" for value in origin_run_ids),
+            }
+        )
+        origin_thread_id = origin_thread_ids[0] if origin_thread_ids else ""
+        origin_run_id = origin_run_ids[-1] if origin_run_ids else ""
         for topic in payload["topics"]:
             kind = MemoryKind(str(topic["kind"]).strip())
             family = MemoryTopicFamily(str(topic["topic_family"]).strip())
@@ -244,6 +265,9 @@ class MemoryConsolidationService:
                 title=title,
                 file_name=file_name,
                 derived_hash="",
+                origin_thread_id=origin_thread_id,
+                origin_run_id=origin_run_id,
+                source_refs=source_refs,
                 user_edited=False,
                 auto_update=True,
             )
@@ -255,6 +279,9 @@ class MemoryConsolidationService:
                 title=title,
                 file_name=file_name,
                 derived_hash=derived,
+                origin_thread_id=origin_thread_id,
+                origin_run_id=origin_run_id,
+                source_refs=source_refs,
                 user_edited=False,
                 auto_update=True,
             )

@@ -4,15 +4,17 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LanguageProvider } from "../i18n";
 import { MemoryPanel } from "./MemoryPanel";
 
-const { getJson, putJson, deleteJson } = vi.hoisted(() => ({
+const { getJson, putJson, postJson, deleteJson } = vi.hoisted(() => ({
   getJson: vi.fn(),
   putJson: vi.fn(),
+  postJson: vi.fn(),
   deleteJson: vi.fn(),
 }));
 
 vi.mock("../lib/product-api", () => ({
   getJson,
   putJson,
+  postJson,
   deleteJson,
 }));
 
@@ -24,6 +26,9 @@ const ENTRY = {
   file_name: "run-approval.md",
   user_edited: false,
   auto_update: true,
+  origin_thread_id: "thread_api",
+  origin_run_id: "run_api",
+  source_refs: ["thread:thread_api", "run:run_api"],
   updated_at: "2026-09-28T00:00:00+00:00",
 };
 
@@ -86,7 +91,7 @@ describe("MemoryPanel", () => {
 
     fireEvent.click(screen.getByText("编辑"));
     await waitFor(() => expect(screen.getByTestId("memory-editor")).toBeTruthy());
-    fireEvent.change(screen.getByRole("textbox"), {
+    fireEvent.change(screen.getByTestId("memory-editor").querySelector("textarea")!, {
       target: { value: "改写后的正文" },
     });
     fireEvent.click(screen.getByText("保存"));
@@ -97,5 +102,38 @@ describe("MemoryPanel", () => {
         reenable_auto_update: false,
       }),
     );
+  });
+
+  it("consolidates pending memories and reloads", async () => {
+    getJson.mockResolvedValue({ entries: [ENTRY], count: 1 });
+    postJson.mockResolvedValue({ consolidated: 0, entries: [] });
+
+    renderPanel();
+    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId("memory-consolidate"));
+
+    await waitFor(() =>
+      expect(postJson).toHaveBeenCalledWith("/api/memory/consolidate", {}),
+    );
+    expect(getJson).toHaveBeenCalledTimes(2);
+  });
+
+  it("cleans memories by source and reloads", async () => {
+    getJson.mockResolvedValue({ entries: [ENTRY], count: 1 });
+    deleteJson.mockResolvedValue({ deleted_entries: 1, deleted_candidates: 0 });
+
+    renderPanel();
+    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
+
+    fireEvent.change(screen.getByPlaceholderText("thread_id 或 run_id"), {
+      target: { value: "thread_api" },
+    });
+    fireEvent.click(screen.getByTestId("memory-clean-source"));
+
+    await waitFor(() =>
+      expect(deleteJson).toHaveBeenCalledWith("/api/memory/sources/thread_api"),
+    );
+    expect(getJson).toHaveBeenCalledTimes(2);
   });
 });

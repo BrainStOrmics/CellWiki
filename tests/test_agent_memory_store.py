@@ -54,6 +54,9 @@ def test_runtime_store_creates_memory_tables(tmp_path: Path):
         "topic_family",
         "title",
         "file_name",
+        "origin_thread_id",
+        "origin_run_id",
+        "source_refs",
         "derived_hash",
         "user_edited",
         "auto_update",
@@ -231,6 +234,47 @@ def test_delete_entry_removes_file_and_index_row(tmp_path: Path):
 
     assert memory.get_entry("mem_del") is None
     assert not (memory.memory_dir / "prompt-summary.md").exists()
+
+
+def test_delete_by_source_uses_entry_and_candidate_provenance(tmp_path: Path):
+    store = RuntimeStore(tmp_path)
+    memory = WorkspaceMemoryStore(tmp_path, store.path)
+    memory.upsert_entry(
+        memory_id="mem_source",
+        kind=MemoryKind.PREFERENCE,
+        topic_family=MemoryTopicFamily.RUN_APPROVAL,
+        title="来源条目",
+        file_name="source.md",
+        derived_hash="x",
+        origin_thread_id="thread_1",
+        origin_run_id="run_1",
+        source_refs=["thread:thread_1", "run:run_1"],
+    )
+    memory.upsert_entry(
+        memory_id="mem_other",
+        kind=MemoryKind.LESSON,
+        topic_family=MemoryTopicFamily.EVALUATION,
+        title="其他来源",
+        file_name="other.md",
+        derived_hash="x",
+        origin_thread_id="thread_2",
+        origin_run_id="run_2",
+    )
+    memory.add_candidate(
+        kind=MemoryKind.PREFERENCE,
+        topic_family=MemoryTopicFamily.RUN_APPROVAL,
+        title="待合并的同一来源",
+        body="同一来源的候选。",
+        origin_run_id="run_1",
+        origin_thread_id="thread_1",
+    )
+
+    deleted_entries, deleted_candidates = memory.delete_by_source("thread_1")
+
+    assert (deleted_entries, deleted_candidates) == (1, 1)
+    assert memory.get_entry("mem_source") is None
+    assert memory.get_entry("mem_other") is not None
+    assert memory.list_candidates(status=None) == []
 
 
 def test_set_entry_auto_update_clears_user_edited(tmp_path: Path):

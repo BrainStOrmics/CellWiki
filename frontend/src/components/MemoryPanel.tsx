@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { LoaderCircle, Pencil, RefreshCcw, Trash2, XCircle } from "lucide-react";
 
 import { useI18n } from "../i18n";
-import { deleteJson, getJson, putJson } from "../lib/product-api";
+import { deleteJson, getJson, postJson, putJson } from "../lib/product-api";
 
 type MemoryPanelEntry = {
   memory_id: string;
@@ -12,6 +12,9 @@ type MemoryPanelEntry = {
   file_name: string;
   user_edited: boolean;
   auto_update: boolean;
+  origin_thread_id?: string;
+  origin_run_id?: string;
+  source_refs?: string[];
   updated_at: string;
   body?: string;
 };
@@ -37,6 +40,8 @@ export function MemoryPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<EntryDraft>();
+  const [consolidating, setConsolidating] = useState(false);
+  const [source, setSource] = useState("");
 
   async function load() {
     setLoading(true);
@@ -93,6 +98,38 @@ export function MemoryPanel() {
     }
   }
 
+  async function consolidate() {
+    setConsolidating(true);
+    try {
+      await postJson("/api/memory/consolidate", {});
+      await load();
+    } catch (consolidateError) {
+      setError(
+        consolidateError instanceof Error
+          ? consolidateError.message
+          : t("memory.consolidateError"),
+      );
+    } finally {
+      setConsolidating(false);
+    }
+  }
+
+  async function cleanSource() {
+    const trimmed = source.trim();
+    if (!trimmed) return;
+    try {
+      await deleteJson(`/api/memory/sources/${encodeURIComponent(trimmed)}`);
+      setSource("");
+      await load();
+    } catch (cleanupError) {
+      setError(
+        cleanupError instanceof Error
+          ? cleanupError.message
+          : t("memory.cleanupError"),
+      );
+    }
+  }
+
   return (
     <section className="settings-card memory-panel" data-testid="memory-panel">
       <div className="settings-card-title">
@@ -117,6 +154,37 @@ export function MemoryPanel() {
       {!loading && entries.length === 0 ? (
         <p className="settings-empty">{t("memory.empty")}</p>
       ) : null}
+      <div className="memory-actions">
+        <button
+          type="button"
+          data-testid="memory-consolidate"
+          onClick={() => void consolidate()}
+          disabled={consolidating}
+        >
+          {consolidating ? (
+            <LoaderCircle size={12} className="spin" />
+          ) : (
+            <RefreshCcw size={12} />
+          )}
+          {consolidating ? t("memory.consolidating") : t("memory.consolidate")}
+        </button>
+        <div className="memory-source-cleanup">
+          <input
+            value={source}
+            onChange={(event) => setSource(event.target.value)}
+            placeholder={t("memory.sourcePlaceholder")}
+          />
+          <button
+            type="button"
+            data-testid="memory-clean-source"
+            onClick={() => void cleanSource()}
+            disabled={!source.trim()}
+          >
+            <Trash2 size={12} />
+            {t("memory.cleanSource")}
+          </button>
+        </div>
+      </div>
       <ul className="memory-list">
         {entries.map((entry) => (
           <li key={entry.memory_id} data-testid="memory-entry">
@@ -128,6 +196,11 @@ export function MemoryPanel() {
               {entry.kind}
               {entry.user_edited ? ` · ${t("memory.userEdited")}` : ""}
             </small>
+            {entry.origin_thread_id ? (
+              <small>
+                {t("memory.source")}: {entry.origin_thread_id}
+              </small>
+            ) : null}
             <div className="memory-entry-actions">
               <button type="button" onClick={() => void startEdit(entry)}>
                 <Pencil size={12} />

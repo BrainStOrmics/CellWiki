@@ -69,6 +69,10 @@ from cellwiki.services.model_catalog import (
 from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 from cellwiki.services.runtime_store import RuntimeStore, ThreadDeletionBlockedError
 from cellwiki.services.agent_memory import WorkspaceMemoryStore
+from cellwiki.services.agent_memory_merge import (
+    MemoryConsolidationService,
+    MemoryMergeUnavailable,
+)
 
 
 # checkpoint 缺失是**永久性**拒绝——载体里没有该 run 的
@@ -371,6 +375,9 @@ def create_app(
             "topic_family": entry.topic_family.value,
             "title": entry.title,
             "file_name": entry.file_name,
+            "origin_thread_id": entry.origin_thread_id,
+            "origin_run_id": entry.origin_run_id,
+            "source_refs": list(entry.source_refs),
             "user_edited": entry.user_edited,
             "auto_update": entry.auto_update,
             "updated_at": entry.updated_at.isoformat(),
@@ -393,6 +400,35 @@ def create_app(
         payload = _memory_payload(store, entry)
         payload["body"] = store.read_entry_body(entry.file_name)
         return payload
+
+    @app.post("/api/memory/consolidate")
+    def consolidate_memory() -> dict:
+        """Run the single-writer consolidation pass on demand."""
+
+        if not settings.agent_memory_enabled:
+            raise HTTPException(
+                status_code=409, detail="workspace memory is disabled"
+            )
+        store = _memory_store()
+        try:
+            entries = MemoryConsolidationService(store, model_catalog).consolidate()
+        except MemoryMergeUnavailable as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        return {
+            "consolidated": len(entries),
+            "entries": [_memory_payload(store, entry) for entry in entries],
+        }
+
+    @app.delete("/api/memory/sources/{source}")
+    def delete_memory_source(source: str) -> dict:
+        """Delete active entries and candidates attributable to one source."""
+
+        entries, candidates = _memory_store().delete_by_source(source)
+        return {
+            "source": source,
+            "deleted_entries": entries,
+            "deleted_candidates": candidates,
+        }
 
     @app.put("/api/memory/{memory_id}")
     def update_memory(memory_id: str, request: MemoryUpdateRequest) -> dict:

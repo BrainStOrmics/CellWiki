@@ -192,6 +192,9 @@ class WorkspaceMemoryStore:
             "topic_family": entry.topic_family.value,
             "title": entry.title,
             "workspace": entry.workspace,
+            "origin_thread_id": entry.origin_thread_id,
+            "origin_run_id": entry.origin_run_id,
+            "source_refs": list(entry.source_refs),
             "derived_hash": derived,
             "auto_update": entry.auto_update,
             "user_edited": entry.user_edited,
@@ -371,6 +374,9 @@ class WorkspaceMemoryStore:
         title: str,
         file_name: str,
         derived_hash: str,
+        origin_thread_id: str = "",
+        origin_run_id: str = "",
+        source_refs: list[str] | None = None,
         user_edited: bool = False,
         auto_update: bool = True,
     ) -> MemoryEntry:
@@ -388,14 +394,18 @@ class WorkspaceMemoryStore:
                 """
                 INSERT INTO memory_entries(
                     memory_id, workspace, kind, topic_family, title, file_name,
-                    derived_hash, user_edited, auto_update, usage_count,
-                    created_at, updated_at, last_used_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    origin_thread_id, origin_run_id, source_refs, derived_hash,
+                    user_edited, auto_update, usage_count, created_at, updated_at,
+                    last_used_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(memory_id) DO UPDATE SET
                     kind = excluded.kind,
                     topic_family = excluded.topic_family,
                     title = excluded.title,
                     file_name = excluded.file_name,
+                    origin_thread_id = excluded.origin_thread_id,
+                    origin_run_id = excluded.origin_run_id,
+                    source_refs = excluded.source_refs,
                     derived_hash = excluded.derived_hash,
                     user_edited = excluded.user_edited,
                     auto_update = excluded.auto_update,
@@ -408,6 +418,9 @@ class WorkspaceMemoryStore:
                     topic_family.value,
                     title,
                     file_name,
+                    origin_thread_id,
+                    origin_run_id,
+                    json.dumps(list(source_refs or []), ensure_ascii=False),
                     derived_hash,
                     int(user_edited),
                     int(auto_update),
@@ -424,6 +437,9 @@ class WorkspaceMemoryStore:
             topic_family=topic_family,
             title=title,
             file_name=file_name,
+            origin_thread_id=origin_thread_id,
+            origin_run_id=origin_run_id,
+            source_refs=list(source_refs or []),
             derived_hash=derived_hash,
             user_edited=user_edited,
             auto_update=auto_update,
@@ -471,6 +487,44 @@ class WorkspaceMemoryStore:
             path = self._safe_entry_path(entry.file_name)
             path.unlink(missing_ok=True)
 
+    def delete_candidate(self, memory_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM memory_candidates WHERE memory_id = ? AND workspace = ?",
+                (memory_id, self._workspace_key),
+            )
+
+    def delete_by_source(self, source: str) -> tuple[int, int]:
+        """Delete entries and candidates whose provenance matches one source."""
+
+        source = str(source or "").strip()
+        if not source:
+            return (0, 0)
+        entries = [
+            entry for entry in self.list_entries() if self._matches_source(entry, source)
+        ]
+        for entry in entries:
+            self.delete_entry(entry.memory_id)
+        candidates = [
+            candidate
+            for candidate in self.list_candidates(status=None)
+            if self._matches_source(candidate, source)
+        ]
+        for candidate in candidates:
+            self.delete_candidate(candidate.memory_id)
+        return (len(entries), len(candidates))
+
+    @staticmethod
+    def _matches_source(record: MemoryEntry | MemoryCandidate, source: str) -> bool:
+        refs = list(record.source_refs)
+        return (
+            source in refs
+            or f"thread:{source}" in refs
+            or f"run:{source}" in refs
+            or getattr(record, "origin_thread_id", "") == source
+            or getattr(record, "origin_run_id", "") == source
+        )
+
     def entry_body_matches(self, entry: MemoryEntry) -> bool:
         """True when the file body still matches the last automatic write."""
 
@@ -492,6 +546,9 @@ class WorkspaceMemoryStore:
             topic_family=MemoryTopicFamily(row["topic_family"]),
             title=row["title"],
             file_name=row["file_name"],
+            origin_thread_id=str(row["origin_thread_id"] or ""),
+            origin_run_id=str(row["origin_run_id"] or ""),
+            source_refs=json.loads(row["source_refs"] or "[]"),
             derived_hash=row["derived_hash"],
             user_edited=bool(row["user_edited"]),
             auto_update=bool(row["auto_update"]),

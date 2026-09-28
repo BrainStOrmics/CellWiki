@@ -90,6 +90,9 @@ class MemoryEntry(ContractModel):
     topic_family: MemoryTopicFamily
     title: str
     file_name: str
+    origin_thread_id: str = ""
+    origin_run_id: str = ""
+    source_refs: list[str] = Field(default_factory=list)
     derived_hash: str = ""
     user_edited: bool = False       # 用户改过：跳过自动合并，直到显式放行
     auto_update: bool = True        # 面板"重新纳入自动更新"置回 True

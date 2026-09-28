@@ -2330,6 +2330,9 @@ class RuntimeStore:
         topic_family TEXT NOT NULL,
         title TEXT NOT NULL,
         file_name TEXT NOT NULL,
+        origin_thread_id TEXT NOT NULL DEFAULT '',
+        origin_run_id TEXT NOT NULL DEFAULT '',
+        source_refs TEXT NOT NULL DEFAULT '[]',
         derived_hash TEXT NOT NULL,
         user_edited INTEGER NOT NULL DEFAULT 0,
         auto_update INTEGER NOT NULL DEFAULT 1,
@@ -2346,7 +2349,7 @@ class RuntimeStore:
         count INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (workspace, day)
     );
-    PRAGMA user_version=10;
+    PRAGMA user_version=11;
                 """
             )
             self._ensure_thread_registry(connection)
@@ -2396,6 +2399,9 @@ class RuntimeStore:
                 topic_family TEXT NOT NULL,
                 title TEXT NOT NULL,
                 file_name TEXT NOT NULL,
+                origin_thread_id TEXT NOT NULL DEFAULT '',
+                origin_run_id TEXT NOT NULL DEFAULT '',
+                source_refs TEXT NOT NULL DEFAULT '[]',
                 derived_hash TEXT NOT NULL,
                 user_edited INTEGER NOT NULL DEFAULT 0,
                 auto_update INTEGER NOT NULL DEFAULT 1,
@@ -2410,6 +2416,24 @@ class RuntimeStore:
             "CREATE INDEX IF NOT EXISTS ix_memory_entries_workspace "
             "ON memory_entries(workspace, topic_family, updated_at)"
         )
+        columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(memory_entries)")
+        }
+        if "origin_thread_id" not in columns:
+            connection.execute(
+                "ALTER TABLE memory_entries ADD COLUMN "
+                "origin_thread_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "origin_run_id" not in columns:
+            connection.execute(
+                "ALTER TABLE memory_entries ADD COLUMN "
+                "origin_run_id TEXT NOT NULL DEFAULT ''"
+            )
+        if "source_refs" not in columns:
+            connection.execute(
+                "ALTER TABLE memory_entries ADD COLUMN "
+                "source_refs TEXT NOT NULL DEFAULT '[]'"
+            )
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS memory_extraction_counters (
