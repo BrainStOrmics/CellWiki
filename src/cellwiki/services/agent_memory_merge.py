@@ -44,13 +44,16 @@ _FAMILY_LIST = " | ".join(family.value for family in MemoryTopicFamily)
 _INSTRUCTIONS = (
     "你在把知识库工作区里的记忆候选合并成成型记忆。只做合并、去重与改写，"
     "不要新增候选里没有的事实，不要写入科学结论、页面正文、原始语料、隐藏推理或凭据。"
-    "每个话题归入一个固定家族，同一家族内的条目合并到同一个 file_name。"
+    "每个话题归入一个固定家族，同一家族内的条目合并到同一个 file_name；"
+    "每个话题只能有一个 kind，同一文件不得混用多个 kind。"
     "摘要的 User Profile 只写这个工作区里的协作口径（怎么维护知识库、要求什么输出、"
     "哪些操作必须先问），不写跨工作区的个人画像。"
     "只输出一个 JSON 对象："
-    '{"topics": [{"topic_family": "...", "title": "...", "file_name": "kebab-case.md", '
+    '{"topics": [{"kind": "...", "topic_family": "...", "title": "...", '
+    '"file_name": "kebab-case.md", '
     '"body": "..."}], "summary": {"profile": "...", "preferences": "...", '
     '"tips": "...", "index": "..."}}。'
+    f"kind 只能取 {' | '.join(kind.value for kind in MemoryKind)}；"
     f"topic_family 只能取 {_FAMILY_LIST}；"
     "file_name 只用小写字母、数字与连字符，以 .md 结尾；"
     f"summary 总量必须小于 {MEMORY_SUMMARY_MAX_BYTES} 字节，index 用 `### <家族>` 分组。"
@@ -183,10 +186,14 @@ class MemoryConsolidationService:
         if not isinstance(summary, dict):
             raise MemoryMergeRejected("consolidation response carries no summary")
         families = {family.value for family in MemoryTopicFamily}
+        kinds = {kind.value for kind in MemoryKind}
         seen_files: set[str] = set()
         for topic in topics:
             if not isinstance(topic, dict):
                 raise MemoryMergeRejected("topic entry is not an object")
+            kind = str(topic.get("kind") or "").strip()
+            if kind not in kinds:
+                raise MemoryMergeRejected(f"kind outside the enum: {kind}")
             family = str(topic.get("topic_family") or "").strip()
             if family not in families:
                 raise MemoryMergeRejected(f"topic family outside the enum: {family}")
@@ -220,6 +227,7 @@ class MemoryConsolidationService:
             entry.file_name: entry for entry in self.memory.list_entries()
         }
         for topic in payload["topics"]:
+            kind = MemoryKind(str(topic["kind"]).strip())
             family = MemoryTopicFamily(str(topic["topic_family"]).strip())
             file_name = str(topic["file_name"]).strip()
             title = _truncate(str(topic["title"]), 120)
@@ -229,7 +237,6 @@ class MemoryConsolidationService:
                 # 用户改过的条目保持原样：自动合并不得静默覆盖。
                 continue
             memory_id = existing.memory_id if existing else f"mem_{uuid.uuid4().hex}"
-            kind = existing.kind if existing else MemoryKind.LESSON
             entry = self.memory.upsert_entry(
                 memory_id=memory_id,
                 kind=kind,
@@ -253,7 +260,9 @@ class MemoryConsolidationService:
             )
             written.append(entry)
         self.memory.write_summary(payload["summary_body"])
-        self.memory.write_index(self._render_index(payload["summary_body"]))
+        self.memory.write_index(
+            self._render_index(payload["summary_body"], self.memory.list_entries())
+        )
         return written
 
     def _is_user_edited(self, entry: MemoryEntry) -> bool:
@@ -263,17 +272,85 @@ class MemoryConsolidationService:
             return True
         return not self.memory.entry_body_matches(entry)
 
-    @staticmethod
-    def _render_index(summary_body: str) -> str:
-        """MEMORY.md keeps the What's in Memory routing index for tool search."""
+    def _render_index(
+        self, summary_body: str, entries: list[MemoryEntry]
+    ) -> str:
+        """Render the human-readable manual and the What's in Memory routing index."""
 
+        lines = ["# Memory index", ""]
+        task_number = 0
+        for family in MemoryTopicFamily:
+            family_entries = [
+                entry for entry in entries if entry.topic_family is family
+            ]
+            if not family_entries:
+                continue
+            lines.extend(
+                [
+                    "# Task Group",
+                    f"scope: {family.value}",
+                    f"applies_to: {self.memory.workspace_root}",
+                    "",
+                ]
+            )
+            for entry in family_entries:
+                task_number += 1
+                lines.extend(
+                    [
+                        f"## Task {task_number}",
+                        f"- memory_id: {entry.memory_id}",
+                        f"- file: {entry.file_name}",
+                        f"- kind: {entry.kind.value}",
+                        f"- title: {entry.title}",
+                        f"- keywords: {self._keywords(entry.title)}",
+                        f"- updated_at: {entry.updated_at.isoformat()}",
+                        "",
+                    ]
+                )
+        preferences = self._summary_section(
+            summary_body, "## User Preferences"
+        )
+        if preferences:
+            lines.extend(["## User Preferences", preferences, ""])
+        reusable = "\n\n".join(
+            part
+            for part in (
+                self._summary_section(summary_body, "## General Tips"),
+                self._summary_section(summary_body, "## What's in Memory"),
+            )
+            if part
+        )
+        if reusable:
+            lines.extend(["## Reusable Knowledge", reusable, ""])
+        failures = [
+            entry for entry in entries if entry.kind is MemoryKind.LESSON
+        ]
+        if failures:
+            lines.append("## Failures and How to Do Differently")
+            lines.extend(
+                f"- {entry.title} ({entry.file_name})" for entry in failures
+            )
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+    @staticmethod
+    def _summary_section(summary_body: str, heading: str) -> str:
         lines = summary_body.splitlines()
         try:
-            start = lines.index("## What's in Memory")
+            start = lines.index(heading)
         except ValueError:
-            return "# Memory index\n"
-        index_lines = [line for line in lines[start + 1 :] if line.strip()]
-        return "# Memory index\n\n" + "\n".join(index_lines) + "\n"
+            return ""
+        collected: list[str] = []
+        for line in lines[start + 1 :]:
+            if line.startswith("## "):
+                break
+            collected.append(line)
+        return "\n".join(collected).strip()
+
+    @staticmethod
+    def _keywords(title: str) -> str:
+        tokens = re.findall(r"[\w\u4e00-\u9fff-]+", title)
+        return ", ".join(dict.fromkeys(tokens)) or title
 
 
 __all__ = [

@@ -26,9 +26,14 @@ def _stores(tmp_path: Path) -> tuple[RuntimeStore, WorkspaceMemoryStore]:
     return store, WorkspaceMemoryStore(tmp_path, store.path)
 
 
-def _seed(memory: WorkspaceMemoryStore, *, title: str = "逐行判定 diff") -> None:
+def _seed(
+    memory: WorkspaceMemoryStore,
+    *,
+    title: str = "逐行判定 diff",
+    kind: MemoryKind = MemoryKind.PREFERENCE,
+) -> None:
     memory.add_candidate(
-        kind=MemoryKind.PREFERENCE,
+        kind=kind,
         topic_family=MemoryTopicFamily.RUN_APPROVAL,
         title=title,
         body="用户偏好逐行判定审批单元。",
@@ -40,6 +45,7 @@ def _seed(memory: WorkspaceMemoryStore, *, title: str = "逐行判定 diff") -> 
 
 def _topic_payload(
     *,
+    kind: str = MemoryKind.PREFERENCE.value,
     family: str = MemoryTopicFamily.RUN_APPROVAL.value,
     title: str = "审批偏好",
     file_name: str = "run-approval.md",
@@ -48,6 +54,7 @@ def _topic_payload(
     return {
         "topics": [
             {
+                "kind": kind,
                 "topic_family": family,
                 "title": title,
                 "file_name": file_name,
@@ -80,7 +87,52 @@ def test_consolidate_writes_topic_files_and_summary(tmp_path: Path):
     assert "逐行判定 diff" in summary
     index = memory.index_path().read_text(encoding="utf-8")
     assert "# Memory index" in index
+    assert "# Task Group" in index
+    assert "scope: run 与审批" in index
+    assert f"applies_to: {memory.workspace_root}" in index
+    assert "## Task 1" in index
+    assert "- kind: preference" in index
+    assert "## User Preferences" in index
+    assert "## Reusable Knowledge" in index
     assert memory.list_candidates() == []
+
+
+def test_consolidate_preserves_all_candidate_kinds(tmp_path: Path):
+    for kind in MemoryKind:
+        root = tmp_path / kind.value
+        root.mkdir()
+        _store, memory = _stores(root)
+        _seed(memory, kind=kind)
+        service = MemoryConsolidationService(
+            memory,
+            _Catalog(),
+            completer=lambda prompt, kind=kind: json.dumps(
+                _topic_payload(kind=kind.value)
+            ),
+        )
+
+        written = service.consolidate()
+
+        assert len(written) == 1
+        assert written[0].kind is kind
+
+
+def test_consolidate_renders_failures_block(tmp_path: Path):
+    _store, memory = _stores(tmp_path)
+    _seed(memory, kind=MemoryKind.LESSON, title="踩坑记录")
+    service = MemoryConsolidationService(
+        memory,
+        _Catalog(),
+        completer=lambda prompt: json.dumps(
+            _topic_payload(kind=MemoryKind.LESSON.value, title="踩坑记录")
+        ),
+    )
+
+    service.consolidate()
+
+    index = memory.index_path().read_text(encoding="utf-8")
+    assert "## Failures and How to Do Differently" in index
+    assert "踩坑记录" in index
 
 
 def test_consolidate_marks_candidates_merged(tmp_path: Path):

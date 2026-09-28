@@ -40,6 +40,7 @@ def _topic_payload(body: str) -> dict:
     return {
         "topics": [
             {
+                "kind": MemoryKind.PREFERENCE.value,
                 "topic_family": MemoryTopicFamily.RUN_APPROVAL.value,
                 "title": "审批偏好",
                 "file_name": "run-approval.md",
