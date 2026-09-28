@@ -69,6 +69,23 @@ def test_memory_disabled_injects_nothing(monkeypatch, tmp_path: Path):
     assert "Workspace memory summary" not in str(messages)
 
 
+def test_memory_disabled_keeps_stable_prefix_memory_free(monkeypatch):
+    import cellwiki.config as config_module
+    from cellwiki.agent.app import stable_system_prompt_text
+
+    monkeypatch.setattr(config_module.settings, "agent_memory_enabled", False)
+
+    prompt = stable_system_prompt_text(2, "hash")
+
+    for tool_name in (
+        "list_memory",
+        "read_memory",
+        "search_memory",
+        "add_ad_hoc_note",
+    ):
+        assert tool_name not in prompt
+
+
 def test_memory_summary_is_pinned_to_the_first_run_of_a_thread(
     monkeypatch, tmp_path: Path
 ):

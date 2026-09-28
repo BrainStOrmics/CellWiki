@@ -28,7 +28,7 @@ v1
 
 - Evidence Tier 与模板门禁: schema.md, cellwiki-template, Evidence Tier, source_field, L0 门禁
   - desc: 页面提取与 lint 的契约细节；需要改模板或排查门禁失败时先搜这里。
-  - learnings: Tier 1–4 必须有 `raw/<paper_id>/` 绑定；Tier 5 必须以 inference 或 hypothesis 开头。
+  - learnings: Tier 1–4 必须有 `raw/<paper_id>/` 绑定；单文件 `raw/source.md` 不满足该绑定，不得为了过 lint 擅自移动或重建 raw 路径，应降级为 Tier 5（以 inference 或 hypothesis 开头）或先询问用户；Tier 5 必须以 inference 或 hypothesis 开头。
 
 ### raw 与来源
 
