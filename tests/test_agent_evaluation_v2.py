@@ -61,6 +61,32 @@ def test_gate_suite_covers_five_gated_capabilities():
     assert "accept_diff" in steps_by_id["prompt_injection_boundary"]
 
 
+def test_suite_question_policy_applies_as_scenario_default(tmp_path: Path):
+    data = json.loads(GATE_SUITE.read_text(encoding="utf-8"))
+    data["scenarios"] = data["scenarios"][:2]
+    data["question_policy"] = {
+        "mode": "answer",
+        "answers": ["suite default"],
+        "max_answers_per_run": 1,
+    }
+    data["scenarios"][0]["question_policy"] = {
+        "mode": "answer",
+        "answers": ["scenario override"],
+        "max_answers_per_run": 2,
+    }
+    probe_path = tmp_path / "question-policy.json"
+    probe_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+    suite = load_suite(probe_path)
+
+    assert suite.scenarios[0].question_policy == {
+        "mode": "answer",
+        "answers": ["scenario override"],
+        "max_answers_per_run": 2,
+    }
+    assert suite.scenarios[1].question_policy == data["question_policy"]
+
+
 def test_diagnostic_suite_includes_gate_scenarios():
     gate = load_suite(GATE_SUITE)
     diagnostic = load_suite(DIAGNOSTIC_SUITE)

@@ -31,7 +31,7 @@ import shutil
 import stat
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Iterable
@@ -449,12 +449,21 @@ def _parse_scenario(scenario: dict[str, Any]) -> Scenario:
 
 
 def _parse_suite(data: dict[str, Any], path: Path, source_hash: str) -> Suite:
+    suite_policy = data.get("question_policy")
+    scenarios = []
+    for item in data["scenarios"]:
+        scenario = _parse_scenario(item)
+        if scenario.question_policy is None and suite_policy is not None:
+            # Suite-level policy is the default for every scenario; a scenario
+            # may still override it.
+            scenario = replace(scenario, question_policy=dict(suite_policy))
+        scenarios.append(scenario)
     return Suite(
         suite_id=str(data["suite_id"]),
         suite_version=int(data["suite_version"]),
         layer=str(data["layer"]),
-        question_policy=data.get("question_policy"),
-        scenarios=tuple(_parse_scenario(item) for item in data["scenarios"]),
+        question_policy=suite_policy,
+        scenarios=tuple(scenarios),
         path=path,
         source_hash=source_hash,
     )
