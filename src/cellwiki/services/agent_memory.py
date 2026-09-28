@@ -512,7 +512,16 @@ class WorkspaceMemoryStore:
         ]
         for candidate in candidates:
             self.delete_candidate(candidate.memory_id)
+        if entries:
+            # 摘要可能仍引用被删除条目；先清空视图，避免旧内容继续注入。
+            self.reset_views()
         return (len(entries), len(candidates))
+
+    def reset_views(self) -> None:
+        """Invalidate the injected summary and manual index."""
+
+        self.summary_path().unlink(missing_ok=True)
+        self.index_path().unlink(missing_ok=True)
 
     @staticmethod
     def _matches_source(record: MemoryEntry | MemoryCandidate, source: str) -> bool:

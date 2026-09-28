@@ -268,6 +268,8 @@ def test_delete_by_source_uses_entry_and_candidate_provenance(tmp_path: Path):
         origin_run_id="run_1",
         origin_thread_id="thread_1",
     )
+    memory.write_summary(render_summary(profile="来源清理前的摘要。"))
+    memory.write_index("# Memory index\n")
 
     deleted_entries, deleted_candidates = memory.delete_by_source("thread_1")
 
@@ -275,6 +277,8 @@ def test_delete_by_source_uses_entry_and_candidate_provenance(tmp_path: Path):
     assert memory.get_entry("mem_source") is None
     assert memory.get_entry("mem_other") is not None
     assert memory.list_candidates(status=None) == []
+    assert memory.read_summary() == ""
+    assert not memory.index_path().exists()
 
 
 def test_set_entry_auto_update_clears_user_edited(tmp_path: Path):
