@@ -134,5 +134,3 @@ class _NullCatalog:
 
     def resolve(self):  # noqa: D102 - parity with ModelCatalogService
         return None
-
-
