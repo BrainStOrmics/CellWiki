@@ -689,6 +689,27 @@ class RuntimeStore:
                 updated += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
         return updated
 
+    def thread_has_run_context(
+        self, thread_id: str, *, exclude_run_id: str | None = None
+    ) -> bool:
+        """Whether any run in this thread already carries a persisted run_context.
+
+        工作区记忆摘要按线程钉住：只有第一个注入它的 run 才能写 run_context，
+        同线程后续 run 复用该快照，不再重读最新的 memory_summary.md。
+        """
+
+        query = (
+            "SELECT 1 FROM agent_model_messages "
+            "WHERE thread_id = ? AND kind = 'run_context'"
+        )
+        parameters: list[Any] = [thread_id]
+        if exclude_run_id is not None:
+            query += " AND run_id != ?"
+            parameters.append(exclude_run_id)
+        query += " LIMIT 1"
+        with self._connect() as connection:
+            return connection.execute(query, tuple(parameters)).fetchone() is not None
+
     def list_model_messages(self, thread_id: str) -> list[dict[str, Any]]:
         """Return the active append-only transcript for one thread."""
 

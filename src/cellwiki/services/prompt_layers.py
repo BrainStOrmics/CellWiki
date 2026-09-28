@@ -193,6 +193,9 @@ def _render_attachment_block(attachments: list[dict[str, Any]]) -> str:
 _LAYER_B_SNAPSHOT_MAX = 8_000
 _SELECTED_TEXT_MAX = 2_000
 _SELECTION_TRUNCATED = "…[selected text truncated]"
+# 记忆摘要的注入上界：文件 <10,000 bytes，注入硬截断 2,500 tokens。
+_MEMORY_SUMMARY_MAX_TOKENS = 2_500
+_MEMORY_SUMMARY_TRUNCATED = "…[memory summary truncated]"
 
 
 def _bounded_selection(text: str) -> str:
@@ -313,6 +316,7 @@ def build_turn_context(
     attachments: list[dict[str, Any]] | None = None,
     selected_text: str | None = None,
     gate_issues: list[str] | None = None,
+    memory_summary: str | None = None,
 ) -> str:
     """Build the v2 dynamic tail merged into the current user turn.
 
@@ -344,10 +348,35 @@ def build_turn_context(
         block = _render_attachment_block(attachments)
         if block:
             parts.append(block)
+    memory_block = _bounded_memory_summary(memory_summary)
+    if memory_block:
+        parts.append(memory_block)
     hint = intent_hint if intent_hint is not None else classify_intent_hint(current_message)
     if hint:
         parts.append(f"- intent hint: {hint}")
     return "\n".join(parts)[:_LAYER_B_SNAPSHOT_MAX]
+
+
+def _bounded_memory_summary(summary: str | None) -> str:
+    """Hard-bounded memory summary block for the Turn Context tail.
+
+    摘要按线程钉住：只在"新线程第一次 run"注入，同线程后续 run 复用已持久化的
+    ``run_context``，因此这里只做截断，不做相关性筛选——内容由 Phase 2 合并时控制。
+    """
+
+    if summary is None:
+        return ""
+    text = summary.strip()
+    if not text:
+        return ""
+    # 记忆段自身按注入上限截断，同时必须留在整体 Turn Context 预算之内，
+    # 否则总上限一裁就会把截断标记一起切掉。
+    limit = min(_MEMORY_SUMMARY_MAX_TOKENS * 4, _LAYER_B_SNAPSHOT_MAX // 2)
+    if len(text) > limit:
+        # 给截断标记预留位置：否则总上限一裁，标记会先被切掉，读者看不出被截断。
+        keep = max(0, limit - len(_MEMORY_SUMMARY_TRUNCATED) - 1)
+        text = text[:keep] + "\n" + _MEMORY_SUMMARY_TRUNCATED
+    return "## Workspace memory summary\n" + text
 
 
 # 归类的优先级：模糊关键词重叠时（如“继续”同时是 unfinished 标记）优先更具体的类别

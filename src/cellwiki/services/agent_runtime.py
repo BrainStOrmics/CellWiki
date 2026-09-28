@@ -2208,6 +2208,7 @@ class AgentRuntimeManager:
             attachments=self._attachment_manifest(run),
             selected_text=context.selected_text,
             gate_issues=self._previous_gate_issues(run),
+            memory_summary=self._memory_summary_for_thread(run),
         )
         self.store.append_model_message(
             thread_id=run.thread_id,
@@ -2235,6 +2236,20 @@ class AgentRuntimeManager:
             thread_id=run.thread_id,
         )
         return render_model_messages(self.store.list_model_messages(run.thread_id)), prompt_context
+
+    def _memory_summary_for_thread(self, run: AgentRun) -> str:
+        """Injected memory summary, pinned to the first run of a thread (ADR-0016).
+
+        摘要只在"新线程第一次 run"注入并随该线程的 ``run_context`` 一起持久化；
+        同线程后续 run 复用已写入的快照——这样记忆库可以频繁更新而不改变活跃
+        线程的 provider prefix，缓存代价是每线程一次冷启动首调用。
+        """
+
+        if not settings.agent_memory_enabled or not settings.agent_memory_use:
+            return ""
+        if self.store.thread_has_run_context(run.thread_id, exclude_run_id=run.run_id):
+            return ""
+        return self._memory_store.read_summary()
 
     def _model_spec_for_run(self, run: AgentRun) -> ResolvedModelSpec | None:
         """按 run 记录解析模型；legacy 链（无 provider id）返回 None。
