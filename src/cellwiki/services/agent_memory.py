@@ -51,6 +51,13 @@ def _content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
 
 
+def content_hash(*, memory_id: str, title: str, body: str) -> str:
+    """The canonical derived hash for one memory entry payload."""
+
+    payload = {"memory_id": memory_id, "title": title, "body": body}
+    return _content_hash(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
 def _split_summary_sections(body: str) -> dict[str, str]:
     """Split a summary body into its four fixed sections (missing -> empty)."""
 
@@ -157,14 +164,27 @@ class WorkspaceMemoryStore:
         path = self._safe_entry_path(file_name)
         if not path.is_file():
             return ""
-        return path.read_text(encoding="utf-8")
+        return self._strip_frontmatter(path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _strip_frontmatter(text: str) -> str:
+        """Return the body below the entry frontmatter block (empty when absent)."""
+
+        lines = text.splitlines()
+        if not lines or lines[0].strip() != "---":
+            return text.strip()
+        for index in range(1, len(lines)):
+            if lines[index].strip() == "---":
+                return "\n".join(lines[index + 1 :]).strip()
+        return text.strip()
 
     def write_entry_file(self, entry: MemoryEntry, body: str) -> str:
         """Write one entry file and return the derived hash of the payload."""
 
         self.ensure_layout()
-        payload = {"memory_id": entry.memory_id, "title": entry.title, "body": body}
-        derived = _content_hash(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        derived = content_hash(
+            memory_id=entry.memory_id, title=entry.title, body=body
+        )
         frontmatter = {
             "memory_id": entry.memory_id,
             "schema_version": MEMORY_SCHEMA_VERSION,
@@ -407,6 +427,19 @@ class WorkspaceMemoryStore:
             path = self._safe_entry_path(entry.file_name)
             path.unlink(missing_ok=True)
 
+    def entry_body_matches(self, entry: MemoryEntry) -> bool:
+        """True when the file body still matches the last automatic write."""
+
+        try:
+            body = self.read_entry_body(entry.file_name)
+        except ValueError:
+            return False
+        if not body:
+            return False
+        return content_hash(
+            memory_id=entry.memory_id, title=entry.title, body=body
+        ) == entry.derived_hash
+
     def _entry_from_row(self, row: sqlite3.Row) -> MemoryEntry:
         return MemoryEntry(
             memory_id=row["memory_id"],
@@ -450,6 +483,7 @@ __all__ = [
     "MEMORY_SUMMARY_MAX_TOKENS",
     "SUMMARY_HEADINGS",
     "WorkspaceMemoryStore",
+    "content_hash",
     "render_summary",
     "validate_summary_body",
 ]

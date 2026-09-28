@@ -150,9 +150,45 @@ def test_entry_file_records_derived_hash(tmp_path: Path):
         derived_hash=derived,
     )
 
+    raw = (memory.memory_dir / "eval-deterministic.md").read_text(encoding="utf-8")
+    assert derived in raw
     body = memory.read_entry_body("eval-deterministic.md")
-    assert "derived_hash" in body
-    assert memory.get_entry("mem_1").derived_hash == derived
+    assert body == "先跑确定性变体，再上真实模型。"
+    entry = memory.get_entry("mem_1")
+    assert entry is not None
+    assert entry.derived_hash == derived
+    assert memory.entry_body_matches(entry)
+
+
+def test_entry_body_matches_detects_manual_edit(tmp_path: Path):
+    RuntimeStore(tmp_path)
+    memory = WorkspaceMemoryStore(tmp_path, RuntimeStore(tmp_path).path)
+    entry = memory.upsert_entry(
+        memory_id="mem_edit",
+        kind=MemoryKind.LESSON,
+        topic_family=MemoryTopicFamily.EVALUATION,
+        title="评估卷先跑确定性变体",
+        file_name="eval-edited.md",
+        derived_hash="",
+    )
+    derived = memory.write_entry_file(entry, "原始内容。")
+    stored = memory.upsert_entry(
+        memory_id="mem_edit",
+        kind=MemoryKind.LESSON,
+        topic_family=MemoryTopicFamily.EVALUATION,
+        title="评估卷先跑确定性变体",
+        file_name="eval-edited.md",
+        derived_hash=derived,
+    )
+    assert memory.entry_body_matches(stored)
+
+    (memory.memory_dir / "eval-edited.md").write_text(
+        (memory.memory_dir / "eval-edited.md").read_text(encoding="utf-8")
+        + "\n用户补充的一行。\n",
+        encoding="utf-8",
+    )
+
+    assert not memory.entry_body_matches(stored)
 
 
 def test_entry_file_rejects_path_escape(tmp_path: Path):

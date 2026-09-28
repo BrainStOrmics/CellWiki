@@ -81,6 +81,7 @@ from cellwiki.services.model_catalog import ModelCatalogService
 from cellwiki.services.unit_naming import UnitNamingService
 from cellwiki.services.agent_memory import WorkspaceMemoryStore
 from cellwiki.services.agent_memory_extract import MemoryExtractionService
+from cellwiki.services.agent_memory_merge import MemoryConsolidationService
 from cellwiki.services.run_scope import (
     clear_run_scope,
     porcelain_paths as _porcelain_dirty_paths,
@@ -1325,11 +1326,16 @@ class AgentRuntimeManager:
         # 工作区记忆（ADR-0016）：候选队列与成型文件共用同一 store；提取服务在
         # run 终态后按信号门 + 去抖窗口排期，失败只记日志，不影响 run 收尾。
         self._memory_store = WorkspaceMemoryStore(self.project_root, self.store.path)
+        # Phase 2：单写方合并。候选由提取服务落库后经回调触发，绝不与提取并发写文件。
+        self._memory_merge = MemoryConsolidationService(
+            self._memory_store, self._model_catalog
+        )
         self._memory_extraction = MemoryExtractionService(
             self.project_root,
             self.store,
             self._memory_store,
             self._model_catalog,
+            on_candidates=self._memory_merge.consolidate,
         )
         self._naming_executor = ThreadPoolExecutor(
             max_workers=1,

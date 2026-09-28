@@ -148,6 +148,7 @@ class MemoryExtractionService:
         catalog: ModelCatalogService,
         *,
         completer: Callable[[str], str] | None = None,
+        on_candidates: Callable[[], Any] | None = None,
         debounce_minutes: int | None = None,
         sleep: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -156,6 +157,8 @@ class MemoryExtractionService:
         self.memory = memory
         self.catalog = catalog
         self._completer = completer
+        # 合并回调：候选落库后由 runtime 触发单写方 Phase 2；异常由调度线程兜底。
+        self._on_candidates = on_candidates
         self._debounce_minutes = (
             debounce_minutes
             if debounce_minutes is not None
@@ -215,7 +218,9 @@ class MemoryExtractionService:
             run_ids = list(self._pending_runs.pop(thread_id, []))
             self._pending_at.pop(thread_id, None)
         try:
-            self.extract(thread_id, run_ids)
+            created = self.extract(thread_id, run_ids)
+            if created and self._on_candidates is not None:
+                self._on_candidates()
         except Exception as error:  # noqa: BLE001 - 提取失败不影响任何 run
             self._log.warning("memory extraction failed for %s: %s", thread_id, error)
 
