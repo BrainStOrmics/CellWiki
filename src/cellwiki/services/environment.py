@@ -32,7 +32,11 @@ _DEFAULTS = {
     "AGENT_CONTEXT_MAX_TOKENS": str(AGENT_CONTEXT_MAX_TOKEN_PRESETS[2]),
     "LOG_LEVEL": "INFO",
     "APP_LANGUAGE": "zh-CN",
-    "ENABLE_AGENT_MEMORY": "false",
+    "AGENT_MEMORY_ENABLED": "false",
+    "AGENT_MEMORY_GENERATE": "true",
+    "AGENT_MEMORY_USE": "true",
+    "AGENT_MEMORY_DEBOUNCE_MINUTES": "10",
+    "AGENT_MEMORY_DAILY_EXTRACTIONS": "24",
     "ENABLE_EXTERNAL_RESEARCH": "false",
     "MEMORY_RECALL_TOKEN_BUDGET": "800",
     "AUTO_ACCEPT_PENDING_DIFFS": "false",
@@ -101,7 +105,15 @@ class EnvironmentSettingsService:
             "secret_storage": "system" if self._system_secret() else "env",
             "log_level": values["LOG_LEVEL"],
             "app_language": values["APP_LANGUAGE"],
-            "enable_agent_memory": self._bool(values["ENABLE_AGENT_MEMORY"]),
+            "agent_memory_enabled": self._bool(values["AGENT_MEMORY_ENABLED"]),
+            "agent_memory_generate": self._bool(values["AGENT_MEMORY_GENERATE"]),
+            "agent_memory_use": self._bool(values["AGENT_MEMORY_USE"]),
+            "agent_memory_debounce_minutes": self._integer(
+                values["AGENT_MEMORY_DEBOUNCE_MINUTES"], default=10
+            ),
+            "agent_memory_daily_extractions": self._integer(
+                values["AGENT_MEMORY_DAILY_EXTRACTIONS"], default=24
+            ),
             "enable_external_research": self._bool(values["ENABLE_EXTERNAL_RESEARCH"]),
             "memory_recall_token_budget": self._integer(
                 values["MEMORY_RECALL_TOKEN_BUDGET"], default=800
@@ -139,7 +151,11 @@ class EnvironmentSettingsService:
         openai_api_protocol: str | None = None,
         openai_max_input_tokens: int | None = None,
         agent_context_max_tokens: int | None = None,
-        enable_agent_memory: bool = False,
+        agent_memory_enabled: bool = False,
+        agent_memory_generate: bool = True,
+        agent_memory_use: bool = True,
+        agent_memory_debounce_minutes: int = 10,
+        agent_memory_daily_extractions: int = 24,
         enable_external_research: bool = False,
         memory_recall_token_budget: int = 800,
         auto_accept_pending_diffs: bool = False,
@@ -166,7 +182,11 @@ class EnvironmentSettingsService:
             ),
             "LOG_LEVEL": log_level.strip().upper(),
             "APP_LANGUAGE": app_language.strip(),
-            "ENABLE_AGENT_MEMORY": "true" if enable_agent_memory else "false",
+            "AGENT_MEMORY_ENABLED": "true" if agent_memory_enabled else "false",
+            "AGENT_MEMORY_GENERATE": "true" if agent_memory_generate else "false",
+            "AGENT_MEMORY_USE": "true" if agent_memory_use else "false",
+            "AGENT_MEMORY_DEBOUNCE_MINUTES": str(agent_memory_debounce_minutes),
+            "AGENT_MEMORY_DAILY_EXTRACTIONS": str(agent_memory_daily_extractions),
             "ENABLE_EXTERNAL_RESEARCH": "true" if enable_external_research else "false",
             "MEMORY_RECALL_TOKEN_BUDGET": str(memory_recall_token_budget),
             "AUTO_ACCEPT_PENDING_DIFFS": (
@@ -179,8 +199,10 @@ class EnvironmentSettingsService:
             raise ValueError("log level must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
         if normalized["APP_LANGUAGE"] not in {"zh-CN", "en"}:
             raise ValueError("app language must be zh-CN or en")
-        if not 128 <= memory_recall_token_budget <= 4000:
-            raise ValueError("memory recall token budget must be between 128 and 4000")
+        if not 1 <= agent_memory_debounce_minutes <= 720:
+            raise ValueError("memory debounce minutes must be between 1 and 720")
+        if not 1 <= agent_memory_daily_extractions <= 500:
+            raise ValueError("memory daily extractions must be between 1 and 500")
         if agent_context_max_tokens is not None and (
             agent_context_max_tokens not in AGENT_CONTEXT_MAX_TOKEN_PRESETS
         ):
