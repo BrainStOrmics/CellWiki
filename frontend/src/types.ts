@@ -363,6 +363,12 @@ export type AppSettings = {
   enable_agent_memory: boolean;
   enable_external_research: boolean;
   memory_recall_token_budget: number;
+  // ADR-0016 工作区记忆：开关与提取参数
+  agent_memory_enabled: boolean;
+  agent_memory_generate: boolean;
+  agent_memory_use: boolean;
+  agent_memory_debounce_minutes: number;
+  agent_memory_daily_extractions: number;
   auto_accept_pending_diffs: boolean;
   agent_context_max_tokens: number;
   agent_context_max_token_presets: number[];

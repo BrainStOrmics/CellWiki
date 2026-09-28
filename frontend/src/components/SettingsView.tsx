@@ -18,9 +18,10 @@ import {
 import { useI18n } from "../i18n";
 import { isDesktopRuntime, openLogsDirectory, productFetch, restartBackend, runtimeConfig } from "../runtime";
 import { ProviderManager } from "./ProviderManager";
+import { MemoryPanel } from "./MemoryPanel";
 import type { AppSettings } from "../types";
 
-type SettingsSection = "model" | "interface" | "runtime" | "workspace";
+type SettingsSection = "model" | "interface" | "runtime" | "workspace" | "memory";
 
 type SettingsDraft = {
   openai_base_url: string;
@@ -30,9 +31,12 @@ type SettingsDraft = {
   clear_openai_api_key: boolean;
   log_level: AppSettings["log_level"];
   app_language: AppSettings["app_language"];
-  enable_agent_memory: boolean;
   enable_external_research: boolean;
-  memory_recall_token_budget: number;
+  agent_memory_enabled: boolean;
+  agent_memory_generate: boolean;
+  agent_memory_use: boolean;
+  agent_memory_debounce_minutes: number;
+  agent_memory_daily_extractions: number;
   agent_context_max_tokens: number;
   auto_accept_pending_diffs: boolean;
 };
@@ -45,9 +49,12 @@ const emptyDraft: SettingsDraft = {
   clear_openai_api_key: false,
   log_level: "INFO",
   app_language: "zh-CN",
-  enable_agent_memory: false,
   enable_external_research: false,
-  memory_recall_token_budget: 800,
+  agent_memory_enabled: false,
+  agent_memory_generate: true,
+  agent_memory_use: true,
+  agent_memory_debounce_minutes: 10,
+  agent_memory_daily_extractions: 24,
   agent_context_max_tokens: 512000,
   auto_accept_pending_diffs: false,
 };
@@ -92,9 +99,12 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         clear_openai_api_key: false,
         log_level: settings.log_level,
         app_language: settings.app_language,
-        enable_agent_memory: settings.enable_agent_memory,
         enable_external_research: settings.enable_external_research,
-        memory_recall_token_budget: settings.memory_recall_token_budget,
+        agent_memory_enabled: settings.agent_memory_enabled ?? false,
+        agent_memory_generate: settings.agent_memory_generate ?? true,
+        agent_memory_use: settings.agent_memory_use ?? true,
+        agent_memory_debounce_minutes: settings.agent_memory_debounce_minutes ?? 10,
+        agent_memory_daily_extractions: settings.agent_memory_daily_extractions ?? 24,
         agent_context_max_tokens: settings.agent_context_max_tokens,
         auto_accept_pending_diffs: settings.auto_accept_pending_diffs,
       });
@@ -201,6 +211,8 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
     ? { eyebrow: t("settings.providersEyebrow"), title: t("settings.modelTitle") }
     : section === "interface"
       ? { eyebrow: t("settings.interfaceEyebrow"), title: t("settings.interfaceTitle") }
+      : section === "memory"
+        ? { eyebrow: t("memory.title"), title: t("memory.title") }
       : section === "workspace"
         ? { eyebrow: t("settings.workspace"), title: t("settings.workspaceTitle") }
         : { eyebrow: t("settings.localServices"), title: t("settings.runtimeTitle") };
@@ -225,6 +237,9 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
           <button data-testid="settings-workspace-nav" className={section === "workspace" ? "active" : ""} onClick={() => setSection("workspace")}>
             <FolderOpen size={15} /><span><b>{t("settings.workspace")}</b></span>
           </button>
+          <button data-testid="settings-memory-nav" className={section === "memory" ? "active" : ""} onClick={() => setSection("memory")}>
+            <BrainCircuit size={15} /><span><b>{t("memory.title")}</b></span>
+          </button>
         </nav>
         <button className="settings-back" onClick={onClose}><ArrowLeft size={14} />{t("settings.back")}</button>
       </aside>
@@ -241,6 +256,37 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
 
         {loading ? (
           <div className="settings-loading"><LoaderCircle className="spin" size={18} />{t("settings.loading")}</div>
+        ) : section === "memory" ? (
+          <div className="settings-content">
+            <section className="settings-card">
+              <div className="settings-card-title">
+                <BrainCircuit size={16} />
+                <div><h3>{t("memory.title")}</h3></div>
+                <span>{t("settings.defaultOff")}</span>
+              </div>
+              <label className="clear-secret">
+                <input data-testid="memory-enabled-toggle" type="checkbox" checked={draft.agent_memory_enabled} onChange={(event) => updateDraft({ agent_memory_enabled: event.target.checked })} />
+                <span><BrainCircuit size={13} />{t("memory.enabled")}</span>
+              </label>
+              <label className="clear-secret">
+                <input type="checkbox" checked={draft.agent_memory_use} onChange={(event) => updateDraft({ agent_memory_use: event.target.checked })} />
+                <span>{t("memory.use")}</span>
+              </label>
+              <label className="clear-secret">
+                <input type="checkbox" checked={draft.agent_memory_generate} onChange={(event) => updateDraft({ agent_memory_generate: event.target.checked })} />
+                <span>{t("memory.generate")}</span>
+              </label>
+              <label className="settings-field">
+                <span>{t("memory.debounce")}</span>
+                <input type="number" min={1} max={720} value={draft.agent_memory_debounce_minutes} onChange={(event) => updateDraft({ agent_memory_debounce_minutes: Number(event.target.value) })} />
+              </label>
+              <label className="settings-field">
+                <span>{t("memory.dailyLimit")}</span>
+                <input type="number" min={1} max={500} value={draft.agent_memory_daily_extractions} onChange={(event) => updateDraft({ agent_memory_daily_extractions: Number(event.target.value) })} />
+              </label>
+            </section>
+            <MemoryPanel />
+          </div>
         ) : section === "workspace" ? (
           <div className="settings-content">
             <section className="settings-card workspace-card">
@@ -271,9 +317,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             </section>
             <section className="settings-card experimental-card">
               <div className="settings-card-title"><BrainCircuit size={16} /><div><h3>{t("settings.experimentalTitle")}</h3></div><span>{t("settings.defaultOff")}</span></div>
-              <label className="clear-secret"><input type="checkbox" checked={draft.enable_agent_memory} onChange={(event) => updateDraft({ enable_agent_memory: event.target.checked })} /><span><BrainCircuit size={13} />{t("settings.agentMemory")}</span></label>
               <label className="clear-secret"><input type="checkbox" checked={draft.enable_external_research} onChange={(event) => updateDraft({ enable_external_research: event.target.checked })} /><span><FlaskConical size={13} />{t("settings.externalResearch")}</span></label>
-              <label className="settings-field"><span>{t("settings.memoryBudget")}</span><input type="number" min={128} max={4000} value={draft.memory_recall_token_budget} onChange={(event) => updateDraft({ memory_recall_token_budget: Number(event.target.value) })} /></label>
             </section>
           </div>
         ) : (
