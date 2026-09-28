@@ -2285,14 +2285,104 @@ class RuntimeStore:
     );
     CREATE INDEX IF NOT EXISTS ix_agent_questions_run
         ON agent_questions(run_id, status, created_at);
-    PRAGMA user_version=8;
+    CREATE TABLE IF NOT EXISTS memory_candidates (
+        memory_id TEXT PRIMARY KEY,
+        workspace TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        topic_family TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        source_refs TEXT NOT NULL,
+        origin_run_id TEXT NOT NULL,
+        origin_thread_id TEXT NOT NULL,
+        status TEXT NOT NULL,
+        derived_hash TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS ix_memory_candidates_workspace
+        ON memory_candidates(workspace, status, created_at);
+    CREATE TABLE IF NOT EXISTS memory_entries (
+        memory_id TEXT PRIMARY KEY,
+        workspace TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        topic_family TEXT NOT NULL,
+        title TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        derived_hash TEXT NOT NULL,
+        user_edited INTEGER NOT NULL DEFAULT 0,
+        auto_update INTEGER NOT NULL DEFAULT 1,
+        usage_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        last_used_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS ix_memory_entries_workspace
+        ON memory_entries(workspace, topic_family, updated_at);
+    PRAGMA user_version=9;
                 """
             )
             self._ensure_thread_registry(connection)
             self._ensure_run_idempotency_schema(connection)
             self._ensure_transcript_state_schema(connection)
             self._ensure_tombstone_schema(connection)
+            self._ensure_memory_schema(connection)
             self._scrub_retired_payload_fields(connection)
+
+    def _ensure_memory_schema(self, connection: sqlite3.Connection) -> None:
+        """Workspace-memory candidate queue and active-entry index (ADR-0016).
+
+        Tables are created by the executescript above for fresh databases; this
+        guard keeps older runtime databases usable by adding the tables and any
+        later columns in place, mirroring the other guarded migrations.
+        """
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_candidates (
+                memory_id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                topic_family TEXT NOT NULL,
+                title TEXT NOT NULL,
+                body TEXT NOT NULL,
+                source_refs TEXT NOT NULL,
+                origin_run_id TEXT NOT NULL,
+                origin_thread_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                derived_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_memory_candidates_workspace "
+            "ON memory_candidates(workspace, status, created_at)"
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_entries (
+                memory_id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                topic_family TEXT NOT NULL,
+                title TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                derived_hash TEXT NOT NULL,
+                user_edited INTEGER NOT NULL DEFAULT 0,
+                auto_update INTEGER NOT NULL DEFAULT 1,
+                usage_count INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_used_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_memory_entries_workspace "
+            "ON memory_entries(workspace, topic_family, updated_at)"
+        )
 
     def _ensure_tombstone_schema(self, connection: sqlite3.Connection) -> None:
         """判定来源列：代判（auto）与人工判定必须在 tombstone 上可辨。
