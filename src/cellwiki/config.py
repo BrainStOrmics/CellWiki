@@ -94,10 +94,12 @@ class Settings(BaseSettings):
 
     # ---- 实验性功能（Phase 7）- 默认关闭 ----
     # 在语义评估证明对基线有可衡量的改进之前保持 opt-in
-    enable_agent_memory: bool = False       # 是否启用智能体长期记忆
     enable_external_research: bool = False  # 是否启用外部文献搜索
-    # 单次记忆召回查询的 token 预算上限，防止单个智能体回合导致上下文无限增长
-    memory_recall_token_budget: int = 800
+
+    # 迁移期占位：旧安装的 .env 可能仍带这两个键，Settings 对未知键是拒绝的，
+    # 直接删字段会让现有项目启动即失败。它们不再有消费者，保留只为兼容读取。
+    enable_agent_memory: bool | None = None
+    memory_recall_token_budget: int | None = None
 
     # ---- 工作区记忆（ADR-0016）----
     # 默认关闭；开启后 run 终态触发候选提取，摘要有界注入 Turn Context。

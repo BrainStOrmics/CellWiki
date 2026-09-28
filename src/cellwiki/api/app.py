@@ -97,6 +97,12 @@ class SettingsUpdateRequest(BaseModel):
     agent_context_max_tokens: int | None = Field(
         default=None, ge=8_000, le=2_000_000
     )
+    # 工作区记忆（ADR-0016）：默认关闭，全部走 .env 持久化、重启生效。
+    agent_memory_enabled: bool = False
+    agent_memory_generate: bool = True
+    agent_memory_use: bool = True
+    agent_memory_debounce_minutes: int = Field(default=10, ge=1, le=720)
+    agent_memory_daily_extractions: int = Field(default=24, ge=1, le=500)
     # 信任策略：开启后 run 终态（succeeded/unfinished）发布的单元由系统代判。
     auto_accept_pending_diffs: bool = False
 

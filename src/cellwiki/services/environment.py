@@ -38,7 +38,6 @@ _DEFAULTS = {
     "AGENT_MEMORY_DEBOUNCE_MINUTES": "10",
     "AGENT_MEMORY_DAILY_EXTRACTIONS": "24",
     "ENABLE_EXTERNAL_RESEARCH": "false",
-    "MEMORY_RECALL_TOKEN_BUDGET": "800",
     "AUTO_ACCEPT_PENDING_DIFFS": "false",
     "PROJECT_ROOT": "",
 }
@@ -115,9 +114,6 @@ class EnvironmentSettingsService:
                 values["AGENT_MEMORY_DAILY_EXTRACTIONS"], default=24
             ),
             "enable_external_research": self._bool(values["ENABLE_EXTERNAL_RESEARCH"]),
-            "memory_recall_token_budget": self._integer(
-                values["MEMORY_RECALL_TOKEN_BUDGET"], default=800
-            ),
             "auto_accept_pending_diffs": self._bool(
                 values["AUTO_ACCEPT_PENDING_DIFFS"]
             ),
@@ -157,7 +153,6 @@ class EnvironmentSettingsService:
         agent_memory_debounce_minutes: int = 10,
         agent_memory_daily_extractions: int = 24,
         enable_external_research: bool = False,
-        memory_recall_token_budget: int = 800,
         auto_accept_pending_diffs: bool = False,
     ) -> bool:
         """Persist a validated settings draft and report whether runtime restart is needed."""
@@ -188,7 +183,6 @@ class EnvironmentSettingsService:
             "AGENT_MEMORY_DEBOUNCE_MINUTES": str(agent_memory_debounce_minutes),
             "AGENT_MEMORY_DAILY_EXTRACTIONS": str(agent_memory_daily_extractions),
             "ENABLE_EXTERNAL_RESEARCH": "true" if enable_external_research else "false",
-            "MEMORY_RECALL_TOKEN_BUDGET": str(memory_recall_token_budget),
             "AUTO_ACCEPT_PENDING_DIFFS": (
                 "true" if auto_accept_pending_diffs else "false"
             ),
@@ -234,9 +228,12 @@ class EnvironmentSettingsService:
                 "OPENAI_MAX_INPUT_TOKENS",
                 "AGENT_CONTEXT_MAX_TOKENS",
                 "LOG_LEVEL",
-                "ENABLE_AGENT_MEMORY",
+                "AGENT_MEMORY_ENABLED",
+                "AGENT_MEMORY_GENERATE",
+                "AGENT_MEMORY_USE",
+                "AGENT_MEMORY_DEBOUNCE_MINUTES",
+                "AGENT_MEMORY_DAILY_EXTRACTIONS",
                 "ENABLE_EXTERNAL_RESEARCH",
-                "MEMORY_RECALL_TOKEN_BUDGET",
                 "AUTO_ACCEPT_PENDING_DIFFS",
             )
         )

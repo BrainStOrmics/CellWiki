@@ -360,9 +360,7 @@ export type AppSettings = {
   secret_storage?: "system" | "env";
   log_level: "DEBUG" | "INFO" | "WARNING" | "ERROR" | "CRITICAL";
   app_language: "zh-CN" | "en";
-  enable_agent_memory: boolean;
   enable_external_research: boolean;
-  memory_recall_token_budget: number;
   // ADR-0016 工作区记忆：开关与提取参数
   agent_memory_enabled: boolean;
   agent_memory_generate: boolean;
@@ -464,22 +462,6 @@ export type KnowledgeGraph = {
   edges: GraphEdge[];
   scope: string;
   truncated: boolean;
-};
-
-export type MemoryRecord = {
-  memory_id: string;
-  project_id: string;
-  kind: "episode" | "stable";
-  content: string;
-  key?: string | null;
-  run_id?: string | null;
-  confidence: number;
-  tags: string[];
-  status: "active" | "conflict" | "expired" | "deleted";
-  conflicts_with: string[];
-  expires_at?: string | null;
-  created_at: string;
-  updated_at: string;
 };
 
 export type ResearchCandidate = {
