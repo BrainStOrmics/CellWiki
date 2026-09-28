@@ -45,8 +45,11 @@ def _run_trial(
     suite: Suite,
     trial: int,
     results_dir: Path,
+    memory_seed: Path | None = None,
 ) -> dict:
     workspace = prepare_trial_workspace(scenario, trial=trial)
+    if memory_seed is not None:
+        _seed_memory(workspace, memory_seed)
     evidence_dir = results_dir / scenario.scenario_id / f"trial-{trial}" / "steps"
     runner = ScenarioRunner(
         scenario,
@@ -73,6 +76,22 @@ def _run_trial(
         # 句柄仍被持有：保留工作区到下次运行覆盖同一路径，不影响评测结果。
         print(f"[eval-v2] note: workspace kept (in use): {workspace}")
     return result.to_dict()
+
+
+def _seed_memory(workspace: Path, seed: Path) -> None:
+    """Install a summary snapshot as this trial workspace's memory.
+
+    The evaluation workspace starts empty, so a with-memory run needs an explicit
+    seed to have something to inject; the seed is the same for every trial of a
+    pair, which is what makes the two runs comparable.
+    """
+
+    from cellwiki.services.agent_memory import WorkspaceMemoryStore
+    from cellwiki.services.runtime_store import RuntimeStore
+
+    body = Path(seed).read_text(encoding="utf-8")
+    store = WorkspaceMemoryStore(workspace, RuntimeStore(workspace).path)
+    store.write_summary(body)
 
 
 def main() -> int:
@@ -105,6 +124,25 @@ def main() -> int:
         action="store_true",
         help="Allow running a sealed suite (stage acceptance only).",
     )
+    parser.add_argument(
+        "--memory",
+        choices=("off", "on"),
+        default="off",
+        help=(
+            "Run with workspace memory disabled (default) or enabled. "
+            "Use two runs with the same suite/trials to get the paired "
+            "with/without-memory comparison required by ADR-0016."
+        ),
+    )
+    parser.add_argument(
+        "--memory-seed",
+        type=Path,
+        help=(
+            "Path to a memory_summary.md body installed into every trial "
+            "workspace before it runs; use with --memory on so the summary is "
+            "actually injected."
+        ),
+    )
     args = parser.parse_args()
 
     suite_path = (
@@ -126,6 +164,9 @@ def main() -> int:
         parser.error("no scenario matched --scenario filter")
 
     if args.dry_run:
+        print(f"[dry-run] memory: {args.memory}")
+        if args.memory_seed:
+            print(f"[dry-run] memory seed: {args.memory_seed}")
         for scenario in scenarios:
             print(
                 f"[dry-run] {scenario.scenario_id}: {len(scenario.steps)} steps, "
@@ -138,6 +179,10 @@ def main() -> int:
             "OPENAI_API_KEY is required for the real-model v2 evaluation; "
             "offline checks live in scripts/evaluate_agent_eval_v2.py"
         )
+
+    # 记忆开关在 run 时读取，因此在进入 trial 循环前显式覆盖。
+    settings.agent_memory_enabled = args.memory == "on"
+    print(f"[eval-v2] workspace memory: {args.memory}", flush=True)
 
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     out_dir = args.out_dir or RUNS_DIR / stamp
@@ -153,7 +198,9 @@ def main() -> int:
                 f"[eval-v2] {scenario.scenario_id} trial {trial}/{args.trials} ...",
                 flush=True,
             )
-            result = _run_trial(scenario, suite, trial, results_dir)
+            result = _run_trial(
+                scenario, suite, trial, results_dir, memory_seed=args.memory_seed
+            )
             results.append(TrialResult.from_dict(result))
             print(
                 f"[eval-v2] {scenario.scenario_id} trial {trial}/{args.trials} "
@@ -169,6 +216,7 @@ def main() -> int:
         api_protocol=settings.openai_api_protocol,
         generated_at=stamp,
     )
+    report["memory_mode"] = args.memory
     report_path = out_dir / "report.json"
     report_path.write_text(
         json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
