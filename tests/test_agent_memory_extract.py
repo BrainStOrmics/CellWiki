@@ -7,9 +7,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from cellwiki.domain.memory import MemoryCandidateStatus, MemoryKind, MemoryTopicFamily
+from cellwiki.domain.runs import AgentRun
 from cellwiki.services.agent_memory import WorkspaceMemoryStore
 from cellwiki.services.agent_memory_extract import (
     MemoryExtractionService,
+    TOOL_RESULT_FILE_MAX_CHARS,
+    TOOL_RESULT_MAX_FILES,
     has_signal,
 )
 from cellwiki.services.runtime_store import RuntimeStore
@@ -259,6 +262,46 @@ def test_candidates_do_not_enter_prompt_path(tmp_path: Path):
     )
 
     assert memory.read_summary() == ""
+
+
+def test_extraction_reads_bounded_tool_result_sidecars(
+    monkeypatch, tmp_path: Path
+):
+    _enable(monkeypatch)
+    sidecar_root = tmp_path / "data" / "runtime" / "tool-results"
+    current = sidecar_root / "run_1"
+    other = sidecar_root / "run_2"
+    current.mkdir(parents=True)
+    other.mkdir(parents=True)
+    for index in range(TOOL_RESULT_MAX_FILES + 1):
+        (current / f"call_{index}.txt").write_text(
+            f"SIDE_CAR_{index} " + ("x" * (TOOL_RESULT_FILE_MAX_CHARS // 8)),
+            encoding="utf-8",
+        )
+    (other / "call_other.txt").write_text(
+        "OTHER_RUN_SECRET", encoding="utf-8"
+    )
+    prompts: list[str] = []
+
+    def completer(prompt: str) -> str:
+        prompts.append(prompt)
+        return json.dumps({"candidates": []})
+
+    service, _memory = _service(tmp_path, completer=completer)
+    RuntimeStore(tmp_path).create_run(
+        AgentRun(
+            run_id="run_1",
+            thread_id="thread_1",
+            input_message="记住：读取工具侧车",
+        )
+    )
+    service.extract("thread_1", ["run_1"])
+
+    assert len(prompts) == 1
+    for index in range(TOOL_RESULT_MAX_FILES):
+        assert f"SIDE_CAR_{index}" in prompts[0]
+    assert f"SIDE_CAR_{TOOL_RESULT_MAX_FILES}" not in prompts[0]
+    assert "OTHER_RUN_SECRET" not in prompts[0]
 
 
 def test_mark_candidate_status_transitions(tmp_path: Path):

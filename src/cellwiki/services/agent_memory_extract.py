@@ -69,6 +69,9 @@ MAX_CANDIDATES_PER_RUN = 5
 TITLE_MAX_CHARS = 120
 BODY_MAX_CHARS = 2_000
 MAX_SOURCE_REFS = 20
+TOOL_RESULT_MAX_FILES = 4
+TOOL_RESULT_FILE_MAX_CHARS = 4_000
+TOOL_RESULT_TOTAL_MAX_CHARS = 12_000
 REQUEST_TIMEOUT_SECONDS = 60.0
 
 _EXTRACT_INSTRUCTIONS = (
@@ -316,9 +319,50 @@ class MemoryExtractionService:
         answer = self._assistant_text(thread_id=run.thread_id, run_id=run_id)
         if answer:
             lines.append("assistant: " + _truncate(answer, 1_200))
+        tool_results = self._tool_result_digest(run_id)
+        if tool_results:
+            lines.append("tool_results:\n" + tool_results)
         outline = self._event_outline(run_id)
         if outline:
             lines.append("activity:\n" + outline)
+        return "\n".join(lines)
+
+    def _tool_result_digest(self, run_id: str) -> str:
+        """Read a bounded slice of this run's oversized tool-output sidecars."""
+
+        sidecar_dir = (
+            self.project_root
+            / "data"
+            / "runtime"
+            / "tool-results"
+            / run_id
+        )
+        if not sidecar_dir.is_dir():
+            return ""
+        lines: list[str] = []
+        used = 0
+        files = sorted(
+            path
+            for path in sidecar_dir.iterdir()
+            if path.is_file() and path.suffix == ".txt"
+        )
+        for path in files[:TOOL_RESULT_MAX_FILES]:
+            if used >= TOOL_RESULT_TOTAL_MAX_CHARS:
+                break
+            remaining = TOOL_RESULT_TOTAL_MAX_CHARS - used
+            read_limit = min(TOOL_RESULT_FILE_MAX_CHARS, remaining)
+            try:
+                with path.open("r", encoding="utf-8", errors="replace") as handle:
+                    text = handle.read(read_limit + 1)
+            except OSError:
+                continue
+            excerpt = _truncate(
+                text, min(TOOL_RESULT_FILE_MAX_CHARS, remaining)
+            )
+            if not excerpt:
+                continue
+            lines.append(f"- {path.name}: {excerpt}")
+            used += len(excerpt)
         return "\n".join(lines)
 
     def _assistant_text(self, *, thread_id: str, run_id: str) -> str:
@@ -390,6 +434,9 @@ __all__ = [
     "MemoryExtractionDisabled",
     "MemoryExtractionService",
     "MemoryNamingUnavailable",
+    "TOOL_RESULT_FILE_MAX_CHARS",
+    "TOOL_RESULT_MAX_FILES",
+    "TOOL_RESULT_TOTAL_MAX_CHARS",
     "extract_candidates_from_json",
     "has_signal",
 ]
