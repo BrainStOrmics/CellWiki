@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import uuid
 from typing import Any, Callable
 
@@ -89,12 +90,17 @@ class MemoryConsolidationService:
         self.catalog = catalog
         self._completer = completer
         self._log = logging.getLogger(__name__)
+        self._lock = threading.Lock()
 
     # -- entry point -----------------------------------------------------
 
     def consolidate(self) -> list[MemoryEntry]:
         """Consume all pending candidates; returns the entries written this pass."""
 
+        with self._lock:
+            return self._consolidate_locked()
+
+    def _consolidate_locked(self) -> list[MemoryEntry]:
         candidates = self.memory.list_candidates()
         if not candidates:
             return []

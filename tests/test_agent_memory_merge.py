@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from pathlib import Path
 
 from cellwiki.domain.memory import MemoryCandidateStatus, MemoryKind, MemoryTopicFamily
@@ -195,3 +197,36 @@ def test_consolidate_without_model_raises(tmp_path: Path):
         assert isinstance(error, MemoryMergeUnavailable)
     else:  # pragma: no cover - 缺失模型时必须抛错
         raise AssertionError("expected MemoryMergeUnavailable")
+
+
+def test_consolidate_serializes_concurrent_calls(tmp_path: Path):
+    _store, memory = _stores(tmp_path)
+    _seed(memory)
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[int] = []
+
+    def completer(_prompt: str) -> str:
+        calls.append(1)
+        started.set()
+        assert release.wait(timeout=2)
+        return json.dumps(_topic_payload())
+
+    service = MemoryConsolidationService(memory, _Catalog(), completer=completer)
+    first = threading.Thread(target=service.consolidate)
+    second = threading.Thread(target=service.consolidate)
+
+    first.start()
+    assert started.wait(timeout=2)
+    second.start()
+    time.sleep(0.05)
+    assert len(calls) == 1
+
+    release.set()
+    first.join(timeout=2)
+    second.join(timeout=2)
+
+    assert not first.is_alive()
+    assert not second.is_alive()
+    assert len(calls) == 1
+    assert memory.list_candidates() == []
