@@ -55,6 +55,31 @@ CANONICAL_TOOL_ORDER: tuple[str, ...] = tuple(spec.name for spec in AGENT_TOOL_S
 # 提示词里逐字列出的工具名清单（逗号分隔，规范顺序）。
 AGENT_TOOL_NAMES_TEXT: str = ", ".join(CANONICAL_TOOL_ORDER)
 
+# 记忆工具（ADR-0016）：只在 `AGENT_MEMORY_ENABLED=true` 时注册并进入稳定前缀。
+# 关闭时工具面与提示词逐字不变，满足"关闭开关时请求形状与当前实现一致"。
+MEMORY_TOOL_SPECS: tuple[AgentToolSpec, ...] = (
+    AgentToolSpec("add_ad_hoc_note", "Memory"),
+    AgentToolSpec("list_memory", "Memory"),
+    AgentToolSpec("read_memory", "Memory"),
+    AgentToolSpec("search_memory", "Memory"),
+)
+
+MEMORY_TOOL_NAMES: tuple[str, ...] = tuple(
+    spec.name for spec in MEMORY_TOOL_SPECS
+)
+
+
+def agent_tool_names(include_memory: bool = False) -> tuple[str, ...]:
+    """Canonical tool names; memory tools append last when enabled."""
+
+    return CANONICAL_TOOL_ORDER + (MEMORY_TOOL_NAMES if include_memory else ())
+
+
+def agent_tool_names_text(include_memory: bool = False) -> str:
+    """Comma-separated canonical tool names for the stable prefix."""
+
+    return ", ".join(agent_tool_names(include_memory))
+
 
 # 关于“框架通用工具”的边界（2026-09-21 复核结论，别再引入第二层）：
 # 本注册表**不**声明 excluded_tools：本机七格隔离实验证明它零独有职责——框架排除
@@ -68,5 +93,9 @@ __all__ = [
     "AGENT_TOOL_SPECS",
     "AGENT_VISIBLE_TOOL_NAMES",
     "CANONICAL_TOOL_ORDER",
+    "MEMORY_TOOL_NAMES",
+    "MEMORY_TOOL_SPECS",
     "AgentToolSpec",
+    "agent_tool_names",
+    "agent_tool_names_text",
 ]

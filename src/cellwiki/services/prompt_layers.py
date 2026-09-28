@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cellwiki.domain.agent_tools import AGENT_TOOL_NAMES_TEXT
+from cellwiki.domain.agent_tools import agent_tool_names_text
 
 
 # 六类摘要标签（确定性抽取，不依赖额外 LLM 调用）
@@ -121,7 +121,17 @@ tools beyond this whitelist. Answer in the user's language.
 # 注册表注入的工具名清单；Layer A 由静态常量变为"模板 + 注册表"的拼接产物，
 # 因此 stable_system_prompt_text 与 prompt_configuration_hash 都随之变化
 # （属于预期内的稳定前缀变更）。
-LAYER_A_TEXT = LAYER_A_TEMPLATE.replace("{{tools}}", AGENT_TOOL_NAMES_TEXT)
+LAYER_A_TEXT = LAYER_A_TEMPLATE.replace(
+    "{{tools}}", agent_tool_names_text(include_memory=False)
+)
+
+
+def layer_a_text(include_memory: bool = False) -> str:
+    """Layer A with the tool list matching this process's tool surface."""
+
+    return LAYER_A_TEMPLATE.replace(
+        "{{tools}}", agent_tool_names_text(include_memory)
+    )
 
 
 # 校准系数钳制范围：provider 实测/固定估算的比值一旦超出这个区间就按边界取值。

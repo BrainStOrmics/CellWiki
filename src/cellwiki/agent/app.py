@@ -46,15 +46,16 @@ from cellwiki.domain.model_provider import (
 )
 from cellwiki.domain.model_providers import ResolvedModelSpec
 from cellwiki.domain.contracts import WikiAgentContext
-from cellwiki.domain.agent_tools import AGENT_TOOL_NAMES_TEXT
+from cellwiki.domain.agent_tools import agent_tool_names_text
 from cellwiki.agent.executor import (
     WHITELISTED_TOOL_NAMES,
-
     build_attachment_tools,
     build_workspace_tools,
     canonical_tool_sort_key,
+    effective_whitelist,
     tool_schema_fingerprint,
 )
+from cellwiki.agent.memory_tools import build_memory_tools
 from cellwiki.agent.question_tool import build_question_tool
 from cellwiki.services.checkpoints import build_checkpointer
 from cellwiki.services.prompt_cache import (
@@ -62,7 +63,7 @@ from cellwiki.services.prompt_cache import (
     resolve_prompt_cache_policy,
 )
 from cellwiki.services.prompt_layers import (
-    LAYER_A_TEXT,
+    layer_a_text,
     schema_prompt_block,
 )
 from cellwiki.agent.compaction import CellWikiCompactionMiddleware
@@ -80,7 +81,7 @@ from cellwiki.agent.tools import build_lint_tools
 # 提示词覆盖只读检查、Lint 报告、git 与文件工具，按 Layer A/B/C 分层组装；
 # 工具面与提示词必须同步更新。
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = LAYER_A_TEXT
+SYSTEM_PROMPT = layer_a_text(include_memory=False)
 
 # Deep Agents' stock prompt describes a general coding workspace. CellWiki has
 # narrower governed tools, so the coordinator shares this base harness prompt.
@@ -96,19 +97,27 @@ Return concise results appropriate to your assigned role.
 # “不可用”清单改回独立散文常量、文本逐字保持不变：它描述的是框架通用工具的
 # 风险面，不是 CellWiki 自己的注册表；从注册表派生会在它们脱钩后把提醒变成
 # 空词，而且会改变稳定前缀与 cache_prefix_hash。
-CELLWIKI_BOUNDARY_REMINDER = (
-    "CellWiki tool boundary: only the whitelisted CellWiki tools are "
-    f"available ({AGENT_TOOL_NAMES_TEXT}). Generic "
-    "deep-agent tools such as execute, ls, task, write_todos are "
-    "unavailable. Emit calls only for tool schemas visible in this request."
-)
+def boundary_reminder(include_memory: bool = False) -> str:
+    """Tool-boundary reminder whose available list matches the live tool surface."""
+
+    return (
+        "CellWiki tool boundary: only the whitelisted CellWiki tools are "
+        f"available ({agent_tool_names_text(include_memory)}). Generic "
+        "deep-agent tools such as execute, ls, task, write_todos are "
+        "unavailable. Emit calls only for tool schemas visible in this request."
+    )
+
+
+CELLWIKI_BOUNDARY_REMINDER = boundary_reminder(include_memory=False)
 
 
 def stable_system_prompt_text(schema_version: int, schema_contract_hash: str) -> str:
     """Return the exact stable prefix used for cache hash and diagnostics."""
 
+    include_memory = settings.agent_memory_enabled
     return (
-        f"{LAYER_A_TEXT}\n\n{HARNESS_PROMPT}\n\n{CELLWIKI_BOUNDARY_REMINDER}"
+        f"{layer_a_text(include_memory)}\n\n{HARNESS_PROMPT}\n\n"
+        f"{boundary_reminder(include_memory)}"
         f"\n\n{schema_prompt_block(schema_version, schema_contract_hash)}"
     )
 
@@ -163,6 +172,7 @@ def build_coordinator_tools(
         *build_attachment_tools(),
         *build_source_tools(root),
         *build_question_tool(),
+        *build_memory_tools(root),
         *build_delegation_tools(registry or SubagentRegistry()),
     ]
     return sorted(
@@ -207,6 +217,8 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
         cache_policy: PromptCachePolicy | None = None,
         reasoning_replay: str = "none",
     ):
+        # Allowlist 跟随当前进程开关：关闭记忆时记忆工具不进入请求面。
+        self._allowed_tools = effective_whitelist()
         self.append_reminder = append_reminder
         self.cache_policy = cache_policy
         # none：请求里的 assistant 消息压平成跨 run 重建后的形状（丢弃

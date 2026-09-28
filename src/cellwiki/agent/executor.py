@@ -30,8 +30,10 @@ from pydantic import BaseModel, Field
 
 from cellwiki.domain.agent_tools import (
     AGENT_VISIBLE_TOOL_NAMES,
-    CANONICAL_TOOL_ORDER as REGISTRY_TOOL_ORDER,
+    MEMORY_TOOL_NAMES,
+    agent_tool_names,
 )
+from cellwiki.config import settings
 from cellwiki.services.git_executor import GitCommandError, GitExecutor
 from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 from cellwiki.services.workspace import SYSTEM_OWNED_FILES
@@ -118,13 +120,27 @@ _PS_FORBIDDEN_SEPARATORS = (";", "|", ">", "&", "`n", "`r", "&&", "||")
 # 工具声明必须落在主白名单内。
 WHITELISTED_TOOL_NAMES: frozenset[str] = AGENT_VISIBLE_TOOL_NAMES
 
-CANONICAL_TOOL_ORDER: tuple[str, ...] = REGISTRY_TOOL_ORDER
+
+def current_tool_order() -> tuple[str, ...]:
+    """Canonical order for this process: memory tools append when enabled."""
+
+    return agent_tool_names(settings.agent_memory_enabled)
+
+
+def effective_whitelist() -> frozenset[str]:
+    """Allowlist for this process; memory tools only when the switch is on."""
+
+    if settings.agent_memory_enabled:
+        return WHITELISTED_TOOL_NAMES | frozenset(MEMORY_TOOL_NAMES)
+    return WHITELISTED_TOOL_NAMES
+
 
 def canonical_tool_sort_key(tool_name: str) -> tuple[int, str]:
+    order = current_tool_order()
     try:
-        return (CANONICAL_TOOL_ORDER.index(tool_name), tool_name)
+        return (order.index(tool_name), tool_name)
     except ValueError:
-        return (len(CANONICAL_TOOL_ORDER), tool_name)
+        return (len(order), tool_name)
 
 
 def tool_schema_text(tools: list[Any]) -> str:
