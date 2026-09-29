@@ -18,6 +18,7 @@ import re
 import threading
 import time
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
 
@@ -68,7 +69,11 @@ from cellwiki.services.model_catalog import (
 )
 from cellwiki.services.path_guard import PathGuardError, validate_workspace_path
 from cellwiki.services.runtime_store import RuntimeStore, ThreadDeletionBlockedError
-from cellwiki.services.agent_memory import WorkspaceMemoryStore
+from cellwiki.services.agent_memory import (
+    MEMORY_INDEX_FILE,
+    MEMORY_SUMMARY_FILE,
+    WorkspaceMemoryStore,
+)
 from cellwiki.services.agent_memory_merge import (
     MemoryConsolidationService,
     MemoryMergeUnavailable,
@@ -383,13 +388,69 @@ def create_app(
             "updated_at": entry.updated_at.isoformat(),
         }
 
+    memory_view_files = (MEMORY_SUMMARY_FILE, MEMORY_INDEX_FILE)
+
+    def _memory_view_payload(store: WorkspaceMemoryStore, file_name: str) -> dict:
+        path = (
+            store.summary_path()
+            if file_name == MEMORY_SUMMARY_FILE
+            else store.index_path()
+        )
+        try:
+            updated_at = datetime.fromtimestamp(
+                path.stat().st_mtime, tz=UTC
+            ).isoformat()
+            exists = True
+        except OSError:
+            updated_at = None
+            exists = False
+        return {
+            "file_name": file_name,
+            "read_only": True,
+            "exists": exists,
+            "updated_at": updated_at,
+        }
+
     @app.get("/api/memory")
     def list_memory() -> dict:
-        """List workspace memories; empty when the user has none yet."""
+        """List workspace memories and their read-only derived views."""
 
         store = _memory_store()
         entries = [_memory_payload(store, entry) for entry in store.list_entries()]
-        return {"entries": entries, "count": len(entries)}
+        views = [
+            _memory_view_payload(store, file_name)
+            for file_name in memory_view_files
+        ]
+        return {"entries": entries, "count": len(entries), "views": views}
+
+    @app.get("/api/memory/views/{view_name}")
+    def read_memory_view(view_name: str) -> dict:
+        """Read one fixed, read-only memory view."""
+
+        if view_name not in memory_view_files:
+            raise HTTPException(status_code=404, detail="memory view not found")
+        store = _memory_store()
+        path = (
+            store.summary_path()
+            if view_name == MEMORY_SUMMARY_FILE
+            else store.index_path()
+        )
+        try:
+            content = path.read_text(encoding="utf-8")
+            updated_at = datetime.fromtimestamp(
+                path.stat().st_mtime, tz=UTC
+            ).isoformat()
+        except OSError:
+            raise HTTPException(
+                status_code=404, detail="memory view not generated"
+            ) from None
+        return {
+            "file_name": view_name,
+            "read_only": True,
+            "exists": True,
+            "updated_at": updated_at,
+            "content": content,
+        }
 
     @app.get("/api/memory/{memory_id}")
     def read_memory(memory_id: str) -> dict:

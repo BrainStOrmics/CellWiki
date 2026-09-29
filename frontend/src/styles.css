@@ -2449,11 +2449,19 @@ select:focus-visible {
 
 /* ---- 工作区记忆面板 (ADR-0016) ---- */
 .memory-panel { display: flex; flex-direction: column; gap: 10px; }
+.memory-section-title { margin: 2px 0 0; font-size: 12px; font-weight: 600; color: var(--text, #d9e1ea); }
 .memory-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
 .memory-list li { border: 1px solid var(--border-soft, #2b3644); border-radius: 6px; padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
 .memory-entry-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
 .memory-entry-head strong { font-size: 12px; }
 .memory-entry-head span { font-size: 10px; color: var(--muted, #8b98a8); }
+.memory-file-button { width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; display: flex; flex-direction: column; gap: 3px; cursor: pointer; }
+.memory-file-button:disabled { cursor: default; opacity: 0.62; }
+.memory-file-button:focus-visible { outline: 2px solid var(--accent, #5b9dd9); outline-offset: 2px; }
+.memory-file-name { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; font-weight: 600; }
+.memory-file-meta, .memory-file-time { font-size: 10px; color: var(--muted, #8b98a8); }
+.memory-file-content { margin: 0; padding: 8px; max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--border-soft, #2b3644); border-radius: 5px; background: var(--surface-sunken, rgba(0, 0, 0, 0.16)); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; line-height: 1.5; }
+.memory-entry-detail { display: flex; flex-direction: column; gap: 8px; }
 .memory-entry-actions { display: flex; gap: 8px; }
 .memory-entry-actions button { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
 .memory-editor { display: flex; flex-direction: column; gap: 8px; }

@@ -4,6 +4,14 @@ import { LoaderCircle, Pencil, RefreshCcw, Trash2, XCircle } from "lucide-react"
 import { useI18n } from "../i18n";
 import { deleteJson, getJson, postJson, putJson } from "../lib/product-api";
 
+type MemoryPanelView = {
+  file_name: string;
+  read_only: boolean;
+  exists: boolean;
+  updated_at: string | null;
+  content?: string;
+};
+
 type MemoryPanelEntry = {
   memory_id: string;
   kind: string;
@@ -36,7 +44,10 @@ const TOPIC_FAMILIES = [
 
 export function MemoryPanel() {
   const { t } = useI18n();
+  const [views, setViews] = useState<MemoryPanelView[]>([]);
   const [entries, setEntries] = useState<MemoryPanelEntry[]>([]);
+  const [selectedView, setSelectedView] = useState<MemoryPanelView>();
+  const [selectedEntry, setSelectedEntry] = useState<MemoryPanelEntry>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<EntryDraft>();
@@ -46,7 +57,11 @@ export function MemoryPanel() {
   async function load() {
     setLoading(true);
     try {
-      const payload = await getJson<{ entries: MemoryPanelEntry[] }>("/api/memory");
+      const payload = await getJson<{
+        entries: MemoryPanelEntry[];
+        views: MemoryPanelView[];
+      }>("/api/memory");
+      setViews(payload.views ?? []);
       setEntries(payload.entries);
       setError("");
     } catch (loadError) {
@@ -62,17 +77,39 @@ export function MemoryPanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function startEdit(entry: MemoryPanelEntry) {
+  async function openView(view: MemoryPanelView) {
+    if (!view.exists) return;
+    try {
+      const detail = await getJson<MemoryPanelView>(
+        `/api/memory/views/${encodeURIComponent(view.file_name)}`,
+      );
+      setSelectedView(detail);
+      setSelectedEntry(undefined);
+      setEditing(undefined);
+      setError("");
+    } catch (readError) {
+      setError(readError instanceof Error ? readError.message : t("memory.readError"));
+    }
+  }
+
+  async function openEntry(entry: MemoryPanelEntry) {
     try {
       const detail = await getJson<MemoryPanelEntry>(`/api/memory/${entry.memory_id}`);
-      setEditing({
-        memory_id: detail.memory_id,
-        body: detail.body ?? "",
-        reenableAutoUpdate: false,
-      });
-    } catch (editError) {
-      setError(editError instanceof Error ? editError.message : t("memory.readError"));
+      setSelectedEntry(detail);
+      setSelectedView(undefined);
+      setEditing(undefined);
+      setError("");
+    } catch (readError) {
+      setError(readError instanceof Error ? readError.message : t("memory.readError"));
     }
+  }
+
+  function startEdit(entry: MemoryPanelEntry) {
+    setEditing({
+      memory_id: entry.memory_id,
+      body: entry.body ?? "",
+      reenableAutoUpdate: false,
+    });
   }
 
   async function saveEdit() {
@@ -83,6 +120,7 @@ export function MemoryPanel() {
         reenable_auto_update: editing.reenableAutoUpdate,
       });
       setEditing(undefined);
+      setSelectedEntry(undefined);
       await load();
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : t("memory.saveError"));
@@ -92,6 +130,8 @@ export function MemoryPanel() {
   async function remove(memoryId: string) {
     try {
       await deleteJson(`/api/memory/${memoryId}`);
+      setSelectedEntry(undefined);
+      setEditing(undefined);
       await load();
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : t("memory.deleteError"));
@@ -120,6 +160,8 @@ export function MemoryPanel() {
     try {
       await deleteJson(`/api/memory/sources/${encodeURIComponent(trimmed)}`);
       setSource("");
+      setSelectedEntry(undefined);
+      setEditing(undefined);
       await load();
     } catch (cleanupError) {
       setError(
@@ -128,6 +170,12 @@ export function MemoryPanel() {
           : t("memory.cleanupError"),
       );
     }
+  }
+
+  function viewLabel(fileName: string) {
+    if (fileName === "memory_summary.md") return t("memory.summaryFile");
+    if (fileName === "MEMORY.md") return t("memory.indexFile");
+    return fileName;
   }
 
   return (
@@ -150,9 +198,6 @@ export function MemoryPanel() {
           <LoaderCircle size={14} className="spin" />
           {t("memory.loading")}
         </div>
-      ) : null}
-      {!loading && entries.length === 0 ? (
-        <p className="settings-empty">{t("memory.empty")}</p>
       ) : null}
       <div className="memory-actions">
         <button
@@ -185,13 +230,58 @@ export function MemoryPanel() {
           </button>
         </div>
       </div>
+
+      <h4 className="memory-section-title">{t("memory.derivedViews")}</h4>
+      {!loading && views.length === 0 ? (
+        <p className="settings-empty">{t("memory.noViews")}</p>
+      ) : null}
+      <ul className="memory-list memory-view-list">
+        {views.map((view) => (
+          <li key={view.file_name} data-testid="memory-view">
+            <button
+              type="button"
+              className="memory-file-button"
+              data-testid={`memory-view-${view.file_name}`}
+              onClick={() => void openView(view)}
+              disabled={!view.exists}
+            >
+              <span className="memory-file-name">{view.file_name}</span>
+              <span className="memory-file-meta">
+                {viewLabel(view.file_name)} · {t("memory.readOnly")}
+              </span>
+            </button>
+            <small className="memory-file-time">
+              {view.exists
+                ? new Date(view.updated_at ?? "").toLocaleString()
+                : t("memory.notGenerated")}
+            </small>
+            {selectedView?.file_name === view.file_name ? (
+              <pre className="memory-file-content" data-testid="memory-view-content">
+                {selectedView.content ?? ""}
+              </pre>
+            ) : null}
+          </li>
+        ))}
+      </ul>
+
+      <h4 className="memory-section-title">{t("memory.topicFiles")}</h4>
+      {!loading && entries.length === 0 ? (
+        <p className="settings-empty">{t("memory.empty")}</p>
+      ) : null}
       <ul className="memory-list">
         {entries.map((entry) => (
           <li key={entry.memory_id} data-testid="memory-entry">
-            <div className="memory-entry-head">
-              <strong>{entry.title}</strong>
-              <span>{entry.topic_family}</span>
-            </div>
+            <button
+              type="button"
+              className="memory-file-button"
+              data-testid="memory-entry-open"
+              onClick={() => void openEntry(entry)}
+            >
+              <span className="memory-file-name">{entry.file_name}</span>
+              <span className="memory-file-meta">
+                {entry.title} · {entry.topic_family}
+              </span>
+            </button>
             <small>
               {entry.kind}
               {entry.user_edited ? ` · ${t("memory.userEdited")}` : ""}
@@ -201,47 +291,57 @@ export function MemoryPanel() {
                 {t("memory.source")}: {entry.origin_thread_id}
               </small>
             ) : null}
-            <div className="memory-entry-actions">
-              <button type="button" onClick={() => void startEdit(entry)}>
-                <Pencil size={12} />
-                {t("memory.edit")}
-              </button>
-              <button type="button" onClick={() => void remove(entry.memory_id)}>
-                <Trash2 size={12} />
-                {t("memory.delete")}
-              </button>
-            </div>
+            {selectedEntry?.memory_id === entry.memory_id && !editing ? (
+              <div className="memory-entry-detail">
+                <pre className="memory-file-content" data-testid="memory-file-content">
+                  {selectedEntry.body ?? ""}
+                </pre>
+                <div className="memory-entry-actions">
+                  <button type="button" onClick={() => startEdit(selectedEntry)}>
+                    <Pencil size={12} />
+                    {t("memory.edit")}
+                  </button>
+                  <button type="button" onClick={() => void remove(entry.memory_id)}>
+                    <Trash2 size={12} />
+                    {t("memory.delete")}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            {editing?.memory_id === entry.memory_id ? (
+              <div className="memory-editor" data-testid="memory-editor">
+                <textarea
+                  value={editing.body}
+                  onChange={(event) =>
+                    setEditing({ ...editing, body: event.target.value })
+                  }
+                />
+                <label className="clear-secret">
+                  <input
+                    type="checkbox"
+                    checked={editing.reenableAutoUpdate}
+                    onChange={(event) =>
+                      setEditing({
+                        ...editing,
+                        reenableAutoUpdate: event.target.checked,
+                      })
+                    }
+                  />
+                  <span>{t("memory.reenableAutoUpdate")}</span>
+                </label>
+                <div className="memory-entry-actions">
+                  <button type="button" onClick={() => void saveEdit()}>
+                    {t("memory.save")}
+                  </button>
+                  <button type="button" onClick={() => setEditing(undefined)}>
+                    {t("memory.cancel")}
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </li>
         ))}
       </ul>
-      {editing ? (
-        <div className="memory-editor" data-testid="memory-editor">
-          <textarea
-            value={editing.body}
-            onChange={(event) =>
-              setEditing({ ...editing, body: event.target.value })
-            }
-          />
-          <label className="clear-secret">
-            <input
-              type="checkbox"
-              checked={editing.reenableAutoUpdate}
-              onChange={(event) =>
-                setEditing({ ...editing, reenableAutoUpdate: event.target.checked })
-              }
-            />
-            <span>{t("memory.reenableAutoUpdate")}</span>
-          </label>
-          <div className="memory-entry-actions">
-            <button type="button" onClick={() => void saveEdit()}>
-              {t("memory.save")}
-            </button>
-            <button type="button" onClick={() => setEditing(undefined)}>
-              {t("memory.cancel")}
-            </button>
-          </div>
-        </div>
-      ) : null}
       <small className="memory-families">
         {t("memory.families")}: {TOPIC_FAMILIES.join(" / ")}
       </small>

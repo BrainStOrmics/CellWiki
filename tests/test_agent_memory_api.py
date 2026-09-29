@@ -8,7 +8,12 @@ from fastapi.testclient import TestClient
 
 from cellwiki.api.app import create_app
 from cellwiki.domain.memory import MemoryKind, MemoryTopicFamily
-from cellwiki.services.agent_memory import WorkspaceMemoryStore
+from cellwiki.services.agent_memory import (
+    MEMORY_INDEX_FILE,
+    MEMORY_SUMMARY_FILE,
+    WorkspaceMemoryStore,
+    render_summary,
+)
 from cellwiki.services.runtime_store import RuntimeStore
 
 
@@ -51,6 +56,19 @@ def _client(root: Path) -> TestClient:
     return TestClient(create_app(project_root=root))
 
 
+def _seed_views(root: Path) -> None:
+    memory = WorkspaceMemoryStore(root, RuntimeStore(root).path)
+    memory.write_summary(
+        render_summary(
+            profile="工作区协作口径。",
+            preferences="逐行审批。",
+            tips="先读 schema。",
+            index="### run 与审批\n- run-approval.md",
+        )
+    )
+    memory.write_index("# Memory index\n")
+
+
 def test_list_memory_returns_entries(tmp_path: Path):
     _seed(tmp_path)
     client = _client(tmp_path)
@@ -61,6 +79,10 @@ def test_list_memory_returns_entries(tmp_path: Path):
     body = response.json()
     assert body["count"] == 1
     assert body["entries"][0]["memory_id"] == "mem_api"
+    assert [view["file_name"] for view in body["views"]] == [
+        MEMORY_SUMMARY_FILE,
+        MEMORY_INDEX_FILE,
+    ]
 
 
 def test_list_memory_is_empty_without_entries(tmp_path: Path):
@@ -69,7 +91,63 @@ def test_list_memory_is_empty_without_entries(tmp_path: Path):
     response = client.get("/api/memory")
 
     assert response.status_code == 200
-    assert response.json() == {"entries": [], "count": 0}
+    body = response.json()
+    assert body["entries"] == []
+    assert body["count"] == 0
+    assert [view["file_name"] for view in body["views"]] == [
+        MEMORY_SUMMARY_FILE,
+        MEMORY_INDEX_FILE,
+    ]
+    assert all(view["read_only"] is True for view in body["views"])
+    assert all(view["exists"] is False for view in body["views"])
+
+
+def test_list_memory_reports_generated_derived_views(tmp_path: Path):
+    _seed_views(tmp_path)
+    client = _client(tmp_path)
+
+    views = client.get("/api/memory").json()["views"]
+
+    assert all(view["exists"] is True for view in views)
+    assert all(view["updated_at"] for view in views)
+
+
+def test_read_memory_summary_view_returns_content(tmp_path: Path):
+    _seed_views(tmp_path)
+    client = _client(tmp_path)
+
+    response = client.get(f"/api/memory/views/{MEMORY_SUMMARY_FILE}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["file_name"] == MEMORY_SUMMARY_FILE
+    assert body["read_only"] is True
+    assert body["content"].startswith("v1")
+    assert "逐行审批" in body["content"]
+
+
+def test_read_memory_index_view_returns_content(tmp_path: Path):
+    _seed_views(tmp_path)
+    client = _client(tmp_path)
+
+    response = client.get(f"/api/memory/views/{MEMORY_INDEX_FILE}")
+
+    assert response.status_code == 200
+    assert response.json()["content"] == "# Memory index\n"
+
+
+def test_read_memory_view_rejects_unknown_file(tmp_path: Path):
+    client = _client(tmp_path)
+
+    assert client.get("/api/memory/views/other.md").status_code == 404
+
+
+def test_read_memory_view_missing_file_returns_404(tmp_path: Path):
+    client = _client(tmp_path)
+
+    assert (
+        client.get(f"/api/memory/views/{MEMORY_SUMMARY_FILE}").status_code == 404
+    )
 
 
 def test_read_memory_returns_body(tmp_path: Path):
