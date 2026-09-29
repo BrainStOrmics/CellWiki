@@ -229,11 +229,15 @@ def test_delete_entry_removes_file_and_index_row(tmp_path: Path):
         derived_hash="x",
     )
     memory.write_entry_file(entry, "记忆摘要只进 Turn Context。")
+    memory.write_summary(render_summary(profile="删除前的摘要。"))
+    memory.write_index("# Memory index\n")
 
     memory.delete_entry("mem_del")
 
     assert memory.get_entry("mem_del") is None
     assert not (memory.memory_dir / "prompt-summary.md").exists()
+    assert memory.read_summary() == ""
+    assert not memory.index_path().exists()
 
 
 def test_delete_by_source_uses_entry_and_candidate_provenance(tmp_path: Path):

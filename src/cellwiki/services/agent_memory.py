@@ -486,6 +486,9 @@ class WorkspaceMemoryStore:
         if entry is not None:
             path = self._safe_entry_path(entry.file_name)
             path.unlink(missing_ok=True)
+            # 摘要/索引可能仍引用被删条目；立即失效，避免已删除内容继续注入。
+            # 下一次合并会用剩余成型条目重建这两个视图。
+            self.reset_views()
 
     def delete_candidate(self, memory_id: str) -> None:
         with self._connect() as connection:
@@ -512,9 +515,6 @@ class WorkspaceMemoryStore:
         ]
         for candidate in candidates:
             self.delete_candidate(candidate.memory_id)
-        if entries:
-            # 摘要可能仍引用被删除条目；先清空视图，避免旧内容继续注入。
-            self.reset_views()
         return (len(entries), len(candidates))
 
     def reset_views(self) -> None:
