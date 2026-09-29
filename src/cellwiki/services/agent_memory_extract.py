@@ -27,6 +27,7 @@ from cellwiki.domain.memory import (
     MemoryKind,
     MemoryTopicFamily,
 )
+from cellwiki.domain.model_providers import ResolvedModelSpec
 from cellwiki.domain.runs import AgentEventType
 from cellwiki.services.agent_memory import WorkspaceMemoryStore
 from cellwiki.services.environment import _extract_json_object
@@ -151,6 +152,7 @@ class MemoryExtractionService:
         catalog: ModelCatalogService,
         *,
         completer: Callable[[str], str] | None = None,
+        model_spec_for_run: Callable[[str], ResolvedModelSpec | None] | None = None,
         on_candidates: Callable[[], Any] | None = None,
         debounce_minutes: int | None = None,
         sleep: Callable[[float], None] = time.sleep,
@@ -160,6 +162,8 @@ class MemoryExtractionService:
         self.memory = memory
         self.catalog = catalog
         self._completer = completer
+        # 复用产生该 run 的模型；解析不到时才回落目录默认选择。
+        self._model_spec_for_run = model_spec_for_run
         # 合并回调：候选落库后由 runtime 触发单写方 Phase 2；异常由调度线程兜底。
         self._on_candidates = on_candidates
         self._debounce_minutes = (
@@ -251,7 +255,7 @@ class MemoryExtractionService:
         ):
             self._log.info("memory extraction skipped: daily limit reached")
             return []
-        raw = self._complete(prompt)
+        raw = self._complete(prompt, run_ids[-1])
         if not raw.strip():
             return []
         return self._parse_candidates(raw, thread_id, run_ids)
@@ -397,12 +401,12 @@ class MemoryExtractionService:
                 break
         return "\n".join(lines)
 
-    def _complete(self, prompt: str) -> str:
+    def _complete(self, prompt: str, run_id: str | None = None) -> str:
         if self._completer is not None:
             return self._completer(prompt)
-        spec = self.catalog.resolve()
+        spec = self._spec_for_run(run_id) or self.catalog.resolve()
         if spec is None:
-            raise MemoryNamingUnavailable("no default model is configured")
+            raise MemoryNamingUnavailable("no model is available for memory extraction")
         model = build_model_from_spec(
             spec,
             timeout_seconds=REQUEST_TIMEOUT_SECONDS,
@@ -417,6 +421,17 @@ class MemoryExtractionService:
             if client is not None:
                 client.close()
         return text
+
+    def _spec_for_run(self, run_id: str | None) -> ResolvedModelSpec | None:
+        if self._model_spec_for_run is None or not run_id:
+            return None
+        try:
+            return self._model_spec_for_run(run_id)
+        except Exception as error:  # noqa: BLE001 - 解析失败回落默认模型
+            self._log.warning(
+                "memory extraction could not resolve run model %s: %s", run_id, error
+            )
+            return None
 
 
 def extract_candidates_from_json(raw: str) -> list[dict[str, Any]]:

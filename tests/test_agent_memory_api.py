@@ -170,7 +170,11 @@ def test_delete_memory_source_removes_matching_entries_and_candidates(
     assert client.get("/api/memory").json()["count"] == 0
 
 
-def test_consolidate_memory_requires_enabled(tmp_path: Path):
+def test_consolidate_memory_requires_enabled(monkeypatch, tmp_path: Path):
+    import cellwiki.config as config_module
+
+    # 显式关闭，避免测试结果依赖本机 .env 的开关状态。
+    monkeypatch.setattr(config_module.settings, "agent_memory_enabled", False)
     client = _client(tmp_path)
 
     assert client.post("/api/memory/consolidate").status_code == 409

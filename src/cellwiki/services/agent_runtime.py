@@ -1328,13 +1328,16 @@ class AgentRuntimeManager:
         self._memory_store = WorkspaceMemoryStore(self.project_root, self.store.path)
         # Phase 2：单写方合并。候选由提取服务落库后经回调触发，绝不与提取并发写文件。
         self._memory_merge = MemoryConsolidationService(
-            self._memory_store, self._model_catalog
+            self._memory_store,
+            self._model_catalog,
+            model_spec_for_run=self._memory_model_spec_for_run,
         )
         self._memory_extraction = MemoryExtractionService(
             self.project_root,
             self.store,
             self._memory_store,
             self._model_catalog,
+            model_spec_for_run=self._memory_model_spec_for_run,
             on_candidates=self._memory_merge.consolidate,
         )
         self._naming_executor = ThreadPoolExecutor(
@@ -2262,6 +2265,19 @@ class AgentRuntimeManager:
         return self._model_catalog.resolve(
             ModelSelection(provider_id=run.model_provider_id, model_id=run.model_name)
         )
+
+    def _memory_model_spec_for_run(self, run_id: str) -> ResolvedModelSpec | None:
+        """Resolve the model that produced one run, for the memory pipeline.
+
+        记忆的提取与合并复用该 run 的模型（ADR-0016 的"复用当前模型"）；
+        供应商被删除/禁用等结构性错误由调用方回落默认模型，不影响 run。
+        """
+
+        try:
+            run = self.store.get_run(run_id)
+        except KeyError:
+            return None
+        return self._model_spec_for_run(run)
 
     def _adapter_cache_key(self, model_spec: ResolvedModelSpec | None) -> tuple[str, str]:
         if model_spec is not None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 from cellwiki.domain.memory import MemoryCandidateStatus, MemoryKind, MemoryTopicFamily
 from cellwiki.domain.runs import AgentRun
@@ -35,10 +36,21 @@ class _NoopThread:
         return None
 
 
+class _FakeModel:
+    root_client = None
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def invoke(self, _prompt: str):
+        return SimpleNamespace(text=self._text)
+
+
 def _service(
     tmp_path: Path,
     *,
     completer=None,
+    model_spec_for_run=None,
     debounce_minutes: int = 10,
     sleep=None,
 ) -> tuple[MemoryExtractionService, WorkspaceMemoryStore]:
@@ -50,6 +62,7 @@ def _service(
         memory,
         _Catalog(),  # type: ignore[arg-type]
         completer=completer,
+        model_spec_for_run=model_spec_for_run,
         debounce_minutes=debounce_minutes,
         sleep=sleep or (lambda _seconds: None),
     )
@@ -197,6 +210,55 @@ def test_extraction_daily_limit_survives_a_new_service_instance(
     assert len(first_service.extract("thread_1", ["run_1"])) == 1
     assert second_service.extract("thread_2", ["run_2"]) == []
     assert memory.extraction_count(datetime.now(UTC).date().isoformat()) == 1
+
+
+def test_extraction_uses_the_origin_run_model(monkeypatch, tmp_path: Path):
+    _enable(monkeypatch)
+    import cellwiki.services.agent_memory_extract as extract_module
+
+    run_spec = SimpleNamespace(provider_id="run-provider", model_id="run-model")
+    seen: list[object] = []
+
+    def factory(spec, **_kwargs):
+        seen.append(spec)
+        return _FakeModel(json.dumps({"candidates": []}))
+
+    monkeypatch.setattr(extract_module, "build_model_from_spec", factory)
+    service, _memory = _service(
+        tmp_path,
+        model_spec_for_run=lambda _run_id: run_spec,
+    )
+
+    service.extract("thread_1", ["run_1"])
+
+    assert seen == [run_spec]
+
+
+def test_extraction_falls_back_to_catalog_model(monkeypatch, tmp_path: Path):
+    _enable(monkeypatch)
+    import cellwiki.services.agent_memory_extract as extract_module
+
+    default_spec = SimpleNamespace(provider_id="default", model_id="default-model")
+    seen: list[object] = []
+
+    class _DefaultCatalog:
+        def resolve(self):
+            return default_spec
+
+    def factory(spec, **_kwargs):
+        seen.append(spec)
+        return _FakeModel(json.dumps({"candidates": []}))
+
+    monkeypatch.setattr(extract_module, "build_model_from_spec", factory)
+    service, _memory = _service(
+        tmp_path,
+        model_spec_for_run=lambda _run_id: None,
+    )
+    service.catalog = _DefaultCatalog()  # type: ignore[assignment]
+
+    service.extract("thread_1", ["run_1"])
+
+    assert seen == [default_spec]
 
 
 def test_extraction_tolerates_malformed_model_output(monkeypatch, tmp_path: Path):

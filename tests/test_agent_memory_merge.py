@@ -6,6 +6,7 @@ import json
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 from cellwiki.domain.memory import MemoryCandidateStatus, MemoryKind, MemoryTopicFamily
 from cellwiki.services.agent_memory import WorkspaceMemoryStore
@@ -19,6 +20,16 @@ class _Catalog:
 
     def resolve(self):
         return object() if self._available else None
+
+
+class _FakeModel:
+    root_client = None
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    def invoke(self, _prompt: str):
+        return SimpleNamespace(text=self._text)
 
 
 def _stores(tmp_path: Path) -> tuple[RuntimeStore, WorkspaceMemoryStore]:
@@ -115,6 +126,65 @@ def test_consolidate_preserves_all_candidate_kinds(tmp_path: Path):
 
         assert len(written) == 1
         assert written[0].kind is kind
+
+
+def test_consolidate_uses_the_candidate_origin_run_model(
+    monkeypatch, tmp_path: Path
+):
+    _store, memory = _stores(tmp_path)
+    _seed(memory)
+    import cellwiki.services.agent_memory_merge as merge_module
+
+    run_spec = SimpleNamespace(provider_id="run-provider", model_id="run-model")
+    seen: list[tuple[object, str | None]] = []
+    resolved_run_ids: list[str] = []
+
+    def factory(spec, **kwargs):
+        seen.append((spec, kwargs.get("purpose")))
+        return _FakeModel(json.dumps(_topic_payload()))
+
+    def resolver(run_id: str):
+        resolved_run_ids.append(run_id)
+        return run_spec
+
+    monkeypatch.setattr(merge_module, "build_model_from_spec", factory)
+    service = MemoryConsolidationService(
+        memory, _Catalog(), model_spec_for_run=resolver
+    )
+
+    written = service.consolidate()
+
+    assert [entry.file_name for entry in written] == ["run-approval.md"]
+    assert resolved_run_ids == ["run_1"]
+    assert seen == [(run_spec, "structured")]
+
+
+def test_consolidate_falls_back_to_catalog_model(monkeypatch, tmp_path: Path):
+    _store, memory = _stores(tmp_path)
+    _seed(memory)
+    import cellwiki.services.agent_memory_merge as merge_module
+
+    default_spec = SimpleNamespace(provider_id="default", model_id="default-model")
+    seen: list[object] = []
+
+    class _DefaultCatalog:
+        def resolve(self):
+            return default_spec
+
+    def factory(spec, **_kwargs):
+        seen.append(spec)
+        return _FakeModel(json.dumps(_topic_payload()))
+
+    monkeypatch.setattr(merge_module, "build_model_from_spec", factory)
+    service = MemoryConsolidationService(
+        memory,
+        _DefaultCatalog(),  # type: ignore[arg-type]
+        model_spec_for_run=lambda _run_id: None,
+    )
+
+    service.consolidate()
+
+    assert seen == [default_spec]
 
 
 def test_consolidate_renders_failures_block(tmp_path: Path):

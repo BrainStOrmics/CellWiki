@@ -28,6 +28,7 @@ from cellwiki.domain.memory import (
     MemoryKind,
     MemoryTopicFamily,
 )
+from cellwiki.domain.model_providers import ResolvedModelSpec
 from cellwiki.services.agent_memory import (
     MEMORY_SUMMARY_MAX_BYTES,
     WorkspaceMemoryStore,
@@ -88,10 +89,13 @@ class MemoryConsolidationService:
         catalog: ModelCatalogService,
         *,
         completer: Callable[[str], str] | None = None,
+        model_spec_for_run: Callable[[str], ResolvedModelSpec | None] | None = None,
     ) -> None:
         self.memory = memory
         self.catalog = catalog
         self._completer = completer
+        # 复用产生候选的 run 所用模型；解析不到时才回落目录默认选择。
+        self._model_spec_for_run = model_spec_for_run
         self._log = logging.getLogger(__name__)
         self._lock = threading.Lock()
 
@@ -108,7 +112,15 @@ class MemoryConsolidationService:
         if not candidates:
             return []
         prompt = self._build_prompt(candidates)
-        raw = self._complete(prompt)
+        origin_run_id = next(
+            (
+                candidate.origin_run_id
+                for candidate in reversed(candidates)
+                if candidate.origin_run_id
+            ),
+            "",
+        )
+        raw = self._complete(prompt, origin_run_id)
         if not raw.strip():
             # Provider 返回 200 但正文为空（例如 thinking-only、被输出配额截断）
             # 是可重试故障，不是候选本身不合规；保留 pending，等下次合并再试，
@@ -162,12 +174,12 @@ class MemoryConsolidationService:
             + json.dumps(payload, ensure_ascii=False, indent=1)[:60_000]
         )
 
-    def _complete(self, prompt: str) -> str:
+    def _complete(self, prompt: str, run_id: str | None = None) -> str:
         if self._completer is not None:
             return self._completer(prompt)
-        spec = self.catalog.resolve()
+        spec = self._spec_for_run(run_id) or self.catalog.resolve()
         if spec is None:
-            raise MemoryMergeUnavailable("no default model is configured")
+            raise MemoryMergeUnavailable("no model is available for memory merge")
         model = build_model_from_spec(
             spec,
             timeout_seconds=REQUEST_TIMEOUT_SECONDS,
@@ -182,6 +194,17 @@ class MemoryConsolidationService:
             if client is not None:
                 client.close()
         return text
+
+    def _spec_for_run(self, run_id: str | None) -> ResolvedModelSpec | None:
+        if self._model_spec_for_run is None or not run_id:
+            return None
+        try:
+            return self._model_spec_for_run(run_id)
+        except Exception as error:  # noqa: BLE001 - 解析失败回落默认模型
+            self._log.warning(
+                "memory merge could not resolve run model %s: %s", run_id, error
+            )
+            return None
 
     # -- validation ------------------------------------------------------
 
