@@ -6,12 +6,11 @@ import {
   Pencil,
   RefreshCcw,
   Trash2,
-  Wrench,
   XCircle,
 } from "lucide-react";
 
 import { useI18n } from "../i18n";
-import { deleteJson, getJson, postJson, putJson } from "../lib/product-api";
+import { deleteJson, getJson, putJson } from "../lib/product-api";
 
 type MemoryPanelStatus = {
   enabled: boolean;
@@ -59,15 +58,6 @@ type EntryDraft = {
   reenableAutoUpdate: boolean;
 };
 
-const TOPIC_FAMILIES = [
-  "wiki 内容维护",
-  "raw 与来源",
-  "prompt 与上下文",
-  "run 与审批",
-  "评估与测试",
-  "工作区与环境",
-];
-
 function formatTimestamp(value: string | null | undefined): string {
   if (!value) return "—";
   const date = new Date(value);
@@ -85,8 +75,6 @@ export function MemoryPanel() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [editing, setEditing] = useState<EntryDraft>();
-  const [consolidating, setConsolidating] = useState(false);
-  const [source, setSource] = useState("");
 
   async function load() {
     setLoading(true);
@@ -183,56 +171,27 @@ export function MemoryPanel() {
     }
   }
 
-  async function consolidate() {
-    setConsolidating(true);
-    try {
-      await postJson("/api/memory/consolidate", {});
-      await load();
-    } catch (consolidateError) {
-      setError(
-        consolidateError instanceof Error
-          ? consolidateError.message
-          : t("memory.consolidateError"),
-      );
-    } finally {
-      setConsolidating(false);
-    }
-  }
-
-  async function cleanSource() {
-    const trimmed = source.trim();
-    if (!trimmed) return;
-    if (
-      typeof window !== "undefined" &&
-      !window.confirm(t("memory.deleteBySourceConfirm"))
-    ) {
-      return;
-    }
-    try {
-      await deleteJson(`/api/memory/sources/${encodeURIComponent(trimmed)}`);
-      setSource("");
-      setSelectedEntry(undefined);
-      setEditing(undefined);
-      await load();
-    } catch (cleanupError) {
-      setError(
-        cleanupError instanceof Error
-          ? cleanupError.message
-          : t("memory.cleanupError"),
-      );
-    }
-  }
-
   function viewLabel(fileName: string) {
     if (fileName === "memory_summary.md") return t("memory.summaryFile");
     if (fileName === "MEMORY.md") return t("memory.indexFile");
     return fileName;
   }
 
-  const autoOn = Boolean(status?.enabled && status?.auto_extract);
-  const queueSummary = status
-    ? `${status.jobs_pending} ${t("memory.jobsPending")} · ${status.jobs_leased} ${t("memory.jobsRunning")} · ${status.jobs_failed} ${t("memory.jobsFailed")}`
-    : "—";
+  const statusLine = (() => {
+    if (!status) return "";
+    if (!status.enabled) return t("memory.statusDisabled");
+    if (!status.auto_extract) return t("memory.statusAutoOff");
+    return t("memory.statusAutoOn").replace(
+      "{hours}",
+      String(status.min_idle_hours),
+    );
+  })();
+  const lastUpdated = status?.last_consolidated_at
+    ? t("memory.lastUpdated").replace(
+        "{time}",
+        formatTimestamp(status.last_consolidated_at),
+      )
+    : "";
 
   return (
     <section className="settings-card memory-panel" data-testid="memory-panel">
@@ -241,7 +200,22 @@ export function MemoryPanel() {
         <div>
           <h3>{t("memory.title")}</h3>
           <small>{t("memory.hint")}</small>
+          {statusLine ? (
+            <small className="memory-status-line" data-testid="memory-status-line">
+              {statusLine}
+              {lastUpdated ? ` · ${lastUpdated}` : ""}
+            </small>
+          ) : null}
         </div>
+        <button
+          type="button"
+          className="memory-refresh"
+          onClick={() => void load()}
+          title={t("memory.refreshStatus")}
+          aria-label={t("memory.refreshStatus")}
+        >
+          <RefreshCcw size={13} />
+        </button>
       </div>
       {error ? (
         <div className="settings-error" role="alert">
@@ -255,72 +229,6 @@ export function MemoryPanel() {
           {t("memory.loading")}
         </div>
       ) : null}
-
-      <h4 className="memory-section-title">{t("memory.status")}</h4>
-      <div className="memory-status-grid" data-testid="memory-status">
-        <div className="memory-status-item">
-          <span>{t("memory.autoExtractState")}</span>
-          <strong className={autoOn ? "memory-on" : "memory-off"}>
-            {autoOn ? t("memory.on") : t("memory.off")}
-          </strong>
-        </div>
-        <div className="memory-status-item">
-          <span>{t("memory.idleWindow")}</span>
-          <strong>
-            {status
-              ? t("memory.hoursValue").replace(
-                  "{hours}",
-                  String(status.min_idle_hours),
-                )
-              : "—"}
-          </strong>
-        </div>
-        <div className="memory-status-item">
-          <span>{t("memory.pendingCandidates")}</span>
-          <strong>{status?.pending_candidates ?? "—"}</strong>
-        </div>
-        <div className="memory-status-item">
-          <span>{t("memory.queue")}</span>
-          <strong>{queueSummary}</strong>
-        </div>
-        <div className="memory-status-item">
-          <span>{t("memory.nextCheck")}</span>
-          <strong>{formatTimestamp(status?.next_job_at)}</strong>
-        </div>
-        <div className="memory-status-item">
-          <span>{t("memory.lastConsolidated")}</span>
-          <strong>{formatTimestamp(status?.last_consolidated_at)}</strong>
-        </div>
-      </div>
-      {status && status.jobs_failed > 0 && status.last_job_error ? (
-        <small className="memory-job-warning" data-testid="memory-job-warning">
-          {t("memory.lastJobError")}: {status.last_job_error}
-        </small>
-      ) : null}
-      <div className="memory-actions">
-        <button
-          type="button"
-          className="primary"
-          data-testid="memory-consolidate"
-          onClick={() => void consolidate()}
-          disabled={
-            consolidating ||
-            !status?.enabled ||
-            status?.pending_candidates === 0
-          }
-        >
-          {consolidating ? (
-            <LoaderCircle size={12} className="spin" />
-          ) : (
-            <RefreshCcw size={12} />
-          )}
-          {consolidating ? t("memory.consolidating") : t("memory.consolidate")}
-        </button>
-        <button type="button" onClick={() => void load()}>
-          <RefreshCcw size={12} />
-          {t("memory.refreshStatus")}
-        </button>
-      </div>
 
       <h4 className="memory-section-title">{t("memory.files")}</h4>
       {!loading && entries.length === 0 ? (
@@ -459,41 +367,6 @@ export function MemoryPanel() {
           );
         })}
       </ul>
-
-      <details className="memory-maintenance" data-testid="memory-maintenance">
-        <summary>
-          <Wrench size={13} />
-          {t("memory.maintenance")}
-        </summary>
-        <div className="memory-maintenance-body">
-          <div className="memory-danger-zone">
-            <strong>{t("memory.deleteBySourceTitle")}</strong>
-            <p>{t("memory.deleteBySourceHint")}</p>
-            <div className="memory-source-cleanup">
-              <input
-                value={source}
-                onChange={(event) => setSource(event.target.value)}
-                placeholder={t("memory.sourcePlaceholder")}
-                aria-label={t("memory.sourcePlaceholder")}
-              />
-              <button
-                type="button"
-                className="danger"
-                data-testid="memory-clean-source"
-                onClick={() => void cleanSource()}
-                disabled={!source.trim()}
-              >
-                <Trash2 size={12} />
-                {t("memory.cleanSource")}
-              </button>
-            </div>
-          </div>
-          <details className="memory-families-help">
-            <summary>{t("memory.familiesHelp")}</summary>
-            <p>{TOPIC_FAMILIES.join(" / ")}</p>
-          </details>
-        </div>
-      </details>
     </section>
   );
 }

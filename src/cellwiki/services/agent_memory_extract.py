@@ -331,6 +331,7 @@ class MemoryExtractionService:
         )
         if not run_ids:
             self.jobs.complete_without_output(job.job_id, watermark=watermark)
+            self._consolidate_pending(job, now=now)
             return
         today = now.date().isoformat()
         if not self.memory.try_consume_extraction_slot(
@@ -345,17 +346,48 @@ class MemoryExtractionService:
         created = self.extract(job.thread_id, run_ids, consume_slot=False)
         if created:
             self.jobs.complete_with_output(job.job_id, watermark=watermark)
-            if self._on_candidates is not None:
-                try:
-                    self._on_candidates()
-                except Exception:  # noqa: BLE001 - 提取成功不应被合并失败回滚
-                    self._log.warning(
-                        "memory consolidation failed after extraction; "
-                        "candidates remain available for retry",
-                        exc_info=True,
-                    )
+        else:
+            self.jobs.complete_without_output(job.job_id, watermark=watermark)
+        self._consolidate_pending(job, now=now)
+
+    def _consolidate_pending(self, job: MemoryJob, *, now: datetime) -> None:
+        """Consume pending candidates without a manual panel action.
+
+        Candidates can come from this extraction pass, from
+        ``add_ad_hoc_note``, or from an earlier failed consolidation. If they
+        remain pending afterwards, put the job back on a short retry window so
+        the pipeline heals itself.
+        """
+
+        if not self.memory.list_candidates():
             return
-        self.jobs.complete_without_output(job.job_id, watermark=watermark)
+        retry_at = now + timedelta(minutes=10)
+        if self._on_candidates is None:
+            self.jobs.reschedule(
+                job.job_id,
+                available_at=retry_at,
+                error="pending candidates without a consolidator",
+            )
+            return
+        try:
+            self._on_candidates()
+        except Exception:  # noqa: BLE001 - 合并失败不污染提取 job 的终态
+            self._log.warning(
+                "memory consolidation failed; candidates will be retried",
+                exc_info=True,
+            )
+            self.jobs.reschedule(
+                job.job_id,
+                available_at=retry_at,
+                error="memory consolidation failed",
+            )
+            return
+        if self.memory.list_candidates():
+            self.jobs.reschedule(
+                job.job_id,
+                available_at=retry_at,
+                error="candidates remain pending after consolidation",
+            )
 
     def _next_allowed_at(self, job: MemoryJob, *, now: datetime) -> datetime:
         """Return when a thread may next be extracted."""

@@ -41,6 +41,7 @@ def _service(
     *,
     completer=None,
     model_spec_for_run=None,
+    on_candidates=None,
     debounce_minutes: int = 10,
     min_idle_hours: int = 4,
     max_age_days: int = 30,
@@ -55,6 +56,7 @@ def _service(
         _Catalog(),  # type: ignore[arg-type]
         completer=completer,
         model_spec_for_run=model_spec_for_run,
+        on_candidates=on_candidates,
         debounce_minutes=debounce_minutes,
         min_idle_hours=min_idle_hours,
         max_age_days=max_age_days,
@@ -441,6 +443,89 @@ def test_empty_extraction_output_is_retryable(
     assert job is not None
     assert job.status.value == "failed"
     assert job.retry_at is not None
+
+
+def test_pending_candidates_are_consolidated_automatically(
+    monkeypatch, tmp_path: Path
+):
+    _enable(monkeypatch)
+    clock = [datetime(2026, 9, 29, 12, 0, tzinfo=UTC)]
+    service, memory = _service(
+        tmp_path,
+        completer=lambda prompt: json.dumps({"candidates": []}),
+        now=lambda: clock[0],
+    )
+    candidate = memory.add_candidate(
+        kind=MemoryKind.PREFERENCE,
+        topic_family=MemoryTopicFamily.RUN_APPROVAL,
+        title="用户明确要求记住",
+        body="用户明确要求记住的内容。",
+        origin_run_id="run_1",
+        origin_thread_id="thread_1",
+    )
+    service._on_candidates = lambda: memory.mark_candidate(  # noqa: SLF001
+        candidate.memory_id,
+        MemoryCandidateStatus.MERGED,
+    )
+    RuntimeStore(tmp_path).create_run(
+        AgentRun(
+            run_id="run_1",
+            thread_id="thread_1",
+            input_message="普通会话内容",
+            status=AgentRunStatus.SUCCEEDED,
+            finished_at=clock[0],
+        )
+    )
+    service.notify_run_settled("run_1", "thread_1", "普通会话内容")
+
+    clock[0] += timedelta(hours=4, seconds=1)
+    assert service.run_due_jobs() == 1
+
+    assert memory.list_candidates() == []
+    job = service.jobs.get_thread_job("thread_1")
+    assert job is not None
+    assert job.status.value == "succeeded_no_output"
+
+
+def test_pending_candidates_reschedule_the_job_when_not_consumed(
+    monkeypatch, tmp_path: Path
+):
+    _enable(monkeypatch)
+    clock = [datetime(2026, 9, 29, 12, 0, tzinfo=UTC)]
+    service, memory = _service(
+        tmp_path,
+        completer=lambda prompt: json.dumps({"candidates": []}),
+        now=lambda: clock[0],
+    )
+    memory.add_candidate(
+        kind=MemoryKind.PREFERENCE,
+        topic_family=MemoryTopicFamily.RUN_APPROVAL,
+        title="未消费候选",
+        body="合并没有消费这条候选。",
+        origin_run_id="run_1",
+        origin_thread_id="thread_1",
+    )
+    service._on_candidates = lambda: None  # noqa: SLF001
+    RuntimeStore(tmp_path).create_run(
+        AgentRun(
+            run_id="run_1",
+            thread_id="thread_1",
+            input_message="普通会话内容",
+            status=AgentRunStatus.SUCCEEDED,
+            finished_at=clock[0],
+        )
+    )
+    service.notify_run_settled("run_1", "thread_1", "普通会话内容")
+
+    clock[0] += timedelta(hours=4, seconds=1)
+    assert service.run_due_jobs() == 1
+
+    job = service.jobs.get_thread_job("thread_1")
+    assert job is not None
+    assert job.status.value == "pending"
+    assert job.last_error == "candidates remain pending after consolidation"
+    assert job.available_at > clock[0]
+    assert len(memory.list_candidates()) == 1
 
 
 def test_candidates_do_not_enter_prompt_path(tmp_path: Path):

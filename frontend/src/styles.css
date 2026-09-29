@@ -2450,17 +2450,12 @@ select:focus-visible {
 /* ---- 工作区记忆面板 (ADR-0016) ---- */
 .memory-panel { display: flex; flex-direction: column; gap: 14px; }
 .memory-section-title { margin: 2px 0 0; font-size: 12px; font-weight: 600; color: var(--text); }
-.memory-status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
-.memory-status-item { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--border-soft); border-radius: var(--radius-m); background: var(--bg-raised); }
-.memory-status-item span { font-size: 11px; color: var(--muted); }
-.memory-status-item strong { font-size: 12px; font-weight: 600; color: var(--text); }
-.memory-status-item strong.memory-on { color: var(--success); }
-.memory-status-item strong.memory-off { color: var(--muted); }
-.memory-job-warning { color: var(--danger); font-size: 11px; }
-.memory-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.memory-actions button { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
-.memory-actions button.primary { color: var(--accent-text); background: var(--accent); border-color: var(--accent); }
-.memory-actions button.primary:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+.memory-status-line { color: var(--muted); }
+.memory-refresh { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 1px solid var(--border-soft); border-radius: var(--radius-m); background: transparent; color: var(--muted); cursor: pointer; }
+.memory-refresh:hover { color: var(--text); background: var(--bg-hover); }
+.settings-advanced { border-top: 1px solid var(--border-soft); padding-top: 8px; }
+.settings-advanced summary { font-size: 12px; color: var(--muted); cursor: pointer; }
+.settings-advanced .settings-field { margin-top: 8px; }
 .memory-file-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .memory-file-row { border: 1px solid var(--border-soft); border-radius: var(--radius-m); background: var(--bg-raised); overflow: hidden; }
 .memory-file-row-main { width: 100%; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
@@ -2482,18 +2477,5 @@ select:focus-visible {
 .memory-entry-actions button { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; }
 .memory-editor { display: flex; flex-direction: column; gap: 8px; }
 .memory-editor textarea { min-height: 140px; width: 100%; font-family: inherit; font-size: 12px; resize: vertical; }
-.memory-maintenance { border: 1px solid var(--border-soft); border-radius: var(--radius-m); background: var(--bg-raised); }
-.memory-maintenance > summary { display: flex; align-items: center; gap: 6px; padding: 8px 10px; font-size: 12px; font-weight: 600; cursor: pointer; list-style: none; }
-.memory-maintenance > summary::-webkit-details-marker { display: none; }
-.memory-maintenance-body { display: flex; flex-direction: column; gap: 12px; padding: 0 10px 10px; }
-.memory-danger-zone { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px dashed var(--border-soft); }
-.memory-danger-zone strong { font-size: 12px; color: var(--danger); }
-.memory-danger-zone p { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted); }
-.memory-source-cleanup { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.memory-source-cleanup input { flex: 1 1 200px; min-width: 160px; font-size: 11px; }
-.memory-source-cleanup button.danger { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--danger); border-color: var(--danger); }
-.memory-source-cleanup button.danger:hover:not(:disabled) { background: var(--danger-soft); }
-.memory-families-help summary { font-size: 11px; color: var(--muted); cursor: pointer; }
-.memory-families-help p { margin: 6px 0 0; font-size: 11px; line-height: 1.6; color: var(--muted); }
 .settings-empty { color: var(--muted); font-size: 12px; }
 .settings-loading { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }

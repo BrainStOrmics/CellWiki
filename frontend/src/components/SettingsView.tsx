@@ -286,6 +286,14 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 <span><BrainCircuit size={13} />{t("memory.enabled")}</span>
               </label>
               <label className="clear-secret">
+                <input type="checkbox" checked={draft.agent_memory_auto_extract} onChange={(event) => updateDraft({ agent_memory_auto_extract: event.target.checked })} />
+                <span>{t("memory.autoExtract")}</span>
+              </label>
+              <label className="settings-field">
+                <span>{t("memory.minIdleHours")}</span>
+                <input type="number" min={1} max={720} value={draft.agent_memory_min_idle_hours} onChange={(event) => updateDraft({ agent_memory_min_idle_hours: Number(event.target.value) })} />
+              </label>
+              <label className="clear-secret">
                 <input type="checkbox" checked={draft.agent_memory_use} onChange={(event) => updateDraft({ agent_memory_use: event.target.checked })} />
                 <span>{t("memory.use")}</span>
               </label>
@@ -293,30 +301,25 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 <input type="checkbox" checked={draft.agent_memory_generate} onChange={(event) => updateDraft({ agent_memory_generate: event.target.checked })} />
                 <span>{t("memory.generate")}</span>
               </label>
-              <label className="clear-secret">
-                <input type="checkbox" checked={draft.agent_memory_auto_extract} onChange={(event) => updateDraft({ agent_memory_auto_extract: event.target.checked })} />
-                <span>{t("memory.autoExtract")}</span>
-              </label>
-              <label className="settings-field">
-                <span>{t("memory.debounce")}</span>
-                <input type="number" min={1} max={720} value={draft.agent_memory_debounce_minutes} onChange={(event) => updateDraft({ agent_memory_debounce_minutes: Number(event.target.value) })} />
-              </label>
-              <label className="settings-field">
-                <span>{t("memory.minIdleHours")}</span>
-                <input type="number" min={1} max={720} value={draft.agent_memory_min_idle_hours} onChange={(event) => updateDraft({ agent_memory_min_idle_hours: Number(event.target.value) })} />
-              </label>
-              <label className="settings-field">
-                <span>{t("memory.maxAgeDays")}</span>
-                <input type="number" min={1} max={3650} value={draft.agent_memory_max_age_days} onChange={(event) => updateDraft({ agent_memory_max_age_days: Number(event.target.value) })} />
-              </label>
-              <label className="settings-field">
-                <span>{t("memory.maxThreadsPerScan")}</span>
-                <input type="number" min={1} max={100} value={draft.agent_memory_max_threads_per_scan} onChange={(event) => updateDraft({ agent_memory_max_threads_per_scan: Number(event.target.value) })} />
-              </label>
-              <label className="settings-field">
-                <span>{t("memory.dailyLimit")}</span>
-                <input type="number" min={1} max={500} value={draft.agent_memory_daily_extractions} onChange={(event) => updateDraft({ agent_memory_daily_extractions: Number(event.target.value) })} />
-              </label>
+              <details className="settings-advanced">
+                <summary>{t("memory.advanced")}</summary>
+                <label className="settings-field">
+                  <span>{t("memory.debounce")}</span>
+                  <input type="number" min={1} max={720} value={draft.agent_memory_debounce_minutes} onChange={(event) => updateDraft({ agent_memory_debounce_minutes: Number(event.target.value) })} />
+                </label>
+                <label className="settings-field">
+                  <span>{t("memory.maxAgeDays")}</span>
+                  <input type="number" min={1} max={3650} value={draft.agent_memory_max_age_days} onChange={(event) => updateDraft({ agent_memory_max_age_days: Number(event.target.value) })} />
+                </label>
+                <label className="settings-field">
+                  <span>{t("memory.maxThreadsPerScan")}</span>
+                  <input type="number" min={1} max={100} value={draft.agent_memory_max_threads_per_scan} onChange={(event) => updateDraft({ agent_memory_max_threads_per_scan: Number(event.target.value) })} />
+                </label>
+                <label className="settings-field">
+                  <span>{t("memory.dailyLimit")}</span>
+                  <input type="number" min={1} max={500} value={draft.agent_memory_daily_extractions} onChange={(event) => updateDraft({ agent_memory_daily_extractions: Number(event.target.value) })} />
+                </label>
+              </details>
             </section>
             <MemoryPanel />
           </div>

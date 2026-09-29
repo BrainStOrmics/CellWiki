@@ -11,16 +11,14 @@ test("workspace memory settings panel loads and reflects the API", async ({ page
   await expect(page.getByTestId("memory-panel")).toBeVisible();
   await expect(page.getByTestId("memory-enabled-toggle")).toBeVisible();
   await expect(page.getByTestId("memory-enabled-toggle")).not.toBeChecked();
-  await expect(page.getByTestId("memory-status")).toBeVisible();
-  await expect(
-    page.getByTestId("memory-status").getByText("自动提取", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByTestId("memory-status-line")).toBeVisible();
   await expect(page.getByText("memory_summary.md")).toBeVisible();
   await expect(page.getByText("MEMORY.md")).toBeVisible();
   await expect(
     page.getByText(/还没有成型记忆|No consolidated memories yet/),
   ).toBeVisible();
-  await expect(page.getByTestId("memory-maintenance")).toBeVisible();
+  await expect(page.getByTestId("memory-consolidate")).toHaveCount(0);
+  await expect(page.getByTestId("memory-maintenance")).toHaveCount(0);
 
   // 面板读到的是真实 Product API 的响应，而不是前端内置数据。
   const response = await page.request.get("http://127.0.0.1:18000/api/memory");

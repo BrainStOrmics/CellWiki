@@ -4,17 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LanguageProvider } from "../i18n";
 import { MemoryPanel } from "./MemoryPanel";
 
-const { getJson, putJson, postJson, deleteJson } = vi.hoisted(() => ({
+const { getJson, putJson, deleteJson } = vi.hoisted(() => ({
   getJson: vi.fn(),
   putJson: vi.fn(),
-  postJson: vi.fn(),
   deleteJson: vi.fn(),
 }));
 
 vi.mock("../lib/product-api", () => ({
   getJson,
   putJson,
-  postJson,
   deleteJson,
 }));
 
@@ -55,13 +53,13 @@ const STATUS = {
   daily_extractions: 24,
   pending_candidates: 2,
   jobs_pending: 2,
-  jobs_leased: 1,
+  jobs_leased: 0,
   jobs_failed: 0,
   next_job_at: "2026-09-29T16:00:00+00:00",
   last_job_status: "succeeded_no_output",
   last_job_error: "",
   last_job_updated_at: "2026-09-29T12:00:00+00:00",
-  last_consolidated_at: null,
+  last_consolidated_at: "2026-09-29T11:00:00+00:00",
 };
 
 function payload(overrides: Record<string, unknown> = {}) {
@@ -89,17 +87,19 @@ afterEach(() => {
 });
 
 describe("MemoryPanel", () => {
-  it("renders scheduler status and unified file rows", async () => {
+  it("renders a plain status line and unified file rows", async () => {
     getJson.mockResolvedValue(payload());
 
     renderPanel();
 
     await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
     expect(getJson).toHaveBeenCalledWith("/api/memory");
-    expect(screen.getByTestId("memory-status")).toBeTruthy();
-    expect(screen.getByText("已开启")).toBeTruthy();
-    expect(screen.getByText("4 小时")).toBeTruthy();
-    expect(screen.getByText("2 待处理 · 1 进行中 · 0 失败")).toBeTruthy();
+    expect(screen.getByTestId("memory-status-line").textContent).toContain(
+      "自动提取已开启 · 空闲 4 小时",
+    );
+    expect(screen.getByTestId("memory-status-line").textContent).toContain(
+      "上次更新",
+    );
     expect(screen.getByText("run-approval.md")).toBeTruthy();
     expect(screen.getByText("memory_summary.md")).toBeTruthy();
     expect(screen.getByText("MEMORY.md")).toBeTruthy();
@@ -107,14 +107,24 @@ describe("MemoryPanel", () => {
   });
 
   it("shows the empty state when no memories exist", async () => {
-    getJson.mockResolvedValue(
-      payload({ entries: [], count: 0, status: { ...STATUS, pending_candidates: 0 } }),
-    );
+    getJson.mockResolvedValue(payload({ entries: [], count: 0 }));
 
     renderPanel();
 
     await waitFor(() => expect(screen.queryByTestId("memory-entry")).toBeNull());
     expect(screen.getByText(/还没有成型记忆/)).toBeTruthy();
+  });
+
+  it("keeps management controls out of the panel", async () => {
+    getJson.mockResolvedValue(payload());
+
+    renderPanel();
+    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
+
+    expect(screen.queryByTestId("memory-consolidate")).toBeNull();
+    expect(screen.queryByTestId("memory-maintenance")).toBeNull();
+    expect(screen.queryByText(/立即合并/)).toBeNull();
+    expect(screen.queryByText(/按来源清理/)).toBeNull();
   });
 
   it("opens a derived view as read-only content", async () => {
@@ -204,80 +214,5 @@ describe("MemoryPanel", () => {
         reenable_auto_update: false,
       }),
     );
-  });
-
-  it("consolidates pending candidates when some exist", async () => {
-    getJson.mockResolvedValue(payload());
-    postJson.mockResolvedValue({ consolidated: 0, entries: [] });
-
-    renderPanel();
-    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
-
-    const button = screen.getByTestId("memory-consolidate") as HTMLButtonElement;
-    expect(button.disabled).toBe(false);
-    fireEvent.click(button);
-
-    await waitFor(() =>
-      expect(postJson).toHaveBeenCalledWith("/api/memory/consolidate", {}),
-    );
-    expect(getJson).toHaveBeenCalledTimes(2);
-  });
-
-  it("disables consolidation when no candidates are pending", async () => {
-    getJson.mockResolvedValue(
-      payload({ status: { ...STATUS, pending_candidates: 0 } }),
-    );
-
-    renderPanel();
-    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
-
-    const button = screen.getByTestId("memory-consolidate") as HTMLButtonElement;
-    expect(button.disabled).toBe(true);
-  });
-
-  it("deletes memories by source after confirmation", async () => {
-    getJson.mockResolvedValue(payload());
-    deleteJson.mockResolvedValue({ deleted_entries: 1, deleted_candidates: 0 });
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
-    renderPanel();
-    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
-
-    fireEvent.change(screen.getByPlaceholderText("thread_id 或 run_id"), {
-      target: { value: "thread_api" },
-    });
-    fireEvent.click(screen.getByTestId("memory-clean-source"));
-
-    await waitFor(() =>
-      expect(deleteJson).toHaveBeenCalledWith("/api/memory/sources/thread_api"),
-    );
-    expect(getJson).toHaveBeenCalledTimes(2);
-  });
-
-  it("keeps memories when the source cleanup confirmation is cancelled", async () => {
-    getJson.mockResolvedValue(payload());
-    vi.spyOn(window, "confirm").mockReturnValue(false);
-
-    renderPanel();
-    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
-
-    fireEvent.change(screen.getByPlaceholderText("thread_id 或 run_id"), {
-      target: { value: "thread_api" },
-    });
-    fireEvent.click(screen.getByTestId("memory-clean-source"));
-
-    await waitFor(() => expect(window.confirm).toHaveBeenCalled());
-    expect(deleteJson).not.toHaveBeenCalled();
-  });
-
-  it("keeps maintenance actions behind the maintenance disclosure", async () => {
-    getJson.mockResolvedValue(payload());
-
-    renderPanel();
-    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
-
-    const maintenance = screen.getByTestId("memory-maintenance");
-    expect(maintenance.querySelector("summary")?.textContent).toContain("维护");
-    expect(maintenance.querySelector("button.danger")).toBeTruthy();
   });
 });
