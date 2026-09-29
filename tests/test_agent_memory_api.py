@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -14,6 +15,7 @@ from cellwiki.services.agent_memory import (
     WorkspaceMemoryStore,
     render_summary,
 )
+from cellwiki.services.agent_memory_jobs import MemoryJobStore
 from cellwiki.services.runtime_store import RuntimeStore
 
 
@@ -83,6 +85,9 @@ def test_list_memory_returns_entries(tmp_path: Path):
         MEMORY_SUMMARY_FILE,
         MEMORY_INDEX_FILE,
     ]
+    assert isinstance(body["status"]["enabled"], bool)
+    assert body["status"]["pending_candidates"] == 0
+    assert body["status"]["jobs_pending"] == 0
 
 
 def test_list_memory_is_empty_without_entries(tmp_path: Path):
@@ -100,6 +105,27 @@ def test_list_memory_is_empty_without_entries(tmp_path: Path):
     ]
     assert all(view["read_only"] is True for view in body["views"])
     assert all(view["exists"] is False for view in body["views"])
+    assert isinstance(body["status"]["enabled"], bool)
+    assert body["status"]["jobs_failed"] == 0
+
+
+def test_list_memory_reports_scheduler_status(tmp_path: Path):
+    _seed(tmp_path)
+    memory = WorkspaceMemoryStore(tmp_path, RuntimeStore(tmp_path).path)
+    jobs = MemoryJobStore(memory.runtime_db, tmp_path)
+    jobs.upsert_thread_job(
+        thread_id="thread_api",
+        available_at=datetime(2026, 9, 29, 16, 0, tzinfo=UTC),
+        input_watermark="run_api",
+    )
+    client = _client(tmp_path)
+
+    status = client.get("/api/memory").json()["status"]
+
+    assert status["jobs_pending"] == 1
+    assert status["jobs_leased"] == 0
+    assert status["next_job_at"].startswith("2026-09-29T16:00")
+    assert status["last_consolidated_at"] is not None
 
 
 def test_list_memory_reports_generated_derived_views(tmp_path: Path):

@@ -47,6 +47,33 @@ const VIEWS = [
   },
 ];
 
+const STATUS = {
+  enabled: true,
+  auto_extract: true,
+  min_idle_hours: 4,
+  debounce_minutes: 1,
+  daily_extractions: 24,
+  pending_candidates: 2,
+  jobs_pending: 2,
+  jobs_leased: 1,
+  jobs_failed: 0,
+  next_job_at: "2026-09-29T16:00:00+00:00",
+  last_job_status: "succeeded_no_output",
+  last_job_error: "",
+  last_job_updated_at: "2026-09-29T12:00:00+00:00",
+  last_consolidated_at: null,
+};
+
+function payload(overrides: Record<string, unknown> = {}) {
+  return {
+    entries: [ENTRY],
+    count: 1,
+    views: VIEWS,
+    status: STATUS,
+    ...overrides,
+  };
+}
+
 function renderPanel() {
   return render(
     <LanguageProvider>
@@ -58,34 +85,41 @@ function renderPanel() {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe("MemoryPanel", () => {
-  it("lists memories from the API", async () => {
-    getJson.mockResolvedValue({ entries: [ENTRY], count: 1, views: VIEWS });
+  it("renders scheduler status and unified file rows", async () => {
+    getJson.mockResolvedValue(payload());
 
     renderPanel();
 
     await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
     expect(getJson).toHaveBeenCalledWith("/api/memory");
+    expect(screen.getByTestId("memory-status")).toBeTruthy();
+    expect(screen.getByText("已开启")).toBeTruthy();
+    expect(screen.getByText("4 小时")).toBeTruthy();
+    expect(screen.getByText("2 待处理 · 1 进行中 · 0 失败")).toBeTruthy();
     expect(screen.getByText("run-approval.md")).toBeTruthy();
-    expect(screen.getByText(/逐行审批/)).toBeTruthy();
     expect(screen.getByText("memory_summary.md")).toBeTruthy();
     expect(screen.getByText("MEMORY.md")).toBeTruthy();
+    expect(screen.getByText("尚未生成")).toBeTruthy();
   });
 
   it("shows the empty state when no memories exist", async () => {
-    getJson.mockResolvedValue({ entries: [], count: 0, views: VIEWS });
+    getJson.mockResolvedValue(
+      payload({ entries: [], count: 0, status: { ...STATUS, pending_candidates: 0 } }),
+    );
 
     renderPanel();
 
     await waitFor(() => expect(screen.queryByTestId("memory-entry")).toBeNull());
-    expect(screen.getByText(/还没有记忆/)).toBeTruthy();
+    expect(screen.getByText(/还没有成型记忆/)).toBeTruthy();
   });
 
   it("opens a derived view as read-only content", async () => {
     getJson
-      .mockResolvedValueOnce({ entries: [ENTRY], count: 1, views: VIEWS })
+      .mockResolvedValueOnce(payload())
       .mockResolvedValueOnce({
         ...VIEWS[0],
         content: "v1\n\n## User Preferences\n逐行审批。",
@@ -109,7 +143,7 @@ describe("MemoryPanel", () => {
 
   it("opens a topic file with edit and delete actions", async () => {
     getJson
-      .mockResolvedValueOnce({ entries: [ENTRY], count: 1, views: VIEWS })
+      .mockResolvedValueOnce(payload())
       .mockResolvedValueOnce({ ...ENTRY, body: "原始正文" });
 
     renderPanel();
@@ -129,9 +163,9 @@ describe("MemoryPanel", () => {
 
   it("deletes a memory through the API and reloads", async () => {
     getJson
-      .mockResolvedValueOnce({ entries: [ENTRY], count: 1, views: VIEWS })
+      .mockResolvedValueOnce(payload())
       .mockResolvedValueOnce({ ...ENTRY, body: "原始正文" })
-      .mockResolvedValueOnce({ entries: [], count: 0, views: VIEWS });
+      .mockResolvedValueOnce(payload({ entries: [], count: 0 }));
     deleteJson.mockResolvedValue({ deleted: "mem_1" });
 
     renderPanel();
@@ -147,9 +181,9 @@ describe("MemoryPanel", () => {
 
   it("edits a memory body through the API", async () => {
     getJson
-      .mockResolvedValueOnce({ entries: [ENTRY], count: 1, views: VIEWS })
+      .mockResolvedValueOnce(payload())
       .mockResolvedValueOnce({ ...ENTRY, body: "原始正文" })
-      .mockResolvedValueOnce({ entries: [ENTRY], count: 1, views: VIEWS });
+      .mockResolvedValueOnce(payload());
     putJson.mockResolvedValue({ ...ENTRY, body: "改写后的正文" });
 
     renderPanel();
@@ -172,14 +206,16 @@ describe("MemoryPanel", () => {
     );
   });
 
-  it("consolidates pending memories and reloads", async () => {
-    getJson.mockResolvedValue({ entries: [ENTRY], count: 1, views: VIEWS });
+  it("consolidates pending candidates when some exist", async () => {
+    getJson.mockResolvedValue(payload());
     postJson.mockResolvedValue({ consolidated: 0, entries: [] });
 
     renderPanel();
     await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
 
-    fireEvent.click(screen.getByTestId("memory-consolidate"));
+    const button = screen.getByTestId("memory-consolidate") as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    fireEvent.click(button);
 
     await waitFor(() =>
       expect(postJson).toHaveBeenCalledWith("/api/memory/consolidate", {}),
@@ -187,9 +223,22 @@ describe("MemoryPanel", () => {
     expect(getJson).toHaveBeenCalledTimes(2);
   });
 
-  it("cleans memories by source and reloads", async () => {
-    getJson.mockResolvedValue({ entries: [ENTRY], count: 1, views: VIEWS });
+  it("disables consolidation when no candidates are pending", async () => {
+    getJson.mockResolvedValue(
+      payload({ status: { ...STATUS, pending_candidates: 0 } }),
+    );
+
+    renderPanel();
+    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
+
+    const button = screen.getByTestId("memory-consolidate") as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+  });
+
+  it("deletes memories by source after confirmation", async () => {
+    getJson.mockResolvedValue(payload());
     deleteJson.mockResolvedValue({ deleted_entries: 1, deleted_candidates: 0 });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
 
     renderPanel();
     await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
@@ -203,5 +252,32 @@ describe("MemoryPanel", () => {
       expect(deleteJson).toHaveBeenCalledWith("/api/memory/sources/thread_api"),
     );
     expect(getJson).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps memories when the source cleanup confirmation is cancelled", async () => {
+    getJson.mockResolvedValue(payload());
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+
+    renderPanel();
+    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
+
+    fireEvent.change(screen.getByPlaceholderText("thread_id 或 run_id"), {
+      target: { value: "thread_api" },
+    });
+    fireEvent.click(screen.getByTestId("memory-clean-source"));
+
+    await waitFor(() => expect(window.confirm).toHaveBeenCalled());
+    expect(deleteJson).not.toHaveBeenCalled();
+  });
+
+  it("keeps maintenance actions behind the maintenance disclosure", async () => {
+    getJson.mockResolvedValue(payload());
+
+    renderPanel();
+    await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
+
+    const maintenance = screen.getByTestId("memory-maintenance");
+    expect(maintenance.querySelector("summary")?.textContent).toContain("维护");
+    expect(maintenance.querySelector("button.danger")).toBeTruthy();
   });
 });

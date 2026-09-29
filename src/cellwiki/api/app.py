@@ -74,6 +74,8 @@ from cellwiki.services.agent_memory import (
     MEMORY_SUMMARY_FILE,
     WorkspaceMemoryStore,
 )
+from cellwiki.domain.memory import MemoryJobStatus
+from cellwiki.services.agent_memory_jobs import MemoryJobStore
 from cellwiki.services.agent_memory_merge import (
     MemoryConsolidationService,
     MemoryMergeUnavailable,
@@ -418,15 +420,70 @@ def create_app(
 
     @app.get("/api/memory")
     def list_memory() -> dict:
-        """List workspace memories and their read-only derived views."""
+        """List workspace memories, derived views and scheduler status."""
 
         store = _memory_store()
-        entries = [_memory_payload(store, entry) for entry in store.list_entries()]
+        entry_records = store.list_entries()
+        entries = [_memory_payload(store, entry) for entry in entry_records]
         views = [
             _memory_view_payload(store, file_name)
             for file_name in memory_view_files
         ]
-        return {"entries": entries, "count": len(entries), "views": views}
+        jobs = MemoryJobStore(store.runtime_db, store.workspace_root).list_jobs()
+        pending_jobs = [
+            job for job in jobs if job.status is MemoryJobStatus.PENDING
+        ]
+        leased_jobs = [
+            job for job in jobs if job.status is MemoryJobStatus.LEASED
+        ]
+        failed_jobs = [
+            job for job in jobs if job.status is MemoryJobStatus.FAILED
+        ]
+        pending_candidates = len(store.list_candidates())
+        next_job_at = min(
+            (job.available_at for job in pending_jobs),
+            default=None,
+        )
+        last_job = max(jobs, key=lambda job: job.updated_at, default=None)
+        last_consolidated_at = max(
+            (entry.updated_at for entry in entry_records),
+            default=None,
+        )
+        return {
+            "entries": entries,
+            "count": len(entries),
+            "views": views,
+            "status": {
+                "enabled": settings.agent_memory_enabled,
+                "auto_extract": settings.agent_memory_auto_extract,
+                "min_idle_hours": settings.agent_memory_min_idle_hours,
+                "debounce_minutes": settings.agent_memory_debounce_minutes,
+                "daily_extractions": settings.agent_memory_daily_extractions,
+                "pending_candidates": pending_candidates,
+                "jobs_pending": len(pending_jobs),
+                "jobs_leased": len(leased_jobs),
+                "jobs_failed": len(failed_jobs),
+                "next_job_at": (
+                    next_job_at.isoformat() if next_job_at is not None else None
+                ),
+                "last_job_status": (
+                    last_job.status.value if last_job is not None else None
+                ),
+                "last_job_error": (
+                    last_job.last_error if last_job is not None else ""
+                ),
+                "last_job_updated_at": (
+                    last_job.updated_at.isoformat()
+                    if last_job is not None
+                    else None
+                ),
+                "last_consolidated_at": (
+                    last_consolidated_at.isoformat()
+                    if last_consolidated_at is not None
+                    else None
+                ),
+            },
+        }
 
     @app.get("/api/memory/views/{view_name}")
     def read_memory_view(view_name: str) -> dict:
