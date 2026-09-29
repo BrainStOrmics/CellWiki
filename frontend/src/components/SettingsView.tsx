@@ -35,7 +35,12 @@ type SettingsDraft = {
   agent_memory_enabled: boolean;
   agent_memory_generate: boolean;
   agent_memory_use: boolean;
+  agent_memory_auto_extract: boolean;
   agent_memory_debounce_minutes: number;
+  agent_memory_min_idle_hours: number;
+  agent_memory_max_age_days: number;
+  agent_memory_max_threads_per_scan: number;
+  agent_memory_extract_concurrency: number;
   agent_memory_daily_extractions: number;
   agent_context_max_tokens: number;
   auto_accept_pending_diffs: boolean;
@@ -53,7 +58,12 @@ const emptyDraft: SettingsDraft = {
   agent_memory_enabled: false,
   agent_memory_generate: true,
   agent_memory_use: true,
+  agent_memory_auto_extract: true,
   agent_memory_debounce_minutes: 10,
+  agent_memory_min_idle_hours: 4,
+  agent_memory_max_age_days: 30,
+  agent_memory_max_threads_per_scan: 5,
+  agent_memory_extract_concurrency: 2,
   agent_memory_daily_extractions: 24,
   agent_context_max_tokens: 512000,
   auto_accept_pending_diffs: false,
@@ -103,7 +113,14 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         agent_memory_enabled: settings.agent_memory_enabled ?? false,
         agent_memory_generate: settings.agent_memory_generate ?? true,
         agent_memory_use: settings.agent_memory_use ?? true,
+        agent_memory_auto_extract: settings.agent_memory_auto_extract ?? true,
         agent_memory_debounce_minutes: settings.agent_memory_debounce_minutes ?? 10,
+        agent_memory_min_idle_hours: settings.agent_memory_min_idle_hours ?? 4,
+        agent_memory_max_age_days: settings.agent_memory_max_age_days ?? 30,
+        agent_memory_max_threads_per_scan:
+          settings.agent_memory_max_threads_per_scan ?? 5,
+        agent_memory_extract_concurrency:
+          settings.agent_memory_extract_concurrency ?? 2,
         agent_memory_daily_extractions: settings.agent_memory_daily_extractions ?? 24,
         agent_context_max_tokens: settings.agent_context_max_tokens,
         auto_accept_pending_diffs: settings.auto_accept_pending_diffs,
@@ -276,9 +293,25 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 <input type="checkbox" checked={draft.agent_memory_generate} onChange={(event) => updateDraft({ agent_memory_generate: event.target.checked })} />
                 <span>{t("memory.generate")}</span>
               </label>
+              <label className="clear-secret">
+                <input type="checkbox" checked={draft.agent_memory_auto_extract} onChange={(event) => updateDraft({ agent_memory_auto_extract: event.target.checked })} />
+                <span>{t("memory.autoExtract")}</span>
+              </label>
               <label className="settings-field">
                 <span>{t("memory.debounce")}</span>
                 <input type="number" min={1} max={720} value={draft.agent_memory_debounce_minutes} onChange={(event) => updateDraft({ agent_memory_debounce_minutes: Number(event.target.value) })} />
+              </label>
+              <label className="settings-field">
+                <span>{t("memory.minIdleHours")}</span>
+                <input type="number" min={1} max={720} value={draft.agent_memory_min_idle_hours} onChange={(event) => updateDraft({ agent_memory_min_idle_hours: Number(event.target.value) })} />
+              </label>
+              <label className="settings-field">
+                <span>{t("memory.maxAgeDays")}</span>
+                <input type="number" min={1} max={3650} value={draft.agent_memory_max_age_days} onChange={(event) => updateDraft({ agent_memory_max_age_days: Number(event.target.value) })} />
+              </label>
+              <label className="settings-field">
+                <span>{t("memory.maxThreadsPerScan")}</span>
+                <input type="number" min={1} max={100} value={draft.agent_memory_max_threads_per_scan} onChange={(event) => updateDraft({ agent_memory_max_threads_per_scan: Number(event.target.value) })} />
               </label>
               <label className="settings-field">
                 <span>{t("memory.dailyLimit")}</span>

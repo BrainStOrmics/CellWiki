@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import Enum
+from typing import Any
 
 from cellwiki.domain.contracts import ContractModel
 from pydantic import Field
@@ -111,10 +112,53 @@ class MemorySummary(ContractModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
+class MemoryJobKind(str, Enum):
+    """Background work item kinds for the workspace-memory pipeline."""
+
+    THREAD_EXTRACT = "thread_extract"
+    GLOBAL_CONSOLIDATE = "global_consolidate"
+
+
+class MemoryJobStatus(str, Enum):
+    """Persistent lifecycle state for one background memory job."""
+
+    PENDING = "pending"
+    LEASED = "leased"
+    SUCCEEDED = "succeeded"
+    SUCCEEDED_NO_OUTPUT = "succeeded_no_output"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class MemoryJob(ContractModel):
+    """One recoverable background memory job."""
+
+    job_id: str
+    workspace: str
+    thread_id: str = ""
+    kind: MemoryJobKind
+    status: MemoryJobStatus = MemoryJobStatus.PENDING
+    priority: int = Field(default=0, ge=0)
+    available_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    worker_id: str = ""
+    lease_until: datetime | None = None
+    retry_at: datetime | None = None
+    retry_count: int = Field(default=0, ge=0)
+    input_watermark: str = ""
+    last_success_watermark: str = ""
+    last_error: str = ""
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
 __all__ = [
     "MemoryCandidate",
     "MemoryCandidateStatus",
     "MemoryEntry",
+    "MemoryJob",
+    "MemoryJobKind",
+    "MemoryJobStatus",
     "MemoryKind",
     "MemorySummary",
     "MemoryTopicFamily",

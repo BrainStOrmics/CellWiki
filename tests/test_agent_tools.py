@@ -228,7 +228,9 @@ def test_question_options_normalize_to_label_description_recommended():
     ]
 
 
-def test_runtime_tool_schema_is_exactly_the_whitelist(tmp_path: Path):
+def test_runtime_tool_schema_is_exactly_the_whitelist(
+    monkeypatch, tmp_path: Path
+):
     """编译后真正发给模型的工具面必须恰好等于白名单。
 
     2026-09-21 之前这条用例只断言中间件的常量 _allowed_tools，因此看着通过，
@@ -237,6 +239,9 @@ def test_runtime_tool_schema_is_exactly_the_whitelist(tmp_path: Path):
     """
     from cellwiki.domain.agent_tools import AGENT_VISIBLE_TOOL_NAMES
     from tests.tool_surface import model_visible_tool_names
+    import cellwiki.config as config_module
+
+    monkeypatch.setattr(config_module.settings, "agent_memory_enabled", False)
 
     names = model_visible_tool_names(_workspace(tmp_path))
 
@@ -245,7 +250,9 @@ def test_runtime_tool_schema_is_exactly_the_whitelist(tmp_path: Path):
     assert "ls" not in names
 
 
-def test_unregistered_provider_profile_still_gets_the_whitelist(tmp_path: Path):
+def test_unregistered_provider_profile_still_gets_the_whitelist(
+    monkeypatch, tmp_path: Path
+):
     """provider 不匹配任何已注册 profile 时，模型可见工具面仍恰好等于白名单。
 
     2026-09-21 七格隔离实验的 N2 格：profile 不匹配时框架自己的工具排除中间件
@@ -254,6 +261,9 @@ def test_unregistered_provider_profile_still_gets_the_whitelist(tmp_path: Path):
     "allowlist 是唯一承重防线"这个结论（上面的用例只覆盖 profile 匹配路径）。"""
     from cellwiki.domain.agent_tools import AGENT_VISIBLE_TOOL_NAMES
     from tests.tool_surface import model_visible_tool_names
+    import cellwiki.config as config_module
+
+    monkeypatch.setattr(config_module.settings, "agent_memory_enabled", False)
 
     names = model_visible_tool_names(
         _workspace(tmp_path), ls_provider="unregistered-provider"

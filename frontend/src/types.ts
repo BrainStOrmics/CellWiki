@@ -365,7 +365,12 @@ export type AppSettings = {
   agent_memory_enabled: boolean;
   agent_memory_generate: boolean;
   agent_memory_use: boolean;
+  agent_memory_auto_extract: boolean;
   agent_memory_debounce_minutes: number;
+  agent_memory_min_idle_hours: number;
+  agent_memory_max_age_days: number;
+  agent_memory_max_threads_per_scan: number;
+  agent_memory_extract_concurrency: number;
   agent_memory_daily_extractions: number;
   auto_accept_pending_diffs: boolean;
   agent_context_max_tokens: number;

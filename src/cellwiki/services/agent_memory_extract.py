@@ -1,22 +1,21 @@
 # =============================================================================
 # 工作区记忆提取（ADR-0016 切片 2）
 # =============================================================================
-# run 进终态后：信号门先判定这次是否值得记录（查询、状态检查与普通问答直接
-# no-op），有信号则按线程起去抖窗口；窗口到期且线程空闲时提取一次，把窗口内的
-# 多轮合并成一次候选提取。提取复用当前 coordinator 模型，输入取终态转录 +
-# 事件摘要 + tool-results 侧车，避开随后发生的工具输出预览化与冷点剪枝。
-# Agent 只产候选；候选落 memory_candidates，不进 prompt。
+# run 进终态后写入持久化 memory_jobs：普通会话等待线程空闲窗口，显式
+# remember/correct 信号走短窗口高优先级路径。后台 worker 到期后再次确认
+# 线程空闲，再提取候选；进程重启后由 pending/expired job 恢复。提取输入取
+# 终态转录 + 事件摘要 + tool-results 侧车。Agent 只产候选；候选落
+# memory_candidates，不进 prompt。
 # =============================================================================
 
-"""Signal gate, debounced extraction and candidate persistence for memory."""
+"""Persistent job scheduling, idle-gated extraction and candidate persistence."""
 
 from __future__ import annotations
 
 import logging
-import threading
-import time
-from collections import defaultdict
-from datetime import UTC, datetime
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
@@ -24,12 +23,14 @@ from cellwiki.adapters.openai_model import build_model_from_spec
 from cellwiki.config import settings
 from cellwiki.domain.memory import (
     MemoryCandidate,
+    MemoryJob,
     MemoryKind,
     MemoryTopicFamily,
 )
 from cellwiki.domain.model_providers import ResolvedModelSpec
-from cellwiki.domain.runs import AgentEventType
+from cellwiki.domain.runs import AgentEventType, AgentRunStatus
 from cellwiki.services.agent_memory import WorkspaceMemoryStore
+from cellwiki.services.agent_memory_jobs import MemoryJobStore
 from cellwiki.services.environment import _extract_json_object
 from cellwiki.services.model_catalog import ModelCatalogService
 from cellwiki.services.runtime_store import ACTIVE_RUN_STATUSES, RuntimeStore
@@ -74,6 +75,8 @@ TOOL_RESULT_MAX_FILES = 4
 TOOL_RESULT_FILE_MAX_CHARS = 4_000
 TOOL_RESULT_TOTAL_MAX_CHARS = 12_000
 REQUEST_TIMEOUT_SECONDS = 60.0
+JOB_LEASE_SECONDS = 120
+JOB_RETRY_MAX = 5
 
 _EXTRACT_INSTRUCTIONS = (
     "你在把一个已完成的知识库工作 run 提炼成工作区级记忆候选。"
@@ -96,6 +99,10 @@ class MemoryExtractionDisabled(RuntimeError):
 
 class MemoryNamingUnavailable(RuntimeError):
     """没有可用默认模型时跳过提取，不影响 run 终态。"""
+
+
+class MemoryExtractionEmptyOutput(RuntimeError):
+    """Provider returned no usable extraction text; retry the job later."""
 
 
 def has_signal(message: str | None) -> bool:
@@ -121,6 +128,10 @@ def _truncate(text: str, limit: int) -> str:
     return collapsed[: limit - 1] + "…"
 
 
+def _ensure_utc(value: datetime) -> datetime:
+    return value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+
+
 def _valid_family(value: Any) -> MemoryTopicFamily | None:
     raw = str(value or "").strip()
     for family in MemoryTopicFamily:
@@ -138,7 +149,7 @@ def _valid_kind(value: Any) -> MemoryKind | None:
 
 
 class MemoryExtractionService:
-    """Own the signal gate, the per-thread debounce window and extraction.
+    """Own persistent memory jobs, idle eligibility and extraction.
 
     ``completer`` 是测试注入点：传入 ``prompt -> str`` 即可完全离线驱动提取；
     生产走供应商目录的默认模型一次性结构化调用。提取失败只记日志，不影响 run。
@@ -154,8 +165,12 @@ class MemoryExtractionService:
         completer: Callable[[str], str] | None = None,
         model_spec_for_run: Callable[[str], ResolvedModelSpec | None] | None = None,
         on_candidates: Callable[[], Any] | None = None,
+        jobs: MemoryJobStore | None = None,
         debounce_minutes: int | None = None,
-        sleep: Callable[[float], None] = time.sleep,
+        min_idle_hours: int | None = None,
+        max_age_days: int | None = None,
+        max_threads_per_scan: int | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self.project_root = Path(project_root)
         self.store = store
@@ -166,69 +181,262 @@ class MemoryExtractionService:
         self._model_spec_for_run = model_spec_for_run
         # 合并回调：候选落库后由 runtime 触发单写方 Phase 2；异常由调度线程兜底。
         self._on_candidates = on_candidates
+        self.jobs = jobs or MemoryJobStore(store.path, self.project_root)
         self._debounce_minutes = (
             debounce_minutes
             if debounce_minutes is not None
             else settings.agent_memory_debounce_minutes
         )
-        self._sleep = sleep
-        self._lock = threading.Lock()
-        self._pending_at: dict[str, float] = {}
-        self._pending_runs: dict[str, list[str]] = defaultdict(list)
+        self._min_idle_hours = (
+            min_idle_hours
+            if min_idle_hours is not None
+            else settings.agent_memory_min_idle_hours
+        )
+        self._max_age_days = (
+            max_age_days
+            if max_age_days is not None
+            else settings.agent_memory_max_age_days
+        )
+        self._max_threads_per_scan = (
+            max_threads_per_scan
+            if max_threads_per_scan is not None
+            else settings.agent_memory_max_threads_per_scan
+        )
+        self._now = now or (lambda: datetime.now(UTC))
         self._log = logging.getLogger(__name__)
 
     # -- terminal hook ---------------------------------------------------
 
     def notify_run_settled(self, run_id: str, thread_id: str, message: str) -> None:
-        """Called once per settled run; decides whether to schedule extraction."""
+        """Queue a settled run for background extraction.
+
+        Explicit memory language is a fast path, not a hard gate. Ordinary
+        terminal runs are queued only when automatic extraction is enabled.
+        """
 
         if not settings.agent_memory_enabled or not settings.agent_memory_generate:
             return
-        if not has_signal(message):
+        explicit = has_signal(message)
+        if not explicit and not settings.agent_memory_auto_extract:
             return
-        self.schedule(thread_id, run_id)
+        self.schedule(thread_id, run_id, explicit=explicit)
 
-    def schedule(self, thread_id: str, run_id: str) -> None:
-        """Start (or restart) the debounce window for one thread."""
+    def schedule(
+        self,
+        thread_id: str,
+        run_id: str,
+        *,
+        explicit: bool = False,
+    ) -> MemoryJob | None:
+        """Create or refresh the persistent extraction job for one thread."""
 
         if not settings.agent_memory_enabled:
-            return
-        with self._lock:
-            self._pending_at[thread_id] = time.monotonic()
-            runs = self._pending_runs[thread_id]
-            if run_id not in runs:
-                runs.append(run_id)
-        worker = threading.Thread(
-            target=self._debounced_extract,
-            args=(thread_id,),
-            name=f"memory-extract-{thread_id[:8]}",
-            daemon=True,
+            return None
+        now = self._now()
+        delay = (
+            timedelta(minutes=self._debounce_minutes)
+            if explicit
+            else timedelta(hours=self._min_idle_hours)
         )
-        worker.start()
+        watermark = self._run_finished_at(run_id) or now.isoformat()
+        return self.jobs.upsert_thread_job(
+            thread_id=thread_id,
+            available_at=now + delay,
+            input_watermark=watermark,
+            priority=1 if explicit else 0,
+            payload={"run_id": run_id, "explicit": explicit},
+        )
 
-    def _debounced_extract(self, thread_id: str) -> None:
-        """Wait out the window, then extract once if the thread stayed idle."""
+    def run_due_jobs(self, *, limit: int | None = None) -> int:
+        """Claim and process one bounded batch of background memory jobs."""
 
-        while True:
-            started = self._pending_at.get(thread_id)
-            if started is None:
-                return
-            remaining = self._debounce_minutes * 60 - (time.monotonic() - started)
-            if remaining <= 0:
-                break
-            self._sleep(min(remaining, 30.0))
-        if self._thread_has_active_run(thread_id):
-            # 线程又忙起来了：把窗口交给下一次终态触发。
+        if not settings.agent_memory_enabled or not settings.agent_memory_generate:
+            return 0
+        now = self._now()
+        claimed = self.jobs.claim_thread_jobs(
+            now=now,
+            worker_id=f"mem-extract-{uuid.uuid4().hex[:8]}",
+            lease_seconds=JOB_LEASE_SECONDS,
+            limit=min(
+                limit or self._max_threads_per_scan,
+                settings.agent_memory_extract_concurrency,
+            ),
+        )
+        if not claimed:
+            return 0
+        workers = max(
+            1,
+            min(
+                settings.agent_memory_extract_concurrency,
+                len(claimed),
+            ),
+        )
+        processed = 0
+        with ThreadPoolExecutor(
+            max_workers=workers,
+            thread_name_prefix="cellwiki-memory-extract",
+        ) as pool:
+            futures = {
+                pool.submit(self._process_job, job, now=now): job
+                for job in claimed
+            }
+            for future in as_completed(futures):
+                job = futures[future]
+                try:
+                    future.result()
+                except Exception as error:  # noqa: BLE001 - 单 job 失败不影响其他 job
+                    self._log.warning(
+                        "memory extraction job failed for %s: %s",
+                        job.thread_id,
+                        error,
+                    )
+                    self.jobs.fail(
+                        job.job_id,
+                        error=str(error),
+                        retry_at=now + self._retry_delay(job.retry_count),
+                        max_retries=JOB_RETRY_MAX,
+                    )
+                processed += 1
+        return processed
+
+    def _process_job(self, job: MemoryJob, *, now: datetime) -> None:
+        """Run one claimed thread extraction job with a fresh eligibility check."""
+
+        if not settings.agent_memory_enabled or not settings.agent_memory_generate:
             return
-        with self._lock:
-            run_ids = list(self._pending_runs.pop(thread_id, []))
-            self._pending_at.pop(thread_id, None)
+        if not settings.agent_memory_auto_extract and job.priority == 0:
+            self.jobs.reschedule(
+                job.job_id,
+                available_at=now + timedelta(days=1),
+                error="automatic memory extraction is disabled",
+            )
+            return
+        next_allowed = self._next_allowed_at(job, now=now)
+        if next_allowed > now:
+            self.jobs.reschedule(
+                job.job_id,
+                available_at=next_allowed,
+                error="thread is not idle enough for memory extraction",
+            )
+            return
+        run_ids = self._eligible_run_ids(
+            job.thread_id,
+            after_watermark=job.last_success_watermark,
+            now=now,
+        )
+        watermark = (
+            self._watermark_for_run_ids(run_ids)
+            or job.input_watermark
+            or now.isoformat()
+        )
+        if not run_ids:
+            self.jobs.complete_without_output(job.job_id, watermark=watermark)
+            return
+        today = now.date().isoformat()
+        if not self.memory.try_consume_extraction_slot(
+            today, settings.agent_memory_daily_extractions
+        ):
+            self.jobs.reschedule(
+                job.job_id,
+                available_at=now + timedelta(minutes=10),
+                error="daily memory extraction limit reached",
+            )
+            return
+        created = self.extract(job.thread_id, run_ids, consume_slot=False)
+        if created:
+            self.jobs.complete_with_output(job.job_id, watermark=watermark)
+            if self._on_candidates is not None:
+                try:
+                    self._on_candidates()
+                except Exception:  # noqa: BLE001 - 提取成功不应被合并失败回滚
+                    self._log.warning(
+                        "memory consolidation failed after extraction; "
+                        "candidates remain available for retry",
+                        exc_info=True,
+                    )
+            return
+        self.jobs.complete_without_output(job.job_id, watermark=watermark)
+
+    def _next_allowed_at(self, job: MemoryJob, *, now: datetime) -> datetime:
+        """Return when a thread may next be extracted."""
+
+        if self._thread_has_active_run(job.thread_id):
+            return now + timedelta(minutes=1)
+        latest = self._latest_eligible_finished_at(job.thread_id)
+        if latest is None:
+            return now + timedelta(minutes=1)
+        if job.priority > 0:
+            return latest + timedelta(minutes=self._debounce_minutes)
+        return latest + timedelta(hours=self._min_idle_hours)
+
+    def _eligible_run_ids(
+        self,
+        thread_id: str,
+        *,
+        after_watermark: str,
+        now: datetime,
+    ) -> list[str]:
+        """Return terminal run ids eligible for a bounded extraction pass."""
+
+        cutoff = now - timedelta(days=self._max_age_days)
+        runs = []
         try:
-            created = self.extract(thread_id, run_ids)
-            if created and self._on_candidates is not None:
-                self._on_candidates()
-        except Exception as error:  # noqa: BLE001 - 提取失败不影响任何 run
-            self._log.warning("memory extraction failed for %s: %s", thread_id, error)
+            for run in self.store.list_runs(thread_id=thread_id, limit=100):
+                if run.finished_at is None:
+                    continue
+                if run.status in ACTIVE_RUN_STATUSES:
+                    continue
+                if run.status is AgentRunStatus.CANCELLED:
+                    continue
+                finished = _ensure_utc(run.finished_at)
+                if finished < cutoff:
+                    continue
+                if after_watermark and finished.isoformat() <= after_watermark:
+                    continue
+                runs.append((finished, run.run_id))
+        except Exception:  # noqa: BLE001 - 单线程读取失败按无候选处理
+            return []
+        runs.sort(key=lambda item: item[0])
+        return [run_id for _finished, run_id in runs]
+
+    def _latest_eligible_finished_at(self, thread_id: str) -> datetime | None:
+        try:
+            values = [
+                _ensure_utc(run.finished_at)
+                for run in self.store.list_runs(thread_id=thread_id, limit=100)
+                if run.finished_at is not None
+                and run.status not in ACTIVE_RUN_STATUSES
+                and run.status is not AgentRunStatus.CANCELLED
+            ]
+        except Exception:  # noqa: BLE001
+            return None
+        return max(values, default=None)
+
+    def _watermark_for_run_ids(self, run_ids: list[str]) -> str:
+        values: list[datetime] = []
+        for run_id in run_ids:
+            try:
+                run = self.store.get_run(run_id)
+            except KeyError:
+                continue
+            if run.finished_at is not None:
+                values.append(_ensure_utc(run.finished_at))
+        return max(values).isoformat() if values else ""
+
+    def _run_finished_at(self, run_id: str) -> str:
+        try:
+            run = self.store.get_run(run_id)
+        except KeyError:
+            return ""
+        return (
+            _ensure_utc(run.finished_at).isoformat()
+            if run.finished_at is not None
+            else ""
+        )
+
+    @staticmethod
+    def _retry_delay(retry_count: int) -> timedelta:
+        return timedelta(minutes=min(2**retry_count, 60))
 
     def _thread_has_active_run(self, thread_id: str) -> bool:
         try:
@@ -239,7 +447,13 @@ class MemoryExtractionService:
 
     # -- extraction ------------------------------------------------------
 
-    def extract(self, thread_id: str, run_ids: list[str]) -> list[MemoryCandidate]:
+    def extract(
+        self,
+        thread_id: str,
+        run_ids: list[str],
+        *,
+        consume_slot: bool = True,
+    ) -> list[MemoryCandidate]:
         """Run one extraction pass over the settled runs; may return no candidates."""
 
         if not settings.agent_memory_enabled:
@@ -250,14 +464,17 @@ class MemoryExtractionService:
         if not prompt.strip():
             return []
         today = datetime.now(UTC).date().isoformat()
-        if not self.memory.try_consume_extraction_slot(
-            today, settings.agent_memory_daily_extractions
-        ):
-            self._log.info("memory extraction skipped: daily limit reached")
-            return []
+        if consume_slot:
+            if not self.memory.try_consume_extraction_slot(
+                today, settings.agent_memory_daily_extractions
+            ):
+                self._log.info("memory extraction skipped: daily limit reached")
+                return []
         raw = self._complete(prompt, run_ids[-1])
         if not raw.strip():
-            return []
+            raise MemoryExtractionEmptyOutput(
+                "memory extraction returned empty output"
+            )
         return self._parse_candidates(raw, thread_id, run_ids)
 
     def _parse_candidates(
@@ -447,6 +664,7 @@ def extract_candidates_from_json(raw: str) -> list[dict[str, Any]]:
 __all__ = [
     "DIGEST_MAX_CHARS",
     "MemoryExtractionDisabled",
+    "MemoryExtractionEmptyOutput",
     "MemoryExtractionService",
     "MemoryNamingUnavailable",
     "TOOL_RESULT_FILE_MAX_CHARS",

@@ -62,6 +62,19 @@ def test_runtime_store_creates_memory_tables(tmp_path: Path):
         "auto_update",
         "usage_count",
     }
+    assert _memory_columns(store.path, "memory_jobs") >= {
+        "job_id",
+        "workspace",
+        "thread_id",
+        "kind",
+        "status",
+        "available_at",
+        "lease_until",
+        "retry_at",
+        "retry_count",
+        "input_watermark",
+        "last_success_watermark",
+    }
 
 
 def test_memory_schema_guard_is_idempotent(tmp_path: Path):

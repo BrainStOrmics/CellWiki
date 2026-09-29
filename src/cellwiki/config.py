@@ -106,8 +106,17 @@ class Settings(BaseSettings):
     agent_memory_enabled: bool = False
     agent_memory_generate: bool = True          # 是否允许 run 贡献未来记忆
     agent_memory_use: bool = True               # 是否注入已有记忆摘要
+    agent_memory_auto_extract: bool = True      # 普通终态 run 是否自动进入提取队列
     # 终态后的去抖窗口（分钟）：窗口内同线程的新 run 会重置计时。
     agent_memory_debounce_minutes: int = Field(default=10, ge=1, le=720)
+    # 普通 run 自动提取前的线程空闲窗口（小时）。
+    agent_memory_min_idle_hours: int = Field(default=4, ge=1, le=720)
+    # 自动提取只处理该年龄窗口内的终态 run。
+    agent_memory_max_age_days: int = Field(default=30, ge=1, le=3650)
+    # 每次后台扫描最多处理的线程数。
+    agent_memory_max_threads_per_scan: int = Field(default=5, ge=1, le=100)
+    # 后台提取 job 的固定并发批次上限。
+    agent_memory_extract_concurrency: int = Field(default=2, ge=1, le=8)
     # 每个工作区每日提取次数上限，防止成本失控。
     agent_memory_daily_extractions: int = Field(default=24, ge=1, le=500)
 

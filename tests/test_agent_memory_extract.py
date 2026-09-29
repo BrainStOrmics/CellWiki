@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 from cellwiki.domain.memory import MemoryCandidateStatus, MemoryKind, MemoryTopicFamily
-from cellwiki.domain.runs import AgentRun
+from cellwiki.domain.runs import AgentRun, AgentRunStatus
 from cellwiki.services.agent_memory import WorkspaceMemoryStore
 from cellwiki.services.agent_memory_extract import (
     MemoryExtractionService,
@@ -23,16 +23,6 @@ class _Catalog:
     """No default model: tests drive extraction through the injected completer."""
 
     def resolve(self):
-        return None
-
-
-class _NoopThread:
-    """Stand-in for ``threading.Thread`` so schedule() stays deterministic."""
-
-    def __init__(self, **_kwargs) -> None:
-        pass
-
-    def start(self) -> None:
         return None
 
 
@@ -52,7 +42,9 @@ def _service(
     completer=None,
     model_spec_for_run=None,
     debounce_minutes: int = 10,
-    sleep=None,
+    min_idle_hours: int = 4,
+    max_age_days: int = 30,
+    now=None,
 ) -> tuple[MemoryExtractionService, WorkspaceMemoryStore]:
     store = RuntimeStore(tmp_path)
     memory = WorkspaceMemoryStore(tmp_path, store.path)
@@ -64,7 +56,9 @@ def _service(
         completer=completer,
         model_spec_for_run=model_spec_for_run,
         debounce_minutes=debounce_minutes,
-        sleep=sleep or (lambda _seconds: None),
+        min_idle_hours=min_idle_hours,
+        max_age_days=max_age_days,
+        now=now,
     )
     return service, memory
 
@@ -142,7 +136,7 @@ def test_extraction_persists_valid_candidates(monkeypatch, tmp_path: Path):
     assert pending[0].source_refs == ["run:run_1"]
 
 
-def test_extraction_no_signal_produces_nothing(monkeypatch, tmp_path: Path):
+def test_no_signal_creates_an_automatic_job(monkeypatch, tmp_path: Path):
     _enable(monkeypatch)
     calls: list[str] = []
 
@@ -154,6 +148,9 @@ def test_extraction_no_signal_produces_nothing(monkeypatch, tmp_path: Path):
 
     service.notify_run_settled("run_1", "thread_1", "这个页面写了什么")
 
+    job = service.jobs.get_thread_job("thread_1")
+    assert job is not None
+    assert job.priority == 0
     assert calls == []
     assert memory.list_candidates(status=None) == []
 
@@ -273,42 +270,177 @@ def test_extraction_tolerates_malformed_model_output(monkeypatch, tmp_path: Path
     assert memory.list_candidates(status=None) == []
 
 
-def test_debounce_window_keeps_one_pending_extraction_per_thread(
+def test_thread_job_is_coalesced_and_rescheduled(
     monkeypatch, tmp_path: Path
 ):
-    """同线程多次触发只保留一个待处理窗口，run 列表按序累积。"""
+    """同线程多次终态只刷新一个持久化 job。"""
 
     _enable(monkeypatch)
-    monkeypatch.setattr(
-        "cellwiki.services.agent_memory_extract.threading.Thread",
-        lambda **kwargs: _NoopThread(),
-    )
+    clock = [datetime(2026, 9, 29, 12, 0, tzinfo=UTC)]
     service, _memory = _service(
-        tmp_path, completer=lambda prompt: json.dumps({"candidates": []})
+        tmp_path,
+        completer=lambda prompt: json.dumps({"candidates": []}),
+        now=lambda: clock[0],
     )
 
-    service.schedule("thread_1", "run_1")
-    service.schedule("thread_1", "run_2")
-    service.schedule("thread_1", "run_1")
+    first = service.schedule("thread_1", "run_1")
+    clock[0] += timedelta(hours=1)
+    second = service.schedule("thread_1", "run_2")
 
-    with service._lock:  # noqa: SLF001 - white-box assertion of the window state
-        assert list(service._pending_runs["thread_1"]) == ["run_1", "run_2"]
-        assert "thread_1" in service._pending_at
+    assert first is not None
+    assert second is not None
+    assert first.job_id == second.job_id
+    assert second.available_at == clock[0] + timedelta(hours=4)
 
 
-def test_disabled_memory_never_records_a_window(monkeypatch, tmp_path: Path):
+def test_disabled_memory_never_records_a_job(monkeypatch, tmp_path: Path):
     _enable(monkeypatch, enabled=False)
-    monkeypatch.setattr(
-        "cellwiki.services.agent_memory_extract.threading.Thread",
-        lambda **kwargs: _NoopThread(),
-    )
     service, _memory = _service(tmp_path)
 
     service.schedule("thread_1", "run_1")
 
-    with service._lock:  # noqa: SLF001
-        assert service._pending_runs == {}
-        assert service._pending_at == {}
+    assert service.jobs.get_thread_job("thread_1") is None
+
+
+def test_explicit_signal_uses_high_priority_short_window(
+    monkeypatch, tmp_path: Path
+):
+    _enable(monkeypatch)
+    clock = [datetime(2026, 9, 29, 12, 0, tzinfo=UTC)]
+    service, _memory = _service(tmp_path, now=lambda: clock[0])
+
+    job = service.schedule("thread_1", "run_1", explicit=True)
+
+    assert job is not None
+    assert job.priority == 1
+    assert job.available_at == clock[0] + timedelta(minutes=10)
+
+
+def test_auto_extract_can_be_disabled_without_blocking_explicit_signal(
+    monkeypatch, tmp_path: Path
+):
+    _enable(monkeypatch)
+    import cellwiki.config as config_module
+
+    monkeypatch.setattr(
+        config_module.settings,
+        "agent_memory_auto_extract",
+        False,
+    )
+    service, _memory = _service(tmp_path)
+
+    service.notify_run_settled("run_normal", "thread_normal", "普通会话内容")
+    service.notify_run_settled("run_explicit", "thread_explicit", "记住这个偏好")
+
+    assert service.jobs.get_thread_job("thread_normal") is None
+    explicit = service.jobs.get_thread_job("thread_explicit")
+    assert explicit is not None
+    assert explicit.priority == 1
+
+
+def test_run_due_jobs_waits_for_the_idle_window(
+    monkeypatch, tmp_path: Path
+):
+    _enable(monkeypatch)
+    clock = [datetime(2026, 9, 29, 12, 0, tzinfo=UTC)]
+    calls: list[str] = []
+
+    def completer(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps({"candidates": []})
+
+    service, memory = _service(
+        tmp_path,
+        completer=completer,
+        now=lambda: clock[0],
+    )
+    store = RuntimeStore(tmp_path)
+    store.create_run(
+        AgentRun(
+            run_id="run_1",
+            thread_id="thread_1",
+            input_message="普通会话内容",
+            status=AgentRunStatus.SUCCEEDED,
+            finished_at=clock[0],
+        )
+    )
+    service.notify_run_settled("run_1", "thread_1", "普通会话内容")
+
+    assert service.run_due_jobs() == 0
+    assert calls == []
+
+    clock[0] += timedelta(hours=4, seconds=1)
+    assert service.run_due_jobs() == 1
+    assert calls
+    job = service.jobs.get_thread_job("thread_1")
+    assert job is not None
+    assert job.status.value == "succeeded_no_output"
+    assert memory.list_candidates(status=None) == []
+
+
+def test_explicit_signal_job_runs_after_short_window(
+    monkeypatch, tmp_path: Path
+):
+    _enable(monkeypatch)
+    clock = [datetime(2026, 9, 29, 12, 0, tzinfo=UTC)]
+    calls: list[str] = []
+
+    def completer(prompt: str) -> str:
+        calls.append(prompt)
+        return json.dumps({"candidates": []})
+
+    service, _memory = _service(
+        tmp_path,
+        completer=completer,
+        now=lambda: clock[0],
+    )
+    RuntimeStore(tmp_path).create_run(
+        AgentRun(
+            run_id="run_1",
+            thread_id="thread_1",
+            input_message="记住这个偏好",
+            status=AgentRunStatus.SUCCEEDED,
+            finished_at=clock[0],
+        )
+    )
+    service.notify_run_settled("run_1", "thread_1", "记住这个偏好")
+
+    assert service.run_due_jobs() == 0
+    clock[0] += timedelta(minutes=10, seconds=1)
+    assert service.run_due_jobs() == 1
+    assert calls
+    job = service.jobs.get_thread_job("thread_1")
+    assert job is not None
+    assert job.status.value == "succeeded_no_output"
+
+
+def test_empty_extraction_output_is_retryable(
+    monkeypatch, tmp_path: Path
+):
+    _enable(monkeypatch)
+    clock = [datetime(2026, 9, 29, 12, 0, tzinfo=UTC)]
+    service, _memory = _service(
+        tmp_path,
+        completer=lambda prompt: "",
+        now=lambda: clock[0],
+    )
+    RuntimeStore(tmp_path).create_run(
+        AgentRun(
+            run_id="run_1",
+            thread_id="thread_1",
+            input_message="普通会话内容",
+            status=AgentRunStatus.SUCCEEDED,
+            finished_at=clock[0],
+        )
+    )
+    service.notify_run_settled("run_1", "thread_1", "普通会话内容")
+
+    clock[0] += timedelta(hours=4, seconds=1)
+    assert service.run_due_jobs() == 1
+    job = service.jobs.get_thread_job("thread_1")
+    assert job is not None
+    assert job.status.value == "failed"
+    assert job.retry_at is not None
 
 
 def test_candidates_do_not_enter_prompt_path(tmp_path: Path):

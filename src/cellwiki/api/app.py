@@ -110,7 +110,12 @@ class SettingsUpdateRequest(BaseModel):
     agent_memory_enabled: bool = False
     agent_memory_generate: bool = True
     agent_memory_use: bool = True
+    agent_memory_auto_extract: bool = True
     agent_memory_debounce_minutes: int = Field(default=10, ge=1, le=720)
+    agent_memory_min_idle_hours: int = Field(default=4, ge=1, le=720)
+    agent_memory_max_age_days: int = Field(default=30, ge=1, le=3650)
+    agent_memory_max_threads_per_scan: int = Field(default=5, ge=1, le=100)
+    agent_memory_extract_concurrency: int = Field(default=2, ge=1, le=8)
     agent_memory_daily_extractions: int = Field(default=24, ge=1, le=500)
     # 信任策略：开启后 run 终态（succeeded/unfinished）发布的单元由系统代判。
     auto_accept_pending_diffs: bool = False

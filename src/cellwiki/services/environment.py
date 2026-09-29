@@ -35,7 +35,12 @@ _DEFAULTS = {
     "AGENT_MEMORY_ENABLED": "false",
     "AGENT_MEMORY_GENERATE": "true",
     "AGENT_MEMORY_USE": "true",
+    "AGENT_MEMORY_AUTO_EXTRACT": "true",
     "AGENT_MEMORY_DEBOUNCE_MINUTES": "10",
+    "AGENT_MEMORY_MIN_IDLE_HOURS": "4",
+    "AGENT_MEMORY_MAX_AGE_DAYS": "30",
+    "AGENT_MEMORY_MAX_THREADS_PER_SCAN": "5",
+    "AGENT_MEMORY_EXTRACT_CONCURRENCY": "2",
     "AGENT_MEMORY_DAILY_EXTRACTIONS": "24",
     "ENABLE_EXTERNAL_RESEARCH": "false",
     "AUTO_ACCEPT_PENDING_DIFFS": "false",
@@ -107,8 +112,23 @@ class EnvironmentSettingsService:
             "agent_memory_enabled": self._bool(values["AGENT_MEMORY_ENABLED"]),
             "agent_memory_generate": self._bool(values["AGENT_MEMORY_GENERATE"]),
             "agent_memory_use": self._bool(values["AGENT_MEMORY_USE"]),
+            "agent_memory_auto_extract": self._bool(
+                values["AGENT_MEMORY_AUTO_EXTRACT"]
+            ),
             "agent_memory_debounce_minutes": self._integer(
                 values["AGENT_MEMORY_DEBOUNCE_MINUTES"], default=10
+            ),
+            "agent_memory_min_idle_hours": self._integer(
+                values["AGENT_MEMORY_MIN_IDLE_HOURS"], default=4
+            ),
+            "agent_memory_max_age_days": self._integer(
+                values["AGENT_MEMORY_MAX_AGE_DAYS"], default=30
+            ),
+            "agent_memory_max_threads_per_scan": self._integer(
+                values["AGENT_MEMORY_MAX_THREADS_PER_SCAN"], default=5
+            ),
+            "agent_memory_extract_concurrency": self._integer(
+                values["AGENT_MEMORY_EXTRACT_CONCURRENCY"], default=2
             ),
             "agent_memory_daily_extractions": self._integer(
                 values["AGENT_MEMORY_DAILY_EXTRACTIONS"], default=24
@@ -150,7 +170,12 @@ class EnvironmentSettingsService:
         agent_memory_enabled: bool = False,
         agent_memory_generate: bool = True,
         agent_memory_use: bool = True,
+        agent_memory_auto_extract: bool = True,
         agent_memory_debounce_minutes: int = 10,
+        agent_memory_min_idle_hours: int = 4,
+        agent_memory_max_age_days: int = 30,
+        agent_memory_max_threads_per_scan: int = 5,
+        agent_memory_extract_concurrency: int = 2,
         agent_memory_daily_extractions: int = 24,
         enable_external_research: bool = False,
         auto_accept_pending_diffs: bool = False,
@@ -180,7 +205,18 @@ class EnvironmentSettingsService:
             "AGENT_MEMORY_ENABLED": "true" if agent_memory_enabled else "false",
             "AGENT_MEMORY_GENERATE": "true" if agent_memory_generate else "false",
             "AGENT_MEMORY_USE": "true" if agent_memory_use else "false",
+            "AGENT_MEMORY_AUTO_EXTRACT": (
+                "true" if agent_memory_auto_extract else "false"
+            ),
             "AGENT_MEMORY_DEBOUNCE_MINUTES": str(agent_memory_debounce_minutes),
+            "AGENT_MEMORY_MIN_IDLE_HOURS": str(agent_memory_min_idle_hours),
+            "AGENT_MEMORY_MAX_AGE_DAYS": str(agent_memory_max_age_days),
+            "AGENT_MEMORY_MAX_THREADS_PER_SCAN": str(
+                agent_memory_max_threads_per_scan
+            ),
+            "AGENT_MEMORY_EXTRACT_CONCURRENCY": str(
+                agent_memory_extract_concurrency
+            ),
             "AGENT_MEMORY_DAILY_EXTRACTIONS": str(agent_memory_daily_extractions),
             "ENABLE_EXTERNAL_RESEARCH": "true" if enable_external_research else "false",
             "AUTO_ACCEPT_PENDING_DIFFS": (
@@ -195,6 +231,14 @@ class EnvironmentSettingsService:
             raise ValueError("app language must be zh-CN or en")
         if not 1 <= agent_memory_debounce_minutes <= 720:
             raise ValueError("memory debounce minutes must be between 1 and 720")
+        if not 1 <= agent_memory_min_idle_hours <= 720:
+            raise ValueError("memory min idle hours must be between 1 and 720")
+        if not 1 <= agent_memory_max_age_days <= 3650:
+            raise ValueError("memory max age days must be between 1 and 3650")
+        if not 1 <= agent_memory_max_threads_per_scan <= 100:
+            raise ValueError("memory max threads per scan must be between 1 and 100")
+        if not 1 <= agent_memory_extract_concurrency <= 8:
+            raise ValueError("memory extract concurrency must be between 1 and 8")
         if not 1 <= agent_memory_daily_extractions <= 500:
             raise ValueError("memory daily extractions must be between 1 and 500")
         if agent_context_max_tokens is not None and (
@@ -231,7 +275,12 @@ class EnvironmentSettingsService:
                 "AGENT_MEMORY_ENABLED",
                 "AGENT_MEMORY_GENERATE",
                 "AGENT_MEMORY_USE",
+                "AGENT_MEMORY_AUTO_EXTRACT",
                 "AGENT_MEMORY_DEBOUNCE_MINUTES",
+                "AGENT_MEMORY_MIN_IDLE_HOURS",
+                "AGENT_MEMORY_MAX_AGE_DAYS",
+                "AGENT_MEMORY_MAX_THREADS_PER_SCAN",
+                "AGENT_MEMORY_EXTRACT_CONCURRENCY",
                 "AGENT_MEMORY_DAILY_EXTRACTIONS",
                 "ENABLE_EXTERNAL_RESEARCH",
                 "AUTO_ACCEPT_PENDING_DIFFS",

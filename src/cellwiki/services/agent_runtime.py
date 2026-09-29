@@ -143,6 +143,7 @@ AUTO_ACCEPT_POLICY = "succeeded+unfinished"
 AUTO_ACCEPT_STATUSES = frozenset(
     {AgentRunStatus.SUCCEEDED, AgentRunStatus.UNFINISHED}
 )
+MEMORY_JOB_POLL_SECONDS = 60.0
 
 _TOOL_ACTIVITY_CODES = {
     "read_file": "reading_page",
@@ -1340,6 +1341,8 @@ class AgentRuntimeManager:
             model_spec_for_run=self._memory_model_spec_for_run,
             on_candidates=self._memory_merge.consolidate,
         )
+        self._memory_job_stop = Event()
+        self._memory_job_thread: Thread | None = None
         self._naming_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix="cellwiki-naming",
@@ -1373,8 +1376,31 @@ class AgentRuntimeManager:
         # 系统维护（audit 快照与 accept/reject/unfinished 写入）串行化：
         # run 收尾线程的 lint 快照与 API 线程的判定维护互不交错提交。
         self._maintenance_lock = RLock()
+        if settings.agent_memory_enabled and settings.agent_memory_auto_extract:
+            self._start_memory_job_worker()
 
     # ---- 公共生命周期 ----
+    def _start_memory_job_worker(self) -> None:
+        if self._memory_job_thread is not None:
+            return
+        self._memory_job_thread = Thread(
+            target=self._memory_job_loop,
+            name="cellwiki-memory-jobs",
+            daemon=True,
+        )
+        self._memory_job_thread.start()
+
+    def _memory_job_loop(self) -> None:
+        """Recover and process persistent memory jobs in the background."""
+
+        while not self._memory_job_stop.is_set():
+            try:
+                self._memory_extraction.run_due_jobs()
+            except Exception:  # noqa: BLE001 - 后台记忆失败不影响 run 或服务
+                logger.warning("memory job worker failed", exc_info=True)
+            if self._memory_job_stop.wait(MEMORY_JOB_POLL_SECONDS):
+                return
+
     def start(
         self,
         thread_id: str,
@@ -4719,6 +4745,9 @@ class AgentRuntimeManager:
         return self._git
 
     def close(self) -> None:
+        self._memory_job_stop.set()
+        if self._memory_job_thread is not None:
+            self._memory_job_thread.join(timeout=2.0)
         # 先让看门狗立刻断开在飞的模型连接：shutdown(wait=True) 要等 worker 退栈，而
         # 挂起的流式读不退栈——不断开就是无限期等待。实测那个停在 cancelling 上 8.5
         # 小时的 run 最后是靠强杀 sidecar 才收敛的，正是因为这里会一直等下去。

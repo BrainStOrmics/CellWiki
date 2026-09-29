@@ -2349,7 +2349,29 @@ class RuntimeStore:
         count INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (workspace, day)
     );
-    PRAGMA user_version=11;
+    CREATE TABLE IF NOT EXISTS memory_jobs (
+        job_id TEXT PRIMARY KEY,
+        workspace TEXT NOT NULL,
+        thread_id TEXT NOT NULL DEFAULT '',
+        kind TEXT NOT NULL,
+        status TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 0,
+        available_at TEXT NOT NULL,
+        worker_id TEXT,
+        lease_until TEXT,
+        retry_at TEXT,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        input_watermark TEXT NOT NULL DEFAULT '',
+        last_success_watermark TEXT NOT NULL DEFAULT '',
+        last_error TEXT NOT NULL DEFAULT '',
+        payload TEXT NOT NULL DEFAULT '{}',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(workspace, thread_id, kind)
+    );
+    CREATE INDEX IF NOT EXISTS ix_memory_jobs_due
+        ON memory_jobs(workspace, kind, status, available_at);
+    PRAGMA user_version=12;
                 """
             )
             self._ensure_thread_registry(connection)
@@ -2443,6 +2465,34 @@ class RuntimeStore:
                 PRIMARY KEY (workspace, day)
             )
             """
+        )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS memory_jobs (
+                job_id TEXT PRIMARY KEY,
+                workspace TEXT NOT NULL,
+                thread_id TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                priority INTEGER NOT NULL DEFAULT 0,
+                available_at TEXT NOT NULL,
+                worker_id TEXT,
+                lease_until TEXT,
+                retry_at TEXT,
+                retry_count INTEGER NOT NULL DEFAULT 0,
+                input_watermark TEXT NOT NULL DEFAULT '',
+                last_success_watermark TEXT NOT NULL DEFAULT '',
+                last_error TEXT NOT NULL DEFAULT '',
+                payload TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(workspace, thread_id, kind)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS ix_memory_jobs_due "
+            "ON memory_jobs(workspace, kind, status, available_at)"
         )
 
     def _ensure_tombstone_schema(self, connection: sqlite3.Connection) -> None:
