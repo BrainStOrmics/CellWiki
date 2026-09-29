@@ -201,6 +201,18 @@ def test_consolidate_rejects_unparsable_output(tmp_path: Path):
     )
 
 
+def test_consolidate_empty_output_keeps_candidates_pending(tmp_path: Path):
+    _store, memory = _stores(tmp_path)
+    _seed(memory)
+    service = MemoryConsolidationService(
+        memory, _Catalog(), completer=lambda prompt: "   \n"
+    )
+
+    assert service.consolidate() == []
+    assert memory.read_summary() == ""
+    assert memory.list_candidates()[0].status == MemoryCandidateStatus.PENDING
+
+
 def test_consolidate_skips_user_edited_files(tmp_path: Path):
     _store, memory = _stores(tmp_path)
     service = MemoryConsolidationService(

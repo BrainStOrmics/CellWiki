@@ -109,6 +109,14 @@ class MemoryConsolidationService:
             return []
         prompt = self._build_prompt(candidates)
         raw = self._complete(prompt)
+        if not raw.strip():
+            # Provider 返回 200 但正文为空（例如 thinking-only、被输出配额截断）
+            # 是可重试故障，不是候选本身不合规；保留 pending，等下次合并再试，
+            # 不能把这一批候选打成终态 rejected。
+            self._log.warning(
+                "memory consolidation returned empty output; candidates left pending"
+            )
+            return []
         try:
             payload = self._parse_payload(raw)
         except Exception as error:  # noqa: BLE001 - 输出不合规即整批拒绝
