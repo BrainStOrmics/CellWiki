@@ -12,23 +12,6 @@ import {
 import { useI18n } from "../i18n";
 import { deleteJson, getJson, putJson } from "../lib/product-api";
 
-type MemoryPanelStatus = {
-  enabled: boolean;
-  auto_extract: boolean;
-  min_idle_hours: number;
-  debounce_minutes: number;
-  daily_extractions: number;
-  pending_candidates: number;
-  jobs_pending: number;
-  jobs_leased: number;
-  jobs_failed: number;
-  next_job_at: string | null;
-  last_job_status: string | null;
-  last_job_error: string;
-  last_job_updated_at: string | null;
-  last_consolidated_at: string | null;
-};
-
 type MemoryPanelView = {
   file_name: string;
   read_only: boolean;
@@ -67,7 +50,6 @@ function formatTimestamp(value: string | null | undefined): string {
 
 export function MemoryPanel() {
   const { t } = useI18n();
-  const [status, setStatus] = useState<MemoryPanelStatus>();
   const [views, setViews] = useState<MemoryPanelView[]>([]);
   const [entries, setEntries] = useState<MemoryPanelEntry[]>([]);
   const [selectedView, setSelectedView] = useState<MemoryPanelView>();
@@ -82,9 +64,7 @@ export function MemoryPanel() {
       const payload = await getJson<{
         entries: MemoryPanelEntry[];
         views: MemoryPanelView[];
-        status: MemoryPanelStatus;
       }>("/api/memory");
-      setStatus(payload.status);
       setViews(payload.views ?? []);
       setEntries(payload.entries);
       setError("");
@@ -177,35 +157,12 @@ export function MemoryPanel() {
     return fileName;
   }
 
-  const statusLine = (() => {
-    if (!status) return "";
-    if (!status.enabled) return t("memory.statusDisabled");
-    if (!status.auto_extract) return t("memory.statusAutoOff");
-    return t("memory.statusAutoOn").replace(
-      "{hours}",
-      String(status.min_idle_hours),
-    );
-  })();
-  const lastUpdated = status?.last_consolidated_at
-    ? t("memory.lastUpdated").replace(
-        "{time}",
-        formatTimestamp(status.last_consolidated_at),
-      )
-    : "";
-
   return (
     <section className="settings-card memory-panel" data-testid="memory-panel">
       <div className="settings-card-title">
         <RefreshCcw size={16} />
         <div>
           <h3>{t("memory.title")}</h3>
-          <small>{t("memory.hint")}</small>
-          {statusLine ? (
-            <small className="memory-status-line" data-testid="memory-status-line">
-              {statusLine}
-              {lastUpdated ? ` · ${lastUpdated}` : ""}
-            </small>
-          ) : null}
         </div>
         <button
           type="button"
@@ -339,7 +296,7 @@ export function MemoryPanel() {
                         })
                       }
                     />
-                    <label className="clear-secret">
+                    <label className="settings-toggle">
                       <input
                         type="checkbox"
                         checked={editing?.reenableAutoUpdate ?? false}

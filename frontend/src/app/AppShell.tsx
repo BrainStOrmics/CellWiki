@@ -345,6 +345,8 @@ export function AppShell() {
   // Esc 停止要让位给命令面板的 Esc，所以这里需要读到开关状态本身，不只是 setter。
   const commandPaletteOpen = useUiStore((state) => state.commandPaletteOpen);
   const workbenchRef = useRef<HTMLDivElement>(null);
+  const filePanelRef = useRef<HTMLElement>(null);
+  const agentPanelRef = useRef<HTMLElement>(null);
   const attachmentRef = useRef<HTMLInputElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
@@ -641,25 +643,43 @@ export function AppShell() {
   function beginResize(side: ResizeSide, event: MouseEvent<HTMLDivElement>) {
     event.preventDefault();
     const workbench = workbenchRef.current;
-    if (!workbench) return;
+    const panel = (side === "left" ? filePanelRef : agentPanelRef).current;
+    const handle = event.currentTarget;
+    if (!workbench || !panel) return;
 
     // Width is derived from the pointer's distance to the relevant workbench edge.
-    // Keeping resize state here avoids re-rendering the three independent scrollers.
-    const onPointerMove = (moveEvent: globalThis.MouseEvent) => {
+    // 拖动期间只改 DOM：若每个 mousemove 都写 store，整棵 workbench 会重渲染，
+    // 且 zustand persist 会在指针速率下反复写 localStorage。松手时一次性提交。
+    let nextWidth = side === "left" ? leftWidth : rightWidth;
+    let frame = 0;
+    const measure = (clientX: number) => {
       const bounds = workbench.getBoundingClientRect();
       if (side === "left") {
-        setPanelWidth("left", clamp(moveEvent.clientX - bounds.left, 190, 380));
+        nextWidth = clamp(clientX - bounds.left, 190, 380);
       } else {
-        const maximum = Math.min(560, bounds.width * 0.48);
-        setPanelWidth("right", clamp(bounds.right - moveEvent.clientX, 310, maximum));
+        const maximum = Math.min(720, bounds.width * 0.58);
+        nextWidth = clamp(bounds.right - clientX, 280, maximum);
       }
+    };
+    const paint = () => {
+      frame = 0;
+      panel.style.width = `${nextWidth}px`;
+    };
+    const onPointerMove = (moveEvent: globalThis.MouseEvent) => {
+      measure(moveEvent.clientX);
+      if (!frame) frame = window.requestAnimationFrame(paint);
     };
     const stopResize = () => {
       window.removeEventListener("mousemove", onPointerMove);
       window.removeEventListener("mouseup", stopResize);
+      if (frame) window.cancelAnimationFrame(frame);
+      panel.style.width = `${nextWidth}px`;
+      handle.classList.remove("is-active");
       document.body.classList.remove("is-resizing");
+      setPanelWidth(side, nextWidth);
     };
 
+    handle.classList.add("is-active");
     document.body.classList.add("is-resizing");
     window.addEventListener("mousemove", onPointerMove);
     window.addEventListener("mouseup", stopResize);
@@ -1701,7 +1721,7 @@ export function AppShell() {
           </Suspense>
         ) : (
         <div className="workbench" ref={workbenchRef}>
-          <aside className="file-panel" style={{ width: leftWidth }}>
+          <aside className="file-panel" ref={filePanelRef} style={{ width: leftWidth }}>
               <>
             <div className="panel-toolbar">
               <span>{t("explorer.title")}</span>
@@ -1806,7 +1826,7 @@ export function AppShell() {
 
           <div className="resize-handle" onMouseDown={(event) => beginResize("right", event)} role="separator" aria-label={t("chat.resize")} />
 
-          <aside className="agent-panel" style={{ width: rightWidth }}>
+          <aside className="agent-panel" ref={agentPanelRef} style={{ width: rightWidth }}>
             <div className="agent-toolbar">
               <div className="agent-title"><strong>CewiPilot</strong><small>{t("chat.subtitle")}</small></div>
               <div className="agent-toolbar-actions">

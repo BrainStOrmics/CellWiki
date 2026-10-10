@@ -87,19 +87,15 @@ afterEach(() => {
 });
 
 describe("MemoryPanel", () => {
-  it("renders a plain status line and unified file rows", async () => {
+  it("renders unified file rows without a header subtitle", async () => {
     getJson.mockResolvedValue(payload());
 
     renderPanel();
 
     await waitFor(() => expect(screen.getByTestId("memory-entry")).toBeTruthy());
     expect(getJson).toHaveBeenCalledWith("/api/memory");
-    expect(screen.getByTestId("memory-status-line").textContent).toContain(
-      "自动提取已开启 · 空闲 4 小时",
-    );
-    expect(screen.getByTestId("memory-status-line").textContent).toContain(
-      "上次更新",
-    );
+    expect(screen.queryByTestId("memory-status-line")).toBeNull();
+    expect(screen.queryByText(/协作经验/)).toBeNull();
     expect(screen.getByText("run-approval.md")).toBeTruthy();
     expect(screen.getByText("memory_summary.md")).toBeTruthy();
     expect(screen.getByText("MEMORY.md")).toBeTruthy();

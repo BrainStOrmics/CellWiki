@@ -315,6 +315,10 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .secret-input button:hover { color: #b9c1cb; }
 .clear-secret { display: flex; align-items: center; gap: 7px; margin-top: 10px; color: #89747a; font-size: 9px; }
 .clear-secret input { accent-color: #b86670; }
+/* 普通开关行：跟随主题紫色强调色，与真正危险的“清除密钥”操作区分开。 */
+.settings-toggle { display: flex; align-items: center; gap: 7px; margin-top: 10px; color: var(--accent); font-size: 9px; }
+.settings-toggle input { accent-color: var(--accent); }
+.settings-toggle span { display: inline-flex; align-items: center; gap: 5px; }
 .provider-test-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 14px; }
 .provider-test-card > div:first-child { display: flex; align-items: flex-start; gap: 9px; color: #7299d2; }
 .provider-test-card > div:first-child > span { min-width: 0; }
@@ -510,14 +514,14 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .resize-handle {
   position: relative;
   z-index: 3;
-  width: 5px;
-  flex: 0 0 5px;
-  margin: 0 -2px;
+  width: 9px;
+  flex: 0 0 9px;
+  margin: 0 -4px;
   cursor: col-resize;
 }
-.resize-handle::after { content: ""; position: absolute; top: 0; bottom: 0; left: 2px; width: 1px; background: var(--line); transition: background 120ms ease; }
+.resize-handle::after { content: ""; position: absolute; top: 0; bottom: 0; left: 4px; width: 1px; background: var(--line); transition: background 120ms ease; }
 .resize-handle:hover::after,
-.is-resizing .resize-handle::after { background: #5f88ca; }
+.resize-handle.is-active::after { background: #5f88ca; }
 .is-resizing { cursor: col-resize; user-select: none; }
 
 .reader-toolbar { padding: 0 14px; background: #15181e; }
@@ -2450,7 +2454,6 @@ select:focus-visible {
 /* ---- 工作区记忆面板 (ADR-0016) ---- */
 .memory-panel { display: flex; flex-direction: column; gap: 14px; }
 .memory-section-title { margin: 2px 0 0; font-size: 12px; font-weight: 600; color: var(--text); }
-.memory-status-line { color: var(--muted); }
 .memory-refresh { margin-left: auto; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 1px solid var(--border-soft); border-radius: var(--radius-m); background: transparent; color: var(--muted); cursor: pointer; }
 .memory-refresh:hover { color: var(--text); background: var(--bg-hover); }
 .settings-advanced { border-top: 1px solid var(--border-soft); padding-top: 8px; }

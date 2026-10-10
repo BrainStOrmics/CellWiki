@@ -11,7 +11,7 @@ test("workspace memory settings panel loads and reflects the API", async ({ page
   await expect(page.getByTestId("memory-panel")).toBeVisible();
   await expect(page.getByTestId("memory-enabled-toggle")).toBeVisible();
   await expect(page.getByTestId("memory-enabled-toggle")).not.toBeChecked();
-  await expect(page.getByTestId("memory-status-line")).toBeVisible();
+  await expect(page.getByTestId("memory-status-line")).toHaveCount(0);
   await expect(page.getByText("memory_summary.md")).toBeVisible();
   await expect(page.getByText("MEMORY.md")).toBeVisible();
   await expect(

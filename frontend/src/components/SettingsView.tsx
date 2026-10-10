@@ -281,11 +281,11 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 <div><h3>{t("memory.title")}</h3></div>
                 <span>{t("settings.defaultOff")}</span>
               </div>
-              <label className="clear-secret">
+              <label className="settings-toggle">
                 <input data-testid="memory-enabled-toggle" type="checkbox" checked={draft.agent_memory_enabled} onChange={(event) => updateDraft({ agent_memory_enabled: event.target.checked })} />
                 <span><BrainCircuit size={13} />{t("memory.enabled")}</span>
               </label>
-              <label className="clear-secret">
+              <label className="settings-toggle">
                 <input type="checkbox" checked={draft.agent_memory_auto_extract} onChange={(event) => updateDraft({ agent_memory_auto_extract: event.target.checked })} />
                 <span>{t("memory.autoExtract")}</span>
               </label>
@@ -293,11 +293,11 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
                 <span>{t("memory.minIdleHours")}</span>
                 <input type="number" min={1} max={720} value={draft.agent_memory_min_idle_hours} onChange={(event) => updateDraft({ agent_memory_min_idle_hours: Number(event.target.value) })} />
               </label>
-              <label className="clear-secret">
+              <label className="settings-toggle">
                 <input type="checkbox" checked={draft.agent_memory_use} onChange={(event) => updateDraft({ agent_memory_use: event.target.checked })} />
                 <span>{t("memory.use")}</span>
               </label>
-              <label className="clear-secret">
+              <label className="settings-toggle">
                 <input type="checkbox" checked={draft.agent_memory_generate} onChange={(event) => updateDraft({ agent_memory_generate: event.target.checked })} />
                 <span>{t("memory.generate")}</span>
               </label>
@@ -332,7 +332,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             </section>
             <section className="settings-card">
               <div className="settings-card-title"><ShieldCheck size={16} /><div><h3>{t("settings.approvalTitle")}</h3></div><span>{t("settings.defaultOff")}</span></div>
-              <label className="clear-secret"><input data-testid="auto-accept-toggle" type="checkbox" checked={draft.auto_accept_pending_diffs} onChange={(event) => updateDraft({ auto_accept_pending_diffs: event.target.checked })} /><span><ShieldCheck size={13} />{t("settings.autoAccept")}</span></label>
+              <label className="settings-toggle"><input data-testid="auto-accept-toggle" type="checkbox" checked={draft.auto_accept_pending_diffs} onChange={(event) => updateDraft({ auto_accept_pending_diffs: event.target.checked })} /><span><ShieldCheck size={13} />{t("settings.autoAccept")}</span></label>
             </section>
           </div>
         ) : section === "model" ? (
@@ -353,7 +353,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
             </section>
             <section className="settings-card experimental-card">
               <div className="settings-card-title"><BrainCircuit size={16} /><div><h3>{t("settings.experimentalTitle")}</h3></div><span>{t("settings.defaultOff")}</span></div>
-              <label className="clear-secret"><input type="checkbox" checked={draft.enable_external_research} onChange={(event) => updateDraft({ enable_external_research: event.target.checked })} /><span><FlaskConical size={13} />{t("settings.externalResearch")}</span></label>
+              <label className="settings-toggle"><input type="checkbox" checked={draft.enable_external_research} onChange={(event) => updateDraft({ enable_external_research: event.target.checked })} /><span><FlaskConical size={13} />{t("settings.externalResearch")}</span></label>
             </section>
           </div>
         ) : (
