@@ -258,7 +258,8 @@ export function ProviderManager({
   }
 
   function pickAvailableModel(index: number, id: string) {
-    updateModel(index, { id });
+    // 从可用清单选中模型时，显示名称同步跟随模型名，避免留空。
+    updateModel(index, { id, display_name: id });
     setOpenPanelIndex(null);
     setPanelQuery("");
   }

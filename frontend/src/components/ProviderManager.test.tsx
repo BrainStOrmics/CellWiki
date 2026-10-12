@@ -290,7 +290,9 @@ describe("ProviderManager", () => {
     await waitFor(() => expect(screen.getByText("model-extra")).toBeVisible());
     fireEvent.click(screen.getByText("model-extra"));
 
-    await waitFor(() => expect(screen.getByDisplayValue("model-extra")).toBeVisible());
+    // 模型调用名与显示名称一起填入所选模型
+    await waitFor(() => expect(screen.getByPlaceholderText("模型调用名")).toHaveValue("model-extra"));
+    expect(screen.getByPlaceholderText("显示名称")).toHaveValue("model-extra");
   });
 
   it("fetches draft models before saving once base url and key are filled", async () => {
@@ -337,7 +339,8 @@ describe("ProviderManager", () => {
     await waitFor(() => expect(screen.getByText("draft-model-b")).toBeVisible());
     fireEvent.click(screen.getByText("draft-model-b"));
 
-    await waitFor(() => expect(screen.getByDisplayValue("draft-model-b")).toBeVisible());
+    await waitFor(() => expect(screen.getByPlaceholderText("模型调用名")).toHaveValue("draft-model-b"));
+    expect(screen.getByPlaceholderText("显示名称")).toHaveValue("draft-model-b");
   });
 
   it("renders no field hint lines under the editor inputs", async () => {
