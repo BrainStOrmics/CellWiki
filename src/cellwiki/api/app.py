@@ -18,6 +18,7 @@ import re
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Callable
@@ -37,6 +38,8 @@ from pydantic import BaseModel, Field
 
 from cellwiki.config import settings
 from cellwiki.api.reader import WikiReader
+from cellwiki.api.annotation import create_annotation_router
+from cellwiki.services.annotation_support import AnnotationSupportService
 from cellwiki.api.errors import create_error_router
 from cellwiki.api.retention import create_retention_router
 from cellwiki.api.security import DesktopTokenMiddleware
@@ -249,6 +252,7 @@ def create_app(
     env_root: Path | None = None,
     agent_runtime: AgentRuntimeManager | None = None,
     local_token: str | None = None,
+    annotation_token: str | None = None,
     shutdown_callback: Callable[[], None] | None = None,
 ) -> FastAPI:
     """构造产品 API 应用：路由、桌面令牌中间件与延迟加载的 Agent 运行时。
@@ -287,6 +291,25 @@ def create_app(
         return runtime
 
     app = FastAPI(title="CellWiki Product API", version="0.1.0")
+    @contextmanager
+    def annotation_guard():
+        from cellwiki.services.annotation_support import AnnotationUnavailable
+
+        if not runtime_lock.acquire(blocking=False):
+            raise AnnotationUnavailable("KNOWLEDGE_BUSY")
+        try:
+            if runtime is None:
+                yield
+            else:
+                with runtime.annotation_read_guard():
+                    yield
+        finally:
+            runtime_lock.release()
+
+    app.include_router(create_annotation_router(
+        AnnotationSupportService(root, maintenance_guard=annotation_guard),
+        annotation_token if annotation_token is not None else os.getenv("CELLWIKI_ANNOTATION_API_TOKEN", settings.cellwiki_annotation_api_token),
+    ))
     # 空 token 表示开发模式，打包桌面构建始终通过侧车环境注入随机 token
     app.add_middleware(
         DesktopTokenMiddleware,

@@ -25,7 +25,7 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from queue import Empty
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1681,6 +1681,17 @@ class AgentRuntimeManager:
         return reviewer.diff_between(
             diff.snapshot_commit, enabled_refs=refs
         ).patch
+
+    @contextmanager
+    def annotation_read_guard(self):
+        from cellwiki.services.annotation_support import AnnotationUnavailable
+
+        if not self._maintenance_lock.acquire(blocking=False):
+            raise AnnotationUnavailable("KNOWLEDGE_BUSY")
+        try:
+            yield
+        finally:
+            self._maintenance_lock.release()
 
     def accept_pending_diff(
         self,

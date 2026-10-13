@@ -13,6 +13,11 @@
 - 工作区记忆新增后台自动提取：普通终态会话默认在空闲 4 小时后进入持久化
   `memory_jobs` 调度；“记住/更正”等显式信号仍走高优先级快速路径，进程重启可恢复
   未完成的提取任务。
+- 新增 CellWiki 侧只读注释证据接口 `POST /api/v1/annotation-support`：用独立
+  `CELLWIKI_ANNOTATION_API_TOKEN` 鉴权（未配置时禁用），只投影已提交且已批准的
+  schema/Wiki 知识，确定性返回候选与可追溯文献证据；`support_score` 恒为
+  `null`。调用方（CellHashtag）接入、端口发现、最终注释与生物学准确率评估仍
+  待后续工作，本版本不作任何准确率承诺。
 
 ### Changed
 

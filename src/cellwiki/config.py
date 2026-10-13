@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     # 注意：.env 是相对于执行工作目录解析的，不是包根目录
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
+    cellwiki_annotation_api_token: str = Field(default="", repr=False)
+
     # ---- OpenAI API 设置 ----
     openai_api_key: str = ""
     openai_base_url: str = ""

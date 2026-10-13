@@ -37,6 +37,8 @@ class DesktopTokenMiddleware(BaseHTTPMiddleware):
         self.token = token
 
     async def dispatch(self, request: Request, call_next):
+        if request.url.path.rstrip("/") == "/api/v1/annotation-support":
+            return await call_next(request)
         # 空 token = 开发模式，或只读方法（GET/HEAD/OPTIONS）免认证
         if not self.token or request.method in {"GET", "HEAD", "OPTIONS"}:
             return await call_next(request)
