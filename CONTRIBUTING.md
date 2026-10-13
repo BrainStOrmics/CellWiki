@@ -26,6 +26,18 @@ Copy-Item .env.example .env
 
 开发态由 `cellwiki.exe dev` 编排本地服务；发布态由 Tauri 启动打包的 Python sidecar。涉及启动、关闭、认证或路径的变更必须分别验证两种运行方式。
 
+终端态入口：
+
+```powershell
+uv run cellwiki serve --workspace <knowledge-base> --detach
+uv run cellwiki daemon status --workspace <knowledge-base>
+uv run cellwiki daemon stop --workspace <knowledge-base>
+```
+
+`cellwiki` 无子命令进入 Textual TUI；TUI 是 daemon 客户端，不得构造第二个
+`AgentRuntimeManager`。daemon 只监听 `127.0.0.1`，发现文件与控制 token 位于
+用户状态目录且权限 0600。
+
 ## 代码变更规则
 
 - 为非直观的意图、数据所有权、错误处理和安全限制写注释或 docstring；不要写逐行复述型注释。
@@ -45,6 +57,18 @@ Set-Location frontend
 npm test
 npm run build
 ```
+
+终端运行时相关的最小验证：
+
+```powershell
+uv run pytest -q tests/test_local_daemon.py tests/test_tui.py tests/test_product_cli.py
+uv run ruff check src tests
+uv run mypy src
+uv run python docs/scripts/check_docs.py --require-design
+```
+
+本机 `.env` 若设置 `AUTO_ACCEPT_PENDING_DIFFS=true`，会改变待确认 diff 的测试
+预期；跑全量套件前请用环境变量覆盖为 `false` 或使用干净工作区。
 
 真实模型测试需要单独启用已配置的 provider，不应进入普通 pytest 或声称为 hosted CI 证据。
 

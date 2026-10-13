@@ -18,6 +18,10 @@
   schema/Wiki 知识，确定性返回候选与可追溯文献证据；`support_score` 恒为
   `null`。调用方（CellHashtag）接入、端口发现、最终注释与生物学准确率评估仍
   待后续工作，本版本不作任何准确率承诺。
+- 新增本地 daemon（`cellwiki serve`）与终端客户端：每个工作区一个常驻运行时，
+  只监听 loopback，发现文件与控制 token 位于用户状态目录（0600）；`cellwiki`
+  无子命令进入 Textual TUI，支持对话流、提问卡片、pending diff 审批与线程切换，
+  并在需要时自动拉起 daemon。`cellwiki dev` 与桌面 sidecar 行为不变。
 
 ### Changed
 

@@ -1,6 +1,7 @@
 # Agentic CellWiki
 
-Agentic CellWiki 是一个本地优先的 Windows 桌面科学 Wiki：**你选定的工作目录就是知识库**。
+Agentic CellWiki 是一个本地优先的科学 Wiki，提供 Windows 桌面与 Linux 终端两种入口：
+**你选定的工作目录就是知识库**。
 系统为它初始化 git 仓库并建好 `wiki/`、`raw/` 与根级维护文件；WikiAgent 在同一工作区内
 阅读与编辑，系统负责派生文件与阻断式门禁，**每次正式变更由人工逐条判定 diff**。
 
@@ -39,8 +40,27 @@ Agentic CellWiki 是一个本地优先的 Windows 桌面科学 Wiki：**你选�
   各含 Base URL、协议、API Key 与模型清单，配置免重启生效，对话框可随时切换当前模型）、
   日志级别与中英界面，API Key 优先存 Windows Credential Manager。
 
-**尚未落地，不要按这些预期使用**：子 Agent 委托（注册表为空）、安装包代码签名与
-干净 VM 外部验收。
+**尚未落地，不要按这些预期使用**：子 Agent 委托（注册表为空）、MCP 适配
+（已接受、暂缓实施）、安装包代码签名与干净 VM 外部验收。
+
+## Linux / 终端使用
+
+终端路径只需要 Python 3.12 与 `uv`：
+
+```bash
+uv tool install /path/to/CellWiki
+cd /path/to/knowledge-base
+cellwiki
+```
+
+`cellwiki` 无子命令进入 Textual 终端界面，并在需要时自动拉起本地 daemon。
+`cellwiki serve [--workspace PATH] [--detach]` 前台或后台运行 daemon；
+`cellwiki daemon status|stop|restart --workspace PATH` 管理生命周期。daemon 只
+监听 `127.0.0.1`，发现文件与控制 token 位于用户状态目录
+（`$XDG_RUNTIME_DIR` 优先，否则 `~/.cellwiki`）且权限 0600。
+
+TUI v1 覆盖对话流、提问卡片、pending diff 审批与线程切换；附件上传与完整设置
+编辑暂未提供，需要这些能力时使用桌面端。
 
 ## 开发环境
 

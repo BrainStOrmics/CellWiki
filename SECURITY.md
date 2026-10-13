@@ -22,6 +22,9 @@ CellWiki 当前为未签名 Windows Beta。安全修复以当前 `main` 的后�
 - 注释证据接口默认禁用；仅在显式配置独立的
   `CELLWIKI_ANNOTATION_API_TOKEN` 后可用。它只监听 loopback、只读已提交知识、
   不调用模型也不写文件，且不接受桌面 token；该 token 不写入项目文件。
+- 本地 daemon（`cellwiki serve`）只监听 `127.0.0.1`；发现文件与控制 token 位于
+  用户状态目录（优先 `$XDG_RUNTIME_DIR`，否则 `~/.cellwiki`）且权限 0600，
+  控制 token 每次启动轮换、与注释 token 和桌面 token 分离；TUI 自身不监听网络。
 - API Key 优先存放在 Windows Credential Manager，界面只显示是否已配置和脱敏提示。
 - 日志 formatter 会脱敏常见 Authorization 与 API Key 形式。
 - Agent 与 `lint_knowledge_base` 不能绕过 `Run -> 待确认 diff -> 用户接受`
@@ -42,6 +45,7 @@ CellWiki 当前为未签名 Windows Beta。安全修复以当前 `main` 的后�
 - PDF、Markdown 和外部来源可能包含恶意指令、异常文件或不可靠科学主张。
 - 目前安装包未代码签名，Windows SmartScreen 可能提示风险。
 - 目前没有完整的项目级一键安全删除界面。
-- 注释证据接口没有调用方发现协议：打包 sidecar 使用随机端口，同机调用方需
-  自行确定端口并单独配置 token，开放给非受信本机进程前需评估暴露面。
+- 打包桌面 sidecar 的注释证据接口仍没有调用方发现协议：sidecar 使用随机端口，
+  同机调用方需自行确定端口并单独配置 token；`cellwiki serve` daemon 提供
+  `daemon.json` 发现文件。开放给非受信本机进程前都需评估暴露面。
 - 依赖升级、SBOM、自动更新和干净 VM 安装验证尚未成为正式发布门禁。
