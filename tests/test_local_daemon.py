@@ -97,6 +97,27 @@ def test_stale_registration_is_reported_and_cleaned(
     assert not (state_dir / local_daemon.CONTROL_TOKEN_FILE_NAME).exists()
 
 
+def test_explicit_environment_wins_over_workspace_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "explicit-key")
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.delenv("PROJECT_ROOT", raising=False)
+
+    local_daemon.apply_workspace_environment(
+        {
+            "OPENAI_API_KEY": "",
+            "OPENAI_MODEL": "workspace-model",
+            "PROJECT_ROOT": "/elsewhere",
+        },
+        workspace=tmp_path,
+    )
+
+    assert os.environ["OPENAI_API_KEY"] == "explicit-key"
+    assert os.environ["OPENAI_MODEL"] == "workspace-model"
+    assert os.environ["PROJECT_ROOT"] == str(tmp_path)
+
+
 @pytest.mark.skipif(os.name == "nt", reason="daemon smoke is Linux-first")
 def test_daemon_lifecycle_smoke(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _use_isolated_state(tmp_path, monkeypatch)

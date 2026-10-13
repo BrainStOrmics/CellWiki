@@ -474,6 +474,27 @@ def _configure_daemon_logging(workspace: Path, *, secrets: list[str], level: str
     return log_path
 
 
+def apply_workspace_environment(
+    runtime_values: dict[str, str],
+    *,
+    workspace: Path,
+) -> None:
+    """Apply workspace settings while explicit process environment wins.
+
+    The decided precedence is environment > workspace `.env` > user config, so
+    an explicitly exported provider key must not be replaced by an empty
+    workspace default.
+    """
+
+    for key, value in runtime_values.items():
+        if key == "PROJECT_ROOT":
+            continue
+        if os.environ.get(key):
+            continue
+        os.environ[key] = value
+    os.environ["PROJECT_ROOT"] = str(workspace)
+
+
 def run_daemon(workspace: Path, *, log_level: str | None = None) -> None:
     """Run the blocking daemon process for one workspace."""
 
@@ -494,10 +515,10 @@ def run_daemon(workspace: Path, *, log_level: str | None = None) -> None:
     write_control_token(state_dir, token)
     try:
         settings_service = EnvironmentSettingsService(resolved, prefer_system_store=False)
-        os.environ.update(settings_service.runtime_environment())
-        # The workspace itself is authoritative for the daemon; a stale
-        # PROJECT_ROOT in .env must not redirect the runtime elsewhere.
-        os.environ["PROJECT_ROOT"] = str(resolved)
+        apply_workspace_environment(
+            settings_service.runtime_environment(),
+            workspace=resolved,
+        )
         effective_level = str(
             log_level or settings_service.public_settings().get("log_level") or "INFO"
         )
