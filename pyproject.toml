@@ -28,11 +28,12 @@ dependencies = [
     "pyyaml>=6.0",
     "sqlalchemy>=2.0,<3",
     "uvicorn[standard]>=0.35,<1",
+    "httpx>=0.28,<1",
+    "textual>=8.2.8",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "httpx>=0.28,<1",
     "mypy>=1.17,<2",
     "pytest>=7.0.0",
     "ruff>=0.12,<1",

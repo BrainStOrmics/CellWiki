@@ -24,21 +24,36 @@ def test_packaging_exposes_only_product_entry_points() -> None:
     }
 
 
-def test_product_cli_accepts_only_the_desktop_development_command() -> None:
+def test_product_cli_parses_tui_daemon_and_development_commands() -> None:
     from cellwiki.product_cli import build_parser
 
     parser = build_parser()
-    arguments = parser.parse_args(["dev", "--no-desktop", "--reuse-ports"])
 
-    assert arguments.command == "dev"
-    assert arguments.no_desktop is True
-    assert arguments.reuse_ports is True
+    development = parser.parse_args(["dev", "--no-desktop", "--reuse-ports"])
+    assert development.command == "dev"
+    assert development.no_desktop is True
+    assert development.reuse_ports is True
+
+    serve = parser.parse_args(["serve", "--workspace", "kb", "--detach"])
+    assert serve.command == "serve"
+    assert serve.workspace == Path("kb")
+    assert serve.detach is True
+
+    status = parser.parse_args(["daemon", "status", "--workspace", "kb"])
+    assert status.command == "daemon"
+    assert status.daemon_command == "status"
+    assert status.workspace == Path("kb")
+
+    default = parser.parse_args([])
+    assert default.command is None
 
     with pytest.raises(SystemExit):
         parser.parse_args(["ingest", "paper.pdf"])
 
 
 def test_product_cli_runs_the_owned_development_runtime(monkeypatch, tmp_path: Path) -> None:
+    from cellwiki import config as config_module
+    from cellwiki import dev_runtime as dev_runtime_module
     from cellwiki import product_cli
 
     captured: dict[str, object] = {}
@@ -51,8 +66,8 @@ def test_product_cli_runs_the_owned_development_runtime(monkeypatch, tmp_path: P
         def run(self) -> None:
             captured["ran"] = True
 
-    monkeypatch.setattr(product_cli, "DevelopmentRuntime", FakeDevelopmentRuntime)
-    monkeypatch.setattr(product_cli.settings, "project_root", tmp_path)
+    monkeypatch.setattr(dev_runtime_module, "DevelopmentRuntime", FakeDevelopmentRuntime)
+    monkeypatch.setattr(config_module.settings, "project_root", tmp_path)
 
     product_cli.main(["dev", "--no-desktop"])
 
