@@ -20,14 +20,24 @@ from langchain_core.messages import AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import _construct_responses_api_input
 
+from cellwiki.adapters.anthropic_model import ChatAnthropicWithRootClient
 from cellwiki.agent.app import _CellWikiToolBoundaryMiddleware
 
 
-class _FakeAnthropicModel:
-    """Stands in for ChatAnthropic; only the module path matters to _model_identity."""
+def _anthropic_model() -> ChatAnthropicWithRootClient:
+    """生产同款 Anthropic 客户端类（wrapper 子类），不用替身。
 
+    2026-10-14 事故：旧测试用改 ``__module__`` 的替身，掩盖了协议识别只按
+    模块路径判断、漏掉生产包装类的缺陷（清洗因此对真实模型静默失效）；
+    这里直接用运行时构建的同一个类。
+    """
 
-_FakeAnthropicModel.__module__ = "langchain_anthropic.chat_models"
+    return ChatAnthropicWithRootClient(
+        model="test-model",
+        api_key="test-key",
+        base_url="http://127.0.0.1:1/anthropic",
+        timeout=1.0,
+    )
 
 
 def _responses_model() -> ChatOpenAI:
@@ -166,7 +176,7 @@ def test_non_responses_protocols_are_not_normalized() -> None:
     """
 
     run_in = _run_in_assistant("answer", TOOL_CALLS)
-    filtered = _filter(_FakeAnthropicModel(), [run_in])
+    filtered = _filter(_anthropic_model(), [run_in])
     assert filtered[0].content == run_in.content
 
 
@@ -193,7 +203,7 @@ def test_anthropic_drops_signature_only_thinking_blocks() -> None:
     """退化 thinking 块（只有签名）会被 DeepSeek 拒绝回放，必须在发出前丢掉。"""
 
     message = _vendor_anthropic_assistant(None)
-    (filtered,) = _filter(_FakeAnthropicModel(), [message])
+    (filtered,) = _filter(_anthropic_model(), [message])
     assert [block["type"] for block in filtered.content] == ["tool_use"]
     _system, wire = _format_anthropic_messages([filtered])
     assert [block["type"] for block in wire[0]["content"]] == ["tool_use"]
@@ -203,7 +213,7 @@ def test_anthropic_keeps_thinking_blocks_with_text() -> None:
     """带正文的签名块是 Anthropic 的回传契约（整体剥离会 400），必须原样保留。"""
 
     original = _vendor_anthropic_assistant("need to commit")
-    (filtered,) = _filter(_FakeAnthropicModel(), [original])
+    (filtered,) = _filter(_anthropic_model(), [original])
     assert filtered.content == original.content
 
 
@@ -211,7 +221,7 @@ def test_anthropic_thinking_only_message_falls_back_to_empty_text() -> None:
     """整条消息只有一个退化 thinking 块时，回退为重建形状的空文本。"""
 
     message = AIMessage(content=[{"type": "thinking", "index": 0, "signature": "sig"}])
-    (filtered,) = _filter(_FakeAnthropicModel(), [message])
+    (filtered,) = _filter(_anthropic_model(), [message])
     assert filtered.content == ""
     _system, wire = _format_anthropic_messages([filtered])
     assert wire[0]["content"] == ""
@@ -225,7 +235,7 @@ def test_anthropic_wire_never_carries_textless_thinking_blocks() -> None:
         _vendor_anthropic_assistant("kept"),
         _rebuilt_assistant("plain", TOOL_CALLS),
     ]
-    filtered = _filter(_FakeAnthropicModel(), messages)
+    filtered = _filter(_anthropic_model(), messages)
     _system, wire = _format_anthropic_messages(filtered)
     for message in wire:
         content = message.get("content")

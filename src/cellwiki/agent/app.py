@@ -30,6 +30,7 @@ from deepagents import (
 from deepagents.backends import StateBackend
 from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
+from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_openai import ChatOpenAI
@@ -348,7 +349,11 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
                 if bool(getattr(model, "use_responses_api", False))
                 else "chat_completions"
             )
-        elif type(model).__module__.startswith("langchain_anthropic"):
+        elif isinstance(model, ChatAnthropic):
+            # 必须按类型判断：生产 Anthropic 客户端是 langchain ChatAnthropic 的
+            # 子类包装（cellwiki.adapters.anthropic_model，为独占连接池而引入），
+            # 模块路径判断会漏掉它——协议识别是出站 thinking 清洗的开关，
+            # 失配后清洗静默不执行（2026-10-14 实测）。
             protocol = "anthropic"
         else:
             protocol = type(model).__module__ + "." + type(model).__name__
