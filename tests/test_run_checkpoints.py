@@ -204,12 +204,17 @@ def _wait_for_status(
     timeout: float = WAIT_TIMEOUT,
 ) -> AgentRun:
     deadline = time.monotonic() + timeout
+    last: AgentRun | None = None
     while time.monotonic() < deadline:
         run = manager.store.get_run(run_id)
+        last = run
         if run.status in statuses:
             return run
         time.sleep(0.02)
-    raise AssertionError(f"run {run_id} did not reach {statuses}")
+    raise AssertionError(
+        f"run {run_id} did not reach {statuses}; last status="
+        f"{last.status.value if last is not None else '<no run>'}"
+    )
 
 
 def _wait_for_checkpoint(
@@ -240,6 +245,41 @@ def _seed_workspace(root: Path) -> None:
             valid_cell_type_page(standard_name="a", display_name="Alpha cell"),
             encoding="utf-8",
         )
+
+
+def _commit_workspace_baseline(root: Path) -> None:
+    """Commit the seeded scaffold so it is not treated as a run's agent diff."""
+    import subprocess
+
+    from cellwiki.services.workspace import (
+        AGENT_GIT_IDENTITY_EMAIL,
+        AGENT_GIT_IDENTITY_NAME,
+        ensure_workspace,
+    )
+
+    ensure_workspace(root)
+    subprocess.run(
+        ["git", "-C", str(root), "add", "--all"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            f"user.name={AGENT_GIT_IDENTITY_NAME}",
+            "-c",
+            f"user.email={AGENT_GIT_IDENTITY_EMAIL}",
+            "commit",
+            "-m",
+            "test workspace baseline",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
 
 def _graph_manager(root: Path, model: BaseChatModel | None = None) -> tuple[AgentRuntimeManager, BaseChatModel]:
     """真实产品图 + 假模型：这是 checkpoint 唯一真正的生产路径。"""
@@ -1021,6 +1061,7 @@ def test_resumed_segment_continues_from_checkpoint_without_replaying_transcript(
     """续跑段从该 run 自己的 checkpoint 继续，
     不重放 transcript；checkpoint 标识落库；墙钟跨段累计。"""
     _seed_workspace(tmp_path)
+    _commit_workspace_baseline(tmp_path)
     model = _InterruptRecordingModel()
     manager = AgentRuntimeManager(tmp_path, adapter=build_wiki_agent(tmp_path, model=model))
     thread_id = "thread_resume"
