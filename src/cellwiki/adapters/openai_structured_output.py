@@ -418,6 +418,12 @@ def _is_timeout_error(error: Exception) -> bool:
     )
 
 
+def _mentions_status_code(text: str, code: str) -> bool:
+    """状态码必须是独立数字：行号/列号（如 "column 401482"）里的子串不算。"""
+
+    return re.search(rf"\b{code}\b", text) is not None
+
+
 def _classify_provider_error(error: Exception) -> str:
     """Map transport, HTTP, and parsing failures to stable ingest error kinds."""
 
@@ -443,11 +449,19 @@ def _classify_provider_error(error: Exception) -> str:
         return "truncated_response"
     if "connection" in text or "connect" in text:
         return "connection_error"
-    if "401" in text or "authentication" in text or "api key" in text:
+    if (
+        _mentions_status_code(text, "401")
+        or "authentication" in text
+        or "api key" in text
+    ):
         return "authentication_error"
-    if "403" in text or "permission" in text or "forbidden" in text:
+    if (
+        _mentions_status_code(text, "403")
+        or "permission" in text
+        or "forbidden" in text
+    ):
         return "permission_error"
-    if "429" in text or "rate limit" in text:
+    if _mentions_status_code(text, "429") or "rate limit" in text:
         return "rate_limit"
     return "invalid_response"
 

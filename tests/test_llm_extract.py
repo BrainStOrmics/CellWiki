@@ -430,6 +430,18 @@ class TestMockLLMExtraction:
 
         assert _classify_provider_error(error) == "truncated_response"
 
+    def test_text_fallback_requires_standalone_status_codes(self):
+        """行号/列号里的子串（"column 401482"）不再冒充状态码。"""
+
+        wrapped = RuntimeError(
+            "upstream failure: missing field `thinking` at line 1 column 401482"
+        )
+        assert _classify_provider_error(wrapped) == "invalid_response"
+        assert (
+            _classify_provider_error(RuntimeError("HTTP 401 Unauthorized"))
+            == "authentication_error"
+        )
+
     def test_chunk_extraction_adaptively_splits_truncated_provider_output(self):
         truncated_response = AIMessage(
             content='{"cell_types": [',

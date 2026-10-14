@@ -463,6 +463,36 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
         )
         return message.model_copy(update={"content": text, "name": None})
 
+    @staticmethod
+    def _drop_empty_thinking_blocks(message: Any) -> Any:
+        """Drop signature-only thinking blocks that the provider refuses to replay.
+
+        DeepSeek 的 Anthropic 兼容端点在个别轮次只流回"签名 + tool_use"、没有
+        thinking 正文的退化块（2026-10-14 实测：git commit 轮）。回放时它被序列化为
+        只有 ``type`` 与 ``signature`` 的块，服务端反序列化要求 ``thinking`` 字段，
+        整个请求以 422（missing field `thinking`）被拒、run 必挂。带正文的签名块是
+        Anthropic 的回传契约（整体剥离会 400），不在清理范围——只丢没有正文的块。
+        这里只改本次请求的副本：图内 state、checkpoint、UI 的 ``reasoning_delta``
+        事件都不受影响。
+        """
+
+        if not isinstance(message, AIMessage) or not isinstance(message.content, list):
+            return message
+        kept = [
+            block
+            for block in message.content
+            if not (
+                isinstance(block, dict)
+                and block.get("type") == "thinking"
+                and not str(block.get("thinking") or "").strip()
+            )
+        ]
+        if len(kept) == len(message.content):
+            return message
+        if not kept:
+            return message.model_copy(update={"content": ""})
+        return message.model_copy(update={"content": kept})
+
     def _filter_request(self, request: Any) -> Any:
         filtered_tools = sorted(
             (
@@ -484,13 +514,20 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
                 ]
             system_message = system_message.model_copy(update={"content": content})
         request = request.override(tools=filtered_tools, system_message=system_message)
-        if (
-            self.reasoning_replay == "none"
-            and self._model_identity(request.model).get("protocol") == "responses"
-        ):
+        protocol = self._model_identity(request.model).get("protocol")
+        if self.reasoning_replay == "none" and protocol == "responses":
             request = request.override(
                 messages=[
                     self._flatten_assistant_content(message)
+                    for message in request.messages
+                ]
+            )
+        elif protocol == "anthropic":
+            # 有效性守卫，与回放策略无关：退化（无正文）thinking 块任何模式下都
+            # 不可回放，语义与 Responses 压平里"空文本块被丢弃"一致。
+            request = request.override(
+                messages=[
+                    self._drop_empty_thinking_blocks(message)
                     for message in request.messages
                 ]
             )

@@ -15,6 +15,7 @@ import json
 from typing import Any
 
 from langchain.agents.middleware.types import ModelRequest
+from langchain_anthropic.chat_models import _format_messages as _format_anthropic_messages
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langchain_openai.chat_models.base import _construct_responses_api_input
@@ -159,11 +160,80 @@ def test_opaque_mode_leaves_the_request_untouched() -> None:
 
 
 def test_non_responses_protocols_are_not_normalized() -> None:
-    """Anthropic thinking 块必须原样回传，规范化只对 Responses 生效。"""
+    """Responses 压平不作用于 Anthropic：reasoning/function_call 块原样保留。
+
+    空（无正文）thinking 块的清理是另一条 anthropic 专项守卫，见下方用例。
+    """
 
     run_in = _run_in_assistant("answer", TOOL_CALLS)
     filtered = _filter(_FakeAnthropicModel(), [run_in])
     assert filtered[0].content == run_in.content
+
+
+def _vendor_anthropic_assistant(thinking_text: str | None) -> AIMessage:
+    """DeepSeek Anthropic 路由流回的形状：thinking 块 + tool_use。
+
+    ``thinking_text=None`` 建模退化块（只有签名、没有正文），这是引发
+    "missing field `thinking`" 422 的原始形状（2026-10-14 事故）。
+    """
+
+    block: dict[str, Any] = {"type": "thinking", "index": 0, "signature": "sig_1"}
+    if thinking_text is not None:
+        block["thinking"] = thinking_text
+    return AIMessage(
+        content=[
+            block,
+            {"type": "tool_use", "index": 1, "id": "call_1", "name": "git", "input": {}},
+        ],
+        tool_calls=[{"name": "git", "args": {}, "id": "call_1"}],
+    )
+
+
+def test_anthropic_drops_signature_only_thinking_blocks() -> None:
+    """退化 thinking 块（只有签名）会被 DeepSeek 拒绝回放，必须在发出前丢掉。"""
+
+    message = _vendor_anthropic_assistant(None)
+    (filtered,) = _filter(_FakeAnthropicModel(), [message])
+    assert [block["type"] for block in filtered.content] == ["tool_use"]
+    _system, wire = _format_anthropic_messages([filtered])
+    assert [block["type"] for block in wire[0]["content"]] == ["tool_use"]
+
+
+def test_anthropic_keeps_thinking_blocks_with_text() -> None:
+    """带正文的签名块是 Anthropic 的回传契约（整体剥离会 400），必须原样保留。"""
+
+    original = _vendor_anthropic_assistant("need to commit")
+    (filtered,) = _filter(_FakeAnthropicModel(), [original])
+    assert filtered.content == original.content
+
+
+def test_anthropic_thinking_only_message_falls_back_to_empty_text() -> None:
+    """整条消息只有一个退化 thinking 块时，回退为重建形状的空文本。"""
+
+    message = AIMessage(content=[{"type": "thinking", "index": 0, "signature": "sig"}])
+    (filtered,) = _filter(_FakeAnthropicModel(), [message])
+    assert filtered.content == ""
+    _system, wire = _format_anthropic_messages([filtered])
+    assert wire[0]["content"] == ""
+
+
+def test_anthropic_wire_never_carries_textless_thinking_blocks() -> None:
+    """wire 级合同：规范化后不存在缺 thinking 正文的 thinking 块。"""
+
+    messages = [
+        _vendor_anthropic_assistant(None),
+        _vendor_anthropic_assistant("kept"),
+        _rebuilt_assistant("plain", TOOL_CALLS),
+    ]
+    filtered = _filter(_FakeAnthropicModel(), messages)
+    _system, wire = _format_anthropic_messages(filtered)
+    for message in wire:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if block.get("type") == "thinking":
+                assert block.get("thinking")
 
 
 def test_rebuilt_shape_is_a_fixed_point() -> None:

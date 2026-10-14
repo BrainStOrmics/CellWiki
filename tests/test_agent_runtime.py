@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable
 import pytest
@@ -24,6 +25,7 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
 
 from cellwiki.domain.contracts import WikiAgentContext
+from cellwiki.domain.model_providers import ResolvedModelSpec
 from cellwiki.domain.pending_diff import PendingDiffStatus
 from tests.schema_helpers import (
     invalid_cell_type_page,
@@ -725,6 +727,92 @@ def test_run_without_textual_answer_is_failed(tmp_path: Path):
 def test_classify_agent_error_maps_timeout_and_rate_limit():
     assert classify_agent_error(TimeoutError("timed out")) == AgentErrorType.TIMEOUT
     assert classify_agent_error(RuntimeError("429 rate limit")) == AgentErrorType.RATE_LIMIT
+
+
+def test_classify_agent_error_ignores_numbers_that_merely_contain_status_codes():
+    """2026-10-14 事故回归：422 报错里的 "column 401482" 曾被裸子串匹配成认证错误。"""
+
+    missing_thinking = (
+        "Error code: 422 - {'error': {'message': 'Failed to deserialize the JSON "
+        "body into the target type: messages[75].content: missing field `thinking` "
+        "at line 1 column 401482 (request_id: 96fc8753)'}}"
+    )
+    assert classify_agent_error(RuntimeError(missing_thinking)) == AgentErrorType.SYSTEM
+    assert (
+        classify_agent_error(RuntimeError("HTTP 401 Unauthorized"))
+        == AgentErrorType.AUTHENTICATION
+    )
+    assert (
+        classify_agent_error(RuntimeError("HTTP 429 Too Many Requests"))
+        == AgentErrorType.RATE_LIMIT
+    )
+
+
+def _resolved_spec(**overrides: Any) -> ResolvedModelSpec:
+    values: dict[str, Any] = {
+        "provider_id": "deepseek",
+        "model_id": "deepseek-flash",
+        "base_url": "https://api.deepseek.com/anthropic",
+        "protocol": "anthropic",
+        "api_key": "sk-one",
+        "request_overrides": {},
+        "max_input_tokens": 1_000_000,
+    }
+    values.update(overrides)
+    return ResolvedModelSpec(**values)
+
+
+def test_adapter_cache_key_tracks_config_that_shapes_the_model(tmp_path: Path):
+    """同一 (provider, model) 下改协议/base_url/覆盖/密钥/窗口都必须换键。
+
+    2026-10-14 事故：协议从 anthropic 改成 responses 后缓存键不变，run 继续复用
+    旧协议客户端，设置形同未改。
+    """
+
+    manager = AgentRuntimeManager(tmp_path)
+    try:
+        key = manager._adapter_cache_key(_resolved_spec())
+        assert manager._adapter_cache_key(_resolved_spec()) == key
+        for changed in (
+            replace(_resolved_spec(), protocol="responses"),
+            replace(_resolved_spec(), base_url="https://api.deepseek.com"),
+            replace(_resolved_spec(), request_overrides={"max_tokens": 4096}),
+            replace(_resolved_spec(), api_key="sk-two"),
+            replace(_resolved_spec(), max_input_tokens=200_000),
+            replace(_resolved_spec(), model_id="deepseek-pro"),
+            replace(_resolved_spec(), provider_id="dcs-cloud"),
+        ):
+            assert manager._adapter_cache_key(changed) != key
+    finally:
+        manager.close()
+
+
+def test_adapter_rebuilds_when_only_the_protocol_changes(tmp_path: Path):
+    """只改协议（provider/model 不变）也要重编译，而不是复用旧协议的客户端。"""
+
+    manager = AgentRuntimeManager(tmp_path)
+    try:
+        current: dict[str, ResolvedModelSpec] = {"spec": _resolved_spec()}
+        builds: list[Any] = []
+
+        def fake_build(model_spec: Any) -> Any:
+            builds.append(model_spec)
+            return object()
+
+        manager._model_spec_for_run = lambda run: current["spec"]  # type: ignore[method-assign]
+        manager._build_agent = fake_build  # type: ignore[method-assign]
+
+        first = manager._ensure_adapter_for_run(object())  # type: ignore[arg-type]
+        second = manager._ensure_adapter_for_run(object())  # type: ignore[arg-type]
+        assert first is second
+        assert len(builds) == 1
+
+        current["spec"] = replace(_resolved_spec(), protocol="responses")
+        third = manager._ensure_adapter_for_run(object())  # type: ignore[arg-type]
+        assert third is not first
+        assert len(builds) == 2
+    finally:
+        manager.close()
 
 # =============================================================================
 # 严格串行门禁 + pending diff 生命周期契约（真实 git 工作区）

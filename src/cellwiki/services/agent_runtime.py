@@ -21,6 +21,7 @@ import difflib
 import hashlib
 import json
 import logging
+import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -46,6 +47,7 @@ from cellwiki.agent.app import (
 )
 from cellwiki.config import settings
 from cellwiki.domain.contracts import WikiAgentContext
+from cellwiki.domain.model_provider import normalize_wire_protocol
 from cellwiki.domain.model_providers import ModelSelection, ResolvedModelSpec
 from cellwiki.domain.pending_diff import PendingDiff, PendingDiffStatus
 from cellwiki.domain.questions import PendingQuestion, normalize_question_options
@@ -261,14 +263,33 @@ def outcome_retryable(
     )
 
 
+def _mentions_status_code(message: str, code: str) -> bool:
+    """状态码必须是独立数字：行号/列号（如 "column 401482"）里的子串不算。
+
+    2026-10-14 实测：缺 thinking 的 422 报错正文带 "at line 1 column 401482"，
+    裸子串匹配把它误判成 401，run 落 authentication、界面提示"检查 API key"，
+    而真实原因与凭据无关。
+    """
+
+    return re.search(rf"\b{code}\b", message) is not None
+
+
 def classify_agent_error(error: Exception) -> AgentErrorType:
     """Map an adapter/provider exception to a stable error category."""
     message = str(error).lower()
     if isinstance(error, TimeoutError) or "timed out" in message or "timeout" in message:
         return AgentErrorType.TIMEOUT
-    if "429" in message or "rate limit" in message or "quota" in message:
+    if (
+        _mentions_status_code(message, "429")
+        or "rate limit" in message
+        or "quota" in message
+    ):
         return AgentErrorType.RATE_LIMIT
-    if "authentication" in message or "api key" in message or "401" in message:
+    if (
+        "authentication" in message
+        or "api key" in message
+        or _mentions_status_code(message, "401")
+    ):
         return AgentErrorType.AUTHENTICATION
     if "budget" in message or "max_model_calls" in message:
         return AgentErrorType.BUDGET
@@ -1353,9 +1374,10 @@ class AgentRuntimeManager:
         self._thread_lock = RLock()
         self._built_adapter: Any | None = None
         self._built_cache_policy: Any | None = None
-        # 当前 _built_adapter 用的模型键：(provider_id, model_id)；legacy 链为
-        # ("", settings.openai_model)。run 请求换模型时据此重建编译图。
-        self._built_adapter_key: tuple[str, str] | None = None
+        # 当前 _built_adapter 用的模型键（见 _adapter_cache_key）；legacy 链为
+        # ("", settings.openai_model)。解析结果任何影响模型/压缩策略的字段变化
+        # 都据此重建编译图。
+        self._built_adapter_key: tuple[str, ...] | None = None
         # 看门狗要靠它才能关掉模型的 HTTP client。注入 adapter 时为空，看门狗到期
         # 也就无操作——测试替身没有真实连接可断。
         self._agent_model: Any | None = None
@@ -2319,10 +2341,29 @@ class AgentRuntimeManager:
             return None
         return self._model_spec_for_run(run)
 
-    def _adapter_cache_key(self, model_spec: ResolvedModelSpec | None) -> tuple[str, str]:
-        if model_spec is not None:
-            return (model_spec.provider_id, model_spec.model_id)
-        return ("", settings.openai_model or "")
+    def _adapter_cache_key(
+        self, model_spec: ResolvedModelSpec | None
+    ) -> tuple[str, ...]:
+        """模型图缓存键：覆盖解析结果里全部影响模型构建与压缩策略的字段。
+
+        只比 (provider_id, model_id) 时，同一对供应商/模型下改协议、base_url、
+        request_overrides、密钥或 max_input_tokens 会继续命中旧图——旧客户端仍按
+        旧配置发请求（2026-10-14 实测：改 anthropic→responses 后 run 仍发
+        Anthropic 请求），与"供应商配置的增删改免重启、对下一条 run 生效"不符。
+        密钥只以摘要入键，不落明文。
+        """
+
+        if model_spec is None:
+            return ("", settings.openai_model or "")
+        return (
+            model_spec.provider_id,
+            model_spec.model_id,
+            normalize_wire_protocol(model_spec.protocol),
+            model_spec.base_url,
+            json.dumps(model_spec.request_overrides, sort_keys=True, default=str),
+            hashlib.sha256(model_spec.api_key.encode("utf-8")).hexdigest()[:16],
+            str(model_spec.max_input_tokens),
+        )
 
     def _close_cached_model(self) -> None:
         """换模型重建前关掉旧模型的 HTTP client，防止连接池泄漏。"""
@@ -2337,7 +2378,7 @@ class AgentRuntimeManager:
     def _ensure_adapter_for_run(self, run: AgentRun) -> Any:
         """取（或按本次 run 的模型键重建）编译图；串行门禁保证无并发重建。
 
-        选中模型与缓存一致时复用既有图；不一致（换模型/换供应商/重启后首跑）
+        缓存键一致时复用既有图；不一致（换模型/换供应商/改供应商配置/重启后首跑）
         才重编译并换掉看门狗句柄，语义与强制断连后的 rotate 相同。
         """
         if self.adapter is not None:
