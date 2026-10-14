@@ -18,10 +18,10 @@ from cellwiki.services.prompt_layers import (
 )
 
 
-def test_layer_a_is_the_static_baseline_imported_by_app():
-    from cellwiki.agent.app import SYSTEM_PROMPT
+def test_layer_a_defaults_to_the_static_registry_baseline():
+    from cellwiki.services.prompt_layers import layer_a_text
 
-    assert SYSTEM_PROMPT == LAYER_A_TEXT
+    assert layer_a_text() == LAYER_A_TEXT
     assert "coordinator" in LAYER_A_TEXT
     assert "ask_user_question" in LAYER_A_TEXT
     assert "read_attachment" in LAYER_A_TEXT
@@ -30,33 +30,46 @@ def test_layer_a_is_the_static_baseline_imported_by_app():
     assert "raw/<source_id>/" in LAYER_A_TEXT
 
 
+def test_layer_a_and_boundary_reminder_follow_the_memory_switch():
+    from cellwiki.agent.app import boundary_reminder
+    from cellwiki.services.prompt_layers import layer_a_text
+
+    for name in ("add_ad_hoc_note", "list_memory", "read_memory", "search_memory"):
+        assert name not in layer_a_text(False)
+        assert name not in boundary_reminder(False)
+        assert name in layer_a_text(True)
+        assert name in boundary_reminder(True)
+
+
 def test_prompt_tool_name_lists_come_from_the_registry():
     """提示词与边界提醒里的工具名必须来自注册表，不得手写。
 
     手写清单会和代码脱节：2026-09-21 修复前 Layer A 与边界提醒都写着模型
     根本看不到的 ls，同时漏说 delete_file 被框架排除的事实。
     """
-    from cellwiki.agent.app import CELLWIKI_BOUNDARY_REMINDER
+    from cellwiki.agent.app import boundary_reminder
     from cellwiki.domain.agent_tools import (
         AGENT_TOOL_NAMES_TEXT,
         AGENT_VISIBLE_TOOL_NAMES,
     )
 
+    reminder = boundary_reminder(include_memory=False)
+
     # 两处清单逐字等于注册表文本（不是"包含某些名字"，而是恰好这一串）。
     assert AGENT_TOOL_NAMES_TEXT in LAYER_A_TEXT
-    assert AGENT_TOOL_NAMES_TEXT in CELLWIKI_BOUNDARY_REMINDER
+    assert AGENT_TOOL_NAMES_TEXT in reminder
     assert len(AGENT_TOOL_NAMES_TEXT.split(", ")) == len(AGENT_VISIBLE_TOOL_NAMES)
 
     # 白名单里的每个名字都必须真的出现在提示词里（漏说不等于少给）。
     for name in AGENT_VISIBLE_TOOL_NAMES:
         assert name in LAYER_A_TEXT, name
-        assert name in CELLWIKI_BOUNDARY_REMINDER, name
+        assert name in reminder, name
 
     # 边界提醒的"不可用"清单是独立散文常量，描述框架通用工具的风险面，
     # 不是 CellWiki 注册表的投影；文本逐字固定（它参与 stable prefix 与 cache_prefix_hash）。
     assert (
         "Generic deep-agent tools such as execute, ls, task, write_todos are "
-        "unavailable." in CELLWIKI_BOUNDARY_REMINDER
+        "unavailable." in reminder
     )
 
     # 已退役与框架残留的工具名不得出现在 Layer A 的可用工具清单里。
@@ -72,8 +85,8 @@ def test_prompt_tool_name_lists_come_from_the_registry():
         assert not re.search(rf"\b{retired}\b", LAYER_A_TEXT), retired
 
     # 边界提醒里只允许把 ls 当作"不可用"提到（它是框架残留、仍需显式拦截）。
-    assert "available (" in CELLWIKI_BOUNDARY_REMINDER
-    available_clause = CELLWIKI_BOUNDARY_REMINDER.split("available (", 1)[1].split(")", 1)[0]
+    assert "available (" in reminder
+    available_clause = reminder.split("available (", 1)[1].split(")", 1)[0]
     assert "ls" not in available_clause.split(", ")
 
 

@@ -29,7 +29,7 @@ _SUMMARY_CATEGORIES: dict[str, tuple[str, ...]] = {
     "corrections": ("纠正", "更正", "修正", "correction", "错误", "errata"),
 }
 
-# Layer A：静态基线（app.py 的 SYSTEM_PROMPT 来自这里）。
+# Layer A：静态基线（build_wiki_agent 按进程实时工具面从这里渲染）。
 # 结构：定位与不变量 -> 意图分诊 -> 工具合同 -> 输出纪律 -> 术语。
 # 2026-09-18：删除"预算与升级"段与两处"最多 3 次只读调用"上限——调用上限
 # 由运行时预算兜底，提示词不再教模型数调用次数。

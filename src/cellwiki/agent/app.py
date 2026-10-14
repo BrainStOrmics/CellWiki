@@ -28,6 +28,9 @@ from deepagents import (
     register_harness_profile,
 )
 from deepagents.backends import StateBackend
+from deepagents.middleware.filesystem import (
+    FILESYSTEM_SYSTEM_PROMPT as FRAMEWORK_FILESYSTEM_PROMPT,
+)
 from deepagents.middleware.summarization import SummarizationMiddleware
 from langchain.agents.middleware import AgentMiddleware, TodoListMiddleware
 from langchain_anthropic import ChatAnthropic
@@ -80,9 +83,10 @@ from cellwiki.agent.tools import build_lint_tools
 # ---------------------------------------------------------------------------
 # 系统提示词 —— 定义 CellWiki 协调器的工作区行为边界
 # 提示词覆盖只读检查、Lint 报告、git 与文件工具，按 Layer A/B/C 分层组装；
-# 工具面与提示词必须同步更新。
+# 工具面与提示词必须同步更新。Layer A 在 build_wiki_agent 里按进程实时工具面
+# （含 AGENT_MEMORY_ENABLED）渲染，不再固化"关闭记忆"的版本——否则系统文本
+# 的工具名清单会与请求面的 allowlist/工具数组脱节。
 # ---------------------------------------------------------------------------
-SYSTEM_PROMPT = layer_a_text(include_memory=False)
 
 # Deep Agents' stock prompt describes a general coding workspace. CellWiki has
 # narrower governed tools, so the coordinator shares this base harness prompt.
@@ -107,9 +111,6 @@ def boundary_reminder(include_memory: bool = False) -> str:
         "deep-agent tools such as execute, ls, task, write_todos are "
         "unavailable. Emit calls only for tool schemas visible in this request."
     )
-
-
-CELLWIKI_BOUNDARY_REMINDER = boundary_reminder(include_memory=False)
 
 
 def stable_system_prompt_text(schema_version: int, schema_contract_hash: str) -> str:
@@ -167,15 +168,23 @@ def build_coordinator_tools(
     root: Path,
     registry: SubagentRegistry | None = None,
 ) -> list[Any]:
+    """Assemble the coordinator tool surface for the process-live flags.
+
+    记忆工具（ADR-0016）只在 ``AGENT_MEMORY_ENABLED=true`` 时进入工具集，
+    使"构建的工具集 / 请求面 allowlist / 稳定前缀工具名文本 / tool schema
+    指纹"在同一开关状态下描述同一个工具面；关闭时与既有 13 工具形状逐字一致。
+    """
+
     tools: list[Any] = [
         *build_workspace_tools(root),
         *build_lint_tools(root),
         *build_attachment_tools(),
         *build_source_tools(root),
         *build_question_tool(),
-        *build_memory_tools(root),
         *build_delegation_tools(registry or SubagentRegistry()),
     ]
+    if settings.agent_memory_enabled:
+        tools.extend(build_memory_tools(root))
     return sorted(
         tools,
         key=lambda tool: canonical_tool_sort_key(str(getattr(tool, "name", "") or "")),
@@ -191,6 +200,22 @@ def coordinator_tool_schema_hash(
 # 哨兵对象，用于区分"未传入检查点器"和"传入了 None"
 _DEFAULT_CHECKPOINTER = object()
 
+# deepagents 的 FilesystemMiddleware 会把这段通用文件系统通知无条件追加进
+# system（宣告 ls 可用、路径必须以 / 开头等），与 CellWiki 的 allowlist 和
+# 工作区相对路径契约直接冲突。请求面归一化时按渲染文本整块移除；导入的是
+# 同一个模板常量，deepagents 升级改文案时匹配随之更新，机制变化则由
+# tests/test_system_prompt_wire.py 的真实图捕获测试兜底。
+_FRAMEWORK_FILESYSTEM_BLOCK_TEXT = FRAMEWORK_FILESYSTEM_PROMPT.strip()
+
+
+def _is_framework_filesystem_block(block: Any) -> bool:
+    """True for the deepagents FilesystemMiddleware boilerplate text block."""
+
+    if not isinstance(block, dict) or block.get("type") != "text":
+        return False
+    text = block.get("text")
+    return isinstance(text, str) and text.strip() == _FRAMEWORK_FILESYSTEM_BLOCK_TEXT
+
 
 class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
     """Keep non-whitelisted generic tools out of every CellWiki model request.
@@ -204,6 +229,10 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
     历史说明：HarnessProfile.excluded_tools 已于 2026-09-21 退役（它零独有职责，且曾把
     白名单自己的 ls / delete_file 删掉）；同名命中不到 profile 时框架排除不生效，这正是
     本边界存在的理由。未登记的工具名由本类的调用拦截（wrap_tool_call）兜底。
+
+    请求面归一化还包括 system 消息：框架 FilesystemMiddleware 注入的通用文件
+    系统提示块在发出前整块移除，避免"框架说 ls 可用、CellWiki 说 ls 不可用"
+    的自相矛盾（2026-10-14 实测捕获）。
     """
 
     name = "cellwiki_tool_boundary"
@@ -220,6 +249,9 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
     ):
         # Allowlist 跟随当前进程开关：关闭记忆时记忆工具不进入请求面。
         self._allowed_tools = effective_whitelist()
+        # 边界提醒与 allowlist 读同一个开关：开启记忆时两个工具名清单（Layer A
+        # 与提醒）都列出四个记忆工具，与请求面一致；关闭时保持 13 工具形状。
+        self._boundary_reminder = boundary_reminder(settings.agent_memory_enabled)
         self.append_reminder = append_reminder
         self.cache_policy = cache_policy
         # none：请求里的 assistant 消息压平成跨 run 重建后的形状（丢弃
@@ -242,6 +274,22 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
                     blocks.append({"type": "text", "text": str(block)})
             return blocks
         return [{"type": "text", "text": str(content or "")}]
+
+    @staticmethod
+    def _strip_framework_filesystem_prompt(
+        system_message: SystemMessage,
+    ) -> SystemMessage:
+        """Drop the deepagents filesystem boilerplate block from the request."""
+
+        content = system_message.content
+        if not isinstance(content, list):
+            return system_message
+        kept = [
+            block for block in content if not _is_framework_filesystem_block(block)
+        ]
+        if len(kept) == len(content):
+            return system_message
+        return system_message.model_copy(update={"content": kept})
 
     def _explicit_marker(self) -> tuple[str, dict[str, str]] | None:
         if self.cache_policy is None or not self.cache_policy.allows_explicit_breakpoints():
@@ -508,16 +556,20 @@ class _CellWikiToolBoundaryMiddleware(AgentMiddleware):
             key=lambda tool: canonical_tool_sort_key(self._tool_name(tool) or ""),
         )
         system_message = request.system_message
-        if self.append_reminder and isinstance(system_message, SystemMessage):
-            content = system_message.content
-            if isinstance(content, str):
-                content = f"{content}\n\n{CELLWIKI_BOUNDARY_REMINDER}"
-            else:
-                content = [
-                    *content,
-                    {"type": "text", "text": CELLWIKI_BOUNDARY_REMINDER},
-                ]
-            system_message = system_message.model_copy(update={"content": content})
+        if isinstance(system_message, SystemMessage):
+            system_message = self._strip_framework_filesystem_prompt(system_message)
+            if self.append_reminder:
+                content = system_message.content
+                if isinstance(content, str):
+                    content = f"{content}\n\n{self._boundary_reminder}"
+                else:
+                    content = [
+                        *content,
+                        {"type": "text", "text": self._boundary_reminder},
+                    ]
+                system_message = system_message.model_copy(
+                    update={"content": content}
+                )
         request = request.override(tools=filtered_tools, system_message=system_message)
         protocol = self._model_identity(request.model).get("protocol")
         if self.reasoning_replay == "none" and protocol == "responses":
@@ -713,6 +765,9 @@ def build_wiki_agent(
     """
     root = Path(project_root or settings.workspace_root).resolve()
     _register_cellwiki_harness_profile(settings.openai_model)
+    # Layer A 的工具名清单跟随进程实时工具面：开启记忆时与 allowlist 一致地
+    # 列出四个记忆工具，关闭时保持既有 13 工具文本（"关闭态请求形状不变"）。
+    include_memory = settings.agent_memory_enabled
     coordinator_model = model or build_model()
     # 构建工具集：工作区工具 + 确定性 lint 报告 + 交互工具
     coordinator_tools = build_coordinator_tools(root, registry)
@@ -730,7 +785,7 @@ def build_wiki_agent(
     return create_deep_agent(
         name="cellwiki-agent",
         model=coordinator_model,
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=layer_a_text(include_memory),
         tools=coordinator_tools,
         middleware=[
             tool_boundary,
