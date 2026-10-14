@@ -1398,6 +1398,12 @@ class AgentRuntimeManager:
         # 系统维护（audit 快照与 accept/reject/unfinished 写入）串行化：
         # run 收尾线程的 lint 快照与 API 线程的判定维护互不交错提交。
         self._maintenance_lock = RLock()
+        # 收尾与准入的原子性：run 写终态、发布本 run 审批单元与代判判定对后续
+        # run 的准入判定必须是一个观察面。少了这把锁，准入会在"终态已写、单元
+        # 尚未发布"的窗口里读到无待审单元并放行新 run，绕过阻断式审批门禁。
+        # 锁序：本锁在最外层，内部可以再取 _thread_lock / _maintenance_lock；
+        # 反向获取一律禁止。
+        self._finalize_lock = RLock()
         if settings.agent_memory_enabled and settings.agent_memory_auto_extract:
             self._start_memory_job_worker()
 
@@ -1472,21 +1478,11 @@ class AgentRuntimeManager:
         # 带 request_id 时不在事务外做任何预检。重试风暴里原 run 往往还是
         # 活动的，预检会把"命中既有 run"误判成 409；权威判定（先查 replay、再查
         # 活动 run、最后插入）全在 create_run_if_idle 的同一 BEGIN IMMEDIATE 里。
+        #
+        # 下面这次只是快速路径：省掉被拒路径上的 git 快照与 run 构造。真正的
+        # 判定在 _admit_run 内，与 run 收尾共用 _finalize_lock。
         if request_id is None:
-            active = self._ensure_single_active_run()
-            if active is not None:
-                raise AgentRunInProgressError(
-                    f"another agent run is active: {active.run_id} ({active.status.value})"
-                )
-            pending = [
-                diff
-                for diff in self.store.list_pending_diffs(limit=50)
-                if diff.status == PendingDiffStatus.PENDING
-            ]
-            if pending:
-                raise AgentRunInProgressError(
-                    f"a pending diff requires review before a new run: {pending[0].diff_id}"
-                )
+            self._raise_when_gate_busy()
         # 重试上次失败的维护（best-effort，失败不阻塞新 run）
         self._retry_failed_maintenance()
         run_id = _new_run_id()
@@ -1521,10 +1517,7 @@ class AgentRuntimeManager:
             transcript_version=2,
             request_id=request_id,
         )
-        try:
-            created, replayed = self.store.create_run_if_idle(run, request_id=request_id)
-        except SerialGateViolationError as error:
-            raise AgentRunInProgressError(str(error)) from None
+        created, replayed = self._admit_run(run, request_id=request_id)
         if replayed:
             # 幂等命中：不提交第二个执行者，直接把既有 run 交回调用方。
             return created, True
@@ -1534,6 +1527,42 @@ class AgentRuntimeManager:
             self._execute, created.run_id, thread_id, message, context, budget
         )
         return created, False
+
+    def _raise_when_gate_busy(self) -> None:
+        """串行门禁的快速预检；权威判定在 :meth:`_admit_run` 的临界区里。"""
+
+        active = self._ensure_single_active_run()
+        if active is not None:
+            raise AgentRunInProgressError(
+                f"another agent run is active: {active.run_id} ({active.status.value})"
+            )
+        pending = [
+            diff
+            for diff in self.store.list_pending_diffs(limit=50)
+            if diff.status == PendingDiffStatus.PENDING
+        ]
+        if pending:
+            raise AgentRunInProgressError(
+                f"a pending diff requires review before a new run: {pending[0].diff_id}"
+            )
+
+    def _admit_run(
+        self, run: AgentRun, *, request_id: str | None
+    ) -> tuple[AgentRun, bool]:
+        """准入门：与 run 收尾共享 ``_finalize_lock``。
+
+        收尾在锁内完成"写终态 → 发布本 run 审批单元 → 代判判定"，所以这里
+        要么看到收尾前的状态，要么看到收尾后的确定状态；不会读到"终态已写、
+        单元尚未发布"的中间态——那个窗口会让新 run 绕过阻断式审批门禁。
+        """
+
+        with self._finalize_lock:
+            if request_id is None:
+                self._raise_when_gate_busy()
+            try:
+                return self.store.create_run_if_idle(run, request_id=request_id)
+            except SerialGateViolationError as error:
+                raise AgentRunInProgressError(str(error)) from None
 
     def retry(self, run_id: str, *, reason: str = "retry") -> AgentRun:
         """retry = 先删该 run 的状态键，再从有界 transcript 重放。
@@ -1941,20 +1970,23 @@ class AgentRuntimeManager:
                 self._running_run_id = None
             self._cancellations.pop(run_id, None)
             self._forced_closes.pop(run_id, None)
-        try:
-            # 段尾兜底发布是只读的（串行门已清，写侧 git 必须已结束）：
-            # 不再做版本化收口，收口由各终态收尾点负责。
-            self._maybe_publish_pending_diff(run_id, version_first=False)
-        except (GitCommandError, OSError, RunVersioningError) as error:
-            # 发布是幂等收尾；git 异常不得掩盖这一段真正的运行结果。收口失败在
-            # SUCCEEDED 落点前已被拦截，这里的兜底只保证不掩盖真实运行结果。
-            if isinstance(error, RunVersioningError):
-                self._emit_versioning_failure_event(run_id, error)
-        # 中断收尾（预算/超时耗尽）的单元只在这里存在：它的发布就是上面那次
-        # 段尾兜底发布，终态收尾点在当时还没有单元可判。成功收尾与主动停止的
-        # 单元已在持串行门时判过，这里是幂等空读；failed/cancelled 由助手内部
-        # 排除，仍留给人看。
-        self._maybe_auto_accept_pending_diff(run_id)
+        # 段尾兜底发布与代判同属收尾：持同一把收尾锁，避免准入判定在这个
+        # 窗口里读到"终态已写、本 run 单元尚未发布"的中间态。
+        with self._finalize_lock:
+            try:
+                # 段尾兜底发布是只读的（串行门已清，写侧 git 必须已结束）：
+                # 不再做版本化收口，收口由各终态收尾点负责。
+                self._maybe_publish_pending_diff(run_id, version_first=False)
+            except (GitCommandError, OSError, RunVersioningError) as error:
+                # 发布是幂等收尾；git 异常不得掩盖这一段真正的运行结果。收口失败在
+                # SUCCEEDED 落点前已被拦截，这里的兜底只保证不掩盖真实运行结果。
+                if isinstance(error, RunVersioningError):
+                    self._emit_versioning_failure_event(run_id, error)
+            # 中断收尾（预算/超时耗尽）的单元只在这里存在：它的发布就是上面那次
+            # 段尾兜底发布，终态收尾点在当时还没有单元可判。成功收尾与主动停止的
+            # 单元已在持串行门时判过，这里是幂等空读；failed/cancelled 由助手内部
+            # 排除，仍留给人看。
+            self._maybe_auto_accept_pending_diff(run_id)
         # 会话命名：同一服务，服务内部按 title_source 幂等（只对一个会话命名一次）。
         self._queue_thread_naming(thread_id)
 
@@ -2503,23 +2535,26 @@ class AgentRuntimeManager:
                     # 挂起段发布尽力而为；答题后的最终收尾会再次强制收口。
                     pass
                 return
-            self._finalize_stream_outcome(
-                run_id,
-                thread_id,
-                outcome,
-                continued=continue_from_checkpoint,
-            )
-            # 尽早发布 pending diff（幂等：git 异常不影响运行结果）
-            try:
-                published = self._maybe_publish_pending_diff(run_id)
-            except (GitCommandError, OSError, RunVersioningError):
-                published = False
-            if published:
-                # 内容型 run：强制 lint 快照写入 audit_report.md（仅记录，不改门禁语义）
-                self._forced_lint_audit(run_id)
-            # 代判按 run 终态判定，不按"是否刚发布"判定：挂起过、收尾无新提交
-            # 的 run 也在这里补上判定。
-            self._maybe_auto_accept_pending_diff(run_id)
+            # 收尾临界区：终态写入、本 run 单元发布与代判判定对同一次准入
+            # 判定必须是一个观察面，窗口内不得放行新 run。
+            with self._finalize_lock:
+                self._finalize_stream_outcome(
+                    run_id,
+                    thread_id,
+                    outcome,
+                    continued=continue_from_checkpoint,
+                )
+                # 尽早发布 pending diff（幂等：git 异常不影响运行结果）
+                try:
+                    published = self._maybe_publish_pending_diff(run_id)
+                except (GitCommandError, OSError, RunVersioningError):
+                    published = False
+                if published:
+                    # 内容型 run：强制 lint 快照写入 audit_report.md（仅记录，不改门禁语义）
+                    self._forced_lint_audit(run_id)
+                # 代判按 run 终态判定，不按"是否刚发布"判定：挂起过、收尾无新提交
+                # 的 run 也在这里补上判定。
+                self._maybe_auto_accept_pending_diff(run_id)
         except _RunTimeoutError as error:
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, str(error))
         except AgentBudgetExceeded as error:
@@ -3672,15 +3707,18 @@ class AgentRuntimeManager:
                     # 挂起段发布尽力而为；答题后的最终收尾会再次强制收口。
                     pass
                 return
-            self._finalize_stream_outcome(run_id, thread_id, outcome)
-            try:
-                published = self._maybe_publish_pending_diff(run_id)
-            except (GitCommandError, OSError, RunVersioningError):
-                published = False
-            if published:
-                # 与首段同一条门禁：续跑段发布的单元同样要留强制 lint 快照。
-                self._forced_lint_audit(run_id)
-            self._maybe_auto_accept_pending_diff(run_id)
+            # 与首段同一条收尾临界区：续跑段的终态、单元发布与代判同样是
+            # 一次不可分割的观察面。
+            with self._finalize_lock:
+                self._finalize_stream_outcome(run_id, thread_id, outcome)
+                try:
+                    published = self._maybe_publish_pending_diff(run_id)
+                except (GitCommandError, OSError, RunVersioningError):
+                    published = False
+                if published:
+                    # 与首段同一条门禁：续跑段发布的单元同样要留强制 lint 快照。
+                    self._forced_lint_audit(run_id)
+                self._maybe_auto_accept_pending_diff(run_id)
         except _RunTimeoutError as error:
             self._finalize_unfinished(run_id, AgentErrorType.TIMEOUT, str(error))
         except AgentBudgetExceeded as error:

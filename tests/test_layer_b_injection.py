@@ -13,10 +13,12 @@
 
 from __future__ import annotations
 
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
 
+import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.outputs import ChatGeneration, ChatGenerationChunk, ChatResult
@@ -25,7 +27,8 @@ from pydantic import Field
 from cellwiki.agent.app import build_wiki_agent
 from cellwiki.domain.contracts import WikiAgentContext
 from cellwiki.domain.runs import AgentRunStatus
-from cellwiki.services.agent_runtime import AgentRuntimeManager
+from cellwiki.services.agent_runtime import AgentRunInProgressError, AgentRuntimeManager
+from cellwiki.services.workspace import ensure_workspace
 
 WAIT_TIMEOUT = 20.0
 
@@ -92,6 +95,16 @@ def _finish_run(manager: AgentRuntimeManager, run: Any) -> None:
     raise AssertionError(f"run {run.run_id} never finished")
 
 
+def _commit_workspace_baseline(root: Path) -> None:
+    """把脚手架提交成基线，使后续 run 从干净树开始、不发布首轮审批单元。"""
+    subprocess.run(["git", "-C", str(root), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-C", str(root), "commit", "-m", "seed workspace baseline"],
+        check=True,
+        capture_output=True,
+    )
+
+
 def _run_with_selection(root: Path, selected_text: str | None) -> str:
     page = root / "wiki" / "cell_types" / "a.md"
     page.parent.mkdir(parents=True, exist_ok=True)
@@ -144,8 +157,10 @@ def test_turn_context_rides_the_last_user_message_after_history(tmp_path: Path):
     # 独立系统消息，而是当前用户消息的尾部：唯一的 SystemMessage 只装稳定前缀，
     # 历史之后紧跟的那条消息就是"本次提问 + 本次上下文"。跑同一个 thread 两轮，
     # 对第二轮 run 的第一次模型调用断言消息序列的形状。工作区不放页面：不符合
-    # schema 的页面会让第一轮以 unfinished 收尾，占着串行门禁，第二轮就起不来。
-    (tmp_path / "wiki").mkdir()
+    # schema 的页面会让第一轮以 unfinished 收尾，占着串行门禁，第二轮就起不来；
+    # 基线必须已提交，否则脚手架会作为首轮改动发布审批单元，同样挡住第二轮。
+    ensure_workspace(tmp_path)
+    _commit_workspace_baseline(tmp_path)
     model = _RecordingFakeModel()
     manager = AgentRuntimeManager(tmp_path, adapter=build_wiki_agent(tmp_path, model=model))
     thread_id = "thread_position"
@@ -177,3 +192,40 @@ def test_turn_context_rides_the_last_user_message_after_history(tmp_path: Path):
     assert "第二问" in tail and "## Run context" in tail, shape
     # 它前面是上一轮的助手回答，而不是静态系统提示或列表开头。
     assert _text(messages[-2]) == "已回答", f"turn context is not behind history: {shape}"
+
+
+def test_fresh_workspace_first_unit_blocks_the_next_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """脚手架首轮发布的审批单元必须挡住下一次 run。
+
+    修复前这条判定取决于收尾线程的调度：本地常年放行（终态已可见、单元尚未
+    发布），Linux CI 上被挡（单元已发布）。修复后终态、单元发布与代判判定在
+    同一个收尾临界区内完成，准入判定不再读到中间态。
+    """
+
+    from cellwiki.config import settings
+
+    monkeypatch.setattr(settings, "auto_accept_pending_diffs", False)
+    ensure_workspace(tmp_path)  # 初始化但无初始 commit：首轮 run 会发布脚手架单元
+    model = _RecordingFakeModel()
+    manager = AgentRuntimeManager(tmp_path, adapter=build_wiki_agent(tmp_path, model=model))
+    thread_id = "thread_fresh_gate"
+    first = manager.start(
+        thread_id=thread_id,
+        message="第一问",
+        context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
+    )
+    _finish_run(manager, first)
+
+    # 门禁必须给出确定的拒绝：终态可见即收尾已收敛，单元已发布（修复前这里
+    # 取决于调度——本地放行、CI 被挡）。
+    with pytest.raises(AgentRunInProgressError):
+        manager.start(
+            thread_id=thread_id,
+            message="第二问",
+            context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
+        )
+    units = manager.store.list_pending_diffs(run_id=first.run_id)
+    assert units, "脚手架首轮必须发布审批单元"
+    assert manager.store.get_run(first.run_id).pending_diff_id
