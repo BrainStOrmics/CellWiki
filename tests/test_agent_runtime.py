@@ -627,7 +627,7 @@ def test_delete_thread_removes_complete_conversation(tmp_path: Path):
             data={"answer": "Done.", "file_paths": []},
         )
     ]])
-    manager = AgentRuntimeManager(tmp_path, adapter=adapter)
+    manager = AgentRuntimeManager(_prepared_workspace(tmp_path), adapter=adapter)
     try:
         started = manager.start(
             thread_id="thread_delete",
