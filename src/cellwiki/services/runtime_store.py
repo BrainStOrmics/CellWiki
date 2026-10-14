@@ -1527,6 +1527,28 @@ class RuntimeStore:
             )
         return run
 
+    def set_run_pending_diff(self, run_id: str, pending_diff_id: str) -> AgentRun:
+        """Record the current approval unit without clobbering lifecycle fields."""
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT payload FROM agent_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(run_id)
+            current = AgentRun.model_validate_json(row[0])
+            updated = current.model_copy(
+                update={
+                    "pending_diff_id": pending_diff_id,
+                    "updated_at": datetime.now(UTC),
+                }
+            )
+            connection.execute(
+                "UPDATE agent_runs SET payload = ?, updated_at = ? WHERE run_id = ?",
+                (updated.model_dump_json(), updated.updated_at.isoformat(), run_id),
+            )
+        return updated
+
     def claim_resume_unfinished(self, run_id: str) -> AgentRun:
         """Transition an unfinished run back to running (resume from checkpoint).
 

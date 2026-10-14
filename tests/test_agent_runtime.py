@@ -1281,6 +1281,69 @@ def test_question_timeout_finalizes_unfinished(tmp_path: Path):
         runtime.close()
 
 
+def test_question_timeout_survives_pending_diff_bookkeeping_race(
+    tmp_path: Path, monkeypatch
+):
+    """Regression: pending-diff bookkeeping must not revive a finalized run.
+
+    2026-10-14: _maybe_publish_pending_diff wrote a run payload captured before
+    answer_question(timed_out=True); on slow Linux CI the stale write landed
+    after finalization and reverted the run to WAITING_CONFIRMATION.
+    """
+    adapter = QuestionCapableAdapter(
+        scripts=[
+            [
+                RuntimeSignal(
+                    type=AgentEventType.TASK_CONFIRMATION_REQUIRED,
+                    message="Waiting for the user: 是否继续？",
+                    data={
+                        "interrupt": {
+                            "question": "是否继续？",
+                            "options": [],
+                            "required": False,
+                        }
+                    },
+                ),
+            ],
+        ],
+        resume_script=[],
+    )
+    runtime = AgentRuntimeManager(tmp_path, adapter=adapter)
+    collected = threading.Event()
+    release = threading.Event()
+    original = runtime._collect_run_agent_diff
+
+    def slow_collect(run_id: str, *, version_first: bool = True):
+        result = original(run_id, version_first=version_first)
+        collected.set()
+        release.wait(timeout=WAIT_TIMEOUT)
+        return result
+
+    monkeypatch.setattr(runtime, "_collect_run_agent_diff", slow_collect)
+    thread_id = f"thread_q_{abs(hash(tmp_path)) & 0xFFFF}"
+    try:
+        run = runtime.start(
+            thread_id=thread_id,
+            message="开始",
+            context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
+        )
+        assert collected.wait(timeout=WAIT_TIMEOUT), (
+            "worker never collected the pending diff"
+        )
+        result = runtime.answer_question(run.run_id, [], timed_out=True)
+        assert result["status"] == AgentRunStatus.UNFINISHED.value
+        release.set()
+        deadline = time.monotonic() + WAIT_TIMEOUT
+        while time.monotonic() < deadline:
+            if runtime.store.get_run(run.run_id).pending_diff_id:
+                break
+            time.sleep(0.02)
+        assert runtime.store.get_run(run.run_id).status == AgentRunStatus.UNFINISHED
+    finally:
+        release.set()
+        runtime.close()
+
+
 def test_skip_required_question_finalizes_unfinished(tmp_path: Path):
     # 必答问题的「跳过本题」也必须是合法出口：放弃回答不触发必答校验
     # （2026-09-20 实测：校验排在跳过前面，跳过永远 422）。

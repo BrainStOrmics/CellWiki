@@ -1674,12 +1674,15 @@ class AgentRuntimeManager:
             raise KeyError(diff_id)
         if self._git_executor() is None:
             return ""
-        refs = frozenset({"HEAD"})
+        # 审批单元的内容由发布时记录的 head_commit 决定；实时 diff 到 HEAD
+        # 会把之后的系统维护提交（如 audit_report.md 快照）卷进用户判定范围。
+        right = diff.head_commit or "HEAD"
+        refs = {right}
         if diff.snapshot_commit is not None:
-            refs = frozenset({diff.snapshot_commit, "HEAD"})
+            refs.add(diff.snapshot_commit)
         reviewer = GitExecutor(self.project_root, max_output_bytes=10_000_000)
         return reviewer.diff_between(
-            diff.snapshot_commit, enabled_refs=refs
+            diff.snapshot_commit, right=right, enabled_refs=frozenset(refs)
         ).patch
 
     @contextmanager
@@ -4259,9 +4262,7 @@ class AgentRuntimeManager:
             }
         )
         self.store.save_pending_diff(pending)
-        self.store.update_run(
-            run.model_copy(update={"pending_diff_id": pending.diff_id})
-        )
+        self.store.set_run_pending_diff(run.run_id, pending.diff_id)
         # 命名是展示性元数据：后台单线程跑，失败只落字段与日志，不阻塞门禁。
         self._queue_unit_naming(pending)
         return True
