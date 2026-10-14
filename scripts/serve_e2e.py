@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import uvicorn
@@ -11,6 +12,11 @@ from cellwiki.api.app import create_app
 from cellwiki.domain.runs import AgentEventType, AgentRun, AgentRunStatus
 from cellwiki.services.agent_runtime import AgentRuntimeManager, RuntimeSignal
 from cellwiki.services.runtime_store import RuntimeStore
+from cellwiki.services.workspace import (
+    AGENT_GIT_IDENTITY_EMAIL,
+    AGENT_GIT_IDENTITY_NAME,
+    ensure_workspace,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -62,6 +68,7 @@ class E2ELiveAgentAdapter:
 def seed_project() -> None:
     """Create an idempotent fixture while keeping all generated data under build/."""
 
+    ensure_workspace(PROJECT)
     wiki = PROJECT / "wiki" / "cell_types"
     wiki.mkdir(parents=True, exist_ok=True)
     (wiki / "regulatory_t_cell.md").write_text(
@@ -91,6 +98,44 @@ Activation state must be considered before interpreting a single marker.
     # Reset only the generated fixture settings so repeated local runs always
     # exercise the documented default-Chinese then switch-to-English flow.
     (PROJECT / ".env").write_text("APP_LANGUAGE=zh-CN\n", encoding="utf-8")
+    _commit_seed_state()
+
+
+def _commit_seed_state() -> None:
+    """Commit the fixture baseline so seed files stay out of the agent run diff."""
+
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=PROJECT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if not status.stdout.strip():
+        return
+    subprocess.run(
+        ["git", "add", "-A"],
+        cwd=PROJECT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            f"user.name={AGENT_GIT_IDENTITY_NAME}",
+            "-c",
+            f"user.email={AGENT_GIT_IDENTITY_EMAIL}",
+            "commit",
+            "-m",
+            "test: seed the e2e workspace",
+        ],
+        cwd=PROJECT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def seed_agent_history() -> None:
