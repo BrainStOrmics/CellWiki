@@ -57,6 +57,40 @@ def _write_workspace(root: Path) -> None:
     )
 
 
+def _prepare_committed_workspace(root: Path) -> None:
+    """Give API tests a clean baseline so scaffold files never enter a run diff."""
+    import subprocess
+
+    from cellwiki.services.workspace import (
+        AGENT_GIT_IDENTITY_EMAIL,
+        AGENT_GIT_IDENTITY_NAME,
+        ensure_workspace,
+    )
+
+    ensure_workspace(root)
+    subprocess.run(
+        ["git", "-C", str(root), "add", "--all"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            f"user.name={AGENT_GIT_IDENTITY_NAME}",
+            "-c",
+            f"user.email={AGENT_GIT_IDENTITY_EMAIL}",
+            "commit",
+            "-m",
+            "test workspace baseline",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
 def _wait_for_run(client: TestClient, run_id: str, statuses: set[AgentRunStatus]):
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
@@ -170,6 +204,7 @@ def test_settings_context_window_preset_roundtrip(tmp_path: Path):
 
 
 def test_agent_thread_and_run_lifecycle(tmp_path: Path):
+    _prepare_committed_workspace(tmp_path)
     adapter = _ApiAgentAdapter()
     manager = AgentRuntimeManager(tmp_path, adapter=adapter)
     try:
@@ -210,6 +245,7 @@ def test_thread_attachments_upload_and_run_scope(tmp_path: Path):
     # 线程附件 = 临时 Agent 上下文；上传、线程归属校验、随线程删除
     from cellwiki.services.attachment_store import AttachmentFileStore
 
+    _prepare_committed_workspace(tmp_path)
     # 删除护栏只放行已收敛的会话：注入确定性 adapter 并等 run 落终态，
     # 而不是让删除与仍在执行的 worker 抢同一批行。
     manager = AgentRuntimeManager(tmp_path, adapter=_ApiAgentAdapter())

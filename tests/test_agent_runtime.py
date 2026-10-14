@@ -1259,22 +1259,22 @@ def test_question_timeout_finalizes_unfinished(tmp_path: Path):
     )
     runtime = AgentRuntimeManager(tmp_path, adapter=adapter)
     thread_id = f"thread_q_{abs(hash(tmp_path)) & 0xFFFF}"
-    run = runtime.start(
-        thread_id=thread_id,
-        message="开始",
-        context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
-    )
-    deadline = time.monotonic() + WAIT_TIMEOUT
-    while time.monotonic() < deadline:
-        current = runtime.store.get_run(run.run_id)
-        if current is not None and current.status == AgentRunStatus.WAITING_CONFIRMATION:
-            break
-        time.sleep(0.02)
-    result = runtime.answer_question(run.run_id, [], timed_out=True)
-    assert result["status"] == AgentRunStatus.UNFINISHED.value
-    assert runtime.store.get_run(run.run_id).status == AgentRunStatus.UNFINISHED
-    question = runtime.store.list_questions(run.run_id)[0]
-    assert question["status"] == "timed_out"
+    try:
+        run = runtime.start(
+            thread_id=thread_id,
+            message="开始",
+            context=WikiAgentContext(project_id="cellwiki", thread_id=thread_id),
+        )
+        # 等待态和问题行在同一事务落盘；统一走等待器，CI 慢时前置条件失败
+        # 会给出明确断言，而不是带着错误状态继续执行。
+        _wait_for_status(runtime, run.run_id, {AgentRunStatus.WAITING_CONFIRMATION})
+        result = runtime.answer_question(run.run_id, [], timed_out=True)
+        assert result["status"] == AgentRunStatus.UNFINISHED.value
+        assert runtime.store.get_run(run.run_id).status == AgentRunStatus.UNFINISHED
+        question = runtime.store.list_questions(run.run_id)[0]
+        assert question["status"] == "timed_out"
+    finally:
+        runtime.close()
 
 
 def test_skip_required_question_finalizes_unfinished(tmp_path: Path):
@@ -2111,6 +2111,25 @@ def _wip_commit_sha(repo: Path, run_id: str) -> str:
     raise AssertionError(f"no auto-version commit for run {run_id}")
 
 
+def _wait_for_commit_subject(repo: Path, marker: str) -> None:
+    """Wait until a commit subject containing marker exists."""
+    import subprocess
+
+    deadline = time.monotonic() + WAIT_TIMEOUT
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "log", "--format=%s", "-20"],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        if marker in result.stdout:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"no commit subject containing {marker!r}")
+
+
 def _name_status(repo: Path, sha: str) -> dict[str, str]:
     import subprocess
 
@@ -2322,9 +2341,18 @@ def test_auto_version_mixed_dirty_states(tmp_path: Path):
         assert rows["wiki/cell_types/fresh_cell.md"] == "A"
         for name in system_files:
             assert name not in rows, "系统维护文件不得卷入 wip commit"
+        # run 结束的强制 lint 快照会追加并提交 audit_report.md；先等该维护提交
+        # 落定，避免断言与后台维护线程竞态。
+        _wait_for_commit_subject(
+            repo, f"maintenance after run {started.run_id} (lint)"
+        )
         dirty = _dirty_paths(repo)
-        for name in system_files:
-            assert name in dirty, "外部改动的系统维护文件保持脏区等用户处置"
+        assert "audit_report.md" not in dirty, "audit_report 由 lint 维护提交接管"
+        assert "external touch" in (repo / "audit_report.md").read_text(
+            encoding="utf-8"
+        )
+        for name in ("overview.md", "statistics.md", "log.md"):
+            assert name in dirty, "未被维护接管的系统文件保持脏区等用户处置"
         # 幂等：重复收口不产生新 wip commit（竞态说明同上）
         wip_before = _wip_commit_sha(repo, started.run_id)
         manager._ensure_run_versioned(started.run_id)

@@ -6,6 +6,7 @@
 
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -60,7 +61,6 @@ def test_development_runtime_stops_the_windows_process_tree(
 
     taskkill_calls = []
 
-    monkeypatch.setattr(dev_runtime.os, "name", "nt")
     monkeypatch.setattr(
         dev_runtime.subprocess,
         "run",
@@ -78,6 +78,9 @@ def test_development_runtime_stops_the_windows_process_tree(
         )
     )
 
+    # 只替换 dev_runtime 看到的 os，避免 pathlib 在 Linux 上按 os.name
+    # 构造 WindowsPath；taskkill 分支因此可以在非 Windows CI 上继续覆盖。
+    monkeypatch.setattr(dev_runtime, "os", SimpleNamespace(name="nt"))
     runtime.stop()
 
     assert taskkill_calls[0][0] == ["taskkill", "/PID", "321", "/T", "/F"]
