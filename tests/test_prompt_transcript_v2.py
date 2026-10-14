@@ -175,7 +175,50 @@ def _wait(manager: AgentRuntimeManager, run: AgentRun) -> AgentRun:
     raise AssertionError(f"run {run.run_id} did not finish")
 
 
+def _commit_workspace_baseline(root: Path) -> None:
+    """Commit the scaffold so the first run never publishes it as an agent diff."""
+    import subprocess
+
+    from cellwiki.services.workspace import (
+        AGENT_GIT_IDENTITY_EMAIL,
+        AGENT_GIT_IDENTITY_NAME,
+        ensure_workspace,
+    )
+
+    ensure_workspace(root)
+    status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if not status.stdout.strip():
+        return
+    subprocess.run(
+        ["git", "-C", str(root), "add", "--all"],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(root),
+            "-c",
+            f"user.name={AGENT_GIT_IDENTITY_NAME}",
+            "-c",
+            f"user.email={AGENT_GIT_IDENTITY_EMAIL}",
+            "commit",
+            "-m",
+            "test workspace baseline",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
 def _manager(tmp_path: Path, model: _TranscriptModel) -> AgentRuntimeManager:
+    _commit_workspace_baseline(tmp_path)
     return AgentRuntimeManager(tmp_path, adapter=build_wiki_agent(tmp_path, model=model))
 
 

@@ -93,14 +93,18 @@ def _prepare_committed_workspace(root: Path) -> None:
 
 def _wait_for_run(client: TestClient, run_id: str, statuses: set[AgentRunStatus]):
     deadline = time.monotonic() + 5
+    last_status = "<no run payload>"
     while time.monotonic() < deadline:
         response = client.get(f"/api/agent/runs/{run_id}")
         assert response.status_code == 200
         run = response.json()
+        last_status = run["status"]
         if run["status"] in {s.value for s in statuses}:
             return run
         time.sleep(0.02)
-    raise AssertionError(f"run {run_id} did not reach {statuses}")
+    raise AssertionError(
+        f"run {run_id} did not reach {statuses}; last status={last_status}"
+    )
 
 
 def test_health_and_system_info(tmp_path: Path):
@@ -566,6 +570,7 @@ class _QuestionCapableApiAdapter:
 
 def test_agent_question_flow_via_api(tmp_path: Path):
     # ask_user_question 5+1 —— 挂起 -> GET question -> POST 回复 -> 续跑
+    _prepare_committed_workspace(tmp_path)
     adapter = _QuestionCapableApiAdapter()
     manager = AgentRuntimeManager(tmp_path, adapter=adapter)
     client = TestClient(create_app(tmp_path, agent_runtime=manager))

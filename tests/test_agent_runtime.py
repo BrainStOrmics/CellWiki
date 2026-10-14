@@ -1126,7 +1126,7 @@ def test_ask_user_question_pauses_waits_and_resumes(tmp_path: Path):
             RuntimeSignal(type=AgentEventType.FINAL_RESPONSE, message="已完成"),
         ],
     )
-    runtime = AgentRuntimeManager(tmp_path, adapter=adapter)
+    runtime = AgentRuntimeManager(_prepared_workspace(tmp_path), adapter=adapter)
     thread_id = f"thread_q_{abs(hash(tmp_path)) & 0xFFFF}"
     started = runtime.start(
         thread_id=thread_id,
@@ -1165,7 +1165,11 @@ def test_ask_user_question_pauses_waits_and_resumes(tmp_path: Path):
         if runtime.store.get_run(started.run_id).status == AgentRunStatus.SUCCEEDED:
             break
         time.sleep(0.02)
-    assert runtime.store.get_run(started.run_id).status == AgentRunStatus.SUCCEEDED
+    final = runtime.store.get_run(started.run_id)
+    assert final.status == AgentRunStatus.SUCCEEDED, [
+        (event.type.value, event.message)
+        for event in runtime.store.list_events(started.run_id)
+    ]
     assert adapter.calls[-1] == (None, ["是"])
     answered = runtime.store.list_questions(started.run_id)[0]
     assert answered["status"] == "answered"
@@ -1663,9 +1667,7 @@ class _MaintenanceWritingAdapter:
 def test_accept_publishes_pending_diff_without_system_files_and_runs_maintenance(
     tmp_path: Path,
 ):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    _init_git_repo(repo)
+    repo = _prepared_workspace(tmp_path)
     manager = AgentRuntimeManager(repo, adapter=_MaintenanceWritingAdapter(repo))
     try:
         started = manager.start(
