@@ -46,6 +46,10 @@ LOCK_FILE_NAME = "daemon.lock"
 LAUNCH_LOG_FILE_NAME = "launch.log"
 DAEMON_LOG_FILE_NAME = "daemon.log"
 START_TIMEOUT_SECONDS = 90.0
+# subprocess exposes these only on Windows; getattr keeps Linux mypy and
+# imports valid while the values are still used on the Windows launch path.
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+_DETACHED_PROCESS = getattr(subprocess, "DETACHED_PROCESS", 0)
 
 
 class DaemonError(RuntimeError):
@@ -373,7 +377,7 @@ def ensure_daemon(workspace: Path, *, timeout: float = START_TIMEOUT_SECONDS) ->
         "stdin": subprocess.DEVNULL,
     }
     if os.name == "nt":
-        popen_options["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+        popen_options["creationflags"] = _CREATE_NO_WINDOW | _DETACHED_PROCESS
     else:
         popen_options["start_new_session"] = True
     with launch_log.open("ab", buffering=0) as log_handle:
