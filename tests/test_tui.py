@@ -7,10 +7,15 @@ import io
 from pathlib import Path
 from typing import Any
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 from rich.console import Console
 
 from cellwiki.tui import renderer
-from cellwiki.tui.app import ESCAPE, CellWikiTui
+from cellwiki.tui.app import ESCAPE, CellWikiTui, CommandCompleter
 from cellwiki.tui.client import CellWikiClientError
 
 
@@ -227,6 +232,9 @@ def test_tui_streams_answer_into_scrollback(tmp_path: Path) -> None:
         assert app.run_status == "succeeded"
         assert app.model_label == "openai/gpt-5"
         assert app.context_label == "ctx 12k"
+        toolbar = "".join(piece for _, piece in app._toolbar())
+        assert "model openai/gpt-5" in toolbar
+        assert "ctx 12k" in toolbar
 
     asyncio.run(scenario())
     text = buffer.getvalue()
@@ -358,7 +366,12 @@ def test_tui_diff_gate_defers_and_reopens(tmp_path: Path) -> None:
         await app.submit(ESCAPE)
         assert app.gate is None
         assert app.pending_diff_id == "diff_1"
+        assert app.run_task is not None and app.run_task.done()
         assert fake.accepted == [] and fake.rejected == []
+        await app.submit("note for later")
+        assert app.queue == ["note for later"]
+        assert "queued (1): note for later" in buffer.getvalue()
+        assert app.withdraw_queued() == "note for later"
         await app.submit("/diff")
         await _wait_for(lambda: app.gate is not None)
         await app.submit("1")
@@ -573,3 +586,118 @@ def test_renderer_approval_lines_include_patch_and_options() -> None:
     assert "wiki/x.md" in plain
     assert "+new" in plain
     assert "1 accept" in plain
+
+
+def test_tui_retry_recovers_failed_run(tmp_path: Path) -> None:
+    fake = FakeClient(
+        [
+            {
+                "run_id": "run_1",
+                "status": "failed",
+                "pending_diff_id": None,
+                "retryable": True,
+            },
+            {
+                "run_id": "run_1",
+                "status": "failed",
+                "pending_diff_id": None,
+                "retryable": True,
+            },
+        ],
+        events={"run_1": []},
+    )
+    console, _ = _console()
+
+    async def scenario() -> None:
+        app = CellWikiTui(
+            tmp_path, client_factory=lambda workspace: fake, console=console
+        )
+        await app.connect()
+        await app.submit("hello")
+        assert await app.wait_idle(5.0)
+        assert app.run_status == "failed"
+        await app.submit("/retry")
+        assert await app.wait_idle(5.0)
+
+    asyncio.run(scenario())
+    assert fake.retried == ["run_1"]
+
+
+def test_tui_version_mismatch_prompts_restart(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    from cellwiki.services.local_daemon import (
+        DaemonCoordinates,
+        DaemonVersionMismatch,
+    )
+
+    coordinates = DaemonCoordinates(
+        schema_version=1,
+        pid=1,
+        port=1,
+        workspace=str(tmp_path),
+        package_version="0.0.1",
+        api_version="old",
+        started_at="2026-10-15T00:00:00+00:00",
+        log_path="launch.log",
+    )
+    fake = FakeClient(
+        [{"run_id": "run_1", "status": "succeeded", "pending_diff_id": None}]
+    )
+    attempts: list[int] = []
+
+    def factory(workspace: Path) -> FakeClient:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise DaemonVersionMismatch(coordinates)
+        return fake
+
+    restarts: list[Path] = []
+    monkeypatch.setattr(
+        "cellwiki.tui.app.restart_daemon",
+        lambda workspace: restarts.append(workspace),
+    )
+    console, _ = _console()
+
+    async def scenario() -> None:
+        app = CellWikiTui(tmp_path, client_factory=factory, console=console)
+
+        async def confirm(message: str) -> str:
+            return "y"
+
+        monkeypatch.setattr(app, "_prompt_line", confirm)
+        assert await app._connect_with_restart_prompt()
+        assert app.connected
+
+    asyncio.run(scenario())
+    assert len(attempts) == 2
+    assert restarts == [tmp_path.resolve()]
+
+
+def test_tui_command_completion_and_multiline_binding(tmp_path: Path) -> None:
+    fake = FakeClient(
+        [{"run_id": "run_1", "status": "succeeded", "pending_diff_id": None}]
+    )
+    console, _ = _console()
+    app = CellWikiTui(
+        tmp_path, client_factory=lambda workspace: fake, console=console
+    )
+    completions = list(
+        CommandCompleter().get_completions(Document("/re", 3), CompleteEvent())
+    )
+    assert {completion.text for completion in completions} == {"/resume", "/retry"}
+
+    async def scenario() -> None:
+        with create_pipe_input() as pipe:
+            session: PromptSession[str] = PromptSession(
+                input=pipe,
+                output=DummyOutput(),
+                key_bindings=app._build_key_bindings(),
+                multiline=True,
+            )
+            pipe.send_text("line1\\\r")
+            pipe.send_text("line2\r")
+            result = await session.prompt_async()
+            assert result == "line1\nline2"
+
+    asyncio.run(scenario())
