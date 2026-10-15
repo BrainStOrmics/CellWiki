@@ -34,9 +34,9 @@ uv run cellwiki daemon status --workspace <knowledge-base>
 uv run cellwiki daemon stop --workspace <knowledge-base>
 ```
 
-`cellwiki` 无子命令进入 Textual TUI；TUI 是 daemon 客户端，不得构造第二个
-`AgentRuntimeManager`。daemon 只监听 `127.0.0.1`，发现文件与控制 token 位于
-用户状态目录且权限 0600。
+`cellwiki` 无子命令进入行式 TUI（`prompt_toolkit` + `rich`）；TUI 是 daemon
+客户端，不得构造第二个 `AgentRuntimeManager`。daemon 只监听 `127.0.0.1`，
+发现文件与控制 token 位于用户状态目录且权限 0600。
 
 ## 代码变更规则
 

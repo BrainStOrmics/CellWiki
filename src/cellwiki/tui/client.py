@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -144,6 +146,64 @@ class DaemonClient:
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:
         return dict(self._json("POST", f"/api/agent/runs/{run_id}/cancel"))
+
+    def retry_run(self, run_id: str) -> dict[str, Any]:
+        return dict(self._json("POST", f"/api/agent/runs/{run_id}/retry"))
+
+    def resume_run(self, run_id: str) -> dict[str, Any]:
+        return dict(self._json("POST", f"/api/agent/runs/{run_id}/resume"))
+
+    def list_model_providers(self) -> dict[str, Any]:
+        return dict(self._json("GET", "/api/model-providers"))
+
+    def context_usage(self, thread_id: str) -> dict[str, Any]:
+        return dict(self._json("GET", f"/api/agent/threads/{thread_id}/context-usage"))
+
+    async def stream_events(
+        self,
+        run_id: str,
+        after: int = 0,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield SSE events for one run until the server closes the stream.
+
+        The server ends the stream on terminal run states; callers reconnect
+        with the last seen ``sequence`` as the new ``after`` cursor.
+        """
+
+        url = f"{self.base_url}/api/agent/runs/{run_id}/stream"
+        timeout = httpx.Timeout(connect=10.0, read=None, write=10.0, pool=10.0)
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            async with client.stream(
+                "GET",
+                url,
+                headers=self._headers(),
+                params={"after": after},
+            ) as response:
+                if response.status_code >= 400:
+                    body = (await response.aread()).decode("utf-8", "replace").strip()
+                    raise CellWikiClientError(
+                        f"daemon request failed ({response.status_code}): "
+                        f"{body or response.reason_phrase}",
+                        status_code=response.status_code,
+                    )
+                data_lines: list[str] = []
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.rstrip("\r")
+                    if line == "":
+                        if data_lines:
+                            try:
+                                yield dict(json.loads("\n".join(data_lines)))
+                            except ValueError as error:
+                                raise CellWikiClientError(
+                                    "daemon returned invalid SSE JSON"
+                                ) from error
+                        data_lines = []
+                        continue
+                    if line.startswith(":"):
+                        continue
+                    field, _, value = line.partition(":")
+                    if field == "data":
+                        data_lines.append(value.lstrip(" "))
 
 
 def _error_message(response: httpx.Response) -> str:

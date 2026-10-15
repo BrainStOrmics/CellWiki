@@ -53,14 +53,19 @@ cd /path/to/knowledge-base
 cellwiki
 ```
 
-`cellwiki` 无子命令进入 Textual 终端界面，并在需要时自动拉起本地 daemon。
+`cellwiki` 无子命令进入行式终端界面，并在需要时自动拉起本地 daemon。
+界面为单列对话，输出直接进入终端 scrollback（退出后仍可回看）；支持 `/` 命令
+（`/help` `/new` `/resume` `/clear` `/status` `/continue` `/retry` `/diff`
+`/quit`）、内联的提问与 pending diff 数字键审批、`Esc` 打断当前 run、忙时
+`Enter` 排队。
 `cellwiki serve [--workspace PATH] [--detach]` 前台或后台运行 daemon；
 `cellwiki daemon status|stop|restart --workspace PATH` 管理生命周期。daemon 只
 监听 `127.0.0.1`，发现文件与控制 token 位于用户状态目录
 （`$XDG_RUNTIME_DIR` 优先，否则 `~/.cellwiki`）且权限 0600。
 
-TUI v1 覆盖对话流、提问卡片、pending diff 审批与线程切换；附件上传与完整设置
-编辑暂未提供，需要这些能力时使用桌面端。
+TUI 覆盖对话、提问与 pending diff 审批；附件上传、完整设置编辑、`@` 文件
+补全、`/model`、`/context` 与附着其他客户端启动的 run 属后续版本，需要这些
+能力时使用桌面端。
 
 ## 开发环境
 
