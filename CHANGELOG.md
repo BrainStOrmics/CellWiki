@@ -36,6 +36,9 @@
 
 ### Changed
 
+- 终端客户端主色统一：每个主题预设的 `code`（Markdown 行内代码/代码块）
+  与 `claude`（主色）取同一值；助手 bullet `●`、Markdown 列表 `•`、
+  输入框边框/标题/`❯` 提示符与代码同色。
 - 终端客户端 dark 主题主色改为截图取样的紫色 `#B1B9F9`（助手 bullet、
   spinner、`✻`、输入框提示符与标题、行内代码与代码块同色）；light 主题
   使用深紫变体（`#7C3AED`/`#6D28D9`）；助手 bullet 与 spinner 现在按主题

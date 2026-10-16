@@ -59,6 +59,12 @@ describe("theme presets", () => {
     expect(dark.tokens.claude).toBe("#B1B9F9");
     expect(dark.tokens.code).toBe("#B1B9F9");
   });
+
+  it("aligns the code color with the accent in every preset", () => {
+    for (const theme of THEME_PRESETS) {
+      expect(theme.tokens.code).toBe(theme.tokens.claude);
+    }
+  });
 });
 
 describe("theme store", () => {

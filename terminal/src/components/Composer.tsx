@@ -311,11 +311,11 @@ export function Composer({
     const pad = Math.max(0, innerWidth - displayWidth(text));
     return (
       <Text key={key}>
-        <Text color={theme.tokens.subtle}>{"│ "}</Text>
+        <Text color={theme.tokens.claude}>{"│ "}</Text>
         <Text color={inactive ? theme.tokens.inactive : undefined}>
           {text}
         </Text>
-        <Text color={theme.tokens.subtle}>{`${" ".repeat(pad)} │`}</Text>
+        <Text color={theme.tokens.claude}>{`${" ".repeat(pad)} │`}</Text>
       </Text>
     );
   };
@@ -340,18 +340,18 @@ export function Composer({
         </Text>
       ) : null}
       <Text>
-        <Text color={theme.tokens.subtle}>{topLeft}</Text>
+        <Text color={theme.tokens.claude}>{topLeft}</Text>
         {titleText ? (
           <Text color={theme.tokens.claude}>{titleText}</Text>
         ) : null}
-        <Text color={theme.tokens.subtle}>{topRight}</Text>
+        <Text color={theme.tokens.claude}>{topRight}</Text>
       </Text>
       <Text>
-        <Text color={theme.tokens.subtle}>{"│ "}</Text>
+        <Text color={theme.tokens.claude}>{"│ "}</Text>
         <Text color={promptColor}>{prompt}</Text>
         <Text>{firstLine}</Text>
         <Text color={theme.tokens.inactive}>▌</Text>
-        <Text color={theme.tokens.subtle}>
+        <Text color={theme.tokens.claude}>
           {" ".repeat(firstPad)}
           {" │"}
         </Text>
@@ -366,7 +366,7 @@ export function Composer({
             true,
           )
         : null}
-      <Text color={theme.tokens.subtle}>{bottomBorder}</Text>
+      <Text color={theme.tokens.claude}>{bottomBorder}</Text>
     </Box>
   );
 }

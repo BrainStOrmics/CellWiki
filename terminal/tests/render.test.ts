@@ -97,6 +97,7 @@ describe("markdown rendering", () => {
     ).toEqual(["Title", "• item", "│ note", "raw **code**", "after"]);
     const fenceLine = lines[3];
     expect(fenceLine?.segments[0]?.code).toBe(true);
+    expect(lines[1]?.segments[0]).toEqual({ text: "• ", accent: true });
   });
 
   it("strips markdown markers from assistant visual lines", () => {

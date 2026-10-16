@@ -8,6 +8,8 @@ export interface StyledSegment {
   underline?: boolean;
   /** Inline code or code block content; render with the theme code color. */
   code?: boolean;
+  /** List markers and other accent decorations. */
+  accent?: boolean;
   color?: string;
 }
 
@@ -84,7 +86,7 @@ export function renderMarkdown(text: string): MarkdownLine[] {
     if (bullet) {
       lines.push({
         segments: [
-          { text: `${bullet[1] ?? ""}• ` },
+          { text: `${bullet[1] ?? ""}• `, accent: true },
           ...renderInline(bullet[2] ?? ""),
         ],
       });
