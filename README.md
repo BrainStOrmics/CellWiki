@@ -89,11 +89,10 @@ Markdown 列表 `•` 也使用该主色。
 `Esc` 取消）：选择只作用于本次 TUI 会话后续的 run（对齐桌面端 composer
 的模型切换器，不写工作区默认），状态行与 `/status` 标注 `(session)`；
 `/model <model_id>` 直接切换，`/model default` 回到目录默认。
-新会话（启动、`/new`、`/clear`）会在上方显示欢迎横幅：按参考形象图还原的
-终端像素猫（半块字符 + 真彩，黑身/琥珀眼/红颈圈与蝴蝶结，深色终端自动
-提亮猫身）+ `CellWiki v0.1.0`、当前模型、工作区路径与
-`| Using … · /model` 提示；发出第一条消息或 `/resume` 后收起，窄终端
-退化为文字行。
+新会话（启动、`/new`、`/clear`）会在上方显示欢迎横幅：Claude Code 风格的
+红色块状像素猫（16×16 单色半块字符，眼睛/嘴巴用负形挖空）+
+`CellWiki v0.1.0`、当前模型、工作区路径与 `| Using … · /model` 提示；
+发出第一条消息或 `/resume` 后收起，窄终端退化为文字行。
 Python 终端界面已退役；
 `cellwiki dev`、`cellwiki serve` 与 `cellwiki daemon *` 仍由 Python 提供。
 

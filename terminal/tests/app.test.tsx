@@ -378,7 +378,7 @@ describe("App", () => {
     expect(frame).toContain("openai/gpt-5");
     expect(frame).toContain("from the model catalog");
     expect(frame).toContain("/model");
-    expect(frame).toContain("▀");
+    expect(frame).toContain("█");
 
     await controller.submit("hi");
     await controller.waitIdle();

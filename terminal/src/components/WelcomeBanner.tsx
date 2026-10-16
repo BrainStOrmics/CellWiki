@@ -6,43 +6,28 @@ import type { TuiState } from "../controller";
 import { truncateToWidth } from "../render/text";
 import type { Theme } from "../theme/themes";
 
-// The mascot is traced from the reference art at 20x20 pixels and drawn with
-// half blocks: two vertical pixels per terminal cell.
+// Claude Code style mascot: one solid color, blocky pixels, details cut out.
 const MASCOT_PIXELS = [
-  "00000000000000000000",
-  "00000000000000000000",
-  "00000720020000000000",
-  "00000517333711000000",
-  "00002551444155000000",
-  "00007551111155200000",
-  "00033111111115320000",
-  "00024111111115300000",
-  "00024122211222300000",
-  "00024161211612300000",
-  "00024121211212300000",
-  "00003411155111300000",
-  "00000444444447000000",
-  "00000214444111000000",
-  "00000754445511200000",
-  "00000144554551700000",
-  "00007511111141100000",
-  "00075411111114110000",
-  "00002001101122720000",
-  "00000000000000000000",
+  "0000000000000000",
+  "0001100001100000",
+  "0011110011110000",
+  "0011111111110000",
+  "0011111111110000",
+  "0111111111111000",
+  "0110011110011000",
+  "0110011110011000",
+  "0111111111111000",
+  "0111110011111000",
+  "0011111111110000",
+  "0000111111000000",
+  "0000111111000000",
+  "0000111111110000",
+  "0000110011000000",
+  "0000000000000000",
 ];
 
-const MASCOT_COLORS: Record<string, string | null> = {
-  "0": null,
-  "1": "#454545",
-  "2": "#f2e3b3",
-  "3": "#e8402a",
-  "4": "#96231c",
-  "5": "#6b3a2c",
-  "6": "#ffffff",
-  "7": "#8a8a8a",
-};
-
-const MASCOT_WIDTH = MASCOT_PIXELS[0]?.length ?? 24;
+const MASCOT_COLOR = "#e5484d";
+const MASCOT_WIDTH = MASCOT_PIXELS[0]?.length ?? 16;
 
 export function WelcomeBanner({
   state,
@@ -59,8 +44,7 @@ export function WelcomeBanner({
     return null;
   }
   const artRows = Math.ceil(MASCOT_PIXELS.length / 2);
-  const showArt =
-    width >= MASCOT_WIDTH + 28 && maxRows >= artRows + 2;
+  const showArt = width >= MASCOT_WIDTH + 28 && maxRows >= artRows + 2;
   const textWidth = Math.max(8, width - (showArt ? MASCOT_WIDTH + 4 : 2));
   const session = Boolean(state.modelSelection?.model_id);
   const modelLabel = state.modelLabel || "unknown";
@@ -73,7 +57,7 @@ export function WelcomeBanner({
       <Box flexDirection="row">
         {showArt ? (
           <Box flexDirection="column" marginRight={2}>
-            {renderMascot(theme)}
+            {renderMascot()}
           </Box>
         ) : null}
         <Box flexDirection="column">
@@ -91,50 +75,33 @@ export function WelcomeBanner({
   );
 }
 
-function renderMascot(theme: Theme): ReactNode[] {
-  const body = theme.dark ? "#454545" : "#2b2b2b";
-  const edge = theme.dark ? "#8a8a8a" : "#6b6b6b";
-  const colorFor = (index: string | undefined): string | null => {
-    const key = index ?? "0";
-    if (key === "1") {
-      return body;
-    }
-    if (key === "7") {
-      return edge;
-    }
-    return MASCOT_COLORS[key] ?? null;
-  };
-
+function renderMascot(): ReactNode[] {
   const rows: ReactNode[] = [];
   for (let y = 0; y < MASCOT_PIXELS.length; y += 2) {
     const topRow = MASCOT_PIXELS[y] ?? "";
     const bottomRow = MASCOT_PIXELS[y + 1] ?? "";
     const cells: ReactNode[] = [];
     for (let x = 0; x < MASCOT_WIDTH; x += 1) {
-      const top = colorFor(topRow[x]);
-      const bottom = colorFor(bottomRow[x]);
+      const top = topRow[x] === "1";
+      const bottom = bottomRow[x] === "1";
       if (!top && !bottom) {
         cells.push(<Text key={`${x}`}> </Text>);
-      } else if (top && !bottom) {
+      } else if (top && bottom) {
         cells.push(
-          <Text key={`${x}`} color={top}>
-            ▀
+          <Text key={`${x}`} color={MASCOT_COLOR}>
+            █
           </Text>,
         );
-      } else if (!top && bottom) {
+      } else if (top) {
         cells.push(
-          <Text key={`${x}`} color={bottom}>
-            ▄
+          <Text key={`${x}`} color={MASCOT_COLOR}>
+            ▀
           </Text>,
         );
       } else {
         cells.push(
-          <Text
-            key={`${x}`}
-            color={top ?? undefined}
-            backgroundColor={bottom ?? undefined}
-          >
-            ▀
+          <Text key={`${x}`} color={MASCOT_COLOR}>
+            ▄
           </Text>,
         );
       }
