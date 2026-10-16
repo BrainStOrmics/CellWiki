@@ -79,7 +79,8 @@ viewport 内窗口化显示，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/`Ctrl+End
 `~/.cellwiki/tui.json`，`Esc` 取消；内置 `auto`（按终端背景选深浅）、
 `dark`、`light`、`dark-daltonized`、`light-daltonized`、`dark-ansi`、
 `light-ansi`，配色覆盖输入框、对话、审批卡与状态行，
-`CELLWIKI_TUI_THEME` 环境变量优先。
+`CELLWIKI_TUI_THEME` 环境变量优先。dark 主题主色为紫色 `#B1B9F9`
+（助手 bullet、spinner、行内代码与代码块同色），light 主题使用深紫变体。
 Python 终端界面已退役；
 `cellwiki dev`、`cellwiki serve` 与 `cellwiki daemon *` 仍由 Python 提供。
 

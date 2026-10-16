@@ -1,6 +1,8 @@
 import type { Gate, Tone } from "../controller";
+import type { Theme } from "../theme/themes";
 import {
   renderMarkdownLines,
+  wrapSegments,
   type StyledSegment,
 } from "./markdown";
 import { displayWidth, wrapToWidth } from "./text";
@@ -36,6 +38,7 @@ export function segmentText(segments: StyledSegment[]): string {
 export function toVisualLines(
   lines: Array<{ text: string; tone?: Tone }>,
   width: number,
+  theme?: Theme,
 ): VisualLine[] {
   const visual: VisualLine[] = [];
   for (const line of lines) {
@@ -47,7 +50,16 @@ export function toVisualLines(
         : wrapToWidth(line.text, bodyWidth).map((text) => [{ text }]);
     source.forEach((segments, index) => {
       const lead = index === 0 ? prefix : prefix ? "  " : "";
-      const withLead = lead ? [{ text: lead }, ...segments] : segments;
+      const leadColor = lead
+        ? line.tone === "assistant"
+          ? theme?.tokens.claude
+          : line.tone === "user"
+            ? theme?.tokens.suggestion
+            : undefined
+        : undefined;
+      const withLead = lead
+        ? [{ text: lead, color: leadColor }, ...segments]
+        : segments;
       visual.push({
         text: segmentText(withLead),
         tone: line.tone,
@@ -62,20 +74,27 @@ export function buildLiveLines(
   state: LiveInput,
   spinner: string,
   width: number,
+  theme?: Theme,
 ): VisualLine[] {
   const lines: VisualLine[] = [];
+  const push = (tone: Tone | undefined, segments: StyledSegment[]): void => {
+    for (const wrapped of wrapSegments(segments, width)) {
+      lines.push({ text: segmentText(wrapped), tone, segments: wrapped });
+    }
+  };
   if (state.reasoning) {
     const tail = state.reasoning
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
       .at(-1) ?? "";
-    const text = state.verbose
-      ? `✻ ${state.reasoning.split("\n").slice(-12).join("\n")}`
-      : `✻ Thinking… ${tail.slice(-120)}`;
-    for (const wrapped of wrapToWidth(text, width)) {
-      lines.push({ text: wrapped, tone: "dim" });
-    }
+    const body = state.verbose
+      ? state.reasoning.split("\n").slice(-12).join("\n")
+      : `Thinking… ${tail.slice(-120)}`;
+    push(undefined, [
+      { text: "✻ ", color: theme?.tokens.claude },
+      { text: body, dim: true },
+    ]);
   }
   if (state.streaming) {
     for (const segments of renderMarkdownLines(state.streaming, width)) {
@@ -83,11 +102,17 @@ export function buildLiveLines(
     }
   }
   for (const tool of state.tools) {
-    lines.push({ text: `${spinner} ${tool.summary}`, tone: "tool" });
+    push("tool", [
+      { text: `${spinner} `, color: theme?.tokens.claude },
+      { text: tool.summary, color: theme?.tokens.tool },
+    ]);
   }
   const busy = state.runId !== null || state.tools.length > 0;
   if (busy && !state.streaming && !state.reasoning && state.tools.length === 0) {
-    lines.push({ text: `${spinner} working… (Esc to interrupt)`, tone: "dim" });
+    push(undefined, [
+      { text: `${spinner} `, color: theme?.tokens.claude },
+      { text: "working… (Esc to interrupt)", dim: true },
+    ]);
   }
   return lines;
 }

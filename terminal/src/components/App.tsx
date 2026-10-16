@@ -94,8 +94,8 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
 
   const allLines = useMemo(
     () => [
-      ...toVisualLines(state.transcript, size.columns),
-      ...buildLiveLines(state, spinner, size.columns),
+      ...toVisualLines(state.transcript, size.columns, state.theme),
+      ...buildLiveLines(state, spinner, size.columns, state.theme),
     ],
     [
       state.transcript,
@@ -106,6 +106,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
       state.verbose,
       spinner,
       size.columns,
+      state.theme,
     ],
   );
   const maxOffset = Math.max(

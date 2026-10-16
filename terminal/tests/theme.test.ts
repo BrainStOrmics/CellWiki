@@ -53,6 +53,12 @@ describe("theme presets", () => {
       expect(theme.tokens.code).not.toBe(theme.tokens.inactive);
     }
   });
+
+  it("uses the requested purple accent in the dark preset", () => {
+    const dark = findTheme("dark");
+    expect(dark.tokens.claude).toBe("#B1B9F9");
+    expect(dark.tokens.code).toBe("#B1B9F9");
+  });
 });
 
 describe("theme store", () => {

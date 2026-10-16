@@ -8,6 +8,7 @@ import {
 } from "../src/render/text";
 import { formatRelativeTime } from "../src/render/time";
 import { renderInline, renderMarkdown } from "../src/render/markdown";
+import { findTheme } from "../src/theme/themes";
 import {
   buildLiveLines,
   gateLayout,
@@ -54,6 +55,19 @@ describe("transcript visual lines", () => {
       "● abcdef",
       "  ghij",
     ]);
+  });
+
+  it("colors the assistant bullet with the theme accent", () => {
+    const theme = findTheme("dark");
+    const visual = toVisualLines(
+      [{ text: "hello", tone: "assistant" }],
+      20,
+      theme,
+    );
+    expect(visual[0]?.segments?.[0]).toEqual({
+      text: "● ",
+      color: theme.tokens.claude,
+    });
   });
 });
 
@@ -173,6 +187,26 @@ describe("live region", () => {
     );
     expect(live.map((line) => line.text).join("")).toContain("read_file");
     expect(live.some((line) => line.text.includes("hello"))).toBe(true);
+  });
+
+  it("colors the spinner with the theme accent", () => {
+    const theme = findTheme("dark");
+    const live = buildLiveLines(
+      {
+        reasoning: "",
+        streaming: "",
+        tools: [{ id: "tool_1", summary: "read_file x.md" }],
+        runId: "run_1",
+        verbose: false,
+      },
+      "⠋",
+      40,
+      theme,
+    );
+    expect(live[0]?.segments?.[0]).toEqual({
+      text: "⠋ ",
+      color: theme.tokens.claude,
+    });
   });
 });
 

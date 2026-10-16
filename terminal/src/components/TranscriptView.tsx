@@ -18,7 +18,7 @@ export function TranscriptView({
   return (
     <Static items={lines}>
       {(line) => {
-        const visual = toVisualLines([line], width);
+        const visual = toVisualLines([line], width, theme);
         return (
           <Box key={line.id} flexDirection="column">
             {visual.map((visualLine, index) =>

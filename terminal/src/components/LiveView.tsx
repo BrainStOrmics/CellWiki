@@ -17,7 +17,7 @@ export function LiveView({
 }) {
   const busy = state.runId !== null || state.tools.length > 0;
   const spinner = useSpinnerFrame(busy);
-  const lines = buildLiveLines(state, spinner, width);
+  const lines = buildLiveLines(state, spinner, width, theme);
   if (lines.length === 0) {
     return null;
   }
