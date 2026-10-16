@@ -143,6 +143,7 @@ def _run_tui(arguments: argparse.Namespace) -> None:
 
     import shutil
     import subprocess
+    import sys
 
     executable = shutil.which("cellwiki-tui")
     if executable is None:
@@ -151,6 +152,7 @@ def _run_tui(arguments: argparse.Namespace) -> None:
             "`npm install -g cellwiki-tui` (Node >= 22)"
         )
     command = [executable, "--workspace", str(Path.cwd())]
+    environment = {**os.environ, "CELLWIKI_PYTHON": sys.executable}
     if os.name == "nt" and executable.lower().endswith((".cmd", ".bat")):
         command = [
             os.environ.get("COMSPEC", "cmd.exe"),
@@ -160,7 +162,7 @@ def _run_tui(arguments: argparse.Namespace) -> None:
             *command,
         ]
     try:
-        return_code = subprocess.call(command)
+        return_code = subprocess.call(command, env=environment)
     except OSError as error:
         raise SystemExit(f"cellwiki TUI failed to start: {error}") from None
     raise SystemExit(return_code)

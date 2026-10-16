@@ -9,6 +9,7 @@ import {
   ensureDaemon,
   readControlToken,
   readCoordinates,
+  resolveCellwikiInvocation,
   workspaceHash,
   workspaceStateDir,
 } from "../src/daemon/discovery";
@@ -95,5 +96,39 @@ describe("daemon discovery", () => {
         spawnCli: async () => undefined,
       }),
     ).rejects.toThrow(/incompatible/);
+  });
+
+  it("prefers the handoff interpreter when cellwiki is not on PATH", async () => {
+    const invocation = resolveCellwikiInvocation({
+      PATH: "",
+      CELLWIKI_PYTHON: "C:\\venv\\python.exe",
+    } as NodeJS.ProcessEnv);
+    expect(invocation).toEqual({
+      command: "C:\\venv\\python.exe",
+      args: ["-m", "cellwiki.product_cli"],
+    });
+    const workspace = mkdtempSync(join(tmpdir(), "cellwiki-ws-"));
+    const override = mkdtempSync(join(tmpdir(), "cellwiki-daemon-"));
+    const spawned: string[] = [];
+    const coordinates = await ensureDaemon(workspace, {
+      env: {
+        PATH: "",
+        CELLWIKI_PYTHON: "C:\\venv\\python.exe",
+        CELLWIKI_DAEMON_DIR: override,
+      } as NodeJS.ProcessEnv,
+      spawnCli: async (command, args) => {
+        spawned.push(command, ...args);
+      },
+      healthCheck: async () => false,
+      timeoutMs: 1,
+      sleep: async () => undefined,
+    }).catch(() => null);
+    expect(coordinates).toBeNull();
+    expect(spawned[0]).toBe("C:\\venv\\python.exe");
+    expect(spawned.slice(1, 4)).toEqual([
+      "-m",
+      "cellwiki.product_cli",
+      "serve",
+    ]);
   });
 });

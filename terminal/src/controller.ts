@@ -602,7 +602,7 @@ export class TuiController {
         this.commit(`... ${message || "working"}`, "dim");
         return false;
       case "error":
-        this.commit(`error: ${message}`, "error");
+        this.commit(`error: ${formatProviderError(message)}`, "error");
         return false;
       default:
         return false;
@@ -908,7 +908,44 @@ export function formatRunSummary(run: AgentRun): string {
     parts.push(`tokens ${input}/${output}`);
   }
   if (run.error_message) {
-    parts.push(run.error_message);
+    parts.push(formatProviderError(run.error_message));
   }
   return parts.join(" · ");
+}
+
+export function formatProviderError(message: string): string {
+  const text = (message ?? "").trim();
+  if (!text) {
+    return "";
+  }
+  const dataMatch = /(?:^|\n)data:\s*(\{[\s\S]*\})\s*$/.exec(text);
+  if (dataMatch?.[1]) {
+    try {
+      const payload = JSON.parse(dataMatch[1]) as Record<string, unknown>;
+      const code = typeof payload.code === "string" ? payload.code : "";
+      const detail = typeof payload.message === "string" ? payload.message : "";
+      if (detail) {
+        return truncate(code ? `${detail} (${code})` : detail);
+      }
+    } catch {
+      // fall through to the framing-stripping path
+    }
+  }
+  const lines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(
+      (line) =>
+        line &&
+        !line.startsWith("id:") &&
+        !line.startsWith("event:") &&
+        !line.startsWith(":HTTP_STATUS") &&
+        !line.startsWith("data:"),
+    );
+  const collapsed = lines.join(" ").replace(/\s+/g, " ").trim();
+  return truncate(collapsed || text);
+}
+
+function truncate(value: string, limit = 300): string {
+  return value.length > limit ? `${value.slice(0, limit)}…` : value;
 }

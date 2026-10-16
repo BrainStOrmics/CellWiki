@@ -1,5 +1,5 @@
 import { Box, Text, useInput } from "ink";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import { filterCommands } from "../commands";
 import type { TuiController, TuiState } from "../controller";
@@ -31,6 +31,15 @@ export function Composer({ controller, state }: ComposerProps) {
   const [menuIndex, setMenuIndex] = useState(0);
   const [history, setHistory] = useState<string[]>([]);
   const [historyIndex, setHistoryIndex] = useState(-1);
+  const valueRef = useRef("");
+  const updateValue = (
+    next: string | ((current: string) => string),
+  ): void => {
+    const resolved =
+      typeof next === "function" ? next(valueRef.current) : next;
+    valueRef.current = resolved;
+    setValue(resolved);
+  };
 
   const gate = state.gate;
   const slashMatches = useMemo(
@@ -62,12 +71,36 @@ export function Composer({ controller, state }: ComposerProps) {
     if (!item) {
       return;
     }
+    const current = valueRef.current;
     if (menuKind === "slash") {
-      setValue(`${item} `);
+      updateValue(`${item} `);
     } else if (mention) {
-      setValue(`${value.slice(0, mention.start)}@${item} `);
+      updateValue(`${current.slice(0, mention.start)}@${item} `);
     }
     setMenuIndex(0);
+  };
+
+  const submitCurrent = (): void => {
+    const current = valueRef.current;
+    if (menuKind) {
+      const item = menuItems[menuIndex];
+      const exactSlash =
+        menuKind === "slash" &&
+        item !== undefined &&
+        current.trim() === item;
+      if (!exactSlash) {
+        completeMenu();
+        return;
+      }
+    }
+    const message = current;
+    updateValue("");
+    setMenuIndex(0);
+    setHistoryIndex(-1);
+    if (message.trim()) {
+      setHistory((historyItems) => [...historyItems, message]);
+      void controller.submit(message);
+    }
   };
 
   useInput((input, key) => {
@@ -86,22 +119,12 @@ export function Composer({ controller, state }: ComposerProps) {
       return;
     }
     if (key.return) {
-      if (value.endsWith("\\") && !value.endsWith("\\\\")) {
-        setValue((current) => `${current.slice(0, -1)}\n`);
+      const current = valueRef.current;
+      if (current.endsWith("\\") && !current.endsWith("\\\\")) {
+        updateValue(`${current.slice(0, -1)}\n`);
         return;
       }
-      if (menuKind) {
-        completeMenu();
-        return;
-      }
-      const message = value;
-      setValue("");
-      setMenuIndex(0);
-      setHistoryIndex(-1);
-      if (message.trim()) {
-        setHistory((current) => [...current, message]);
-        void controller.submit(message);
-      }
+      submitCurrent();
       return;
     }
     if (key.tab && menuKind) {
@@ -115,10 +138,10 @@ export function Composer({ controller, state }: ComposerProps) {
         );
         return;
       }
-      if (!value && state.queue.length > 0) {
+      if (!valueRef.current && state.queue.length > 0) {
         const queued = controller.withdrawQueued();
         if (queued) {
-          setValue(queued);
+          updateValue(queued);
         }
         return;
       }
@@ -128,7 +151,7 @@ export function Composer({ controller, state }: ComposerProps) {
             ? history.length - 1
             : Math.max(0, historyIndex - 1);
         setHistoryIndex(next);
-        setValue(history[next] ?? "");
+        updateValue(history[next] ?? "");
       }
       return;
     }
@@ -141,23 +164,37 @@ export function Composer({ controller, state }: ComposerProps) {
         const next = historyIndex + 1;
         if (next >= history.length) {
           setHistoryIndex(-1);
-          setValue("");
+          updateValue("");
         } else {
           setHistoryIndex(next);
-          setValue(history[next] ?? "");
+          updateValue(history[next] ?? "");
         }
       }
       return;
     }
     if (key.backspace || key.delete) {
-      setValue((current) => current.slice(0, -1));
+      updateValue((current) => current.slice(0, -1));
       return;
     }
     if (key.ctrl || key.meta) {
       return;
     }
     if (input && !input.includes("\u001b")) {
-      setValue((current) => current + input);
+      const normalized = input.replace(/\r/g, "\n");
+      const newlineIndex = normalized.indexOf("\n");
+      if (newlineIndex >= 0) {
+        const text = normalized.slice(0, newlineIndex);
+        if (text) {
+          updateValue((current) => current + text);
+        }
+        submitCurrent();
+        const rest = normalized.slice(newlineIndex + 1);
+        if (rest) {
+          updateValue(rest);
+        }
+        return;
+      }
+      updateValue((current) => current + input);
     }
   });
 

@@ -121,4 +121,23 @@ describe("App", () => {
     expect(frame).toContain("+new");
     unmount();
   });
+
+  it("runs a fully typed slash command on the first Enter", async () => {
+    const client = new FakeClient([
+      { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+    ]);
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { stdin, unmount } = render(<App controller={controller} />);
+    await waitFor(() => controller.state.connected);
+    stdin.write("/help\r");
+    await waitFor(() =>
+      controller.state.transcript.some((line) =>
+        line.text.includes("show this help"),
+      ),
+    );
+    unmount();
+  });
 });

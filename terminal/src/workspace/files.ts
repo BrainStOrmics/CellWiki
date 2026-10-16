@@ -47,6 +47,9 @@ export function listWorkspaceFiles(
         }
         walk(fullPath, depth + 1);
       } else if (stats.isFile()) {
+        if (entry === ".env" || entry.startsWith(".env.")) {
+          continue;
+        }
         files.push(relative(root, fullPath).split(sep).join("/"));
       }
     }

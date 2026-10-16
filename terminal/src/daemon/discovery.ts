@@ -203,6 +203,27 @@ export function findCellwikiCli(env: NodeJS.ProcessEnv = process.env): string | 
   return null;
 }
 
+export interface CellwikiInvocation {
+  command: string;
+  args: string[];
+}
+
+export function resolveCellwikiInvocation(
+  env: NodeJS.ProcessEnv = process.env,
+): CellwikiInvocation | null {
+  if (env.CELLWIKI_CLI) {
+    return { command: env.CELLWIKI_CLI, args: [] };
+  }
+  if (env.CELLWIKI_PYTHON) {
+    return {
+      command: env.CELLWIKI_PYTHON,
+      args: ["-m", "cellwiki.product_cli"],
+    };
+  }
+  const cli = findCellwikiCli(env);
+  return cli ? { command: cli, args: [] } : null;
+}
+
 export async function ensureDaemon(
   workspace: string,
   options: EnsureDaemonOptions = {},
@@ -217,15 +238,21 @@ export async function ensureDaemon(
     assertCompatible(existing);
     return existing;
   }
-  const cli = findCellwikiCli(env);
-  if (!cli) {
+  const invocation = resolveCellwikiInvocation(env);
+  if (!invocation) {
     throw new DaemonError(
       "the Python CellWiki CLI was not found on PATH; " +
         "install it first (for example `uv tool install CellWiki`)",
     );
   }
   const spawnCli = options.spawnCli ?? runCellwikiCli;
-  await spawnCli(cli, ["serve", "--detach", "--workspace", resolved]);
+  await spawnCli(invocation.command, [
+    ...invocation.args,
+    "serve",
+    "--detach",
+    "--workspace",
+    resolved,
+  ]);
   const timeoutMs = options.timeoutMs ?? 90_000;
   const pollMs = options.pollMs ?? 100;
   const sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
@@ -249,12 +276,13 @@ export async function restartDaemon(
   options: EnsureDaemonOptions = {},
 ): Promise<DaemonCoordinates> {
   const env = options.env ?? process.env;
-  const cli = findCellwikiCli(env);
-  if (!cli) {
+  const invocation = resolveCellwikiInvocation(env);
+  if (!invocation) {
     throw new DaemonError("the Python CellWiki CLI was not found on PATH");
   }
   const spawnCli = options.spawnCli ?? runCellwikiCli;
-  await spawnCli(cli, [
+  await spawnCli(invocation.command, [
+    ...invocation.args,
     "daemon",
     "restart",
     "--workspace",

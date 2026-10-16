@@ -361,6 +361,7 @@ describe("TuiController", () => {
     const workspace = mkdtempSync(join(tmpdir(), "cellwiki-mention-"));
     mkdirSync(join(workspace, "wiki"));
     writeFileSync(join(workspace, "wiki", "foxp3.md"), "# FOXP3\n");
+    writeFileSync(join(workspace, ".env"), "OPENAI_API_KEY=secret\n");
     const client = new FakeClient([
       { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
     ]);
@@ -369,5 +370,48 @@ describe("TuiController", () => {
       sleep: noSleep,
     });
     expect(controller.mentionCandidates("foxp3")).toContain("wiki/foxp3.md");
+    expect(controller.mentionCandidates("")).not.toContain(".env");
+  });
+
+  it("formats provider SSE error payloads", async () => {
+    const framed =
+      "id:1\nevent:error\n:HTTP_STATUS/400\n" +
+      'data:{"code":"Arrearage","message":"Access denied, please make sure ' +
+      'your account is in good standing."}';
+    const client = new FakeClient(
+      [
+        { run_id: "run_1", thread_id: "thread_1", status: "running" },
+        {
+          run_id: "run_1",
+          thread_id: "thread_1",
+          status: "failed",
+          error_message: framed,
+        },
+      ],
+      {
+        events: {
+          run_1: [
+            {
+              run_id: "run_1",
+              sequence: 1,
+              type: "error",
+              message: framed,
+            },
+          ],
+        },
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("hello");
+    expect(await controller.waitIdle()).toBe(true);
+    const text = controller.state.transcript
+      .map((line) => line.text)
+      .join("\n");
+    expect(text).toContain(
+      "Access denied, please make sure your account is in good standing. " +
+        "(Arrearage)",
+    );
+    expect(text).not.toContain("event:error");
   });
 });

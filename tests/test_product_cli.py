@@ -96,7 +96,12 @@ def test_product_cli_hands_the_tui_to_the_typescript_client(
     )
     monkeypatch.setattr(
         "subprocess.call",
-        lambda command: captured.setdefault("command", command) and 0,
+        lambda command, **kwargs: (
+            captured.setdefault("command", command),
+            captured.setdefault("env", kwargs.get("env")),
+            captured.setdefault("ran", True),
+            0,
+        )[-1],
     )
 
     with pytest.raises(SystemExit) as exit_info:
@@ -108,6 +113,9 @@ def test_product_cli_hands_the_tui_to_the_typescript_client(
         "--workspace",
         str(tmp_path),
     ]
+    import sys
+
+    assert captured["env"]["CELLWIKI_PYTHON"] == sys.executable
 
 
 def test_product_cli_tui_requires_the_typescript_client(monkeypatch) -> None:
