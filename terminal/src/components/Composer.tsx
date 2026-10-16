@@ -87,9 +87,10 @@ export function Composer({
   const extraLines = Math.max(0, lines.length - 1);
   const visibleExtraLines = Math.min(extraLines, 2);
   const overflowLine = extraLines > visibleExtraLines ? 1 : 0;
-  const continuationRows = visibleExtraLines + overflowLine;
+  const contentRows = 1 + visibleExtraLines + overflowLine;
   const queueRows = state.queue.length > 0 ? 1 : 0;
-  const baseRows = 1 + queueRows + continuationRows;
+  // Two extra rows for the input box borders.
+  const baseRows = contentRows + 2 + queueRows;
   const menuCapacity = menuKind
     ? Math.max(0, Math.max(1, maxRows) - baseRows - 1)
     : 0;
@@ -279,17 +280,39 @@ export function Composer({
     }
   });
 
-  const prompt = gate
-    ? gate.kind === "diff"
-      ? "approval (1/2/3, esc later)> "
-      : "answer (esc skip)> "
-    : state.runId
-      ? "(running - enter queues)> "
-      : "> ";
-  const firstLineWidth = Math.max(
-    1,
-    width - displayWidth(prompt) - 1,
+  const innerWidth = Math.max(4, width - 4);
+  const title = truncateToWidth(
+    state.threadTitle || workspaceLabel(state.workspace),
+    Math.max(4, innerWidth - 8),
   );
+  const titleWidth = displayWidth(title);
+  const topBorder =
+    title && titleWidth + 5 <= width
+      ? `╭${"─".repeat(Math.max(1, width - titleWidth - 5))} ${title} ─╮`
+      : `╭${"─".repeat(Math.max(0, width - 2))}╮`;
+  const bottomBorder = `╰${"─".repeat(Math.max(0, width - 2))}╯`;
+  const prompt = "❯ ";
+  const promptColor = gate ? "yellow" : "green";
+  const firstLine = truncateToWidth(
+    lines[0] ?? "",
+    Math.max(1, innerWidth - displayWidth(prompt) - 1),
+  );
+  const firstPad = Math.max(
+    0,
+    innerWidth - displayWidth(prompt) - displayWidth(firstLine) - 1,
+  );
+  const framedRow = (content: string, key: string) => {
+    const text = truncateToWidth(content, innerWidth);
+    const pad = Math.max(0, innerWidth - displayWidth(text));
+    return (
+      <Text key={key} dimColor>
+        {"│ "}
+        {text}
+        {" ".repeat(pad)}
+        {" │"}
+      </Text>
+    );
+  };
 
   return (
     <Box flexDirection="column">
@@ -309,21 +332,29 @@ export function Composer({
           )}
         </Text>
       ) : null}
-      <Box>
-        <Text color={gate ? "yellow" : "green"}>{prompt}</Text>
-        <Text>{truncateToWidth(lines[0] ?? "", firstLineWidth)}</Text>
+      <Text dimColor>{topBorder}</Text>
+      <Text>
+        <Text dimColor>{"│ "}</Text>
+        <Text color={promptColor}>{prompt}</Text>
+        <Text>{firstLine}</Text>
         <Text dimColor>▌</Text>
-      </Box>
-      {lines.slice(1, 1 + visibleExtraLines).map((line, index) => (
-        <Text key={`line-${index}`} dimColor>
-          {truncateToWidth(`... ${line}`, width)}
-        </Text>
-      ))}
-      {overflowLine > 0 ? (
         <Text dimColor>
-          {truncateToWidth(`... (+${extraLines - visibleExtraLines} more lines)`, width)}
+          {" ".repeat(firstPad)}
+          {" │"}
         </Text>
-      ) : null}
+      </Text>
+      {lines
+        .slice(1, 1 + visibleExtraLines)
+        .map((line, index) =>
+          framedRow(`... ${line}`, `line-${index}`),
+        )}
+      {overflowLine > 0
+        ? framedRow(
+            `... (+${extraLines - visibleExtraLines} more lines)`,
+            "overflow",
+          )
+        : null}
+      <Text dimColor>{bottomBorder}</Text>
     </Box>
   );
 }
@@ -349,4 +380,9 @@ function Menu({
       ))}
     </Box>
   );
+}
+
+function workspaceLabel(workspace: string): string {
+  const parts = workspace.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) ?? workspace;
 }

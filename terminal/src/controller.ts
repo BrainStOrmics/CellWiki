@@ -193,13 +193,13 @@ export class TuiController {
     try {
       this.client = await this.createClient();
       const threads = await this.client.listThreads();
-      const latest = threads[0] ?? null;
+      // Entering the TUI starts a new conversation; /resume opens an existing one.
       this.update({
         connected: true,
         connecting: false,
         threads,
-        threadId: latest?.thread_id ?? null,
-        threadTitle: latest?.title ?? "",
+        threadId: null,
+        threadTitle: "",
         versionMismatch: null,
       });
       await this.refreshModel();
@@ -746,8 +746,26 @@ export class TuiController {
     });
     this.commit(formatRunSummary(run), run.status === "failed" ? "error" : "dim");
     await this.refreshContext();
+    await this.refreshThreads();
     this.update({ usageLabel: "" });
     await this.afterRunSettled(run);
+  }
+
+  private async refreshThreads(): Promise<void> {
+    const threadId = this.state.threadId;
+    if (!threadId) {
+      return;
+    }
+    try {
+      const threads = await this.requireClient().listThreads();
+      const current = threads.find((thread) => thread.thread_id === threadId);
+      this.update({
+        threads,
+        threadTitle: current?.title ?? this.state.threadTitle,
+      });
+    } catch {
+      // thread title refresh is best effort
+    }
   }
 
   private async fetchPendingDiffs(): Promise<PendingDiffSummary[]> {

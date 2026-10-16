@@ -56,7 +56,10 @@ cellwiki
 ```
 
 `cellwiki` 无子命令把终端 UI 交给 `cellwiki-tui`（找不到时给出安装提示），
-daemon 缺失时自动拉起。交互式终端默认使用 fullscreen 渲染：界面画在终端
+daemon 缺失时自动拉起。进入 TUI 默认是新会话，不会自动接续最近一次对话；
+要接着旧会话用 `/resume`。输入框是带圆角边框的盒子，顶边右侧显示当前会话
+标题（新会话显示工作区名），首条消息发出后才创建 thread。交互式终端默认
+使用 fullscreen 渲染：界面画在终端
 备用屏（alternate screen，类似 vim），输入框固定在底部，对话在固定
 viewport 内窗口化显示，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/`Ctrl+End`
 跳到最早/最新并恢复自动跟随，`↑`/`↓` 单行滚动；输入历史用 `Ctrl+P`/

@@ -64,6 +64,9 @@ describe("App", () => {
     expect(frame).toContain("model openai/gpt-5");
     expect(frame).toContain("ctx 12k");
     expect(frame).toContain("hello world");
+    expect(frame).toContain("╭");
+    expect(frame).toContain("cellwiki-app-test");
+    expect(frame).toContain("❯ ▌");
     unmount();
   });
 
@@ -83,10 +86,10 @@ describe("App", () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     stdin.write("\r");
     await waitFor(() => client.started.length === 1);
-    expect(client.started[0]).toEqual(["thread_1", "hi"]);
+    expect(client.started[0]).toEqual(["thread_new", "hi"]);
     stdin.write("\u0010");
-    await waitFor(() => (lastFrame() ?? "").includes("> hi") ?? false);
-    expect(lastFrame() ?? "").toContain("> hi");
+    await waitFor(() => (lastFrame() ?? "").includes("❯ hi▌") ?? false);
+    expect(lastFrame() ?? "").toContain("❯ hi▌");
     unmount();
   });
 
