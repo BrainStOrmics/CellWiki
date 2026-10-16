@@ -156,4 +156,109 @@ describe("App", () => {
     expect(frame.length).toBeLessThan(500);
     unmount();
   });
+
+  it("windows the transcript in fullscreen and scrolls with PgUp/PgDn", async () => {
+    const events = {
+      run_1: Array.from({ length: 20 }, (_, index) => ({
+        run_id: "run_1",
+        sequence: index + 1,
+        type: "final_response" as const,
+        message: `answer ${index}`,
+      })),
+    };
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      { events },
+    );
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { stdin, lastFrame, unmount } = render(
+      <App
+        controller={controller}
+        mode="fullscreen"
+        viewport={{ rows: 10, columns: 60 }}
+      />,
+    );
+    await waitFor(() => controller.state.connected);
+    await controller.submit("hi");
+    await waitFor(() => lastFrame()?.includes("answer 19") ?? false);
+    expect(lastFrame() ?? "").not.toContain("answer 0");
+
+    stdin.write("\u001b[5~");
+    await waitFor(() => lastFrame()?.includes("newer line") ?? false);
+    const scrolled = lastFrame() ?? "";
+    expect(scrolled).toContain("newer line");
+
+    stdin.write("\u001b[6~");
+    await waitFor(() => !(lastFrame() ?? "").includes("newer line"));
+    expect(lastFrame() ?? "").toContain("answer 19");
+    unmount();
+  });
+
+  it("bottom-aligns a short transcript in fullscreen", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        events: {
+          run_1: [
+            {
+              run_id: "run_1",
+              sequence: 1,
+              type: "final_response",
+              message: "hello world",
+            },
+          ],
+        },
+      },
+    );
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { lastFrame, unmount } = render(
+      <App
+        controller={controller}
+        mode="fullscreen"
+        viewport={{ rows: 12, columns: 60 }}
+      />,
+    );
+    await waitFor(() => controller.state.connected);
+    await controller.submit("hi");
+    await waitFor(() => lastFrame()?.includes("hello world") ?? false);
+    const lines = (lastFrame() ?? "").split("\n");
+    expect(lines.slice(0, 3).every((line) => line.trim() === "")).toBe(true);
+    unmount();
+  });
+
+  it("keeps the classic scrollback renderer available", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        events: {
+          run_1: [
+            {
+              run_id: "run_1",
+              sequence: 1,
+              type: "final_response",
+              message: "classic hello",
+            },
+          ],
+        },
+      },
+    );
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { lastFrame, unmount } = render(
+      <App controller={controller} mode="classic" />,
+    );
+    await waitFor(() => controller.state.connected);
+    await controller.submit("hi");
+    await waitFor(() => lastFrame()?.includes("classic hello") ?? false);
+    expect(lastFrame() ?? "").toContain("cellwiki");
+    unmount();
+  });
 });

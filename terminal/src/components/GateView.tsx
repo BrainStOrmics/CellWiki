@@ -2,53 +2,82 @@ import { Box, Text } from "ink";
 
 import type { Gate } from "../controller";
 import { redactSecrets } from "../redact";
+import { truncateToWidth } from "../render/text";
 
-export function GateView({ gate }: { gate: Gate }) {
+export interface GateViewProps {
+  gate: Gate;
+  width?: number;
+  previewLines?: number;
+  maxOptions?: number;
+  marginTop?: number;
+}
+
+export function GateView({
+  gate,
+  width = 80,
+  previewLines = 24,
+  maxOptions = Number.MAX_SAFE_INTEGER,
+  marginTop = 1,
+}: GateViewProps) {
   if (gate.kind === "question") {
     const options = gate.question.options ?? [];
+    const shown = options.slice(0, Math.max(0, maxOptions));
+    const hidden = options.length - shown.length;
     return (
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column" marginTop={marginTop}>
         <Text bold color="cyan">
           CellWiki needs your decision
         </Text>
-        <Text>{gate.question.question}</Text>
-        {options.map((option, index) => (
+        <Text>{truncateToWidth(gate.question.question ?? "", width)}</Text>
+        {shown.map((option, index) => (
           <Text
             key={`${index}-${option.label ?? "option"}`}
             color={option.recommended ? "cyan" : undefined}
           >
-            {"  "}
-            {index + 1}. {option.label}
-            {option.description ? ` — ${option.description}` : ""}
+            {truncateToWidth(
+              `  ${index + 1}. ${option.label}${
+                option.description ? ` — ${option.description}` : ""
+              }`,
+              width,
+            )}
           </Text>
         ))}
-        <Text dimColor>
-          Answer with an option number or free text; Esc skips.
-        </Text>
+        {hidden > 0 ? (
+          <Text dimColor>{`… ${hidden} more options`}</Text>
+        ) : null}
+        <Text dimColor>Answer with an option number or free text; Esc skips.</Text>
       </Box>
     );
   }
 
   const safePatch = redactSecrets(gate.patch);
   const lines = safePatch.split("\n");
-  const preview = lines.slice(0, 24);
+  const preview = lines.slice(0, Math.max(0, previewLines));
   const files = diffFiles(safePatch);
   const [added, removed] = diffCounts(safePatch);
   return (
-    <Box flexDirection="column" marginTop={1}>
+    <Box flexDirection="column" marginTop={marginTop}>
       <Text bold>Pending diff {gate.diffId}</Text>
       {files.length > 0 ? (
         <Text dimColor>
-          files: {files.slice(0, 6).join(", ")}
-          {files.length > 6 ? ` … (+${files.length - 6})` : ""}
+          {truncateToWidth(
+            `files: ${files.slice(0, 6).join(", ")}${
+              files.length > 6 ? ` … (+${files.length - 6})` : ""
+            }`,
+            width,
+          )}
         </Text>
       ) : null}
       <Text dimColor>
         changes: +{added} -{removed}
       </Text>
       {preview.map((line, index) => (
-        <Text key={`${index}-${line}`} color={diffColor(line)} dimColor={diffMeta(line)}>
-          {line}
+        <Text
+          key={`${index}-${line}`}
+          color={diffColor(line)}
+          dimColor={diffMeta(line)}
+        >
+          {truncateToWidth(line, width)}
         </Text>
       ))}
       {lines.length > preview.length ? (

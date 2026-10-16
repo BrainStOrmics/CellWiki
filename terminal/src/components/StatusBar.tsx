@@ -1,57 +1,73 @@
 import { Box, Text } from "ink";
 
 import type { TuiState } from "../controller";
+import { displayWidth, truncateToWidth } from "../render/text";
 
-export function StatusBar({ state }: { state: TuiState }) {
-  const parts = ["cellwiki", `model ${state.modelLabel}`];
+interface StatusPart {
+  text: string;
+  optional?: boolean;
+}
+
+export function StatusBar({
+  state,
+  width = 80,
+}: {
+  state: TuiState;
+  width?: number;
+}) {
+  const parts: StatusPart[] = [
+    { text: "cellwiki" },
+    { text: `model ${state.modelLabel}` },
+  ];
   if (state.threadTitle) {
-    parts.push(truncateDisplayWidth(state.threadTitle, 12));
+    parts.push({ text: truncateToWidth(state.threadTitle, 12), optional: true });
   }
-  parts.push(`run ${state.runStatus}`);
+  parts.push({ text: `run ${state.runStatus}` });
   if (state.contextLabel) {
-    parts.push(state.contextLabel);
+    parts.push({ text: state.contextLabel });
   }
   if (state.usageLabel) {
-    parts.push(state.usageLabel);
+    parts.push({ text: state.usageLabel, optional: true });
   }
   if (state.queue.length > 0) {
-    parts.push(`queued ${state.queue.length}`);
+    parts.push({ text: `queued ${state.queue.length}`, optional: true });
   }
   if (state.pendingDiffId && !state.gate) {
-    parts.push(`diff ${state.pendingDiffId} (/diff)`);
+    parts.push({
+      text: `diff ${state.pendingDiffId} (/diff)`,
+      optional: true,
+    });
   }
   if (state.verbose) {
-    parts.push("verbose");
+    parts.push({ text: "verbose", optional: true });
   }
+
+  let text = joinParts(parts);
+  while (displayWidth(text) > width - 1) {
+    const index = lastOptionalIndex(parts);
+    if (index < 0) {
+      break;
+    }
+    parts.splice(index, 1);
+    text = joinParts(parts);
+  }
+
   return (
     <Box marginTop={1}>
-      <Text dimColor>{parts.join("  ·  ")}</Text>
+      <Text dimColor>{truncateToWidth(text, Math.max(1, width - 1))}</Text>
     </Box>
   );
 }
 
-function truncateDisplayWidth(value: string, limit: number): string {
-  let width = 0;
-  let result = "";
-  for (const character of value) {
-    width += isWide(character) ? 2 : 1;
-    if (width > limit) {
-      return `${result}…`;
-    }
-    result += character;
-  }
-  return result;
+function joinParts(parts: StatusPart[]): string {
+  return parts.map((part) => part.text).join("  ·  ");
 }
 
-function isWide(character: string): boolean {
-  const code = character.codePointAt(0) ?? 0;
-  return (
-    (code >= 0x1100 && code <= 0x115f) ||
-    (code >= 0x2e80 && code <= 0xa4cf) ||
-    (code >= 0xac00 && code <= 0xd7a3) ||
-    (code >= 0xf900 && code <= 0xfaff) ||
-    (code >= 0xfe30 && code <= 0xfe6f) ||
-    (code >= 0xff00 && code <= 0xff60) ||
-    (code >= 0xffe0 && code <= 0xffe6)
-  );
+function lastOptionalIndex(parts: StatusPart[]): number {
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    if (parts[index]?.optional) {
+      return index;
+    }
+  }
+  return -1;
 }

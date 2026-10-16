@@ -56,11 +56,15 @@ cellwiki
 ```
 
 `cellwiki` 无子命令把终端 UI 交给 `cellwiki-tui`（找不到时给出安装提示），
-daemon 缺失时自动拉起。界面为 Ink/React 单列对话：已完成内容进入终端
-scrollback（退出后仍可回看），流式正文与工具调用在底部实时更新；支持 `/`
-命令（`/help` `/new` `/resume` `/clear` `/status` `/continue` `/retry`
-`/diff` `/model` `/context` `/quit`）、内联提问与 pending diff 数字键审批、
-`@` 工作区文件补全、`Esc` 打断、忙时 `Enter` 排队。Python 终端界面已退役；
+daemon 缺失时自动拉起。交互式终端默认使用 fullscreen 渲染：界面画在终端
+备用屏（alternate screen，类似 vim），输入框固定在底部，对话在固定
+viewport 内窗口化显示，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/`Ctrl+End`
+跳到最早/最新并恢复自动跟随。备用屏没有终端原生 scrollback，`Cmd+F` 等
+终端搜索不可用；需要主屏 scrollback 时用 `cellwiki-tui --classic` 或设置
+`CELLWIKI_TUI_CLASSIC=1` 退回经典渲染。界面支持 `/` 命令（`/help` `/new`
+`/resume` `/clear` `/status` `/continue` `/retry` `/diff` `/model`
+`/context` `/quit`）、内联提问与 pending diff 数字键审批、`@` 工作区文件
+补全、`Esc` 打断、忙时 `Enter` 排队。Python 终端界面已退役；
 `cellwiki dev`、`cellwiki serve` 与 `cellwiki daemon *` 仍由 Python 提供。
 
 `cellwiki serve [--workspace PATH] [--detach]` 前台或后台运行 daemon；

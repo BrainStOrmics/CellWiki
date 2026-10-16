@@ -1,10 +1,12 @@
 import { render } from "ink";
 
-import { App } from "./components/App";
+import { App, type RenderMode } from "./components/App";
 import { TuiController } from "./controller";
 import {
   HELP,
   VERSION,
+  classicFromEnv,
+  hasClassicFlag,
   hasHelpFlag,
   hasVersionFlag,
   parseWorkspaceArg,
@@ -22,8 +24,14 @@ export async function main(
     return 0;
   }
   const workspace = parseWorkspaceArg(argv) ?? process.cwd();
+  const mode: RenderMode =
+    hasClassicFlag(argv) || classicFromEnv() || !process.stdout.isTTY
+      ? "classic"
+      : "fullscreen";
   const controller = new TuiController(workspace);
-  const app = render(<App controller={controller} />);
+  const app = render(<App controller={controller} mode={mode} />, {
+    alternateScreen: mode === "fullscreen",
+  });
   await app.waitUntilExit();
   return 0;
 }

@@ -1,12 +1,17 @@
 import { Box, Text, useInput } from "ink";
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { filterCommands } from "../commands";
 import type { TuiController, TuiState } from "../controller";
+import { displayWidth, truncateToWidth } from "../render/text";
 
 export interface ComposerProps {
   controller: TuiController;
   state: TuiState;
+  width?: number;
+  maxRows?: number;
+  onRowsChange?: (rows: number) => void;
+  onSubmitted?: () => void;
 }
 
 interface MentionMatch {
@@ -26,7 +31,14 @@ function activeMention(value: string): MentionMatch | null {
   return { start: at, query: tail };
 }
 
-export function Composer({ controller, state }: ComposerProps) {
+export function Composer({
+  controller,
+  state,
+  width = 80,
+  maxRows = 12,
+  onRowsChange,
+  onSubmitted,
+}: ComposerProps) {
   const [value, setValue] = useState("");
   const [menuIndex, setMenuIndex] = useState(0);
   const [history, setHistory] = useState<string[]>([]);
@@ -66,6 +78,25 @@ export function Composer({ controller, state }: ComposerProps) {
         ? "mention"
         : null;
 
+  const lines = value.split("\n");
+  const extraLines = Math.max(0, lines.length - 1);
+  const visibleExtraLines = Math.min(extraLines, 2);
+  const overflowLine = extraLines > visibleExtraLines ? 1 : 0;
+  const continuationRows = visibleExtraLines + overflowLine;
+  const queueRows = state.queue.length > 0 ? 1 : 0;
+  const baseRows = 1 + queueRows + continuationRows;
+  const menuCapacity = menuKind
+    ? Math.max(0, Math.max(1, maxRows) - baseRows - 1)
+    : 0;
+  const shownMenuItems = Math.min(menuItems.length, 6, menuCapacity);
+  const activeMenu = menuKind && shownMenuItems > 0 ? menuKind : null;
+  const menuRows = activeMenu ? 1 + shownMenuItems : 0;
+  const rows = Math.min(baseRows + menuRows, Math.max(1, maxRows));
+
+  useEffect(() => {
+    onRowsChange?.(rows);
+  }, [rows, onRowsChange]);
+
   const completeMenu = (): void => {
     const item = menuItems[menuIndex];
     if (!item) {
@@ -82,10 +113,10 @@ export function Composer({ controller, state }: ComposerProps) {
 
   const submitCurrent = (): void => {
     const current = valueRef.current;
-    if (menuKind) {
+    if (activeMenu) {
       const item = menuItems[menuIndex];
       const exactSlash =
-        menuKind === "slash" &&
+        activeMenu === "slash" &&
         item !== undefined &&
         current.trim() === item;
       if (!exactSlash) {
@@ -99,6 +130,7 @@ export function Composer({ controller, state }: ComposerProps) {
     setHistoryIndex(-1);
     if (message.trim()) {
       setHistory((historyItems) => [...historyItems, message]);
+      onSubmitted?.();
       void controller.submit(message);
     }
   };
@@ -127,12 +159,12 @@ export function Composer({ controller, state }: ComposerProps) {
       submitCurrent();
       return;
     }
-    if (key.tab && menuKind) {
+    if (key.tab && activeMenu) {
       completeMenu();
       return;
     }
     if (key.upArrow) {
-      if (menuKind && menuItems.length > 0) {
+      if (activeMenu && menuItems.length > 0) {
         setMenuIndex(
           (current) => (current - 1 + menuItems.length) % menuItems.length,
         );
@@ -156,7 +188,7 @@ export function Composer({ controller, state }: ComposerProps) {
       return;
     }
     if (key.downArrow) {
-      if (menuKind && menuItems.length > 0) {
+      if (activeMenu && menuItems.length > 0) {
         setMenuIndex((current) => (current + 1) % menuItems.length);
         return;
       }
@@ -205,33 +237,41 @@ export function Composer({ controller, state }: ComposerProps) {
     : state.runId
       ? "(running - enter queues)> "
       : "> ";
-  const lines = value.split("\n");
+  const firstLineWidth = Math.max(
+    1,
+    width - displayWidth(prompt) - 1,
+  );
 
   return (
     <Box flexDirection="column">
-      {menuKind ? (
+      {activeMenu ? (
         <Menu
-          title={menuKind === "slash" ? "commands" : "files"}
-          items={menuItems}
-          index={menuIndex}
+          title={activeMenu === "slash" ? "commands" : "files"}
+          items={menuItems.slice(0, shownMenuItems)}
+          index={Math.min(menuIndex, Math.max(0, shownMenuItems - 1))}
+          width={width}
         />
       ) : null}
       {state.queue.length > 0 ? (
         <Text dimColor>
-          {state.queue.length} queued · up to withdraw
+          {truncateToWidth(`${state.queue.length} queued · up to withdraw`, width)}
         </Text>
       ) : null}
       <Box>
         <Text color={gate ? "yellow" : "green"}>{prompt}</Text>
-        <Text>{lines[0] ?? ""}</Text>
+        <Text>{truncateToWidth(lines[0] ?? "", firstLineWidth)}</Text>
         <Text dimColor>▌</Text>
       </Box>
-      {lines.slice(1).map((line, index) => (
+      {lines.slice(1, 1 + visibleExtraLines).map((line, index) => (
         <Text key={`line-${index}`} dimColor>
-          {"... "}
-          {line}
+          {truncateToWidth(`... ${line}`, width)}
         </Text>
       ))}
+      {overflowLine > 0 ? (
+        <Text dimColor>
+          {truncateToWidth(`... (+${extraLines - visibleExtraLines} more lines)`, width)}
+        </Text>
+      ) : null}
     </Box>
   );
 }
@@ -240,18 +280,19 @@ function Menu({
   title,
   items,
   index,
+  width,
 }: {
   title: string;
   items: string[];
   index: number;
+  width: number;
 }) {
   return (
     <Box flexDirection="column">
       <Text dimColor>{title}</Text>
-      {items.slice(0, 6).map((item, itemIndex) => (
+      {items.map((item, itemIndex) => (
         <Text key={item} color={itemIndex === index ? "cyan" : undefined}>
-          {itemIndex === index ? "❯ " : "  "}
-          {item}
+          {truncateToWidth(`${itemIndex === index ? "❯ " : "  "}${item}`, width)}
         </Text>
       ))}
     </Box>

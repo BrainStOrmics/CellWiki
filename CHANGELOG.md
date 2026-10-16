@@ -28,6 +28,11 @@
 
 ### Changed
 
+- 终端客户端默认改为 fullscreen 渲染（Ink `alternateScreen` + 窗口化
+  viewport）：输入框固定底部，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/
+  `Ctrl+End` 跳转，滚离底部时暂停自动跟随并提示新行；帧高度恒等于终端
+  行数，修复 Windows 经典渲染的重复帧。`cellwiki-tui --classic` 或
+  `CELLWIKI_TUI_CLASSIC=1` 保留主屏 scrollback 渲染。
 - 公开入口文档不再依赖未随代码仓库分发的本地项目与设计文档。
 - 发布说明不再手工维护固定安装包哈希。
 - 设置页工作区记忆面板收敛为“状态行 + 记忆文件列表”：手动合并、队列信息和

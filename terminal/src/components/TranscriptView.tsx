@@ -12,13 +12,17 @@ const TONE_COLORS: Record<Tone, string | undefined> = {
   warning: "yellow",
 };
 
+export function toneColor(tone: Tone | undefined): string | undefined {
+  return tone ? TONE_COLORS[tone] : undefined;
+}
+
 export function TranscriptView({ lines }: { lines: TranscriptLine[] }) {
   return (
     <Static items={lines}>
       {(line) => (
         <Text
           key={line.id}
-          color={line.tone ? TONE_COLORS[line.tone] : undefined}
+          color={toneColor(line.tone)}
           dimColor={line.tone === "dim"}
         >
           {line.text}
