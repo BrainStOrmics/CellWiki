@@ -5,6 +5,7 @@ import type {
   ContextUsage,
   MessageRecord,
   ModelCatalog,
+  PendingDiffSummary,
   PendingQuestion,
   ThreadRecord,
 } from "../src/api/types";
@@ -14,6 +15,7 @@ export interface FakeClientOptions {
   events?: Record<string, AgentEvent[]>;
   question?: PendingQuestion | null;
   patch?: string;
+  pendingDiffs?: PendingDiffSummary[];
   failStreamOnce?: boolean;
   threads?: ThreadRecord[];
 }
@@ -24,6 +26,7 @@ export class FakeClient implements ClientLike {
   private events: Record<string, AgentEvent[]>;
   private question: PendingQuestion | null;
   private patch: string;
+  pendingDiffs: PendingDiffSummary[];
   private failStreamOnce: boolean;
   threads: ThreadRecord[];
   messages: Record<string, MessageRecord[]>;
@@ -53,6 +56,7 @@ export class FakeClient implements ClientLike {
         "+new",
         "",
       ].join("\n");
+    this.pendingDiffs = options.pendingDiffs ?? [];
     this.failStreamOnce = options.failStreamOnce ?? false;
     this.threads = options.threads ?? [
       {
@@ -140,13 +144,23 @@ export class FakeClient implements ClientLike {
     return this.patch;
   }
 
+  async listPendingDiffs(): Promise<PendingDiffSummary[]> {
+    return this.pendingDiffs.map((diff) => ({ ...diff }));
+  }
+
   async acceptPendingDiff(diffId: string): Promise<unknown> {
     this.accepted.push(diffId);
+    this.pendingDiffs = this.pendingDiffs.map((diff) =>
+      diff.diff_id === diffId ? { ...diff, status: "accepted" } : diff,
+    );
     return { diff_id: diffId };
   }
 
   async rejectPendingDiff(diffId: string): Promise<unknown> {
     this.rejected.push(diffId);
+    this.pendingDiffs = this.pendingDiffs.map((diff) =>
+      diff.diff_id === diffId ? { ...diff, status: "rejected" } : diff,
+    );
     return { diff_id: diffId };
   }
 

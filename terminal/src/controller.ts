@@ -5,10 +5,12 @@ import type {
   ContextUsage,
   MessageRecord,
   ModelCatalog,
+  PendingDiffSummary,
   PendingQuestion,
   ThreadRecord,
 } from "./api/types";
 import { parseCommand } from "./commands";
+import { redactSecrets } from "./redact";
 import {
   DaemonVersionMismatch,
   ensureDaemon,
@@ -39,6 +41,7 @@ export interface ClientLike {
   retryRun(runId: string): Promise<AgentRun>;
   resumeRun(runId: string): Promise<AgentRun>;
   pendingDiffPatch(diffId: string): Promise<string>;
+  listPendingDiffs(): Promise<PendingDiffSummary[]>;
   acceptPendingDiff(diffId: string): Promise<unknown>;
   rejectPendingDiff(diffId: string): Promise<unknown>;
   listModelProviders(): Promise<ModelCatalog>;
@@ -96,6 +99,7 @@ export interface TuiState {
   verbose: boolean;
   gate: Gate | null;
   pendingDiffId: string | null;
+  pendingDiffRunId: string | null;
   queue: string[];
   transcript: TranscriptLine[];
   contextLabel: string;
@@ -159,6 +163,7 @@ export class TuiController {
       verbose: false,
       gate: null,
       pendingDiffId: null,
+      pendingDiffRunId: null,
       queue: [],
       transcript: [],
       contextLabel: "",
@@ -192,6 +197,18 @@ export class TuiController {
       });
       await this.refreshModel();
       await this.refreshContext();
+      const pending = await this.fetchPendingDiffs();
+      const newest = pending[0];
+      if (newest) {
+        this.update({
+          pendingDiffId: newest.diff_id,
+          pendingDiffRunId: newest.run_id ?? null,
+        });
+        this.commit(
+          `pending diff ${newest.diff_id} - /diff to review`,
+          "warning",
+        );
+      }
     } catch (error) {
       if (error instanceof DaemonVersionMismatch) {
         this.update({ connecting: false, versionMismatch: error });
@@ -416,6 +433,10 @@ export class TuiController {
   }
 
   private async driveRun(runId: string): Promise<void> {
+    if (!runId) {
+      this.reportError(new Error("run id is missing"));
+      return;
+    }
     while (true) {
       const gateOpened = await this.driveOnce(runId);
       if (gateOpened) {
@@ -516,7 +537,13 @@ export class TuiController {
         this.update({ streaming: this.state.streaming + message });
         return false;
       case "reasoning_delta":
-        this.update({ reasoning: this.state.reasoning + message });
+        if (message) {
+          const reasoning = `${this.state.reasoning}${message}`;
+          this.update({
+            reasoning:
+              reasoning.length > 4_000 ? reasoning.slice(-4_000) : reasoning,
+          });
+        }
         return false;
       case "final_response": {
         const answer =
@@ -630,6 +657,7 @@ export class TuiController {
     const patch = await this.requireClient().pendingDiffPatch(diffId);
     this.update({
       pendingDiffId: diffId,
+      pendingDiffRunId: runId || this.state.pendingDiffRunId,
       runStatus: "waiting_approval",
       gate: { kind: "diff", runId, diffId, patch },
     });
@@ -641,6 +669,7 @@ export class TuiController {
       runStatus: run.status,
       gate: null,
       pendingDiffId: run.pending_diff_id ?? null,
+      pendingDiffRunId: run.pending_diff_id ? run.run_id : null,
       streaming: "",
       reasoning: "",
       tools: [],
@@ -648,12 +677,72 @@ export class TuiController {
     this.commit(formatRunSummary(run), run.status === "failed" ? "error" : "dim");
     await this.refreshContext();
     this.update({ usageLabel: "" });
-    const queue = [...this.state.queue];
-    const next = queue.shift();
-    if (next !== undefined) {
-      this.update({ queue });
-      await this.startMessage(next);
+    await this.afterRunSettled(run);
+  }
+
+  private async fetchPendingDiffs(): Promise<PendingDiffSummary[]> {
+    try {
+      const diffs = await this.requireClient().listPendingDiffs();
+      return diffs.filter(
+        (diff) => diff.status === undefined || diff.status === "pending",
+      );
+    } catch {
+      return [];
     }
+  }
+
+  private async afterRunSettled(run: AgentRun): Promise<void> {
+    await this.afterDiffSettled(run.run_id, run.pending_diff_id ?? null);
+  }
+
+  private async afterDiffSettled(
+    runId: string | null,
+    pendingDiffId: string | null = null,
+  ): Promise<void> {
+    let pending = await this.fetchPendingDiffs();
+    let match = this.matchPendingDiff(pending, runId);
+    if (!match && pendingDiffId) {
+      match = {
+        diff_id: pendingDiffId,
+        run_id: runId ?? undefined,
+        status: "pending",
+      };
+    }
+    if (!match) {
+      await this.sleep(500);
+      pending = await this.fetchPendingDiffs();
+      match = this.matchPendingDiff(pending, runId);
+    }
+    if (match) {
+      const gateRunId = match.run_id ?? runId ?? "";
+      this.update({
+        pendingDiffId: match.diff_id,
+        pendingDiffRunId: gateRunId || null,
+      });
+      await this.openDiffGate(gateRunId, match.diff_id);
+      return;
+    }
+    this.update({
+      pendingDiffId,
+      pendingDiffRunId: pendingDiffId ? runId : null,
+    });
+    if (this.state.queue.length > 0) {
+      const [next, ...rest] = this.state.queue;
+      this.update({ queue: rest });
+      if (next !== undefined) {
+        await this.startMessage(next);
+      }
+    }
+  }
+
+  private matchPendingDiff(
+    pending: PendingDiffSummary[],
+    runId: string | null,
+  ): PendingDiffSummary | null {
+    if (runId) {
+      return pending.find((diff) => diff.run_id === runId) ?? pending[0] ?? null;
+    }
+    return pending[0] ?? null;
   }
 
   private async handleGateInput(text: string): Promise<void> {
@@ -669,8 +758,12 @@ export class TuiController {
         } catch (error) {
           this.reportError(error);
         }
-        this.update({ gate: null, pendingDiffId: null });
-        this.startDriver(gate.runId);
+        this.update({
+          gate: null,
+          pendingDiffId: null,
+          pendingDiffRunId: null,
+        });
+        await this.finishDiffDecision(gate.runId);
         return;
       }
       if (text === "2") {
@@ -680,12 +773,16 @@ export class TuiController {
         } catch (error) {
           this.reportError(error);
         }
-        this.update({ gate: null, pendingDiffId: null });
-        this.startDriver(gate.runId);
+        this.update({
+          gate: null,
+          pendingDiffId: null,
+          pendingDiffRunId: null,
+        });
+        await this.finishDiffDecision(gate.runId);
         return;
       }
       if (text === "3") {
-        this.commit(gate.patch, "dim");
+        this.commit(redactSecrets(gate.patch), "dim");
         return;
       }
       this.commit("choose 1 accept, 2 reject, 3 view diff, or Esc later", "dim");
@@ -707,6 +804,28 @@ export class TuiController {
     }
     this.update({ gate: null });
     this.startDriver(gate.runId);
+  }
+
+  private async finishDiffDecision(runId: string): Promise<void> {
+    if (!runId) {
+      await this.afterDiffSettled(null);
+      return;
+    }
+    let run: AgentRun | null = null;
+    try {
+      run = await this.requireClient().getRun(runId);
+    } catch (error) {
+      this.reportError(error);
+    }
+    if (run && typeof run.status === "string") {
+      if (TERMINAL_STATUSES.has(run.status)) {
+        await this.afterRunSettled(run);
+        return;
+      }
+      this.startDriver(runId);
+      return;
+    }
+    await this.afterDiffSettled(null);
   }
 
   private async handleCommand(text: string): Promise<void> {
@@ -746,11 +865,17 @@ export class TuiController {
       case "/diff":
         if (this.state.pendingDiffId) {
           await this.openDiffGate(
-            this.state.runId ?? "",
+            this.state.pendingDiffRunId ?? this.state.runId ?? "",
             this.state.pendingDiffId,
           );
         } else {
-          this.commit("no pending diff", "dim");
+          const pending = await this.fetchPendingDiffs();
+          const newest = pending[0];
+          if (newest) {
+            await this.openDiffGate(newest.run_id ?? "", newest.diff_id);
+          } else {
+            this.commit("no pending diff", "dim");
+          }
         }
         return;
       case "/model": {

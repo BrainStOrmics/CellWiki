@@ -2,6 +2,7 @@ import { render } from "ink-testing-library";
 import { describe, expect, it } from "vitest";
 
 import { App } from "../src/components/App";
+import { LiveView } from "../src/components/LiveView";
 import { TuiController } from "../src/controller";
 import { FakeClient } from "./fake-client";
 
@@ -138,6 +139,21 @@ describe("App", () => {
         line.text.includes("show this help"),
       ),
     );
+    unmount();
+  });
+
+  it("keeps long reasoning compact in the live view", () => {
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () =>
+        new FakeClient([
+          { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+        ]),
+    });
+    const state = { ...controller.state, reasoning: "x".repeat(5_000) };
+    const { lastFrame, unmount } = render(<LiveView state={state} />);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Thinking…");
+    expect(frame.length).toBeLessThan(500);
     unmount();
   });
 });

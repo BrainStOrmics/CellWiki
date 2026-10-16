@@ -121,7 +121,11 @@ export class DaemonClient {
   }
 
   async listPendingDiffs(): Promise<PendingDiffSummary[]> {
-    return this.request<PendingDiffSummary[]>("GET", "/api/pending-diffs");
+    const payload = await this.request<{ pending_diffs: PendingDiffSummary[] }>(
+      "GET",
+      "/api/pending-diffs",
+    );
+    return payload.pending_diffs;
   }
 
   async pendingDiffPatch(diffId: string): Promise<string> {
@@ -132,7 +136,16 @@ export class DaemonClient {
     if (!response.ok) {
       throw await this.toError(response);
     }
-    return response.text();
+    const text = await response.text();
+    try {
+      const payload = JSON.parse(text) as { patch?: unknown };
+      if (typeof payload.patch === "string") {
+        return payload.patch;
+      }
+    } catch {
+      // fall back to the raw body
+    }
+    return text;
   }
 
   async acceptPendingDiff(diffId: string): Promise<Record<string, unknown>> {

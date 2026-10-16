@@ -158,6 +158,58 @@ describe("TuiController", () => {
     expect(client.accepted).toEqual(["diff_1"]);
   });
 
+  it("surfaces a pending diff published after a succeeded run", async () => {
+    const client = new FakeClient(
+      [
+        {
+          run_id: "run_1",
+          thread_id: "thread_1",
+          status: "succeeded",
+          pending_diff_id: "diff_1",
+        },
+      ],
+      {
+        events: { run_1: [] },
+        pendingDiffs: [
+          { diff_id: "diff_1", run_id: "run_1", status: "pending" },
+        ],
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("edit");
+    await waitFor(() => controller.state.gate?.kind === "diff");
+    expect(controller.state.pendingDiffId).toBe("diff_1");
+  });
+
+  it("advances through multiple pending diffs after accept", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        pendingDiffs: [
+          { diff_id: "diff_1", run_id: "run_1", status: "pending" },
+          { diff_id: "diff_2", run_id: "run_2", status: "pending" },
+        ],
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/diff");
+    await waitFor(() => {
+      const gate = controller.state.gate;
+      return gate?.kind === "diff" && gate.diffId === "diff_1";
+    });
+    await controller.submit("1");
+    await waitFor(() => {
+      const gate = controller.state.gate;
+      return gate?.kind === "diff" && gate.diffId === "diff_2";
+    });
+    await controller.submit("1");
+    expect(await controller.waitIdle()).toBe(true);
+    expect(client.accepted).toEqual(["diff_1", "diff_2"]);
+    expect(controller.state.pendingDiffId).toBeNull();
+  });
+
   it("queues messages while a run is active", async () => {
     const client = new FakeClient(
       [

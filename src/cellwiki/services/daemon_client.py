@@ -136,6 +136,12 @@ class DaemonClient:
                 _error_message(response),
                 status_code=response.status_code,
             )
+        try:
+            payload = response.json()
+        except ValueError:
+            return response.text
+        if isinstance(payload, dict) and isinstance(payload.get("patch"), str):
+            return payload["patch"]
         return response.text
 
     def accept_pending_diff(self, diff_id: str) -> dict[str, Any]:

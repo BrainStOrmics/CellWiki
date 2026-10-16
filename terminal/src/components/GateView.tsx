@@ -1,6 +1,7 @@
 import { Box, Text } from "ink";
 
 import type { Gate } from "../controller";
+import { redactSecrets } from "../redact";
 
 export function GateView({ gate }: { gate: Gate }) {
   if (gate.kind === "question") {
@@ -28,10 +29,11 @@ export function GateView({ gate }: { gate: Gate }) {
     );
   }
 
-  const lines = gate.patch.split("\n");
+  const safePatch = redactSecrets(gate.patch);
+  const lines = safePatch.split("\n");
   const preview = lines.slice(0, 24);
-  const files = diffFiles(gate.patch);
-  const [added, removed] = diffCounts(gate.patch);
+  const files = diffFiles(safePatch);
+  const [added, removed] = diffCounts(safePatch);
   return (
     <Box flexDirection="column" marginTop={1}>
       <Text bold>Pending diff {gate.diffId}</Text>

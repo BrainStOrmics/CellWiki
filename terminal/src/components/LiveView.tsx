@@ -15,17 +15,25 @@ export function LiveView({ state }: { state: TuiState }) {
     }
     const timer = setInterval(() => {
       setFrame((value) => value + 1);
-    }, 120);
+    }, 200);
     return () => clearInterval(timer);
   }, [busy]);
 
   const spinner = FRAMES[frame % FRAMES.length] ?? FRAMES[0];
+  const reasoningTail =
+    state.reasoning
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ?? "";
 
   return (
     <Box flexDirection="column">
       {state.reasoning ? (
         <Text dimColor>
-          ✻ {state.reasoning}
+          {state.verbose
+            ? `✻ ${state.reasoning.split("\n").slice(-12).join("\n")}`
+            : `✻ Thinking… ${reasoningTail.slice(-120)}`}
         </Text>
       ) : null}
       {state.streaming ? <Text>{state.streaming}</Text> : null}
