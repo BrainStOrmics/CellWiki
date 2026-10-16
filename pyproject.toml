@@ -29,7 +29,6 @@ dependencies = [
     "sqlalchemy>=2.0,<3",
     "uvicorn[standard]>=0.35,<1",
     "httpx>=0.28,<1",
-    "prompt_toolkit>=3.0.51,<4",
 ]
 
 [project.optional-dependencies]

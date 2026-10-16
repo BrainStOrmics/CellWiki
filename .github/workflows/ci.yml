@@ -19,7 +19,7 @@ jobs:
         run: >-
           uv run ruff check
           src/cellwiki/agent src/cellwiki/api src/cellwiki/domain
-          src/cellwiki/evaluation src/cellwiki/services src/cellwiki/tui
+          src/cellwiki/evaluation src/cellwiki/services
           src/cellwiki/product_cli.py
           scripts/evaluate_ingest_model.py
           scripts/evaluate_agent_runs.py scripts/run_agent_eval.py
@@ -32,7 +32,7 @@ jobs:
         run: >-
           uv run mypy
           src/cellwiki/agent src/cellwiki/api src/cellwiki/domain
-          src/cellwiki/evaluation src/cellwiki/services src/cellwiki/tui
+          src/cellwiki/evaluation src/cellwiki/services
           src/cellwiki/product_cli.py
           --ignore-missing-imports
       - run: uv run pytest -q
@@ -56,6 +56,39 @@ jobs:
         run: npm test
       - working-directory: frontend
         run: npm run build
+
+  terminal:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: terminal/package-lock.json
+      - working-directory: terminal
+        run: npm ci
+      - working-directory: terminal
+        run: npm run typecheck
+      - working-directory: terminal
+        run: npm test
+      - working-directory: terminal
+        run: npm run build
+      - if: matrix.os == 'ubuntu-latest'
+        uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - if: matrix.os == 'ubuntu-latest'
+        run: uv sync --extra dev
+      - if: matrix.os == 'ubuntu-latest'
+        working-directory: terminal
+        env:
+          CELLWIKI_CLI: ../.venv/bin/cellwiki
+        run: npm run smoke
 
   fixture-e2e:
     runs-on: ubuntu-latest

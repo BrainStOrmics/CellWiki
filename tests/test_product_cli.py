@@ -79,3 +79,43 @@ def test_product_cli_runs_the_owned_development_runtime(monkeypatch, tmp_path: P
         },
         "ran": True,
     }
+
+
+def test_product_cli_hands_the_tui_to_the_typescript_client(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from cellwiki import product_cli
+
+    captured: dict[str, object] = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        "shutil.which",
+        lambda name: "/usr/local/bin/cellwiki-tui"
+        if name == "cellwiki-tui"
+        else None,
+    )
+    monkeypatch.setattr(
+        "subprocess.call",
+        lambda command: captured.setdefault("command", command) and 0,
+    )
+
+    with pytest.raises(SystemExit) as exit_info:
+        product_cli.main([])
+
+    assert exit_info.value.code == 0
+    assert captured["command"] == [
+        "/usr/local/bin/cellwiki-tui",
+        "--workspace",
+        str(tmp_path),
+    ]
+
+
+def test_product_cli_tui_requires_the_typescript_client(monkeypatch) -> None:
+    from cellwiki import product_cli
+
+    monkeypatch.setattr("shutil.which", lambda name: None)
+
+    with pytest.raises(SystemExit) as exit_info:
+        product_cli.main([])
+
+    assert "npm install -g cellwiki-tui" in str(exit_info.value)

@@ -18,11 +18,12 @@
   schema/Wiki 知识，确定性返回候选与可追溯文献证据；`support_score` 恒为
   `null`。调用方（CellHashtag）接入、端口发现、最终注释与生物学准确率评估仍
   待后续工作，本版本不作任何准确率承诺。
-- 新增本地 daemon（`cellwiki serve`）与终端客户端：每个工作区一个常驻运行时，
+- 新增本地 daemon（`cellwiki serve`）与 TypeScript/Ink 终端客户端
+  （`terminal/` + `cellwiki-tui`，Node >= 22）：每个工作区一个常驻运行时，
   只监听 loopback，发现文件与控制 token 位于用户状态目录（0600）；`cellwiki`
-  无子命令进入行式终端界面（`prompt_toolkit` + `rich`）：单列对话写入终端主屏
-  scrollback，支持内联提问与 pending diff 数字键审批、`/` 命令、`Esc` 打断、
-  忙时排队与 SSE 断线重连，并在需要时自动拉起 daemon。`cellwiki dev` 与桌面
+  无子命令把终端 UI 交给 `cellwiki-tui`，支持单列 scrollback、流式与工具行、
+  内联提问与 pending diff 审批、`/` 命令、`@` 文件补全、`Esc` 打断与忙时
+  排队。Python 终端界面已退役；`cellwiki dev`、`cellwiki serve` 与桌面
   sidecar 行为不变。
 
 ### Changed

@@ -45,27 +45,31 @@ Agentic CellWiki 是一个本地优先的科学 Wiki，提供 Windows 桌面与 
 
 ## Linux / 终端使用
 
-终端路径只需要 Python 3.12 与 `uv`：
+终端路径需要 Python 3.12 + `uv`（daemon 与 Agent 运行时）以及 Node.js 22+
+（TypeScript/Ink 终端客户端）：
 
 ```bash
 uv tool install /path/to/CellWiki
+npm install -g cellwiki-tui
 cd /path/to/knowledge-base
 cellwiki
 ```
 
-`cellwiki` 无子命令进入行式终端界面，并在需要时自动拉起本地 daemon。
-界面为单列对话，输出直接进入终端 scrollback（退出后仍可回看）；支持 `/` 命令
-（`/help` `/new` `/resume` `/clear` `/status` `/continue` `/retry` `/diff`
-`/quit`）、内联的提问与 pending diff 数字键审批、`Esc` 打断当前 run、忙时
-`Enter` 排队。
+`cellwiki` 无子命令把终端 UI 交给 `cellwiki-tui`（找不到时给出安装提示），
+daemon 缺失时自动拉起。界面为 Ink/React 单列对话：已完成内容进入终端
+scrollback（退出后仍可回看），流式正文与工具调用在底部实时更新；支持 `/`
+命令（`/help` `/new` `/resume` `/clear` `/status` `/continue` `/retry`
+`/diff` `/model` `/context` `/quit`）、内联提问与 pending diff 数字键审批、
+`@` 工作区文件补全、`Esc` 打断、忙时 `Enter` 排队。Python 终端界面已退役；
+`cellwiki dev`、`cellwiki serve` 与 `cellwiki daemon *` 仍由 Python 提供。
+
 `cellwiki serve [--workspace PATH] [--detach]` 前台或后台运行 daemon；
 `cellwiki daemon status|stop|restart --workspace PATH` 管理生命周期。daemon 只
 监听 `127.0.0.1`，发现文件与控制 token 位于用户状态目录
 （`$XDG_RUNTIME_DIR` 优先，否则 `~/.cellwiki`）且权限 0600。
 
-TUI 覆盖对话、提问与 pending diff 审批；附件上传、完整设置编辑、`@` 文件
-补全、`/model`、`/context` 与附着其他客户端启动的 run 属后续版本，需要这些
-能力时使用桌面端。
+终端客户端当前覆盖对话、提问、审批、运行控制、模型与上下文显示；附件、
+线程重命名/删除、工作区浏览/搜索/编辑、设置与记忆面板按后续计划补齐。
 
 ## 开发环境
 

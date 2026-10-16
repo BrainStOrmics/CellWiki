@@ -34,9 +34,10 @@ uv run cellwiki daemon status --workspace <knowledge-base>
 uv run cellwiki daemon stop --workspace <knowledge-base>
 ```
 
-`cellwiki` 无子命令进入行式 TUI（`prompt_toolkit` + `rich`）；TUI 是 daemon
-客户端，不得构造第二个 `AgentRuntimeManager`。daemon 只监听 `127.0.0.1`，
-发现文件与控制 token 位于用户状态目录且权限 0600。
+`cellwiki` 无子命令把终端 UI 交给 `terminal/` 的 `cellwiki-tui`
+（TypeScript/Ink，Node >= 22）；TS 客户端是 daemon 客户端，不得构造第二个
+`AgentRuntimeManager`。daemon 只监听 `127.0.0.1`，发现文件与控制 token 位于
+用户状态目录且权限 0600。
 
 ## 代码变更规则
 
@@ -61,7 +62,13 @@ npm run build
 终端运行时相关的最小验证：
 
 ```powershell
-uv run pytest -q tests/test_local_daemon.py tests/test_tui.py tests/test_product_cli.py
+Set-Location terminal
+npm ci
+npm run typecheck
+npm test
+npm run build
+Set-Location ..
+uv run pytest -q tests/test_local_daemon.py tests/test_product_cli.py
 uv run ruff check src tests
 uv run mypy src
 uv run python docs/scripts/check_docs.py --require-design

@@ -16,7 +16,7 @@ from cellwiki.services.local_daemon import (
     DaemonCoordinates,
     DaemonVersionMismatch,
 )
-from cellwiki.tui.client import DaemonClient
+from cellwiki.services.daemon_client import DaemonClient
 
 
 def _use_isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

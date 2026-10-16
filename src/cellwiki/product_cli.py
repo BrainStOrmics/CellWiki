@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -138,11 +139,31 @@ def _run_daemon_command(arguments: argparse.Namespace) -> None:
 
 
 def _run_tui(arguments: argparse.Namespace) -> None:
-    """Start the terminal client for the current directory."""
+    """Hand the terminal UI to the TypeScript client for the current directory."""
 
-    from cellwiki.tui.app import run_tui
+    import shutil
+    import subprocess
 
-    run_tui(Path.cwd())
+    executable = shutil.which("cellwiki-tui")
+    if executable is None:
+        raise SystemExit(
+            "cellwiki TUI requires the TypeScript client; install it with "
+            "`npm install -g cellwiki-tui` (Node >= 22)"
+        )
+    command = [executable, "--workspace", str(Path.cwd())]
+    if os.name == "nt" and executable.lower().endswith((".cmd", ".bat")):
+        command = [
+            os.environ.get("COMSPEC", "cmd.exe"),
+            "/d",
+            "/s",
+            "/c",
+            *command,
+        ]
+    try:
+        return_code = subprocess.call(command)
+    except OSError as error:
+        raise SystemExit(f"cellwiki TUI failed to start: {error}") from None
+    raise SystemExit(return_code)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
