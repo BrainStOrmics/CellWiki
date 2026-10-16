@@ -14,6 +14,8 @@ export interface ThemeTokens {
   warning: string;
   diffAdded: string;
   diffRemoved: string;
+  /** Inline code and code blocks. */
+  code: string;
   userMessageBackground: string;
   /** Text drawn on top of a colored background. */
   inverseText: string;
@@ -45,6 +47,7 @@ export const THEME_PRESETS: Theme[] = [
       warning: "#fbbf24",
       diffAdded: "#4ade80",
       diffRemoved: "#f87171",
+      code: "#7dd3fc",
       userMessageBackground: "#3a3a3a",
       inverseText: "#f5f5f5",
       tool: "gray",
@@ -66,6 +69,7 @@ export const THEME_PRESETS: Theme[] = [
       warning: "#b45309",
       diffAdded: "#15803d",
       diffRemoved: "#b91c1c",
+      code: "#1d4ed8",
       userMessageBackground: "#e5e7eb",
       inverseText: "#111827",
       tool: "#6b7280",
@@ -87,6 +91,7 @@ export const THEME_PRESETS: Theme[] = [
       warning: "#f472b6",
       diffAdded: "#60a5fa",
       diffRemoved: "#fbbf24",
+      code: "#93c5fd",
       userMessageBackground: "#3a3a3a",
       inverseText: "#f5f5f5",
       tool: "gray",
@@ -108,6 +113,7 @@ export const THEME_PRESETS: Theme[] = [
       warning: "#a21caf",
       diffAdded: "#1d4ed8",
       diffRemoved: "#b45309",
+      code: "#1d4ed8",
       userMessageBackground: "#e5e7eb",
       inverseText: "#111827",
       tool: "#6b7280",
@@ -129,6 +135,7 @@ export const THEME_PRESETS: Theme[] = [
       warning: "yellowBright",
       diffAdded: "greenBright",
       diffRemoved: "redBright",
+      code: "cyan",
       userMessageBackground: "blackBright",
       inverseText: "white",
       tool: "gray",
@@ -150,6 +157,7 @@ export const THEME_PRESETS: Theme[] = [
       warning: "yellow",
       diffAdded: "green",
       diffRemoved: "red",
+      code: "blue",
       userMessageBackground: "whiteBright",
       inverseText: "black",
       tool: "gray",

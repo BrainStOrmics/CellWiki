@@ -62,7 +62,7 @@ describe("markdown rendering", () => {
     expect(renderInline("**bold** and `code` and [link](https://x)")).toEqual([
       { text: "bold", bold: true },
       { text: " and " },
-      { text: "code", dim: true },
+      { text: "code", code: true },
       { text: " and " },
       { text: "link", underline: true },
     ]);
@@ -81,6 +81,8 @@ describe("markdown rendering", () => {
     expect(
       lines.map((line) => line.segments.map((segment) => segment.text).join("")),
     ).toEqual(["Title", "• item", "│ note", "raw **code**", "after"]);
+    const fenceLine = lines[3];
+    expect(fenceLine?.segments[0]?.code).toBe(true);
   });
 
   it("strips markdown markers from assistant visual lines", () => {

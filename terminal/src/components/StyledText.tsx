@@ -20,7 +20,7 @@ export function StyledText({
           italic={segment.italic}
           dimColor={segment.dim}
           underline={segment.underline}
-          color={segment.color}
+          color={segment.color ?? (segment.code ? theme.tokens.code : undefined)}
         >
           {segment.text}
         </Text>

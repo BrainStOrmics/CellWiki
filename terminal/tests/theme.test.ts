@@ -46,6 +46,13 @@ describe("theme presets", () => {
     expect(daltonized.tokens.error).not.toBe(dark.tokens.error);
     expect(daltonized.tokens.success).not.toBe(dark.tokens.success);
   });
+
+  it("defines a readable code color for every preset", () => {
+    for (const theme of THEME_PRESETS) {
+      expect(theme.tokens.code).toBeTruthy();
+      expect(theme.tokens.code).not.toBe(theme.tokens.inactive);
+    }
+  });
 });
 
 describe("theme store", () => {

@@ -6,6 +6,8 @@ export interface StyledSegment {
   italic?: boolean;
   dim?: boolean;
   underline?: boolean;
+  /** Inline code or code block content; render with the theme code color. */
+  code?: boolean;
   color?: string;
 }
 
@@ -43,7 +45,7 @@ function styleToken(token: string): StyledSegment[] {
     }));
   }
   if (token.startsWith("`") && token.endsWith("`")) {
-    return [{ text: token.slice(1, -1), dim: true }];
+    return [{ text: token.slice(1, -1), code: true }];
   }
   if (token.startsWith("~~") && token.endsWith("~~")) {
     return [{ text: token.slice(2, -2), dim: true }];
@@ -70,7 +72,7 @@ export function renderMarkdown(text: string): MarkdownLine[] {
       continue;
     }
     if (inFence) {
-      lines.push({ segments: [{ text: raw, dim: true }] });
+      lines.push({ segments: [{ text: raw, code: true }] });
       continue;
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(raw);
@@ -101,10 +103,7 @@ export function renderMarkdown(text: string): MarkdownLine[] {
     const quote = /^>\s?(.*)$/.exec(raw);
     if (quote) {
       lines.push({
-        segments: [
-          { text: "│ ", dim: true },
-          ...renderInline(quote[1] ?? ""),
-        ],
+        segments: [{ text: "│ ", dim: true }, ...renderInline(quote[1] ?? "")],
       });
       continue;
     }
