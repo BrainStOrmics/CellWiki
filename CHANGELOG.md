@@ -36,6 +36,9 @@
 
 ### Changed
 
+- 终端客户端 `/new` 现在清空屏幕并开始新会话：清空 transcript、重置
+  thread/run/usage/queue 状态并回到 `run idle`（旧会话仍可用 `/resume`
+  找回）；`/clear` 保持只清视图的语义。
 - 终端客户端主色统一：每个主题预设的 `code`（Markdown 行内代码/代码块）
   与 `claude`（主色）取同一值；助手 bullet `●`、Markdown 列表 `•`、
   输入框边框/标题/`❯` 提示符与代码同色。

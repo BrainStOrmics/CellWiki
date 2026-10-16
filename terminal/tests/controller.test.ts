@@ -99,6 +99,39 @@ describe("TuiController", () => {
     expect(client.started).toEqual([["thread_new", "hello"]]);
   });
 
+  it("clears the transcript when starting a new conversation", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        events: {
+          run_1: [
+            {
+              run_id: "run_1",
+              sequence: 1,
+              type: "final_response",
+              message: "hello world",
+            },
+          ],
+        },
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("hi");
+    expect(await controller.waitIdle()).toBe(true);
+    expect(controller.state.threadId).toBe("thread_new");
+    expect(controller.state.transcript.length).toBeGreaterThan(1);
+
+    await controller.submit("/new");
+    expect(controller.state.threadId).toBeNull();
+    expect(controller.state.threadTitle).toBe("");
+    expect(controller.state.runStatus).toBe("idle");
+    expect(controller.state.transcript.map((line) => line.text)).toEqual([
+      "new conversation",
+    ]);
+    expect(controller.state.transcript[0]?.tone).toBe("dim");
+  });
+
   it("answers an inline question gate", async () => {
     const client = new FakeClient(
       [

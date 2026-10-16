@@ -998,7 +998,21 @@ export class TuiController {
           this.commit("a run is active; finish or interrupt it first", "warning");
           return;
         }
-        this.update({ threadId: null, threadTitle: "", contextLabel: "" });
+        this.update({
+          threadId: null,
+          threadTitle: "",
+          contextLabel: "",
+          transcript: [],
+          runId: null,
+          lastRunId: null,
+          runStatus: "idle",
+          gate: null,
+          streaming: "",
+          reasoning: "",
+          tools: [],
+          usageLabel: "",
+          queue: [],
+        });
         this.commit("new conversation", "dim");
         return;
       case "/resume":

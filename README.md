@@ -83,6 +83,8 @@ viewport 内窗口化显示，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/`Ctrl+End
 （助手 bullet、spinner、行内代码与代码块同色），light 主题使用深紫变体；
 每个预设的 `code` 与主色取同一值，输入框边框/标题/`❯` 提示符与
 Markdown 列表 `•` 也使用该主色。
+`/new` 清空屏幕并开始新会话（旧会话仍可在 `/resume` 里找回），
+`/clear` 只清当前视图、不切换会话。
 Python 终端界面已退役；
 `cellwiki dev`、`cellwiki serve` 与 `cellwiki daemon *` 仍由 Python 提供。
 
