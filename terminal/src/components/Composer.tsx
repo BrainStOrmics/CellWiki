@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { filterCommands } from "../commands";
 import type { TuiController, TuiState } from "../controller";
 import { displayWidth, truncateToWidth } from "../render/text";
+import type { Theme } from "../theme/themes";
 
 export interface ComposerProps {
   controller: TuiController;
@@ -14,6 +15,7 @@ export interface ComposerProps {
   onSubmitted?: () => void;
   onValueChange?: (value: string) => void;
   onScroll?: (delta: number) => void;
+  theme: Theme;
 }
 
 interface MentionMatch {
@@ -42,6 +44,7 @@ export function Composer({
   onSubmitted,
   onValueChange,
   onScroll,
+  theme,
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const [menuIndex, setMenuIndex] = useState(0);
@@ -286,13 +289,15 @@ export function Composer({
     Math.max(4, innerWidth - 8),
   );
   const titleWidth = displayWidth(title);
-  const topBorder =
-    title && titleWidth + 5 <= width
-      ? `╭${"─".repeat(Math.max(1, width - titleWidth - 5))} ${title} ─╮`
-      : `╭${"─".repeat(Math.max(0, width - 2))}╮`;
+  const showTitle = Boolean(title) && titleWidth + 5 <= width;
+  const topLeft = showTitle
+    ? `╭${"─".repeat(Math.max(1, width - titleWidth - 5))}`
+    : `╭${"─".repeat(Math.max(0, width - 2))}`;
+  const topRight = showTitle ? "─╮" : "╮";
+  const titleText = showTitle ? ` ${title} ` : "";
   const bottomBorder = `╰${"─".repeat(Math.max(0, width - 2))}╯`;
   const prompt = "❯ ";
-  const promptColor = gate ? "yellow" : "green";
+  const promptColor = gate ? theme.tokens.warning : theme.tokens.claude;
   const firstLine = truncateToWidth(
     lines[0] ?? "",
     Math.max(1, innerWidth - displayWidth(prompt) - 1),
@@ -301,15 +306,16 @@ export function Composer({
     0,
     innerWidth - displayWidth(prompt) - displayWidth(firstLine) - 1,
   );
-  const framedRow = (content: string, key: string) => {
+  const framedRow = (content: string, key: string, inactive = false) => {
     const text = truncateToWidth(content, innerWidth);
     const pad = Math.max(0, innerWidth - displayWidth(text));
     return (
-      <Text key={key} dimColor>
-        {"│ "}
-        {text}
-        {" ".repeat(pad)}
-        {" │"}
+      <Text key={key}>
+        <Text color={theme.tokens.subtle}>{"│ "}</Text>
+        <Text color={inactive ? theme.tokens.inactive : undefined}>
+          {text}
+        </Text>
+        <Text color={theme.tokens.subtle}>{`${" ".repeat(pad)} │`}</Text>
       </Text>
     );
   };
@@ -322,39 +328,45 @@ export function Composer({
           items={visibleMenuItems}
           index={menuIndexSafe - menuStart}
           width={width}
+          theme={theme}
         />
       ) : null}
       {state.queue.length > 0 ? (
-        <Text dimColor>
+        <Text color={theme.tokens.inactive}>
           {truncateToWidth(
             `${state.queue.length} queued · Ctrl+U to withdraw`,
             width,
           )}
         </Text>
       ) : null}
-      <Text dimColor>{topBorder}</Text>
       <Text>
-        <Text dimColor>{"│ "}</Text>
+        <Text color={theme.tokens.subtle}>{topLeft}</Text>
+        {titleText ? (
+          <Text color={theme.tokens.claude}>{titleText}</Text>
+        ) : null}
+        <Text color={theme.tokens.subtle}>{topRight}</Text>
+      </Text>
+      <Text>
+        <Text color={theme.tokens.subtle}>{"│ "}</Text>
         <Text color={promptColor}>{prompt}</Text>
         <Text>{firstLine}</Text>
-        <Text dimColor>▌</Text>
-        <Text dimColor>
+        <Text color={theme.tokens.inactive}>▌</Text>
+        <Text color={theme.tokens.subtle}>
           {" ".repeat(firstPad)}
           {" │"}
         </Text>
       </Text>
       {lines
         .slice(1, 1 + visibleExtraLines)
-        .map((line, index) =>
-          framedRow(`... ${line}`, `line-${index}`),
-        )}
+        .map((line, index) => framedRow(`... ${line}`, `line-${index}`))}
       {overflowLine > 0
         ? framedRow(
             `... (+${extraLines - visibleExtraLines} more lines)`,
             "overflow",
+            true,
           )
         : null}
-      <Text dimColor>{bottomBorder}</Text>
+      <Text color={theme.tokens.subtle}>{bottomBorder}</Text>
     </Box>
   );
 }
@@ -364,17 +376,22 @@ function Menu({
   items,
   index,
   width,
+  theme,
 }: {
   title: string;
   items: string[];
   index: number;
   width: number;
+  theme: Theme;
 }) {
   return (
     <Box flexDirection="column">
-      <Text dimColor>{title}</Text>
+      <Text color={theme.tokens.inactive}>{title}</Text>
       {items.map((item, itemIndex) => (
-        <Text key={item} color={itemIndex === index ? "cyan" : undefined}>
+        <Text
+          key={item}
+          color={itemIndex === index ? theme.tokens.suggestion : undefined}
+        >
           {truncateToWidth(`${itemIndex === index ? "❯ " : "  "}${item}`, width)}
         </Text>
       ))}

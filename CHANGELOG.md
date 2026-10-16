@@ -6,6 +6,11 @@
 
 ### Added
 
+- 终端客户端新增主题切换：`/theme` 选择器支持 `↑`/`↓` 实时预览、
+  `Enter` 持久化到 `~/.cellwiki/tui.json`、`Esc` 还原；内置 `auto`
+  （按终端背景选深浅）、`dark`、`light`、`dark-daltonized`、
+  `light-daltonized`、`dark-ansi`、`light-ansi`，配色覆盖输入框、对话、
+  审批卡与状态行；`CELLWIKI_TUI_THEME` 优先于配置文件。
 - 终端客户端新增助手消息的终端 Markdown 子集渲染：`**加粗**`、`*斜体*`、
   行内代码、链接、标题、列表（`• `）、引用（`│ `）与代码块；样式按显示
   宽度折行，流式输出同源渲染；表格、图片与 HTML 不渲染。

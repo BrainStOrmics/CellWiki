@@ -74,6 +74,11 @@ viewport 内窗口化显示，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/`Ctrl+End
 为 `❯` 行，助手消息以 `●` 开头，run 结束行显示 `✻ done in Ns · HH:MM`。
 助手消息按终端 Markdown 子集渲染（`**加粗**`、`*斜体*`、行内代码、链接、
 标题、列表、引用、代码块），不再显示原始标记；表格与图片不渲染。
+`/theme` 打开主题选择器：`↑`/`↓` 实时预览，`Enter` 应用并写入
+`~/.cellwiki/tui.json`，`Esc` 取消；内置 `auto`（按终端背景选深浅）、
+`dark`、`light`、`dark-daltonized`、`light-daltonized`、`dark-ansi`、
+`light-ansi`，配色覆盖输入框、对话、审批卡与状态行，
+`CELLWIKI_TUI_THEME` 环境变量优先。
 Python 终端界面已退役；
 `cellwiki dev`、`cellwiki serve` 与 `cellwiki daemon *` 仍由 Python 提供。
 

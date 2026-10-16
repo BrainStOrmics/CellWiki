@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { App } from "../src/components/App";
 import { LiveView } from "../src/components/LiveView";
 import { TuiController } from "../src/controller";
+import { findTheme } from "../src/theme/themes";
 import { FakeClient } from "./fake-client";
 
 const noSleep = async (): Promise<void> => undefined;
@@ -158,7 +159,9 @@ describe("App", () => {
         ]),
     });
     const state = { ...controller.state, reasoning: "x".repeat(5_000) };
-    const { lastFrame, unmount } = render(<LiveView state={state} />);
+    const { lastFrame, unmount } = render(
+      <LiveView state={state} theme={findTheme("dark")} />,
+    );
     const frame = lastFrame() ?? "";
     expect(frame).toContain("Thinking…");
     expect(frame.length).toBeLessThan(500);
@@ -389,6 +392,39 @@ describe("App", () => {
     await waitFor(() => controller.state.threadId === "thread_2");
     await waitFor(() => lastFrame()?.includes("second thread answer") ?? false);
     expect(controller.state.picker).toBeNull();
+    unmount();
+  });
+
+  it("opens the theme picker and applies a theme", async () => {
+    const saved: string[] = [];
+    const client = new FakeClient([
+      { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+    ]);
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+      env: {},
+      themeStore: {
+        load: () => null,
+        save: (themeId) => saved.push(themeId),
+      },
+    });
+    const { stdin, lastFrame, unmount } = render(
+      <App
+        controller={controller}
+        mode="fullscreen"
+        viewport={{ rows: 18, columns: 60 }}
+      />,
+    );
+    await waitFor(() => controller.state.connected);
+    await controller.submit("/theme");
+    await waitFor(() => lastFrame()?.includes("Select theme") ?? false);
+    expect(lastFrame() ?? "").toContain("Dark daltonized");
+    stdin.write("\u001b[B");
+    await waitFor(() => controller.state.themeId === "dark");
+    stdin.write("\r");
+    await waitFor(() => saved.length === 1);
+    expect(saved).toEqual(["dark"]);
     unmount();
   });
 

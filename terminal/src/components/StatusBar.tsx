@@ -2,6 +2,7 @@ import { Box, Text } from "ink";
 
 import type { TuiState } from "../controller";
 import { displayWidth, truncateToWidth } from "../render/text";
+import type { Theme } from "../theme/themes";
 
 interface StatusPart {
   text: string;
@@ -11,9 +12,11 @@ interface StatusPart {
 export function StatusBar({
   state,
   width = 80,
+  theme,
 }: {
   state: TuiState;
   width?: number;
+  theme: Theme;
 }) {
   const parts: StatusPart[] = [
     { text: "cellwiki" },
@@ -54,7 +57,9 @@ export function StatusBar({
 
   return (
     <Box marginTop={1}>
-      <Text dimColor>{truncateToWidth(text, Math.max(1, width - 1))}</Text>
+      <Text color={theme.tokens.inactive}>
+        {truncateToWidth(text, Math.max(1, width - 1))}
+      </Text>
     </Box>
   );
 }

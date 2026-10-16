@@ -24,6 +24,7 @@ import { LiveView } from "./LiveView";
 import { SessionPicker } from "./SessionPicker";
 import { StatusBar } from "./StatusBar";
 import { StyledText } from "./StyledText";
+import { ThemePicker } from "./ThemePicker";
 import { TranscriptView } from "./TranscriptView";
 
 export type RenderMode = "fullscreen" | "classic";
@@ -165,12 +166,23 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
   }
 
   if (state.picker) {
+    if (state.picker.kind === "theme") {
+      return (
+        <ThemePicker
+          controller={controller}
+          state={state}
+          size={size}
+          fullscreen={mode === "fullscreen"}
+        />
+      );
+    }
     return (
       <SessionPicker
         controller={controller}
         state={state}
         size={size}
         fullscreen={mode === "fullscreen"}
+        theme={state.theme}
       />
     );
   }
@@ -178,8 +190,12 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
   if (mode === "classic") {
     return (
       <Box flexDirection="column">
-        <TranscriptView lines={state.transcript} width={size.columns} />
-        <LiveView state={state} />
+        <TranscriptView
+          lines={state.transcript}
+          width={size.columns}
+          theme={state.theme}
+        />
+        <LiveView state={state} theme={state.theme} />
         {state.verbose && state.toolHistory.length > 0 ? (
           <Box flexDirection="column">
             {state.toolHistory.slice(-5).map((tool) => (
@@ -197,6 +213,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
             onSelect={(index) => {
               void controller.submit(String(index + 1));
             }}
+            theme={state.theme}
           />
         ) : null}
         <Composer
@@ -204,8 +221,9 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
           state={state}
           width={size.columns}
           onValueChange={setComposerText}
+          theme={state.theme}
         />
-        <StatusBar state={state} width={size.columns} />
+        <StatusBar state={state} width={size.columns} theme={state.theme} />
       </Box>
     );
   }
@@ -234,12 +252,17 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
           line.tone === "user" ? (
             <Text
               key={`${index}-${line.text}`}
-              backgroundColor="gray"
+              backgroundColor={state.theme.tokens.userMessageBackground}
+              color={state.theme.tokens.inverseText}
             >
               {padToWidth(line.text, Math.max(1, size.columns - 1))}
             </Text>
           ) : (
-            <StyledText key={`${index}-${line.text}`} line={line} />
+            <StyledText
+              key={`${index}-${line.text}`}
+              line={line}
+              theme={state.theme}
+            />
           ),
         )}
       </Box>
@@ -260,6 +283,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
             onSelect={(index) => {
               void controller.submit(String(index + 1));
             }}
+            theme={state.theme}
           />
         </Box>
       ) : null}
@@ -273,10 +297,11 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
           onSubmitted={handleSubmitted}
           onValueChange={setComposerText}
           onScroll={handleScroll}
+          theme={state.theme}
         />
       </Box>
       <Box height={2} flexShrink={0}>
-        <StatusBar state={state} width={size.columns} />
+        <StatusBar state={state} width={size.columns} theme={state.theme} />
       </Box>
     </Box>
   );

@@ -9,12 +9,14 @@ import {
 import { truncateToWidth } from "../render/text";
 import { formatRelativeTime } from "../render/time";
 import type { TerminalSize } from "../render/use-terminal-size";
+import type { Theme } from "../theme/themes";
 
 export interface SessionPickerProps {
   controller: TuiController;
   state: TuiState;
   size: TerminalSize;
   fullscreen: boolean;
+  theme: Theme;
 }
 
 export function SessionPicker({
@@ -22,16 +24,17 @@ export function SessionPicker({
   state,
   size,
   fullscreen,
+  theme,
 }: SessionPickerProps) {
   const picker = state.picker;
-  const query = picker?.query ?? "";
+  const query = picker?.kind === "resume" ? picker.query : "";
   const threads = useMemo(
     () => filterThreads(state.threads, query),
     [state.threads, query],
   );
 
   useInput((input, key) => {
-    if (!picker) {
+    if (!picker || picker.kind !== "resume") {
       return;
     }
     if (key.escape) {
@@ -65,7 +68,7 @@ export function SessionPicker({
     }
   });
 
-  if (!picker) {
+  if (!picker || picker.kind !== "resume") {
     return null;
   }
 
@@ -83,20 +86,24 @@ export function SessionPicker({
 
   return (
     <Box flexDirection="column" height={fullscreen ? rows : undefined}>
-      <Text bold>Resume session</Text>
+      <Text bold color={theme.tokens.claude}>
+        Resume session
+      </Text>
       <Box
         borderStyle="round"
-        borderColor="gray"
+        borderColor={theme.tokens.subtle}
         width={Math.max(12, width - 2)}
         paddingX={1}
       >
-        <Text dimColor>⌕ </Text>
+        <Text color={theme.tokens.inactive}>⌕ </Text>
         <Text>{truncateToWidth(query, Math.max(4, width - 8))}</Text>
-        <Text dimColor>▌</Text>
+        <Text color={theme.tokens.inactive}>▌</Text>
       </Box>
-      <Text dimColor>{truncateToWidth(workspaceLabel(state.workspace), width)}</Text>
+      <Text color={theme.tokens.inactive}>
+        {truncateToWidth(workspaceLabel(state.workspace), width)}
+      </Text>
       {visible.length === 0 ? (
-        <Text dimColor>(no matching conversations)</Text>
+        <Text color={theme.tokens.inactive}>(no matching conversations)</Text>
       ) : null}
       {visible.map((thread, offset) => {
         const itemIndex = start + offset;
@@ -109,14 +116,16 @@ export function SessionPicker({
         ].join(" · ");
         return (
           <Box key={thread.thread_id} flexDirection="column">
-            <Text color={selected ? "cyan" : undefined}>
+            <Text color={selected ? theme.tokens.suggestion : undefined}>
               {truncateToWidth(`${selected ? "❯ " : "  "}${title}`, width)}
             </Text>
-            <Text dimColor>{truncateToWidth(`  ${meta}`, width)}</Text>
+            <Text color={theme.tokens.inactive}>
+              {truncateToWidth(`  ${meta}`, width)}
+            </Text>
           </Box>
         );
       })}
-      <Text dimColor>
+      <Text color={theme.tokens.inactive}>
         {truncateToWidth(
           "Type to search · ↑/↓ to move · Enter to resume · Esc to cancel",
           width,

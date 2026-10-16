@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { Gate } from "../controller";
 import { redactSecrets } from "../redact";
 import { truncateToWidth } from "../render/text";
+import type { Theme } from "../theme/themes";
 
 export interface GateViewProps {
   gate: Gate;
@@ -13,6 +14,7 @@ export interface GateViewProps {
   marginTop?: number;
   allowSelect?: boolean;
   onSelect?: (index: number) => void;
+  theme: Theme;
 }
 
 export function GateView({
@@ -23,6 +25,7 @@ export function GateView({
   marginTop = 1,
   allowSelect = true,
   onSelect,
+  theme,
 }: GateViewProps) {
   const options = gate.kind === "question" ? gate.question.options ?? [] : [];
   const [cursor, setCursor] = useState(0);
@@ -50,7 +53,7 @@ export function GateView({
     const hidden = options.length - shown.length;
     return (
       <Box flexDirection="column" marginTop={marginTop}>
-        <Text bold color="cyan">
+        <Text bold color={theme.tokens.claude}>
           CellWiki needs your decision
         </Text>
         <Text>{truncateToWidth(gate.question.question ?? "", width)}</Text>
@@ -58,7 +61,11 @@ export function GateView({
           <Text
             key={`${index}-${option.label ?? "option"}`}
             color={
-              index === activeCursor || option.recommended ? "cyan" : undefined
+              index === activeCursor
+                ? theme.tokens.suggestion
+                : option.recommended
+                  ? theme.tokens.claude
+                  : undefined
             }
           >
             {truncateToWidth(
@@ -72,9 +79,13 @@ export function GateView({
           </Text>
         ))}
         {hidden > 0 ? (
-          <Text dimColor>{`… ${hidden} more options`}</Text>
+          <Text color={theme.tokens.inactive}>
+            {`… ${hidden} more options`}
+          </Text>
         ) : null}
-        <Text dimColor>↑/↓ choose · Enter select · or type an answer · Esc skips</Text>
+        <Text color={theme.tokens.inactive}>
+          ↑/↓ choose · Enter select · or type an answer · Esc skips
+        </Text>
       </Box>
     );
   }
@@ -86,9 +97,11 @@ export function GateView({
   const [added, removed] = diffCounts(safePatch);
   return (
     <Box flexDirection="column" marginTop={marginTop}>
-      <Text bold>Pending diff {gate.diffId}</Text>
+      <Text bold color={theme.tokens.claude}>
+        Pending diff {gate.diffId}
+      </Text>
       {files.length > 0 ? (
-        <Text dimColor>
+        <Text color={theme.tokens.inactive}>
           {truncateToWidth(
             `files: ${files.slice(0, 6).join(", ")}${
               files.length > 6 ? ` … (+${files.length - 6})` : ""
@@ -97,20 +110,20 @@ export function GateView({
           )}
         </Text>
       ) : null}
-      <Text dimColor>
+      <Text color={theme.tokens.inactive}>
         changes: +{added} -{removed}
       </Text>
       {preview.map((line, index) => (
         <Text
           key={`${index}-${line}`}
-          color={diffColor(line)}
+          color={diffColor(line, theme)}
           dimColor={diffMeta(line)}
         >
           {truncateToWidth(line, width)}
         </Text>
       ))}
       {lines.length > preview.length ? (
-        <Text dimColor>
+        <Text color={theme.tokens.inactive}>
           … {lines.length - preview.length} more lines — press 3 to view full diff
         </Text>
       ) : null}
@@ -146,12 +159,12 @@ function diffCounts(patch: string): [number, number] {
   return [added, removed];
 }
 
-function diffColor(line: string): string | undefined {
+function diffColor(line: string, theme: Theme): string | undefined {
   if (line.startsWith("+") && !line.startsWith("+++")) {
-    return "green";
+    return theme.tokens.diffAdded;
   }
   if (line.startsWith("-") && !line.startsWith("---")) {
-    return "red";
+    return theme.tokens.diffRemoved;
   }
   return undefined;
 }

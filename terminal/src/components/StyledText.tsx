@@ -1,12 +1,18 @@
 import { Text } from "ink";
 
-import { toneColor } from "../render/tone";
 import type { VisualLine } from "../render/viewport";
+import { toneColor, type Theme } from "../theme/themes";
 
-export function StyledText({ line }: { line: VisualLine }) {
+export function StyledText({
+  line,
+  theme,
+}: {
+  line: VisualLine;
+  theme: Theme;
+}) {
   const segments = line.segments ?? [{ text: line.text }];
   return (
-    <Text color={toneColor(line.tone)} dimColor={line.tone === "dim"}>
+    <Text color={toneColor(theme, line.tone)} dimColor={line.tone === "dim"}>
       {segments.map((segment, index) => (
         <Text
           key={`${index}-${segment.text}`}

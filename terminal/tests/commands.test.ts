@@ -12,10 +12,12 @@ describe("commands", () => {
   it("filters slash completions", () => {
     expect(filterCommands("/re")).toEqual(["/resume", "/retry"]);
     expect(filterCommands("/")).toContain("/model");
+    expect(filterCommands("/th")).toEqual(["/theme"]);
   });
 
   it("recognizes known commands", () => {
     expect(isKnownCommand("/context")).toBe(true);
+    expect(isKnownCommand("/theme")).toBe(true);
     expect(isKnownCommand("/nope")).toBe(false);
   });
 });

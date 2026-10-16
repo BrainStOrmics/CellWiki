@@ -394,7 +394,11 @@ describe("TuiController", () => {
     const controller = controllerFor(client);
     await controller.connect();
     await controller.submit("/resume");
-    expect(controller.state.picker).toEqual({ query: "", index: 0 });
+    expect(controller.state.picker).toEqual({
+      kind: "resume",
+      query: "",
+      index: 0,
+    });
 
     controller.setPickerQuery("second");
     expect(filterThreads(controller.state.threads, "second")).toHaveLength(1);
@@ -425,6 +429,40 @@ describe("TuiController", () => {
     await controller.submit("/resume");
     expect(controller.state.picker).not.toBeNull();
     await controller.escape();
+    expect(controller.state.picker).toBeNull();
+  });
+
+  it("previews and applies a theme from the picker", async () => {
+    const saved: string[] = [];
+    const client = new FakeClient([
+      { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+    ]);
+    const workspace = mkdtempSync(join(tmpdir(), "cellwiki-tui-"));
+    const controller = new TuiController(workspace, {
+      clientFactory: async () => client,
+      sleep: noSleep,
+      env: {},
+      themeStore: {
+        load: () => null,
+        save: (themeId) => saved.push(themeId),
+      },
+    });
+    await controller.connect();
+    expect(controller.state.themeId).toBe("auto");
+
+    await controller.submit("/theme");
+    expect(controller.state.picker?.kind).toBe("theme");
+    controller.movePicker(1);
+    expect(controller.state.themeId).toBe("dark");
+    await controller.confirmPicker();
+    expect(saved).toEqual(["dark"]);
+    expect(controller.state.picker).toBeNull();
+
+    await controller.submit("/theme");
+    controller.movePicker(1);
+    expect(controller.state.themeId).toBe("light");
+    await controller.escape();
+    expect(controller.state.themeId).toBe("dark");
     expect(controller.state.picker).toBeNull();
   });
 

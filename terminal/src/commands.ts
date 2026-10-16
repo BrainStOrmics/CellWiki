@@ -2,6 +2,7 @@ export const COMMANDS = [
   "/help",
   "/new",
   "/resume",
+  "/theme",
   "/clear",
   "/status",
   "/continue",

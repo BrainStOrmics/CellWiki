@@ -83,7 +83,7 @@ export function buildLiveLines(
     }
   }
   for (const tool of state.tools) {
-    lines.push({ text: `${spinner} ${tool.summary}`, tone: "warning" });
+    lines.push({ text: `${spinner} ${tool.summary}`, tone: "tool" });
   }
   const busy = state.runId !== null || state.tools.length > 0;
   if (busy && !state.streaming && !state.reasoning && state.tools.length === 0) {

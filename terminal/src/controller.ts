@@ -12,6 +12,16 @@ import type {
 import { parseCommand } from "./commands";
 import { redactSecrets } from "./redact";
 import {
+  resolveTheme,
+  themeChoices,
+  type Theme,
+} from "./theme/themes";
+import {
+  createThemeStore,
+  initialThemeId,
+  type ThemeStore,
+} from "./theme/store";
+import {
   DaemonVersionMismatch,
   ensureDaemon,
   readControlToken,
@@ -80,10 +90,9 @@ export interface TranscriptLine {
   tone?: Tone;
 }
 
-export interface PickerState {
-  query: string;
-  index: number;
-}
+export type PickerState =
+  | { kind: "resume"; query: string; index: number }
+  | { kind: "theme"; index: number; originalThemeId: string };
 
 export interface TuiState {
   workspace: string;
@@ -104,6 +113,8 @@ export interface TuiState {
   verbose: boolean;
   gate: Gate | null;
   picker: PickerState | null;
+  themeId: string;
+  theme: Theme;
   pendingDiffId: string | null;
   pendingDiffRunId: string | null;
   queue: string[];
@@ -119,6 +130,8 @@ export interface ControllerOptions {
   clientFactory?: () => Promise<ClientLike>;
   restart?: () => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
+  themeStore?: ThemeStore;
+  env?: NodeJS.ProcessEnv;
 }
 
 const TERMINAL_STATUSES = new Set([
@@ -144,12 +157,17 @@ export class TuiController {
   private nextLineId = 1;
   private abortController: AbortController | null = null;
   private fileCache: string[] | null = null;
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly themeStore: ThemeStore;
 
   constructor(workspace: string, options: ControllerOptions = {}) {
     this.workspace = workspace;
     this.options = options;
+    this.env = options.env ?? process.env;
+    this.themeStore = options.themeStore ?? createThemeStore();
     this.sleep =
       options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    const themeId = initialThemeId(this.themeStore, this.env);
     this.state = {
       workspace,
       connected: false,
@@ -169,6 +187,8 @@ export class TuiController {
       verbose: false,
       gate: null,
       picker: null,
+      themeId,
+      theme: resolveTheme(themeId, this.env),
       pendingDiffId: null,
       pendingDiffRunId: null,
       queue: [],
@@ -294,25 +314,57 @@ export class TuiController {
       this.commit("no conversations in this workspace", "dim");
       return;
     }
-    this.update({ threads, picker: { query: "", index: 0 } });
+    this.update({ threads, picker: { kind: "resume", query: "", index: 0 } });
+  }
+
+  openThemePicker(): void {
+    const choices = this.themeChoices();
+    const index = Math.max(
+      0,
+      choices.findIndex((theme) => theme.id === this.state.themeId),
+    );
+    this.update({
+      picker: { kind: "theme", index, originalThemeId: this.state.themeId },
+    });
+  }
+
+  themeChoices(): Theme[] {
+    return themeChoices(this.env);
   }
 
   closePicker(): void {
-    if (this.state.picker) {
-      this.update({ picker: null });
+    const picker = this.state.picker;
+    if (!picker) {
+      return;
     }
+    if (picker.kind === "theme") {
+      this.previewTheme(picker.originalThemeId);
+    }
+    this.update({ picker: null });
   }
 
   setPickerQuery(query: string): void {
-    if (!this.state.picker) {
+    const picker = this.state.picker;
+    if (!picker || picker.kind !== "resume") {
       return;
     }
-    this.update({ picker: { query, index: 0 } });
+    this.update({ picker: { ...picker, query, index: 0 } });
   }
 
   movePicker(delta: number): void {
     const picker = this.state.picker;
     if (!picker) {
+      return;
+    }
+    if (picker.kind === "theme") {
+      const choices = this.themeChoices();
+      const count = choices.length;
+      const index = (picker.index + delta + count) % count;
+      this.update({ picker: { ...picker, index } });
+      const choice = choices[index];
+      if (choice) {
+        this.previewTheme(choice.id);
+      }
       return;
     }
     const count = filterThreads(this.state.threads, picker.query).length;
@@ -329,12 +381,26 @@ export class TuiController {
     if (!picker) {
       return;
     }
+    if (picker.kind === "theme") {
+      const choices = this.themeChoices();
+      const choice = choices[picker.index] ?? choices[0];
+      if (choice) {
+        this.previewTheme(choice.id);
+        this.themeStore.save(choice.id);
+      }
+      this.update({ picker: null });
+      return;
+    }
     const threads = filterThreads(this.state.threads, picker.query);
     const thread = threads[picker.index] ?? threads[0];
     this.update({ picker: null });
     if (thread) {
       await this.switchThread(thread);
     }
+  }
+
+  private previewTheme(themeId: string): void {
+    this.update({ themeId, theme: resolveTheme(themeId, this.env) });
   }
 
   mentionCandidates(query: string): string[] {
@@ -347,7 +413,7 @@ export class TuiController {
 
   async escape(): Promise<void> {
     if (this.state.picker) {
-      this.update({ picker: null });
+      this.closePicker();
       return;
     }
     const gate = this.state.gate;
@@ -938,6 +1004,9 @@ export class TuiController {
       case "/resume":
         await this.resumeSession(parsed.argument);
         return;
+      case "/theme":
+        this.openThemePicker();
+        return;
       case "/clear":
         this.update({ transcript: [] });
         return;
@@ -1084,6 +1153,7 @@ const HELP_LINES = [
   "/help            show this help",
   "/new             start a new conversation",
   "/resume [n]      choose a conversation (or switch by number)",
+  "/theme           choose a color theme",
   "/clear           clear the transcript view",
   "/status          workspace, model, run and context status",
   "/continue        resume an unfinished run",
