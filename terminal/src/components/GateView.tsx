@@ -1,4 +1,5 @@
-import { Box, Text } from "ink";
+import { Box, Text, useInput } from "ink";
+import { useState } from "react";
 
 import type { Gate } from "../controller";
 import { redactSecrets } from "../redact";
@@ -10,6 +11,8 @@ export interface GateViewProps {
   previewLines?: number;
   maxOptions?: number;
   marginTop?: number;
+  allowSelect?: boolean;
+  onSelect?: (index: number) => void;
 }
 
 export function GateView({
@@ -18,9 +21,31 @@ export function GateView({
   previewLines = 24,
   maxOptions = Number.MAX_SAFE_INTEGER,
   marginTop = 1,
+  allowSelect = true,
+  onSelect,
 }: GateViewProps) {
+  const options = gate.kind === "question" ? gate.question.options ?? [] : [];
+  const [cursor, setCursor] = useState(0);
+  const activeCursor =
+    options.length > 0 ? Math.min(cursor, options.length - 1) : 0;
+
+  useInput(
+    (_input, key) => {
+      if (options.length === 0) {
+        return;
+      }
+      if (key.upArrow) {
+        setCursor((value) => (value - 1 + options.length) % options.length);
+      } else if (key.downArrow) {
+        setCursor((value) => (value + 1) % options.length);
+      } else if (key.return && allowSelect) {
+        onSelect?.(activeCursor);
+      }
+    },
+    { isActive: gate.kind === "question" && options.length > 0 },
+  );
+
   if (gate.kind === "question") {
-    const options = gate.question.options ?? [];
     const shown = options.slice(0, Math.max(0, maxOptions));
     const hidden = options.length - shown.length;
     return (
@@ -32,10 +57,14 @@ export function GateView({
         {shown.map((option, index) => (
           <Text
             key={`${index}-${option.label ?? "option"}`}
-            color={option.recommended ? "cyan" : undefined}
+            color={
+              index === activeCursor || option.recommended ? "cyan" : undefined
+            }
           >
             {truncateToWidth(
-              `  ${index + 1}. ${option.label}${
+              `${index === activeCursor ? "❯" : " "} ${index + 1}. ${
+                option.label ?? ""
+              }${
                 option.description ? ` — ${option.description}` : ""
               }`,
               width,
@@ -45,7 +74,7 @@ export function GateView({
         {hidden > 0 ? (
           <Text dimColor>{`… ${hidden} more options`}</Text>
         ) : null}
-        <Text dimColor>Answer with an option number or free text; Esc skips.</Text>
+        <Text dimColor>↑/↓ choose · Enter select · or type an answer · Esc skips</Text>
       </Box>
     );
   }

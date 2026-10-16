@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   displayWidth,
+  padToWidth,
   truncateToWidth,
   wrapToWidth,
 } from "../src/render/text";
+import { formatRelativeTime } from "../src/render/time";
 import {
   buildLiveLines,
   gateLayout,
+  toVisualLines,
   windowLines,
 } from "../src/render/viewport";
 
@@ -27,6 +30,41 @@ describe("text helpers", () => {
     expect(wrapToWidth("abcdef", 4)).toEqual(["abcd", "ef"]);
     expect(wrapToWidth("a\n\nb", 4)).toEqual(["a", "", "b"]);
     expect(wrapToWidth("", 4)).toEqual([""]);
+  });
+
+  it("pads a row for a full-width background", () => {
+    expect(padToWidth("❯ hi", 6)).toBe("❯ hi  ");
+    expect(displayWidth(padToWidth("中文", 6))).toBe(6);
+    expect(padToWidth("toolong", 3)).toBe("toolong");
+  });
+});
+
+describe("transcript visual lines", () => {
+  it("prefixes user and assistant lines and indents continuations", () => {
+    const visual = toVisualLines(
+      [
+        { text: "hello", tone: "user" },
+        { text: "abcdefghij", tone: "assistant" },
+      ],
+      8,
+    );
+    expect(visual.map((line) => line.text)).toEqual([
+      "❯ hello",
+      "● abcdef",
+      "  ghij",
+    ]);
+  });
+});
+
+describe("relative time", () => {
+  const now = Date.parse("2026-10-16T12:00:00Z");
+
+  it("formats recent and older timestamps", () => {
+    expect(formatRelativeTime("2026-10-16T11:59:30Z", now)).toBe("just now");
+    expect(formatRelativeTime("2026-10-16T11:30:00Z", now)).toBe("30 min ago");
+    expect(formatRelativeTime("2026-10-15T12:00:00Z", now)).toBe("1 day ago");
+    expect(formatRelativeTime("2026-10-01T12:00:00Z", now)).toBe("2 weeks ago");
+    expect(formatRelativeTime(null, now)).toBe("unknown");
   });
 });
 

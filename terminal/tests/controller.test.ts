@@ -5,7 +5,11 @@ import { describe, expect, it } from "vitest";
 
 import { DaemonRequestError } from "../src/api/client";
 import type { AgentRun } from "../src/api/types";
-import { TuiController } from "../src/controller";
+import {
+  filterThreads,
+  formatRunSummary,
+  TuiController,
+} from "../src/controller";
 import { DaemonVersionMismatch } from "../src/daemon/discovery";
 import { FakeClient } from "./fake-client";
 
@@ -345,6 +349,75 @@ describe("TuiController", () => {
         (line) => line.text === "second thread answer",
       ),
     ).toBe(true);
+  });
+
+  it("opens a resume picker and switches the selected session", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        threads: [
+          {
+            thread_id: "thread_1",
+            title: "First",
+            latest_status: "succeeded",
+          },
+          {
+            thread_id: "thread_2",
+            title: "Second",
+            latest_status: "unfinished",
+          },
+        ],
+      },
+    );
+    client.messages.thread_2 = [
+      { role: "user", content: "second question" },
+      { role: "assistant", content: "second thread answer" },
+    ];
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/resume");
+    expect(controller.state.picker).toEqual({ query: "", index: 0 });
+
+    controller.setPickerQuery("second");
+    expect(filterThreads(controller.state.threads, "second")).toHaveLength(1);
+    await controller.confirmPicker();
+
+    expect(controller.state.picker).toBeNull();
+    expect(controller.state.threadId).toBe("thread_2");
+    expect(
+      controller.state.transcript.some(
+        (line) => line.text === "second thread answer",
+      ),
+    ).toBe(true);
+    expect(
+      controller.state.transcript.find((line) => line.text === "second question")
+        ?.tone,
+    ).toBe("user");
+  });
+
+  it("closes the resume picker with escape", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        threads: [{ thread_id: "thread_1", title: "First" }],
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/resume");
+    expect(controller.state.picker).not.toBeNull();
+    await controller.escape();
+    expect(controller.state.picker).toBeNull();
+  });
+
+  it("formats a done summary with duration and clock", () => {
+    const summary = formatRunSummary({
+      run_id: "run_1",
+      thread_id: "thread_1",
+      status: "succeeded",
+      usage: { elapsed_seconds: 2, input_tokens: 12, output_tokens: 34 },
+    });
+    expect(summary).toMatch(/^✻ done in 2s · \d{2}:\d{2} · tokens 12\/34$/);
   });
 
   it("retries a failed run with /retry", async () => {

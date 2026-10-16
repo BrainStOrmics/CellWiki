@@ -43,6 +43,11 @@ export function truncateToWidth(text: string, limit: number): string {
   return `${result}…`;
 }
 
+export function padToWidth(text: string, limit: number): string {
+  const width = Math.max(0, Math.floor(limit) - displayWidth(text));
+  return `${text}${" ".repeat(width)}`;
+}
+
 export function wrapToWidth(text: string, limit: number): string[] {
   const width = Math.max(1, Math.floor(limit));
   const lines: string[] = [];

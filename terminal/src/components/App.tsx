@@ -9,7 +9,7 @@ import {
 
 import type { TuiController } from "../controller";
 import { useSpinnerFrame } from "../render/spinner";
-import { truncateToWidth } from "../render/text";
+import { padToWidth, truncateToWidth } from "../render/text";
 import { useTerminalSize, type TerminalSize } from "../render/use-terminal-size";
 import {
   buildLiveLines,
@@ -20,6 +20,7 @@ import {
 import { Composer } from "./Composer";
 import { GateView } from "./GateView";
 import { LiveView } from "./LiveView";
+import { SessionPicker } from "./SessionPicker";
 import { StatusBar } from "./StatusBar";
 import { TranscriptView, toneColor } from "./TranscriptView";
 
@@ -42,6 +43,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
   const spinner = useSpinnerFrame(mode === "fullscreen" && busy);
   const [scrollOffset, setScrollOffset] = useState(0);
   const [composerRows, setComposerRows] = useState(1);
+  const [composerText, setComposerText] = useState("");
   const handleComposerRows = useCallback(
     (rows: number) => setComposerRows(rows),
     [],
@@ -125,6 +127,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
       isActive:
         mode === "fullscreen" &&
         state.connected &&
+        state.picker === null &&
         state.versionMismatch === null,
     },
   );
@@ -149,10 +152,21 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
     );
   }
 
+  if (state.picker) {
+    return (
+      <SessionPicker
+        controller={controller}
+        state={state}
+        size={size}
+        fullscreen={mode === "fullscreen"}
+      />
+    );
+  }
+
   if (mode === "classic") {
     return (
       <Box flexDirection="column">
-        <TranscriptView lines={state.transcript} />
+        <TranscriptView lines={state.transcript} width={size.columns} />
         <LiveView state={state} />
         {state.verbose && state.toolHistory.length > 0 ? (
           <Box flexDirection="column">
@@ -164,8 +178,21 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
             ))}
           </Box>
         ) : null}
-        {state.gate ? <GateView gate={state.gate} /> : null}
-        <Composer controller={controller} state={state} width={size.columns} />
+        {state.gate ? (
+          <GateView
+            gate={state.gate}
+            allowSelect={composerText.length === 0}
+            onSelect={(index) => {
+              void controller.submit(String(index + 1));
+            }}
+          />
+        ) : null}
+        <Composer
+          controller={controller}
+          state={state}
+          width={size.columns}
+          onValueChange={setComposerText}
+        />
         <StatusBar state={state} width={size.columns} />
       </Box>
     );
@@ -191,15 +218,24 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
         {Array.from({ length: padding }, (_, index) => (
           <Text key={`padding-${index}`}> </Text>
         ))}
-        {view.lines.map((line, index) => (
-          <Text
-            key={`${index}-${line.text}`}
-            color={toneColor(line.tone)}
-            dimColor={line.tone === "dim"}
-          >
-            {line.text}
-          </Text>
-        ))}
+        {view.lines.map((line, index) =>
+          line.tone === "user" ? (
+            <Text
+              key={`${index}-${line.text}`}
+              backgroundColor="gray"
+            >
+              {padToWidth(line.text, Math.max(1, size.columns - 1))}
+            </Text>
+          ) : (
+            <Text
+              key={`${index}-${line.text}`}
+              color={toneColor(line.tone)}
+              dimColor={line.tone === "dim"}
+            >
+              {line.text}
+            </Text>
+          ),
+        )}
       </Box>
       {state.gate && layout ? (
         <Box
@@ -214,6 +250,10 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
             previewLines={layout.previewLines}
             maxOptions={layout.maxOptions}
             marginTop={0}
+            allowSelect={composerText.length === 0}
+            onSelect={(index) => {
+              void controller.submit(String(index + 1));
+            }}
           />
         </Box>
       ) : null}
@@ -225,6 +265,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
           maxRows={Math.max(1, size.rows - 6)}
           onRowsChange={handleComposerRows}
           onSubmitted={handleSubmitted}
+          onValueChange={setComposerText}
         />
       </Box>
       <Box height={2} flexShrink={0}>

@@ -12,6 +12,7 @@ export interface ComposerProps {
   maxRows?: number;
   onRowsChange?: (rows: number) => void;
   onSubmitted?: () => void;
+  onValueChange?: (value: string) => void;
 }
 
 interface MentionMatch {
@@ -38,6 +39,7 @@ export function Composer({
   maxRows = 12,
   onRowsChange,
   onSubmitted,
+  onValueChange,
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const [menuIndex, setMenuIndex] = useState(0);
@@ -51,6 +53,7 @@ export function Composer({
       typeof next === "function" ? next(valueRef.current) : next;
     valueRef.current = resolved;
     setValue(resolved);
+    onValueChange?.(resolved);
   };
 
   const gate = state.gate;
@@ -164,6 +167,9 @@ export function Composer({
       return;
     }
     if (key.upArrow) {
+      if (gate?.kind === "question") {
+        return;
+      }
       if (activeMenu && menuItems.length > 0) {
         setMenuIndex(
           (current) => (current - 1 + menuItems.length) % menuItems.length,
@@ -188,6 +194,9 @@ export function Composer({
       return;
     }
     if (key.downArrow) {
+      if (gate?.kind === "question") {
+        return;
+      }
       if (activeMenu && menuItems.length > 0) {
         setMenuIndex((current) => (current + 1) % menuItems.length);
         return;

@@ -80,6 +80,11 @@ export interface TranscriptLine {
   tone?: Tone;
 }
 
+export interface PickerState {
+  query: string;
+  index: number;
+}
+
 export interface TuiState {
   workspace: string;
   connected: boolean;
@@ -98,6 +103,7 @@ export interface TuiState {
   toolHistory: ToolState[];
   verbose: boolean;
   gate: Gate | null;
+  picker: PickerState | null;
   pendingDiffId: string | null;
   pendingDiffRunId: string | null;
   queue: string[];
@@ -162,6 +168,7 @@ export class TuiController {
       toolHistory: [],
       verbose: false,
       gate: null,
+      picker: null,
       pendingDiffId: null,
       pendingDiffRunId: null,
       queue: [],
@@ -271,6 +278,65 @@ export class TuiController {
     this.update({ verbose: !this.state.verbose });
   }
 
+  async openResumePicker(): Promise<void> {
+    if (this.runActive()) {
+      this.commit("a run is active; finish or interrupt it first", "warning");
+      return;
+    }
+    let threads: ThreadRecord[];
+    try {
+      threads = await this.requireClient().listThreads();
+    } catch (error) {
+      this.reportError(error);
+      return;
+    }
+    if (threads.length === 0) {
+      this.commit("no conversations in this workspace", "dim");
+      return;
+    }
+    this.update({ threads, picker: { query: "", index: 0 } });
+  }
+
+  closePicker(): void {
+    if (this.state.picker) {
+      this.update({ picker: null });
+    }
+  }
+
+  setPickerQuery(query: string): void {
+    if (!this.state.picker) {
+      return;
+    }
+    this.update({ picker: { query, index: 0 } });
+  }
+
+  movePicker(delta: number): void {
+    const picker = this.state.picker;
+    if (!picker) {
+      return;
+    }
+    const count = filterThreads(this.state.threads, picker.query).length;
+    if (count === 0) {
+      this.update({ picker: { ...picker, index: 0 } });
+      return;
+    }
+    const index = (picker.index + delta + count) % count;
+    this.update({ picker: { ...picker, index } });
+  }
+
+  async confirmPicker(): Promise<void> {
+    const picker = this.state.picker;
+    if (!picker) {
+      return;
+    }
+    const threads = filterThreads(this.state.threads, picker.query);
+    const thread = threads[picker.index] ?? threads[0];
+    this.update({ picker: null });
+    if (thread) {
+      await this.switchThread(thread);
+    }
+  }
+
   mentionCandidates(query: string): string[] {
     this.fileCache ??= listWorkspaceFiles(this.workspace);
     const normalized = query.toLowerCase();
@@ -280,6 +346,10 @@ export class TuiController {
   }
 
   async escape(): Promise<void> {
+    if (this.state.picker) {
+      this.update({ picker: null });
+      return;
+    }
     const gate = this.state.gate;
     if (gate) {
       if (gate.kind === "diff") {
@@ -394,7 +464,7 @@ export class TuiController {
         threadId = await client.createThread();
         this.update({ threadId, threadTitle: "" });
       }
-      this.commit(`> ${message}`, "user");
+      this.commit(message, "user");
       const run = await client.startRun(
         threadId,
         message,
@@ -906,20 +976,13 @@ export class TuiController {
       this.commit("a run is active; finish or interrupt it first", "warning");
       return;
     }
+    if (!argument) {
+      await this.openResumePicker();
+      return;
+    }
     const threads = await this.requireClient().listThreads();
     if (threads.length === 0) {
       this.commit("no conversations in this workspace", "dim");
-      return;
-    }
-    threads.forEach((thread, index) => {
-      this.commit(
-        `  ${index + 1}. ${thread.title || thread.thread_id}  [${
-          thread.latest_status ?? "no runs"
-        }]`,
-        "dim",
-      );
-    });
-    if (!argument) {
       return;
     }
     const index = Number(argument) - 1;
@@ -928,15 +991,20 @@ export class TuiController {
       this.commit("session number out of range", "warning");
       return;
     }
+    await this.switchThread(thread);
+  }
+
+  private async switchThread(thread: ThreadRecord): Promise<void> {
     this.update({
       threadId: thread.thread_id,
       threadTitle: thread.title ?? "",
       transcript: [],
+      picker: null,
     });
     const messages = await this.requireClient().listMessages(thread.thread_id);
     for (const message of messages.slice(-20)) {
       if (message.role === "user" && message.content) {
-        this.commit(`> ${message.content}`, "user");
+        this.commit(message.content, "user");
       } else if (message.role === "assistant" && message.content) {
         this.commit(message.content, "assistant");
       }
@@ -997,7 +1065,7 @@ export class TuiController {
 const HELP_LINES = [
   "/help            show this help",
   "/new             start a new conversation",
-  "/resume [#]      list and switch conversations",
+  "/resume [n]      choose a conversation (or switch by number)",
   "/clear           clear the transcript view",
   "/status          workspace, model, run and context status",
   "/continue        resume an unfinished run",
@@ -1026,7 +1094,18 @@ export function formatContextLabel(usage: ContextUsage): string {
 }
 
 export function formatRunSummary(run: AgentRun): string {
-  const parts = [`run ${run.run_id}: ${run.status}`];
+  const parts: string[] = [];
+  const elapsed = run.usage?.elapsed_seconds;
+  const duration =
+    typeof elapsed === "number" && Number.isFinite(elapsed) && elapsed >= 0
+      ? ` in ${Math.max(1, Math.round(elapsed))}s`
+      : "";
+  if (run.status === "succeeded") {
+    parts.push(`✻ done${duration}`);
+  } else {
+    parts.push(`✻ ${run.status}${duration}`);
+  }
+  parts.push(formatClock(new Date()));
   const input = run.usage?.input_tokens ?? 0;
   const output = run.usage?.output_tokens ?? 0;
   if (input || output) {
@@ -1036,6 +1115,27 @@ export function formatRunSummary(run: AgentRun): string {
     parts.push(formatProviderError(run.error_message));
   }
   return parts.join(" · ");
+}
+
+export function formatClock(date: Date): string {
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+export function filterThreads(
+  threads: ThreadRecord[],
+  query: string,
+): ThreadRecord[] {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) {
+    return threads;
+  }
+  return threads.filter((thread) =>
+    `${thread.title ?? ""} ${thread.thread_id} ${thread.latest_status ?? ""}`
+      .toLowerCase()
+      .includes(normalized),
+  );
 }
 
 export function formatProviderError(message: string): string {

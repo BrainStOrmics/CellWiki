@@ -64,7 +64,10 @@ viewport 内窗口化显示，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/`Ctrl+End
 `CELLWIKI_TUI_CLASSIC=1` 退回经典渲染。界面支持 `/` 命令（`/help` `/new`
 `/resume` `/clear` `/status` `/continue` `/retry` `/diff` `/model`
 `/context` `/quit`）、内联提问与 pending diff 数字键审批、`@` 工作区文件
-补全、`Esc` 打断、忙时 `Enter` 排队。Python 终端界面已退役；
+补全、`Esc` 打断、忙时 `Enter` 排队。`/resume` 打开可搜索的会话选择器
+（输入过滤，`↑`/`↓` 移动，`Enter` 恢复，`Esc` 取消）；对话中用户消息显示
+为 `❯` 行，助手消息以 `●` 开头，run 结束行显示 `✻ done in Ns · HH:MM`。
+Python 终端界面已退役；
 `cellwiki dev`、`cellwiki serve` 与 `cellwiki daemon *` 仍由 Python 提供。
 
 `cellwiki serve [--workspace PATH] [--detach]` 前台或后台运行 daemon；

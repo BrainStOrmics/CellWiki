@@ -28,6 +28,11 @@
 
 ### Changed
 
+- 终端客户端 `/resume` 改为全屏会话选择器：输入即搜索、`↑`/`↓` 移动、
+  `Enter` 恢复、`Esc` 取消，`/resume <n>` 保留按序号切换；对话呈现对齐
+  Claude Code：用户消息为 `❯` 行 + 整行底色，助手消息以 `●` 开头、续行
+  缩进，run 结束行显示 `✻ done in Ns · HH:MM`；提问选项支持 `↑`/`↓` +
+  `Enter` 选择（自由文本输入不受影响）。
 - 终端客户端默认改为 fullscreen 渲染（Ink `alternateScreen` + 窗口化
   viewport）：输入框固定底部，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/
   `Ctrl+End` 跳转，滚离底部时暂停自动跟随并提示新行；帧高度恒等于终端

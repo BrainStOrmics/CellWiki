@@ -261,4 +261,108 @@ describe("App", () => {
     expect(lastFrame() ?? "").toContain("cellwiki");
     unmount();
   });
+
+  it("opens the resume picker and switches sessions", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        threads: [
+          {
+            thread_id: "thread_1",
+            title: "First",
+            latest_status: "succeeded",
+            updated_at: "2026-10-16T10:00:00Z",
+          },
+          {
+            thread_id: "thread_2",
+            title: "Second",
+            latest_status: "unfinished",
+            updated_at: "2026-10-15T10:00:00Z",
+          },
+        ],
+      },
+    );
+    client.messages.thread_2 = [
+      { role: "assistant", content: "second thread answer" },
+    ];
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { stdin, lastFrame, unmount } = render(
+      <App
+        controller={controller}
+        mode="fullscreen"
+        viewport={{ rows: 16, columns: 60 }}
+      />,
+    );
+    await waitFor(() => controller.state.connected);
+    await controller.submit("/resume");
+    await waitFor(() => lastFrame()?.includes("Resume session") ?? false);
+    const pickerFrame = lastFrame() ?? "";
+    expect(pickerFrame).toContain("First");
+    expect(pickerFrame).toContain("Second");
+    expect(pickerFrame).toContain("Type to search");
+
+    stdin.write("Second");
+    await waitFor(() => !(lastFrame() ?? "").includes("First"));
+    stdin.write("\r");
+    await waitFor(() => controller.state.threadId === "thread_2");
+    await waitFor(() => lastFrame()?.includes("second thread answer") ?? false);
+    expect(controller.state.picker).toBeNull();
+    unmount();
+  });
+
+  it("selects a question option with arrows and Enter", async () => {
+    const client = new FakeClient(
+      [
+        {
+          run_id: "run_1",
+          thread_id: "thread_1",
+          status: "waiting_confirmation",
+        },
+        { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+      ],
+      {
+        events: {
+          run_1: [
+            {
+              run_id: "run_1",
+              sequence: 1,
+              type: "run_status",
+              data: { status: "waiting_confirmation" },
+            },
+          ],
+        },
+        question: {
+          run_id: "run_1",
+          question: "Proceed?",
+          options: [{ label: "Yes", recommended: true }, { label: "No" }],
+          required: true,
+        },
+      },
+    );
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { stdin, lastFrame, unmount } = render(
+      <App
+        controller={controller}
+        mode="fullscreen"
+        viewport={{ rows: 18, columns: 60 }}
+      />,
+    );
+    await waitFor(() => controller.state.connected);
+    await controller.submit("go");
+    await waitFor(() => controller.state.gate?.kind === "question");
+    await waitFor(() => lastFrame()?.includes("Proceed?") ?? false);
+
+    stdin.write("\u001b[B");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    stdin.write("\r");
+    await waitFor(() => client.answers.length === 1);
+    expect(client.answers).toEqual([["No", false]]);
+    unmount();
+  });
 });
