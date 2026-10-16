@@ -344,6 +344,52 @@ describe("App", () => {
     unmount();
   });
 
+  it("shows the welcome banner for a new session", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        events: {
+          run_1: [
+            {
+              run_id: "run_1",
+              sequence: 1,
+              type: "final_response",
+              message: "hello world",
+            },
+          ],
+        },
+      },
+    );
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { lastFrame, unmount } = render(
+      <App
+        controller={controller}
+        mode="fullscreen"
+        viewport={{ rows: 24, columns: 80 }}
+      />,
+    );
+    await waitFor(() => controller.state.connected);
+    await waitFor(() => lastFrame()?.includes("CellWiki v") ?? false);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("CellWiki v");
+    expect(frame).toContain("openai/gpt-5");
+    expect(frame).toContain("from the model catalog");
+    expect(frame).toContain("/model");
+    expect(frame).toContain("◉");
+
+    await controller.submit("hi");
+    await controller.waitIdle();
+    await waitFor(() => !(lastFrame() ?? "").includes("CellWiki v"));
+    expect(lastFrame() ?? "").not.toContain("from the model catalog");
+
+    await controller.submit("/new");
+    await waitFor(() => lastFrame()?.includes("CellWiki v") ?? false);
+    unmount();
+  });
+
   it("opens the resume picker and switches sessions", async () => {
     const client = new FakeClient(
       [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],

@@ -92,6 +92,7 @@ describe("TuiController", () => {
     await controller.connect();
     expect(controller.state.threadId).toBeNull();
     expect(controller.state.threadTitle).toBe("");
+    expect(controller.state.welcome).toBe(true);
     expect(controller.state.threads).toHaveLength(1);
     await controller.submit("hello");
     expect(await controller.waitIdle()).toBe(true);
@@ -119,6 +120,7 @@ describe("TuiController", () => {
     await controller.connect();
     await controller.submit("hi");
     expect(await controller.waitIdle()).toBe(true);
+    expect(controller.state.welcome).toBe(false);
     expect(controller.state.threadId).toBe("thread_new");
     expect(controller.state.transcript.length).toBeGreaterThan(1);
 
@@ -126,10 +128,35 @@ describe("TuiController", () => {
     expect(controller.state.threadId).toBeNull();
     expect(controller.state.threadTitle).toBe("");
     expect(controller.state.runStatus).toBe("idle");
-    expect(controller.state.transcript.map((line) => line.text)).toEqual([
-      "new conversation",
-    ]);
-    expect(controller.state.transcript[0]?.tone).toBe("dim");
+    expect(controller.state.transcript).toEqual([]);
+    expect(controller.state.welcome).toBe(true);
+  });
+
+  it("restores the welcome banner with /clear", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        events: {
+          run_1: [
+            {
+              run_id: "run_1",
+              sequence: 1,
+              type: "final_response",
+              message: "hello",
+            },
+          ],
+        },
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("hi");
+    expect(await controller.waitIdle()).toBe(true);
+    expect(controller.state.welcome).toBe(false);
+
+    await controller.submit("/clear");
+    expect(controller.state.welcome).toBe(true);
+    expect(controller.state.transcript).toEqual([]);
   });
 
   it("answers an inline question gate", async () => {
@@ -439,6 +466,7 @@ describe("TuiController", () => {
 
     expect(controller.state.picker).toBeNull();
     expect(controller.state.threadId).toBe("thread_2");
+    expect(controller.state.welcome).toBe(false);
     expect(
       controller.state.transcript.some(
         (line) => line.text === "second thread answer",

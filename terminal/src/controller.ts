@@ -129,6 +129,7 @@ export interface TuiState {
   themeId: string;
   theme: Theme;
   modelSelection: ModelSelection | null;
+  welcome: boolean;
   pendingDiffId: string | null;
   pendingDiffRunId: string | null;
   queue: string[];
@@ -205,6 +206,7 @@ export class TuiController {
       themeId,
       theme: resolveTheme(themeId, this.env),
       modelSelection: null,
+      welcome: true,
       pendingDiffId: null,
       pendingDiffRunId: null,
       queue: [],
@@ -236,6 +238,7 @@ export class TuiController {
         threads,
         threadId: null,
         threadTitle: "",
+        welcome: true,
         versionMismatch: null,
       });
       await this.refreshModel();
@@ -670,6 +673,7 @@ export class TuiController {
         threadId = await client.createThread();
         this.update({ threadId, threadTitle: "" });
       }
+      this.update({ welcome: false });
       this.commit(message, "user");
       const run = await client.startRun(
         threadId,
@@ -1153,8 +1157,8 @@ export class TuiController {
           tools: [],
           usageLabel: "",
           queue: [],
+          welcome: true,
         });
-        this.commit("new conversation", "dim");
         return;
       case "/resume":
         await this.resumeSession(parsed.argument);
@@ -1163,7 +1167,7 @@ export class TuiController {
         this.openThemePicker();
         return;
       case "/clear":
-        this.update({ transcript: [] });
+        this.update({ transcript: [], welcome: true });
         return;
       case "/status":
         await this.printStatus();
@@ -1239,6 +1243,7 @@ export class TuiController {
       threadTitle: thread.title ?? "",
       transcript: [],
       picker: null,
+      welcome: false,
     });
     const messages = await this.requireClient().listMessages(thread.thread_id);
     for (const message of messages.slice(-20)) {

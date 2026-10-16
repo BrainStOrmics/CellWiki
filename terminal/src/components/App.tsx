@@ -27,6 +27,7 @@ import { StatusBar } from "./StatusBar";
 import { StyledText } from "./StyledText";
 import { ThemePicker } from "./ThemePicker";
 import { TranscriptView } from "./TranscriptView";
+import { WelcomeBanner } from "./WelcomeBanner";
 
 export type RenderMode = "fullscreen" | "classic";
 
@@ -202,6 +203,14 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
   if (mode === "classic") {
     return (
       <Box flexDirection="column">
+        {state.welcome ? (
+          <WelcomeBanner
+            state={state}
+            theme={state.theme}
+            width={size.columns}
+            maxRows={8}
+          />
+        ) : null}
         <TranscriptView
           lines={state.transcript}
           width={size.columns}
@@ -254,28 +263,39 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
         flexShrink={0}
         overflow="hidden"
       >
-        {showHint ? (
-          <Text dimColor>{truncateToWidth(hintText, size.columns)}</Text>
-        ) : null}
-        {Array.from({ length: padding }, (_, index) => (
-          <Text key={`padding-${index}`}> </Text>
-        ))}
-        {view.lines.map((line, index) =>
-          line.tone === "user" ? (
-            <Text
-              key={`${index}-${line.text}`}
-              backgroundColor={state.theme.tokens.userMessageBackground}
-              color={state.theme.tokens.inverseText}
-            >
-              {padToWidth(line.text, Math.max(1, size.columns - 1))}
-            </Text>
-          ) : (
-            <StyledText
-              key={`${index}-${line.text}`}
-              line={line}
-              theme={state.theme}
-            />
-          ),
+        {state.welcome ? (
+          <WelcomeBanner
+            state={state}
+            theme={state.theme}
+            width={size.columns}
+            maxRows={transcriptRows}
+          />
+        ) : (
+          <>
+            {showHint ? (
+              <Text dimColor>{truncateToWidth(hintText, size.columns)}</Text>
+            ) : null}
+            {Array.from({ length: padding }, (_, index) => (
+              <Text key={`padding-${index}`}> </Text>
+            ))}
+            {view.lines.map((line, index) =>
+              line.tone === "user" ? (
+                <Text
+                  key={`${index}-${line.text}`}
+                  backgroundColor={state.theme.tokens.userMessageBackground}
+                  color={state.theme.tokens.inverseText}
+                >
+                  {padToWidth(line.text, Math.max(1, size.columns - 1))}
+                </Text>
+              ) : (
+                <StyledText
+                  key={`${index}-${line.text}`}
+                  line={line}
+                  theme={state.theme}
+                />
+              ),
+            )}
+          </>
         )}
       </Box>
       {state.gate && layout ? (
