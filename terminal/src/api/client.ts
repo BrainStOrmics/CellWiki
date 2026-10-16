@@ -5,6 +5,7 @@ import type {
   ContextUsage,
   MessageRecord,
   ModelCatalog,
+  ModelSelection,
   PendingDiffSummary,
   PendingQuestion,
   ThreadRecord,
@@ -51,11 +52,13 @@ export class DaemonClient {
     threadId: string,
     message: string,
     requestId: string,
+    model?: ModelSelection | null,
   ): Promise<AgentRun> {
     return this.request<AgentRun>("POST", "/api/agent/runs", {
       thread_id: threadId,
       message,
       request_id: requestId,
+      ...(model?.provider_id && model.model_id ? { model } : {}),
     });
   }
 

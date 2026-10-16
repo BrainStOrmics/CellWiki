@@ -21,6 +21,7 @@ import {
 import { Composer } from "./Composer";
 import { GateView } from "./GateView";
 import { LiveView } from "./LiveView";
+import { ModelPicker } from "./ModelPicker";
 import { SessionPicker } from "./SessionPicker";
 import { StatusBar } from "./StatusBar";
 import { StyledText } from "./StyledText";
@@ -170,6 +171,16 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
     if (state.picker.kind === "theme") {
       return (
         <ThemePicker
+          controller={controller}
+          state={state}
+          size={size}
+          fullscreen={mode === "fullscreen"}
+        />
+      );
+    }
+    if (state.picker.kind === "model") {
+      return (
+        <ModelPicker
           controller={controller}
           state={state}
           size={size}

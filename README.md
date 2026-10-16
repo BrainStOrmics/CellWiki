@@ -85,6 +85,10 @@ viewport 内窗口化显示，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/`Ctrl+End
 Markdown 列表 `•` 也使用该主色。
 `/new` 清空屏幕并开始新会话（旧会话仍可在 `/resume` 里找回），
 `/clear` 只清当前视图、不切换会话。
+`/model` 打开模型选择器（输入即搜索，`↑`/`↓` 移动，`Enter` 应用，
+`Esc` 取消）：选择只作用于本次 TUI 会话后续的 run（对齐桌面端 composer
+的模型切换器，不写工作区默认），状态行与 `/status` 标注 `(session)`；
+`/model <model_id>` 直接切换，`/model default` 回到目录默认。
 Python 终端界面已退役；
 `cellwiki dev`、`cellwiki serve` 与 `cellwiki daemon *` 仍由 Python 提供。
 

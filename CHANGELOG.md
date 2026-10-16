@@ -6,6 +6,11 @@
 
 ### Added
 
+- 终端客户端 `/model` 升级为会话级模型选择器：列出目录里启用的
+  provider/model，支持输入即搜索、`↑`/`↓` 移动、`Enter` 应用、`Esc`
+  取消；选择随 `POST /api/agent/runs` 的 `model` 字段下发（对齐桌面端
+  composer 的 ModelSwitcher），不写工作区默认；`/model <model_id>` 直接
+  切换、`/model default` 清除覆盖，状态行与 `/status` 标注 `(session)`。
 - 终端客户端新增主题切换：`/theme` 选择器支持 `↑`/`↓` 实时预览、
   `Enter` 持久化到 `~/.cellwiki/tui.json`、`Esc` 还原；内置 `auto`
   （按终端背景选深浅）、`dark`、`light`、`dark-daltonized`、

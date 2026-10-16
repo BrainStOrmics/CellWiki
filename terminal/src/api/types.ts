@@ -76,9 +76,23 @@ export interface ModelSelection {
   model_id?: string;
 }
 
+export interface ProviderModelRecord {
+  id: string;
+  display_name?: string | null;
+  enabled?: boolean;
+}
+
+export interface ModelProviderRecord {
+  id: string;
+  name?: string | null;
+  enabled?: boolean;
+  api_key_configured?: boolean;
+  models?: ProviderModelRecord[];
+}
+
 export interface ModelCatalog {
   default_selection?: ModelSelection | null;
-  providers?: unknown[];
+  providers?: ModelProviderRecord[];
 }
 
 export interface ContextUsage {

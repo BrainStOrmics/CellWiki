@@ -5,6 +5,7 @@ import type {
   ContextUsage,
   MessageRecord,
   ModelCatalog,
+  ModelSelection,
   PendingDiffSummary,
   PendingQuestion,
   ThreadRecord,
@@ -31,6 +32,7 @@ export class FakeClient implements ClientLike {
   threads: ThreadRecord[];
   messages: Record<string, MessageRecord[]>;
   started: Array<[string, string]> = [];
+  models: Array<ModelSelection | null> = [];
   answers: Array<[unknown, boolean]> = [];
   accepted: string[] = [];
   rejected: string[] = [];
@@ -91,8 +93,10 @@ export class FakeClient implements ClientLike {
     threadId: string,
     message: string,
     _requestId: string,
+    model?: ModelSelection | null,
   ): Promise<AgentRun> {
     this.started.push([threadId, message]);
+    this.models.push(model ?? null);
     return {
       run_id: `run_${this.started.length}`,
       thread_id: threadId,
@@ -167,6 +171,29 @@ export class FakeClient implements ClientLike {
   async listModelProviders(): Promise<ModelCatalog> {
     return {
       default_selection: { provider_id: "openai", model_id: "gpt-5" },
+      providers: [
+        {
+          id: "openai",
+          name: "OpenAI",
+          enabled: true,
+          api_key_configured: true,
+          models: [{ id: "gpt-5", display_name: "GPT-5", enabled: true }],
+        },
+        {
+          id: "deepseek",
+          name: "DeepSeek",
+          enabled: true,
+          api_key_configured: false,
+          models: [
+            {
+              id: "deepseek-flash",
+              display_name: "DeepSeek Flash",
+              enabled: true,
+            },
+            { id: "deepseek-pro", enabled: false },
+          ],
+        },
+      ],
     };
   }
 

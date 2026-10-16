@@ -43,4 +43,50 @@ describe("DaemonClient", () => {
       "diff --git a/x b/x\n+new\n",
     );
   });
+
+  it("sends the session model selection when starting a run", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            run_id: "run_1",
+            thread_id: "thread_1",
+            status: "running",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new DaemonClient("http://127.0.0.1:1", "token");
+    await client.startRun("thread_1", "hi", "req_1", {
+      provider_id: "deepseek",
+      model_id: "deepseek-flash",
+    });
+    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(call[1].body))).toMatchObject({
+      thread_id: "thread_1",
+      message: "hi",
+      request_id: "req_1",
+      model: { provider_id: "deepseek", model_id: "deepseek-flash" },
+    });
+  });
+
+  it("omits the model field without a session override", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            run_id: "run_1",
+            thread_id: "thread_1",
+            status: "running",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new DaemonClient("http://127.0.0.1:1", "token");
+    await client.startRun("thread_1", "hi", "req_1");
+    const call = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(call[1].body))).not.toHaveProperty("model");
+  });
 });

@@ -1,10 +1,17 @@
 import { DaemonClient, DaemonRequestError } from "./api/client";
+import {
+  findModelChoice,
+  flattenModelChoices,
+  modelChoiceMatches,
+  type ModelChoice,
+} from "./api/model-choices";
 import type {
   AgentEvent,
   AgentRun,
   ContextUsage,
   MessageRecord,
   ModelCatalog,
+  ModelSelection,
   PendingDiffSummary,
   PendingQuestion,
   ThreadRecord,
@@ -38,6 +45,7 @@ export interface ClientLike {
     threadId: string,
     message: string,
     requestId: string,
+    model?: ModelSelection | null,
   ): Promise<AgentRun>;
   getRun(runId: string): Promise<AgentRun>;
   listEvents(runId: string, after?: number): Promise<AgentEvent[]>;
@@ -92,7 +100,12 @@ export interface TranscriptLine {
 
 export type PickerState =
   | { kind: "resume"; query: string; index: number }
-  | { kind: "theme"; index: number; originalThemeId: string };
+  | { kind: "theme"; index: number; originalThemeId: string }
+  | { kind: "model"; query: string; index: number };
+
+export type ModelPickerItem =
+  | { kind: "default" }
+  | { kind: "model"; choice: ModelChoice };
 
 export interface TuiState {
   workspace: string;
@@ -115,6 +128,7 @@ export interface TuiState {
   picker: PickerState | null;
   themeId: string;
   theme: Theme;
+  modelSelection: ModelSelection | null;
   pendingDiffId: string | null;
   pendingDiffRunId: string | null;
   queue: string[];
@@ -157,6 +171,7 @@ export class TuiController {
   private nextLineId = 1;
   private abortController: AbortController | null = null;
   private fileCache: string[] | null = null;
+  private modelCatalog: ModelCatalog | null = null;
   private readonly env: NodeJS.ProcessEnv;
   private readonly themeStore: ThemeStore;
 
@@ -189,6 +204,7 @@ export class TuiController {
       picker: null,
       themeId,
       theme: resolveTheme(themeId, this.env),
+      modelSelection: null,
       pendingDiffId: null,
       pendingDiffRunId: null,
       queue: [],
@@ -332,6 +348,110 @@ export class TuiController {
     return themeChoices(this.env);
   }
 
+  async openModelPicker(): Promise<void> {
+    try {
+      this.modelCatalog = await this.requireClient().listModelProviders();
+    } catch (error) {
+      this.reportError(error);
+      return;
+    }
+    this.update({ modelLabel: this.formatCurrentModelLabel() });
+    const items = this.modelPickerItems("");
+    this.update({
+      picker: {
+        kind: "model",
+        query: "",
+        index: this.currentModelPickerIndex(items),
+      },
+    });
+  }
+
+  modelPickerItems(query: string): ModelPickerItem[] {
+    const normalized = query.trim().toLowerCase();
+    const items: ModelPickerItem[] = [];
+    if (
+      !normalized ||
+      "use catalog default".includes(normalized) ||
+      "default".includes(normalized)
+    ) {
+      items.push({ kind: "default" });
+    }
+    for (const choice of this.modelChoices()) {
+      if (modelChoiceMatches(choice, normalized)) {
+        items.push({ kind: "model", choice });
+      }
+    }
+    return items;
+  }
+
+  modelChoices(): ModelChoice[] {
+    return flattenModelChoices(this.modelCatalog ?? {});
+  }
+
+  private currentModelPickerIndex(items: ModelPickerItem[]): number {
+    const selection = this.state.modelSelection;
+    if (!selection?.model_id) {
+      return 0;
+    }
+    const index = items.findIndex(
+      (item) =>
+        item.kind === "model" &&
+        item.choice.modelId === selection.model_id &&
+        item.choice.providerId === selection.provider_id,
+    );
+    return index >= 0 ? index : 0;
+  }
+
+  private async applyModelById(modelId: string): Promise<void> {
+    const argument = modelId.trim();
+    if (argument.toLowerCase() === "default") {
+      this.setModelSelection(null);
+      return;
+    }
+    if (!this.modelCatalog) {
+      try {
+        this.modelCatalog = await this.requireClient().listModelProviders();
+      } catch (error) {
+        this.reportError(error);
+        return;
+      }
+    }
+    const choices = this.modelChoices();
+    if (choices.length === 0) {
+      this.commit("no enabled models in the catalog", "warning");
+      return;
+    }
+    const match = findModelChoice(choices, argument);
+    if (!match) {
+      this.commit(
+        `unknown model: ${argument} (${choices.length} enabled model(s); run /model to pick)`,
+        "warning",
+      );
+      return;
+    }
+    this.setModelSelection(match.selection);
+  }
+
+  private setModelSelection(selection: ModelSelection | null): void {
+    this.update({
+      modelSelection: selection,
+      modelLabel: this.formatCurrentModelLabel(selection),
+    });
+    this.commit(`model: ${this.state.modelLabel}`, "dim");
+  }
+
+  private formatCurrentModelLabel(
+    selection: ModelSelection | null = this.state.modelSelection,
+  ): string {
+    if (selection?.model_id) {
+      const prefix = selection.provider_id ? `${selection.provider_id}/` : "";
+      return `${prefix}${selection.model_id} (session)`;
+    }
+    return this.modelCatalog
+      ? formatModelLabel(this.modelCatalog)
+      : this.state.modelLabel;
+  }
+
   closePicker(): void {
     const picker = this.state.picker;
     if (!picker) {
@@ -345,7 +465,7 @@ export class TuiController {
 
   setPickerQuery(query: string): void {
     const picker = this.state.picker;
-    if (!picker || picker.kind !== "resume") {
+    if (!picker || (picker.kind !== "resume" && picker.kind !== "model")) {
       return;
     }
     this.update({ picker: { ...picker, query, index: 0 } });
@@ -365,6 +485,16 @@ export class TuiController {
       if (choice) {
         this.previewTheme(choice.id);
       }
+      return;
+    }
+    if (picker.kind === "model") {
+      const count = this.modelPickerItems(picker.query).length;
+      if (count === 0) {
+        this.update({ picker: { ...picker, index: 0 } });
+        return;
+      }
+      const index = (picker.index + delta + count) % count;
+      this.update({ picker: { ...picker, index } });
       return;
     }
     const count = filterThreads(this.state.threads, picker.query).length;
@@ -389,6 +519,16 @@ export class TuiController {
         this.themeStore.save(choice.id);
       }
       this.update({ picker: null });
+      return;
+    }
+    if (picker.kind === "model") {
+      const items = this.modelPickerItems(picker.query);
+      const item = items[picker.index] ?? items[0];
+      this.update({ picker: null });
+      if (!item) {
+        return;
+      }
+      this.setModelSelection(item.kind === "model" ? item.choice.selection : null);
       return;
     }
     const threads = filterThreads(this.state.threads, picker.query);
@@ -501,8 +641,8 @@ export class TuiController {
 
   private async refreshModel(): Promise<void> {
     try {
-      const catalog = await this.requireClient().listModelProviders();
-      this.update({ modelLabel: formatModelLabel(catalog) });
+      this.modelCatalog = await this.requireClient().listModelProviders();
+      this.update({ modelLabel: this.formatCurrentModelLabel() });
     } catch {
       // model display is best effort
     }
@@ -535,6 +675,7 @@ export class TuiController {
         threadId,
         message,
         `tui_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+        this.state.modelSelection,
       );
       this.update({
         runId: run.run_id,
@@ -1049,16 +1190,13 @@ export class TuiController {
           }
         }
         return;
-      case "/model": {
-        const catalog = await this.requireClient().listModelProviders();
-        const selection = catalog.default_selection;
-        this.commit(
-          `model: ${formatModelLabel(catalog)}${
-            selection?.model_id ? " (default selection)" : ""
-          }`,
-        );
+      case "/model":
+        if (parsed.argument) {
+          await this.applyModelById(parsed.argument);
+        } else {
+          await this.openModelPicker();
+        }
         return;
-      }
       case "/context": {
         await this.refreshContext();
         this.commit(`context: ${this.state.contextLabel || "unknown"}`, "dim");
@@ -1173,7 +1311,7 @@ const HELP_LINES = [
   "/continue        resume an unfinished run",
   "/retry           retry a failed run",
   "/diff            reopen the pending diff approval",
-  "/model           show the default model",
+  "/model [id]      choose a model for this session",
   "/context         show context usage",
   "/quit            leave the TUI (the daemon keeps running)",
   "↑/↓             scroll the conversation (fullscreen)",

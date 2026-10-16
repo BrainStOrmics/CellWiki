@@ -499,6 +499,101 @@ describe("TuiController", () => {
     expect(controller.state.picker).toBeNull();
   });
 
+  it("picks a session model from the /model picker", async () => {
+    const client = new FakeClient([
+      { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+    ]);
+    const controller = controllerFor(client);
+    await controller.connect();
+    expect(controller.state.modelLabel).toBe("openai/gpt-5");
+
+    await controller.submit("/model");
+    expect(controller.state.picker?.kind).toBe("model");
+    expect(
+      controller
+        .modelPickerItems("")
+        .map((item) =>
+          item.kind === "default" ? "default" : item.choice.modelId,
+        ),
+    ).toEqual(["default", "gpt-5", "deepseek-flash"]);
+
+    controller.movePicker(2);
+    await controller.confirmPicker();
+    expect(controller.state.modelSelection).toEqual({
+      provider_id: "deepseek",
+      model_id: "deepseek-flash",
+    });
+    expect(controller.state.modelLabel).toBe("deepseek/deepseek-flash (session)");
+
+    await controller.submit("hi");
+    expect(await controller.waitIdle()).toBe(true);
+    expect(client.models[0]).toEqual({
+      provider_id: "deepseek",
+      model_id: "deepseek-flash",
+    });
+  });
+
+  it("clears the session model override with the catalog default entry", async () => {
+    const client = new FakeClient([
+      { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+    ]);
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/model deepseek-flash");
+    expect(controller.state.modelSelection).toEqual({
+      provider_id: "deepseek",
+      model_id: "deepseek-flash",
+    });
+
+    await controller.submit("/model");
+    controller.setPickerQuery("default");
+    await controller.confirmPicker();
+    expect(controller.state.modelSelection).toBeNull();
+    expect(controller.state.modelLabel).toBe("openai/gpt-5");
+  });
+
+  it("applies a model by id and rejects unknown ids", async () => {
+    const client = new FakeClient([
+      { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+    ]);
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/model deepseek-flash");
+    expect(controller.state.modelSelection).toEqual({
+      provider_id: "deepseek",
+      model_id: "deepseek-flash",
+    });
+
+    await controller.submit("/model nope");
+    expect(controller.state.modelSelection).toEqual({
+      provider_id: "deepseek",
+      model_id: "deepseek-flash",
+    });
+    expect(
+      controller.state.transcript.some((line) =>
+        line.text.includes("unknown model: nope"),
+      ),
+    ).toBe(true);
+
+    await controller.submit("/model default");
+    expect(controller.state.modelSelection).toBeNull();
+  });
+
+  it("reports the session model marker in /status", async () => {
+    const client = new FakeClient([
+      { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+    ]);
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/model deepseek-flash");
+    await controller.submit("/status");
+    expect(
+      controller.state.transcript.some(
+        (line) => line.text === "model: deepseek/deepseek-flash (session)",
+      ),
+    ).toBe(true);
+  });
+
   it("formats a done summary with duration and clock", () => {
     const summary = formatRunSummary({
       run_id: "run_1",

@@ -428,6 +428,42 @@ describe("App", () => {
     unmount();
   });
 
+  it("opens the model picker and applies a session model", async () => {
+    const client = new FakeClient([
+      { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+    ]);
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { stdin, lastFrame, unmount } = render(
+      <App
+        controller={controller}
+        mode="fullscreen"
+        viewport={{ rows: 18, columns: 60 }}
+      />,
+    );
+    await waitFor(() => controller.state.connected);
+    await controller.submit("/model");
+    await waitFor(() => lastFrame()?.includes("Select model") ?? false);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("Use catalog default");
+    expect(frame).toContain("GPT-5");
+    expect(frame).toContain("DeepSeek Flash");
+    expect(frame).toContain("no key");
+
+    stdin.write("deep");
+    await waitFor(() => !(lastFrame() ?? "").includes("GPT-5"));
+    stdin.write("\r");
+    await waitFor(
+      () => controller.state.modelSelection?.model_id === "deepseek-flash",
+    );
+    await waitFor(
+      () => lastFrame()?.includes("deepseek/deepseek-flash (session)") ?? false,
+    );
+    unmount();
+  });
+
   it("selects a question option with arrows and Enter", async () => {
     const client = new FakeClient(
       [
