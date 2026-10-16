@@ -1,9 +1,9 @@
-import { Box, Text } from "ink";
+import { Box } from "ink";
 
 import type { TuiState } from "../controller";
 import { useSpinnerFrame } from "../render/spinner";
 import { buildLiveLines } from "../render/viewport";
-import { toneColor } from "./TranscriptView";
+import { StyledText } from "./StyledText";
 
 export function LiveView({
   state,
@@ -21,13 +21,7 @@ export function LiveView({
   return (
     <Box flexDirection="column">
       {lines.map((line, index) => (
-        <Text
-          key={`${index}-${line.text}`}
-          color={toneColor(line.tone)}
-          dimColor={line.tone === "dim"}
-        >
-          {line.text}
-        </Text>
+        <StyledText key={`${index}-${line.text}`} line={line} />
       ))}
     </Box>
   );

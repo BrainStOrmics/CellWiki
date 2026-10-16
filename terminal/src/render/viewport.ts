@@ -1,9 +1,14 @@
 import type { Gate, Tone } from "../controller";
+import {
+  renderMarkdownLines,
+  type StyledSegment,
+} from "./markdown";
 import { displayWidth, wrapToWidth } from "./text";
 
 export interface VisualLine {
   text: string;
   tone?: Tone;
+  segments?: StyledSegment[];
 }
 
 export interface LiveInput {
@@ -24,6 +29,10 @@ export function transcriptPrefix(tone: Tone | undefined): string {
   return "";
 }
 
+export function segmentText(segments: StyledSegment[]): string {
+  return segments.map((segment) => segment.text).join("");
+}
+
 export function toVisualLines(
   lines: Array<{ text: string; tone?: Tone }>,
   width: number,
@@ -32,9 +41,18 @@ export function toVisualLines(
   for (const line of lines) {
     const prefix = transcriptPrefix(line.tone);
     const bodyWidth = Math.max(1, width - displayWidth(prefix));
-    wrapToWidth(line.text, bodyWidth).forEach((wrapped, index) => {
+    const source =
+      line.tone === "assistant"
+        ? renderMarkdownLines(line.text, bodyWidth)
+        : wrapToWidth(line.text, bodyWidth).map((text) => [{ text }]);
+    source.forEach((segments, index) => {
       const lead = index === 0 ? prefix : prefix ? "  " : "";
-      visual.push({ text: `${lead}${wrapped}`, tone: line.tone });
+      const withLead = lead ? [{ text: lead }, ...segments] : segments;
+      visual.push({
+        text: segmentText(withLead),
+        tone: line.tone,
+        segments: withLead,
+      });
     });
   }
   return visual;
@@ -60,8 +78,8 @@ export function buildLiveLines(
     }
   }
   if (state.streaming) {
-    for (const wrapped of wrapToWidth(state.streaming, width)) {
-      lines.push({ text: wrapped });
+    for (const segments of renderMarkdownLines(state.streaming, width)) {
+      lines.push({ text: segmentText(segments), segments });
     }
   }
   for (const tool of state.tools) {

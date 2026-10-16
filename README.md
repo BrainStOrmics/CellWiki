@@ -69,6 +69,8 @@ viewport 内窗口化显示，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/`Ctrl+End
 补全、`Esc` 打断、忙时 `Enter` 排队。`/resume` 打开可搜索的会话选择器
 （输入过滤，`↑`/`↓` 移动，`Enter` 恢复，`Esc` 取消）；对话中用户消息显示
 为 `❯` 行，助手消息以 `●` 开头，run 结束行显示 `✻ done in Ns · HH:MM`。
+助手消息按终端 Markdown 子集渲染（`**加粗**`、`*斜体*`、行内代码、链接、
+标题、列表、引用、代码块），不再显示原始标记；表格与图片不渲染。
 Python 终端界面已退役；
 `cellwiki dev`、`cellwiki serve` 与 `cellwiki daemon *` 仍由 Python 提供。
 

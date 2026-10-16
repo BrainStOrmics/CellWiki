@@ -7,6 +7,7 @@ import {
   wrapToWidth,
 } from "../src/render/text";
 import { formatRelativeTime } from "../src/render/time";
+import { renderInline, renderMarkdown } from "../src/render/markdown";
 import {
   buildLiveLines,
   gateLayout,
@@ -53,6 +54,42 @@ describe("transcript visual lines", () => {
       "● abcdef",
       "  ghij",
     ]);
+  });
+});
+
+describe("markdown rendering", () => {
+  it("styles inline emphasis, code and links", () => {
+    expect(renderInline("**bold** and `code` and [link](https://x)")).toEqual([
+      { text: "bold", bold: true },
+      { text: " and " },
+      { text: "code", dim: true },
+      { text: " and " },
+      { text: "link", underline: true },
+    ]);
+  });
+
+  it("keeps python dunder identifiers intact", () => {
+    expect(renderInline("call __init__ now")).toEqual([
+      { text: "call __init__ now" },
+    ]);
+  });
+
+  it("renders headings, bullets, quotes and code fences", () => {
+    const lines = renderMarkdown(
+      "# Title\n- item\n> note\n```\nraw **code**\n```\nafter",
+    );
+    expect(
+      lines.map((line) => line.segments.map((segment) => segment.text).join("")),
+    ).toEqual(["Title", "• item", "│ note", "raw **code**", "after"]);
+  });
+
+  it("strips markdown markers from assistant visual lines", () => {
+    const visual = toVisualLines(
+      [{ text: "**能看到:** 只有 thread", tone: "assistant" }],
+      40,
+    );
+    expect(visual[0]?.text).toBe("● 能看到: 只有 thread");
+    expect(visual[0]?.segments?.some((segment) => segment.bold)).toBe(true);
   });
 });
 

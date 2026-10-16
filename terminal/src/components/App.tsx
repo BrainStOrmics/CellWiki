@@ -23,7 +23,8 @@ import { GateView } from "./GateView";
 import { LiveView } from "./LiveView";
 import { SessionPicker } from "./SessionPicker";
 import { StatusBar } from "./StatusBar";
-import { TranscriptView, toneColor } from "./TranscriptView";
+import { StyledText } from "./StyledText";
+import { TranscriptView } from "./TranscriptView";
 
 export type RenderMode = "fullscreen" | "classic";
 
@@ -238,13 +239,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
               {padToWidth(line.text, Math.max(1, size.columns - 1))}
             </Text>
           ) : (
-            <Text
-              key={`${index}-${line.text}`}
-              color={toneColor(line.tone)}
-              dimColor={line.tone === "dim"}
-            >
-              {line.text}
-            </Text>
+            <StyledText key={`${index}-${line.text}`} line={line} />
           ),
         )}
       </Box>

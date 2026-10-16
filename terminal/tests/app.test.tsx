@@ -300,6 +300,44 @@ describe("App", () => {
     unmount();
   });
 
+  it("renders assistant markdown without raw markers", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        events: {
+          run_1: [
+            {
+              run_id: "run_1",
+              sequence: 1,
+              type: "final_response",
+              message: "**bold** and `code`\n- item",
+            },
+          ],
+        },
+      },
+    );
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { lastFrame, unmount } = render(
+      <App
+        controller={controller}
+        mode="fullscreen"
+        viewport={{ rows: 14, columns: 60 }}
+      />,
+    );
+    await waitFor(() => controller.state.connected);
+    await controller.submit("hi");
+    await waitFor(() => lastFrame()?.includes("bold and code") ?? false);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("bold and code");
+    expect(frame).toContain("• item");
+    expect(frame).not.toContain("**bold**");
+    expect(frame).not.toContain("`code`");
+    unmount();
+  });
+
   it("opens the resume picker and switches sessions", async () => {
     const client = new FakeClient(
       [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
