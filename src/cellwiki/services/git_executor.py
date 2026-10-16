@@ -130,8 +130,9 @@ class GitExecutor:
             timeout=self.timeout,
         )
         if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()[:500]
             raise GitCommandError(
-                f"git {label} failed: {(completed.stderr or '').strip()[:500]}"
+                f"git {label} failed: {detail}"
             )
         return completed.stdout[: self.max_output_bytes]
 

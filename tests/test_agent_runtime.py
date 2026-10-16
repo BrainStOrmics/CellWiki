@@ -2178,6 +2178,54 @@ def test_question_park_with_dirty_tree_publishes_versioned_unit(tmp_path: Path):
         manager.close()
 
 
+def test_auto_version_excludes_local_credentials(tmp_path: Path):
+    """本地 .env 凭据不得进入自动收口 commit 或审批 diff。"""
+
+    repo = _prepared_workspace(tmp_path)
+    # 模拟旧工作区：.gitignore 还没有 .env 规则，收口必须自己兜底。
+    (repo / ".gitignore").write_text("data/runtime/\n", encoding="utf-8")
+    (repo / ".env").write_text(
+        "OPENAI_API_KEY=sk-secret-test\n", encoding="utf-8"
+    )
+
+    class WriterWithoutCommit:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "note.md").write_text("note", encoding="utf-8")
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="写好了", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=WriterWithoutCommit())
+    try:
+        started = manager.start(
+            thread_id="t_autoversion_env",
+            message="写但不提交",
+            context=_context("t_autoversion_env"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diff = _wait_for_diff(manager, started.run_id)[0]
+        assert "note.md" in diff.files
+        assert ".env" not in diff.files
+        patch = manager.pending_diff_patch(diff.diff_id)
+        assert "sk-secret-test" not in patch
+        wip_sha = _wip_commit_sha(repo, started.run_id)
+        import subprocess
+
+        changed = subprocess.run(
+            ["git", "-C", str(repo), "show", "--name-only", "--format=", wip_sha],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert ".env" not in changed.stdout
+        assert (repo / ".env").read_text(encoding="utf-8") == (
+            "OPENAI_API_KEY=sk-secret-test\n"
+        )
+    finally:
+        manager.close()
+
+
 def test_auto_version_failure_marks_run_unfinished(tmp_path: Path):
     """自动收口不可行（index 被锁）时 run 落 unfinished，而不是 SUCCEEDED 带脏区。"""
     repo = _prepared_workspace(tmp_path)

@@ -44,6 +44,9 @@ WORKSPACE_IGNORE_FILE_NAME = ".gitignore"
 WORKSPACE_IGNORE_CONTENT = (
     "# 运行时产物：运行库、检查点、错误转储都由产品自己创建，不进版本库\n"
     "data/runtime/\n"
+    "# 本地凭据：不要进入版本库、审批 diff 或 Agent 上下文\n"
+    ".env\n"
+    ".env.*\n"
 )
 # Agent 维护的文件：导航正文与矛盾台账。
 AGENT_OWNED_FILES = frozenset({"index.md", "contradictions.md"})

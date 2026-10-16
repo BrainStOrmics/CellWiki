@@ -43,6 +43,14 @@
 - 删除无调用者的读工具 `get_project_status`、`search_wiki`、`read_wiki_page`（自 git 治理重构后就不在白名单与组装列表里）；前端三张工具卡保留，仅供历史 transcript 渲染。
 - 删除已无消费方的「扫描并登记 raw/」通路（文件树按钮、`POST /api/workspace/raw/scan` 与 `scan_raw_sources`）；其原始消费方 `ingest_sources` 已退役，附件晋升与直接读取 `raw/` 的导入方式不变。
 
+### Fixed
+
+- 工作区初始化生成的 `.gitignore` 现在同时忽略 `.env` 与 `.env.*`；自动收口
+  commit 与审批 diff 显式排除这些本地凭据文件，旧工作区也不会把 API key
+  卷进审批单元。
+- 自动收口在并发调用下于串行段内重读脏区，后到者不再因空提交失败；`git`
+  命令失败信息在 stderr 为空时回退显示 stdout，便于诊断。
+
 ## 2.0.0-beta
 
 > 本节保留该 beta 阶段的历史能力记录；其中 ChangeSet / CentralWriter / FTS5 / KnowledgeGraph 等旧治理链已在此后版本删除，当前能力以 README 与代码为准。

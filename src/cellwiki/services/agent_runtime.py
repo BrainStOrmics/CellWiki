@@ -228,7 +228,19 @@ _SYSTEM_MAINTAINED_FILES = frozenset(
 # 默认即 -A 语义（含删除），白名单无需放行 -A。
 _VERSION_EXCLUDE_PATHSPEC = tuple(
     f":(exclude){name}" for name in sorted(_SYSTEM_MAINTAINED_FILES)
+) + (
+    ":(exclude).env",
+    ":(exclude).env.*",
+    ":(exclude)**/.env",
+    ":(exclude)**/.env.*",
 )
+
+
+def _is_sensitive_path(path: str) -> bool:
+    """Local credential files never enter the approval unit or its diff."""
+
+    name = path.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    return name == ".env" or name.startswith(".env.")
 
 
 # 兼容别名：API 仍在使用旧名（严格串行门禁语义）
@@ -4039,15 +4051,17 @@ class AgentRuntimeManager:
             dirty = self._workspace_dirty_paths(git)
         except GitCommandError:
             return  # 连 status 都读不到（非 git 工作区等），无从收口
-        versionable = [
-            path
-            for path in dict.fromkeys(dirty)
-            if path not in _SYSTEM_MAINTAINED_FILES
-        ]
-        if not versionable:
+        if not self._versionable_paths(dirty):
             return
         try:
             with self._maintenance_lock:
+                # 两个收口调用可能并发读到同一份脏区；串行段内重读，
+                # 让后到者在已无版本化路径时直接返回，而不是撞上
+                # "nothing to commit"。
+                dirty = self._workspace_dirty_paths(git)
+                versionable = self._versionable_paths(dirty)
+                if not versionable:
+                    return
                 git.run("add", "--", ".", *_VERSION_EXCLUDE_PATHSPEC)
                 git.run(
                     "commit",
@@ -4076,6 +4090,14 @@ class AgentRuntimeManager:
             )
         except TerminalRunError:
             pass
+
+    @staticmethod
+    def _versionable_paths(dirty: list[str]) -> list[str]:
+        return [
+            path
+            for path in dict.fromkeys(dirty)
+            if path not in _SYSTEM_MAINTAINED_FILES and not _is_sensitive_path(path)
+        ]
 
     def _emit_versioning_failure_event(
         self, run_id: str, error: RunVersioningError

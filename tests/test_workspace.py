@@ -77,6 +77,8 @@ def test_ensure_workspace_creates_runtime_ignore_boundary(tmp_path: Path):
     ignore = root / WORKSPACE_IGNORE_FILE_NAME
     assert ignore.is_file()
     assert ignore.read_text(encoding="utf-8") == WORKSPACE_IGNORE_CONTENT
+    assert ".env\n" in WORKSPACE_IGNORE_CONTENT
+    assert ".env.*\n" in WORKSPACE_IGNORE_CONTENT
 
 
 def test_runtime_artifacts_stay_out_of_git_status(tmp_path: Path):
