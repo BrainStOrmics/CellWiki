@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -49,6 +50,12 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
     [],
   );
   const handleSubmitted = useCallback(() => setScrollOffset(0), []);
+  const maxOffsetRef = useRef(0);
+  const handleScroll = useCallback((delta: number) => {
+    setScrollOffset((value) =>
+      Math.min(Math.max(0, value - delta), maxOffsetRef.current),
+    );
+  }, []);
 
   useEffect(() => {
     void controller.connect();
@@ -104,6 +111,10 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
     allLines.length - Math.max(1, transcriptRows - 1),
   );
   const offset = Math.min(scrollOffset, maxOffset);
+
+  useEffect(() => {
+    maxOffsetRef.current = maxOffset;
+  }, [maxOffset]);
 
   useEffect(() => {
     if (offset !== scrollOffset) {
@@ -266,6 +277,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
           onRowsChange={handleComposerRows}
           onSubmitted={handleSubmitted}
           onValueChange={setComposerText}
+          onScroll={handleScroll}
         />
       </Box>
       <Box height={2} flexShrink={0}>

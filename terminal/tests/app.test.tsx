@@ -75,13 +75,18 @@ describe("App", () => {
       clientFactory: async () => client,
       sleep: noSleep,
     });
-    const { stdin, unmount } = render(<App controller={controller} />);
+    const { stdin, lastFrame, unmount } = render(
+      <App controller={controller} />,
+    );
     await waitFor(() => controller.state.connected);
     stdin.write("hi");
     await new Promise((resolve) => setTimeout(resolve, 10));
     stdin.write("\r");
     await waitFor(() => client.started.length === 1);
     expect(client.started[0]).toEqual(["thread_1", "hi"]);
+    stdin.write("\u0010");
+    await waitFor(() => (lastFrame() ?? "").includes("> hi") ?? false);
+    expect(lastFrame() ?? "").toContain("> hi");
     unmount();
   });
 
@@ -194,6 +199,39 @@ describe("App", () => {
     stdin.write("\u001b[6~");
     await waitFor(() => !(lastFrame() ?? "").includes("newer line"));
     expect(lastFrame() ?? "").toContain("answer 19");
+
+    stdin.write("\u001b[A");
+    await waitFor(() => lastFrame()?.includes("1 newer line") ?? false);
+    stdin.write("\u001b[B");
+    await waitFor(() => !(lastFrame() ?? "").includes("newer line"));
+    unmount();
+  });
+
+  it("scrolls the slash menu to keep the selection visible", async () => {
+    const client = new FakeClient([
+      { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+    ]);
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { stdin, lastFrame, unmount } = render(
+      <App
+        controller={controller}
+        mode="fullscreen"
+        viewport={{ rows: 16, columns: 60 }}
+      />,
+    );
+    await waitFor(() => controller.state.connected);
+    stdin.write("/");
+    await waitFor(() => lastFrame()?.includes("/help") ?? false);
+    for (let index = 0; index < 10; index += 1) {
+      stdin.write("\u001b[B");
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("/quit");
+    expect(frame).not.toContain("/help");
     unmount();
   });
 

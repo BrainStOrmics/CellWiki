@@ -1074,6 +1074,10 @@ const HELP_LINES = [
   "/model           show the default model",
   "/context         show context usage",
   "/quit            leave the TUI (the daemon keeps running)",
+  "↑/↓             scroll the conversation (fullscreen)",
+  "PgUp/PgDn       scroll half a page (fullscreen)",
+  "Ctrl+P/Ctrl+N   previous/next input history",
+  "Ctrl+U          withdraw the queued message",
   "Esc              interrupt the active run / defer a decision",
   "Enter            send; while a run is active, queue the message",
 ];

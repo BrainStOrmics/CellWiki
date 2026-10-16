@@ -59,7 +59,9 @@ cellwiki
 daemon 缺失时自动拉起。交互式终端默认使用 fullscreen 渲染：界面画在终端
 备用屏（alternate screen，类似 vim），输入框固定在底部，对话在固定
 viewport 内窗口化显示，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/`Ctrl+End`
-跳到最早/最新并恢复自动跟随。备用屏没有终端原生 scrollback，`Cmd+F` 等
+跳到最早/最新并恢复自动跟随，`↑`/`↓` 单行滚动；输入历史用 `Ctrl+P`/
+`Ctrl+N`，排队消息用 `Ctrl+U` 撤回。鼠标滚轮未启用（客户端不捕获鼠标，
+保留终端原生选择）。备用屏没有终端原生 scrollback，`Cmd+F` 等
 终端搜索不可用；需要主屏 scrollback 时用 `cellwiki-tui --classic` 或设置
 `CELLWIKI_TUI_CLASSIC=1` 退回经典渲染。界面支持 `/` 命令（`/help` `/new`
 `/resume` `/clear` `/status` `/continue` `/retry` `/diff` `/model`

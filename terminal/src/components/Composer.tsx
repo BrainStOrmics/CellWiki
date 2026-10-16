@@ -13,6 +13,7 @@ export interface ComposerProps {
   onRowsChange?: (rows: number) => void;
   onSubmitted?: () => void;
   onValueChange?: (value: string) => void;
+  onScroll?: (delta: number) => void;
 }
 
 interface MentionMatch {
@@ -40,6 +41,7 @@ export function Composer({
   onRowsChange,
   onSubmitted,
   onValueChange,
+  onScroll,
 }: ComposerProps) {
   const [value, setValue] = useState("");
   const [menuIndex, setMenuIndex] = useState(0);
@@ -91,9 +93,19 @@ export function Composer({
   const menuCapacity = menuKind
     ? Math.max(0, Math.max(1, maxRows) - baseRows - 1)
     : 0;
-  const shownMenuItems = Math.min(menuItems.length, 6, menuCapacity);
-  const activeMenu = menuKind && shownMenuItems > 0 ? menuKind : null;
-  const menuRows = activeMenu ? 1 + shownMenuItems : 0;
+  const visibleMenuCount = Math.min(menuItems.length, 6, menuCapacity);
+  const activeMenu = menuKind && visibleMenuCount > 0 ? menuKind : null;
+  const menuIndexSafe =
+    menuItems.length > 0 ? Math.min(menuIndex, menuItems.length - 1) : 0;
+  const menuStart = Math.min(
+    Math.max(0, menuIndexSafe - Math.floor(visibleMenuCount / 2)),
+    Math.max(0, menuItems.length - visibleMenuCount),
+  );
+  const visibleMenuItems = menuItems.slice(
+    menuStart,
+    menuStart + visibleMenuCount,
+  );
+  const menuRows = activeMenu ? 1 + visibleMenuCount : 0;
   const rows = Math.min(baseRows + menuRows, Math.max(1, maxRows));
 
   useEffect(() => {
@@ -101,7 +113,7 @@ export function Composer({
   }, [rows, onRowsChange]);
 
   const completeMenu = (): void => {
-    const item = menuItems[menuIndex];
+    const item = menuItems[menuIndexSafe];
     if (!item) {
       return;
     }
@@ -117,7 +129,7 @@ export function Composer({
   const submitCurrent = (): void => {
     const current = valueRef.current;
     if (activeMenu) {
-      const item = menuItems[menuIndex];
+      const item = menuItems[menuIndexSafe];
       const exactSlash =
         activeMenu === "slash" &&
         item !== undefined &&
@@ -136,6 +148,32 @@ export function Composer({
       onSubmitted?.();
       void controller.submit(message);
     }
+  };
+
+  const navigateHistory = (direction: -1 | 1): void => {
+    if (history.length === 0) {
+      return;
+    }
+    if (direction < 0) {
+      const next =
+        historyIndex < 0
+          ? history.length - 1
+          : Math.max(0, historyIndex - 1);
+      setHistoryIndex(next);
+      updateValue(history[next] ?? "");
+      return;
+    }
+    if (historyIndex < 0) {
+      return;
+    }
+    const next = historyIndex + 1;
+    if (next >= history.length) {
+      setHistoryIndex(-1);
+      updateValue("");
+      return;
+    }
+    setHistoryIndex(next);
+    updateValue(history[next] ?? "");
   };
 
   useInput((input, key) => {
@@ -176,21 +214,11 @@ export function Composer({
         );
         return;
       }
-      if (!valueRef.current && state.queue.length > 0) {
-        const queued = controller.withdrawQueued();
-        if (queued) {
-          updateValue(queued);
-        }
+      if (onScroll) {
+        onScroll(-1);
         return;
       }
-      if (history.length > 0) {
-        const next =
-          historyIndex < 0
-            ? history.length - 1
-            : Math.max(0, historyIndex - 1);
-        setHistoryIndex(next);
-        updateValue(history[next] ?? "");
-      }
+      navigateHistory(-1);
       return;
     }
     if (key.downArrow) {
@@ -201,14 +229,26 @@ export function Composer({
         setMenuIndex((current) => (current + 1) % menuItems.length);
         return;
       }
-      if (historyIndex >= 0) {
-        const next = historyIndex + 1;
-        if (next >= history.length) {
-          setHistoryIndex(-1);
-          updateValue("");
-        } else {
-          setHistoryIndex(next);
-          updateValue(history[next] ?? "");
+      if (onScroll) {
+        onScroll(1);
+        return;
+      }
+      navigateHistory(1);
+      return;
+    }
+    if (key.ctrl && input === "p") {
+      navigateHistory(-1);
+      return;
+    }
+    if (key.ctrl && input === "n") {
+      navigateHistory(1);
+      return;
+    }
+    if (key.ctrl && input === "u") {
+      if (state.queue.length > 0) {
+        const queued = controller.withdrawQueued();
+        if (queued) {
+          updateValue(queued);
         }
       }
       return;
@@ -256,14 +296,17 @@ export function Composer({
       {activeMenu ? (
         <Menu
           title={activeMenu === "slash" ? "commands" : "files"}
-          items={menuItems.slice(0, shownMenuItems)}
-          index={Math.min(menuIndex, Math.max(0, shownMenuItems - 1))}
+          items={visibleMenuItems}
+          index={menuIndexSafe - menuStart}
           width={width}
         />
       ) : null}
       {state.queue.length > 0 ? (
         <Text dimColor>
-          {truncateToWidth(`${state.queue.length} queued · up to withdraw`, width)}
+          {truncateToWidth(
+            `${state.queue.length} queued · Ctrl+U to withdraw`,
+            width,
+          )}
         </Text>
       ) : null}
       <Box>
