@@ -60,6 +60,7 @@ export interface ClientLike {
   resumeRun(runId: string): Promise<AgentRun>;
   pendingDiffPatch(diffId: string): Promise<string>;
   listPendingDiffs(): Promise<PendingDiffSummary[]>;
+  getPendingDiff(diffId: string): Promise<PendingDiffSummary | null>;
   acceptPendingDiff(diffId: string): Promise<unknown>;
   rejectPendingDiff(diffId: string): Promise<unknown>;
   listModelProviders(): Promise<ModelCatalog>;
@@ -990,6 +991,21 @@ export class TuiController {
     }
   }
 
+  /**
+   * One diff's authoritative state. `undefined` means the daemon could not be
+   * reached, so callers keep the optimistic fallback; `null` means the diff
+   * does not exist (404).
+   */
+  private async fetchPendingDiff(
+    diffId: string,
+  ): Promise<PendingDiffSummary | null | undefined> {
+    try {
+      return await this.requireClient().getPendingDiff(diffId);
+    } catch {
+      return undefined;
+    }
+  }
+
   private async afterRunSettled(run: AgentRun): Promise<void> {
     await this.afterDiffSettled(run.run_id, run.pending_diff_id ?? null);
   }
@@ -1001,11 +1017,20 @@ export class TuiController {
     let pending = await this.fetchPendingDiffs();
     let match = this.matchPendingDiff(pending, runId);
     if (!match && pendingDiffId) {
-      match = {
-        diff_id: pendingDiffId,
-        run_id: runId ?? undefined,
-        status: "pending",
-      };
+      // The run record keeps pending_diff_id after the diff is resolved, so
+      // the fallback must verify the diff's real state before opening a gate.
+      const record = await this.fetchPendingDiff(pendingDiffId);
+      if (
+        record === undefined ||
+        (record !== null &&
+          (record.status === undefined || record.status === "pending"))
+      ) {
+        match = {
+          diff_id: pendingDiffId,
+          run_id: runId ?? undefined,
+          status: "pending",
+        };
+      }
     }
     if (!match) {
       await this.sleep(500);
@@ -1021,10 +1046,7 @@ export class TuiController {
       await this.openDiffGate(gateRunId, match.diff_id);
       return;
     }
-    this.update({
-      pendingDiffId,
-      pendingDiffRunId: pendingDiffId ? runId : null,
-    });
+    this.update({ pendingDiffId: null, pendingDiffRunId: null });
     if (this.state.queue.length > 0) {
       const [next, ...rest] = this.state.queue;
       this.update({ queue: rest });
@@ -1118,6 +1140,7 @@ export class TuiController {
     }
     if (run && typeof run.status === "string") {
       if (TERMINAL_STATUSES.has(run.status)) {
+        this.update({ runStatus: run.status });
         await this.afterRunSettled(run);
         return;
       }

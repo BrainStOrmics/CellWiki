@@ -206,7 +206,12 @@ describe("TuiController", () => {
           status: "waiting_approval",
           pending_diff_id: "diff_1",
         },
-        { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+        {
+          run_id: "run_1",
+          thread_id: "thread_1",
+          status: "succeeded",
+          pending_diff_id: "diff_1",
+        },
       ],
       {
         events: {
@@ -219,6 +224,9 @@ describe("TuiController", () => {
             },
           ],
         },
+        pendingDiffs: [
+          { diff_id: "diff_1", run_id: "run_1", status: "pending" },
+        ],
       },
     );
     const controller = controllerFor(client);
@@ -238,6 +246,9 @@ describe("TuiController", () => {
     await controller.submit("1");
     expect(await controller.waitIdle()).toBe(true);
     expect(client.accepted).toEqual(["diff_1"]);
+    expect(controller.state.gate).toBeNull();
+    expect(controller.state.pendingDiffId).toBeNull();
+    expect(controller.state.runStatus).toBe("succeeded");
   });
 
   it("surfaces a pending diff published after a succeeded run", async () => {
@@ -290,6 +301,54 @@ describe("TuiController", () => {
     expect(await controller.waitIdle()).toBe(true);
     expect(client.accepted).toEqual(["diff_1", "diff_2"]);
     expect(controller.state.pendingDiffId).toBeNull();
+  });
+
+  it("does not reopen the gate when the run still references an accepted diff", async () => {
+    const client = new FakeClient(
+      [
+        {
+          run_id: "run_1",
+          thread_id: "thread_1",
+          status: "succeeded",
+          pending_diff_id: "diff_1",
+        },
+      ],
+      {
+        pendingDiffs: [
+          { diff_id: "diff_1", run_id: "run_1", status: "accepted" },
+        ],
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("edit");
+    expect(await controller.waitIdle()).toBe(true);
+    expect(controller.state.gate).toBeNull();
+    expect(controller.state.pendingDiffId).toBeNull();
+  });
+
+  it("opens the gate from the run reference when the pending list lags", async () => {
+    const client = new FakeClient(
+      [
+        {
+          run_id: "run_1",
+          thread_id: "thread_1",
+          status: "succeeded",
+          pending_diff_id: "diff_1",
+        },
+      ],
+      {
+        pendingDiffs: [
+          { diff_id: "diff_1", run_id: "run_1", status: "pending" },
+        ],
+        pendingDiffListOverride: [],
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("edit");
+    await waitFor(() => controller.state.gate?.kind === "diff");
+    expect(controller.state.pendingDiffId).toBe("diff_1");
   });
 
   it("queues messages while a run is active", async () => {

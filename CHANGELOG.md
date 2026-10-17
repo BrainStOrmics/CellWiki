@@ -92,6 +92,12 @@
 
 ### Fixed
 
+- 终端客户端修复审批门在判定后重开：真实 daemon 的 run 记录在 accept/reject
+  后仍保留 `pending_diff_id`，此前兜底逻辑据此把已判定的 diff 当作"仍待
+  审批"再次弹出（再按 `1` 会得到 409）。现在兜底先经
+  `GET /api/pending-diffs/{id}` 校验实际状态，只有仍为 `pending` 才开门；
+  判定完成后会话内 `pendingDiffId` 收敛为 `null`，状态行从
+  `waiting_approval` 恢复 run 终态。
 - 工作区初始化生成的 `.gitignore` 现在同时忽略 `.env` 与 `.env.*`；自动收口
   commit 与审批 diff 显式排除这些本地凭据文件，旧工作区也不会把 API key
   卷进审批单元。

@@ -44,6 +44,28 @@ describe("DaemonClient", () => {
     );
   });
 
+  it("reads one pending diff and treats a missing one as absent", async () => {
+    const fetchMock = vi.fn(async (input: unknown) => {
+      if (String(input).includes("/api/pending-diffs/diff_1")) {
+        return new Response(
+          JSON.stringify({ diff_id: "diff_1", status: "accepted" }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(JSON.stringify({ detail: "not found" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new DaemonClient("http://127.0.0.1:1", "token");
+    await expect(client.getPendingDiff("diff_1")).resolves.toMatchObject({
+      diff_id: "diff_1",
+      status: "accepted",
+    });
+    await expect(client.getPendingDiff("diff_missing")).resolves.toBeNull();
+  });
+
   it("sends the session model selection when starting a run", async () => {
     const fetchMock = vi.fn(
       async () =>

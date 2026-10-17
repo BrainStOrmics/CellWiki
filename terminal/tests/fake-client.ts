@@ -17,6 +17,9 @@ export interface FakeClientOptions {
   question?: PendingQuestion | null;
   patch?: string;
   pendingDiffs?: PendingDiffSummary[];
+  /** When set, listPendingDiffs returns this instead of pendingDiffs
+   * (models a lagging list while getPendingDiff sees the real record). */
+  pendingDiffListOverride?: PendingDiffSummary[];
   failStreamOnce?: boolean;
   threads?: ThreadRecord[];
 }
@@ -28,6 +31,7 @@ export class FakeClient implements ClientLike {
   private question: PendingQuestion | null;
   private patch: string;
   pendingDiffs: PendingDiffSummary[];
+  private pendingDiffListOverride: PendingDiffSummary[] | undefined;
   private failStreamOnce: boolean;
   threads: ThreadRecord[];
   messages: Record<string, MessageRecord[]>;
@@ -59,6 +63,7 @@ export class FakeClient implements ClientLike {
         "",
       ].join("\n");
     this.pendingDiffs = options.pendingDiffs ?? [];
+    this.pendingDiffListOverride = options.pendingDiffListOverride;
     this.failStreamOnce = options.failStreamOnce ?? false;
     this.threads = options.threads ?? [
       {
@@ -149,7 +154,20 @@ export class FakeClient implements ClientLike {
   }
 
   async listPendingDiffs(): Promise<PendingDiffSummary[]> {
-    return this.pendingDiffs.map((diff) => ({ ...diff }));
+    return (this.pendingDiffListOverride ?? this.pendingDiffs).map((diff) => ({
+      ...diff,
+    }));
+  }
+
+  async getPendingDiff(diffId: string): Promise<PendingDiffSummary | null> {
+    const record = this.pendingDiffs.find((diff) => diff.diff_id === diffId);
+    if (!record) {
+      throw new DaemonRequestError(
+        "daemon request failed (404): pending diff not found",
+        404,
+      );
+    }
+    return { ...record };
   }
 
   async acceptPendingDiff(diffId: string): Promise<unknown> {

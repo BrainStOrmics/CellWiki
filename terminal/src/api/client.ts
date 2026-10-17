@@ -131,6 +131,20 @@ export class DaemonClient {
     return payload.pending_diffs;
   }
 
+  async getPendingDiff(diffId: string): Promise<PendingDiffSummary | null> {
+    try {
+      return await this.request<PendingDiffSummary>(
+        "GET",
+        `/api/pending-diffs/${encodeURIComponent(diffId)}`,
+      );
+    } catch (error) {
+      if (error instanceof DaemonRequestError && error.status === 404) {
+        return null;
+      }
+      throw error;
+    }
+  }
+
   async pendingDiffPatch(diffId: string): Promise<string> {
     const response = await fetch(
       `${this.baseUrl}/api/pending-diffs/${encodeURIComponent(diffId)}/patch`,
