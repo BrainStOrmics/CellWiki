@@ -20,6 +20,9 @@ export interface FakeClientOptions {
   /** When set, listPendingDiffs returns this instead of pendingDiffs
    * (models a lagging list while getPendingDiff sees the real record). */
   pendingDiffListOverride?: PendingDiffSummary[];
+  /** Hides pendingDiffs from listPendingDiffs until this many list calls have
+   * happened (models the runtime publishing a diff after the run settles). */
+  pendingDiffVisibleAfter?: number;
   failStreamOnce?: boolean;
   threads?: ThreadRecord[];
 }
@@ -32,6 +35,8 @@ export class FakeClient implements ClientLike {
   private patch: string;
   pendingDiffs: PendingDiffSummary[];
   private pendingDiffListOverride: PendingDiffSummary[] | undefined;
+  private pendingDiffVisibleAfter: number | undefined;
+  private pendingDiffListCalls = 0;
   private failStreamOnce: boolean;
   threads: ThreadRecord[];
   messages: Record<string, MessageRecord[]>;
@@ -64,6 +69,7 @@ export class FakeClient implements ClientLike {
       ].join("\n");
     this.pendingDiffs = options.pendingDiffs ?? [];
     this.pendingDiffListOverride = options.pendingDiffListOverride;
+    this.pendingDiffVisibleAfter = options.pendingDiffVisibleAfter;
     this.failStreamOnce = options.failStreamOnce ?? false;
     this.threads = options.threads ?? [
       {
@@ -154,6 +160,13 @@ export class FakeClient implements ClientLike {
   }
 
   async listPendingDiffs(): Promise<PendingDiffSummary[]> {
+    this.pendingDiffListCalls += 1;
+    if (
+      this.pendingDiffVisibleAfter !== undefined &&
+      this.pendingDiffListCalls < this.pendingDiffVisibleAfter
+    ) {
+      return [];
+    }
     return (this.pendingDiffListOverride ?? this.pendingDiffs).map((diff) => ({
       ...diff,
     }));

@@ -351,6 +351,32 @@ describe("TuiController", () => {
     expect(controller.state.pendingDiffId).toBe("diff_1");
   });
 
+  it("waits for a late-published diff before opening the gate", async () => {
+    const client = new FakeClient(
+      [
+        {
+          run_id: "run_1",
+          thread_id: "thread_1",
+          status: "succeeded",
+          pending_diff_id: null,
+        },
+      ],
+      {
+        pendingDiffs: [
+          { diff_id: "diff_1", run_id: "run_1", status: "pending" },
+        ],
+        // The runtime finalizes the run before publishing its diff: the list
+        // stays empty for the first calls after the run settles.
+        pendingDiffVisibleAfter: 3,
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("edit");
+    await waitFor(() => controller.state.gate?.kind === "diff");
+    expect(controller.state.pendingDiffId).toBe("diff_1");
+  });
+
   it("queues messages while a run is active", async () => {
     const client = new FakeClient(
       [

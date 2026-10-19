@@ -158,6 +158,10 @@ const TERMINAL_STATUSES = new Set([
   "rejected",
 ]);
 const RECONNECT_ATTEMPTS = 5;
+// The runtime writes a run's terminal status before publishing its pending
+// diff, so a settled run can briefly report no diff; poll a bounded window.
+const DIFF_PUBLISH_ATTEMPTS = 6;
+const DIFF_PUBLISH_POLL_MS = 600;
 
 export class TuiController {
   readonly workspace: string;
@@ -960,7 +964,7 @@ export class TuiController {
     await this.refreshContext();
     await this.refreshThreads();
     this.update({ usageLabel: "" });
-    await this.afterRunSettled(run);
+    await this.afterRunSettled(run, true);
   }
 
   private async refreshThreads(): Promise<void> {
@@ -1006,36 +1010,49 @@ export class TuiController {
     }
   }
 
-  private async afterRunSettled(run: AgentRun): Promise<void> {
-    await this.afterDiffSettled(run.run_id, run.pending_diff_id ?? null);
+  private async afterRunSettled(
+    run: AgentRun,
+    awaitPublish = false,
+  ): Promise<void> {
+    await this.afterDiffSettled(
+      run.run_id,
+      run.pending_diff_id ?? null,
+      awaitPublish,
+    );
   }
 
   private async afterDiffSettled(
     runId: string | null,
     pendingDiffId: string | null = null,
+    awaitPublish = false,
   ): Promise<void> {
-    let pending = await this.fetchPendingDiffs();
-    let match = this.matchPendingDiff(pending, runId);
-    if (!match && pendingDiffId) {
-      // The run record keeps pending_diff_id after the diff is resolved, so
-      // the fallback must verify the diff's real state before opening a gate.
-      const record = await this.fetchPendingDiff(pendingDiffId);
-      if (
-        record === undefined ||
-        (record !== null &&
-          (record.status === undefined || record.status === "pending"))
-      ) {
-        match = {
-          diff_id: pendingDiffId,
-          run_id: runId ?? undefined,
-          status: "pending",
-        };
-      }
-    }
-    if (!match) {
-      await this.sleep(500);
-      pending = await this.fetchPendingDiffs();
+    const attempts = awaitPublish ? DIFF_PUBLISH_ATTEMPTS : 1;
+    let match: PendingDiffSummary | null = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const pending = await this.fetchPendingDiffs();
       match = this.matchPendingDiff(pending, runId);
+      if (!match && pendingDiffId && attempt === 0) {
+        // The run record keeps pending_diff_id after the diff is resolved, so
+        // the fallback must verify the diff's real state before opening a gate.
+        const record = await this.fetchPendingDiff(pendingDiffId);
+        if (
+          record === undefined ||
+          (record !== null &&
+            (record.status === undefined || record.status === "pending"))
+        ) {
+          match = {
+            diff_id: pendingDiffId,
+            run_id: runId ?? undefined,
+            status: "pending",
+          };
+        }
+      }
+      if (match) {
+        break;
+      }
+      if (attempt < attempts - 1) {
+        await this.sleep(DIFF_PUBLISH_POLL_MS);
+      }
     }
     if (match) {
       const gateRunId = match.run_id ?? runId ?? "";

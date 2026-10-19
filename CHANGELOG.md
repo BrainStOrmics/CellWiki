@@ -92,6 +92,14 @@
 
 ### Fixed
 
+- 终端客户端修复审批门在 run 结束后未自动弹出：runtime 先写 run 终态再发布
+  pending diff，客户端此前只重试一次 500ms，发布超窗时审批门被静默丢弃。
+  现在 run 终态路径对 pending diff 做有界轮询（6 次 × 600ms，含按 id 状态
+  兜底），审批门可靠弹出；审批判定路径保持单次检查，不引入额外延迟。
+- 供应商目录在 daemon 启动时与 `.env` 对齐：进程内首次加载目录时，若
+  `.env` 比目录文件更新，则用 `.env` 的显式字段（含 API key）同步
+  `source=legacy` 供应商；ProviderManager 的修改（目录更新）不被覆盖。
+  修复"换了 `.env` 的 key 后仍使用旧 key"导致的 401 / 计费失败。
 - 终端客户端修复审批门在判定后重开：真实 daemon 的 run 记录在 accept/reject
   后仍保留 `pending_diff_id`，此前兜底逻辑据此把已判定的 diff 当作"仍待
   审批"再次弹出（再按 `1` 会得到 409）。现在兜底先经
