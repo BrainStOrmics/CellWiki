@@ -251,6 +251,77 @@ describe("TuiController", () => {
     expect(controller.state.runStatus).toBe("succeeded");
   });
 
+  it("refreshes a stale approval preview when the unit grew", async () => {
+    const client = new FakeClient(
+      [
+        {
+          run_id: "run_1",
+          thread_id: "thread_1",
+          status: "succeeded",
+          pending_diff_id: "diff_1",
+        },
+      ],
+      {
+        pendingDiffs: [{ diff_id: "diff_1", run_id: "run_1", status: "pending" }],
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/diff");
+    await waitFor(() => controller.state.gate?.kind === "diff");
+
+    // daemon 把同一审批单元就地刷新了（提问挂起之后又落了提交），门里的缓存落后。
+    client.patch =
+      "diff --git a/notes/language.md b/notes/language.md\n+new file\n";
+    await controller.submit("3");
+
+    expect(
+      controller.state.transcript.some((line) =>
+        line.text.includes("notes/language.md"),
+      ),
+    ).toBe(true);
+    const gate = controller.state.gate;
+    expect(gate?.kind === "diff" && gate.patch.includes("notes/language.md")).toBe(
+      true,
+    );
+  });
+
+  it("asks again when the approval unit changed before a decision", async () => {
+    const client = new FakeClient(
+      [
+        {
+          run_id: "run_1",
+          thread_id: "thread_1",
+          status: "succeeded",
+          pending_diff_id: "diff_1",
+        },
+      ],
+      {
+        pendingDiffs: [{ diff_id: "diff_1", run_id: "run_1", status: "pending" }],
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/diff");
+    await waitFor(() => controller.state.gate?.kind === "diff");
+
+    client.patch =
+      "diff --git a/notes/language.md b/notes/language.md\n+new file\n";
+    await controller.submit("1");
+
+    expect(client.accepted).toEqual([]);
+    expect(
+      controller.state.transcript.some((line) =>
+        line.text.includes("changed since this gate opened"),
+      ),
+    ).toBe(true);
+
+    // 刷新后的内容已进缓存，第二次确认才真的判定。
+    await controller.submit("1");
+    expect(await controller.waitIdle()).toBe(true);
+    expect(client.accepted).toEqual(["diff_1"]);
+  });
+
   it("surfaces a pending diff published after a succeeded run", async () => {
     const client = new FakeClient(
       [
@@ -740,6 +811,61 @@ describe("TuiController", () => {
     await controller.submit("/retry");
     expect(await controller.waitIdle()).toBe(true);
     expect(client.retried).toEqual(["run_1"]);
+  });
+
+  it("shows the workspace-blocking run in /status", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        blockingRuns: [
+          { run_id: "run_block", thread_id: "thread_other", status: "unfinished" },
+        ],
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/status");
+    expect(
+      controller.state.transcript.some((line) =>
+        line.text.startsWith("blocking run: run_block (unfinished)"),
+      ),
+    ).toBe(true);
+  });
+
+  it("resumes the workspace-blocking run with /continue", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        blockingRuns: [
+          { run_id: "run_block", thread_id: "thread_other", status: "unfinished" },
+        ],
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/continue");
+    expect(client.resumed).toEqual(["run_block"]);
+    expect(await controller.waitIdle()).toBe(true);
+  });
+
+  it("abandons the workspace-blocking run with /cancel", async () => {
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      {
+        blockingRuns: [
+          { run_id: "run_block", thread_id: "thread_other", status: "unfinished" },
+        ],
+      },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    await controller.submit("/cancel");
+    expect(client.cancelled).toEqual(["run_block"]);
+    expect(
+      controller.state.transcript.some((line) =>
+        line.text.includes("cancelling run_block"),
+      ),
+    ).toBe(true);
   });
 
   it("prompts and restarts on a daemon version mismatch", async () => {

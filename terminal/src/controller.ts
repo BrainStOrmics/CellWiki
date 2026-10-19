@@ -48,6 +48,7 @@ export interface ClientLike {
     model?: ModelSelection | null,
   ): Promise<AgentRun>;
   getRun(runId: string): Promise<AgentRun>;
+  listRuns(limit?: number): Promise<AgentRun[]>;
   listEvents(runId: string, after?: number): Promise<AgentEvent[]>;
   getQuestion(runId: string): Promise<PendingQuestion | null>;
   answerQuestion(
@@ -158,6 +159,16 @@ const TERMINAL_STATUSES = new Set([
   "rejected",
 ]);
 const RECONNECT_ATTEMPTS = 5;
+// 串行门禁认这些状态为"活跃 run"（daemon 侧 _ensure_single_active_run 的同集），
+// 其中 unfinished 会一直挡着新 run，直到续跑、重试或放弃。
+const BLOCKING_RUN_STATUSES = new Set([
+  "queued",
+  "running",
+  "retrying",
+  "cancelling",
+  "waiting_confirmation",
+  "unfinished",
+]);
 // The runtime writes a run's terminal status before publishing its pending
 // diff, so a settled run can briefly report no diff; poll a bounded window.
 const DIFF_PUBLISH_ATTEMPTS = 6;
@@ -702,7 +713,7 @@ export class TuiController {
         const match = /run_[A-Za-z0-9_]+/.exec(error.message);
         this.reportError(
           match
-            ? `${error.message} (active run ${match[0]}; /status to inspect)`
+            ? `${error.message} (active run ${match[0]}; /continue to resume, /cancel to abandon)`
             : error,
         );
         return;
@@ -1083,31 +1094,52 @@ export class TuiController {
     return pending[0] ?? null;
   }
 
+  /**
+   * 审批门里的补丁是开门那一刻的快照。同一个审批单元会在提问挂起与续跑之间被
+   * 就地刷新（同一 diff_id 追加提交），门里的预览于是可能落后于真正要判的内容
+   * （2026-10-19 实测：门显示 2 文件 +21，daemon 里已是 3 文件 +31）。展示与
+   * 判定前都重取一次；取不到时退回缓存，不拿网络抖动挡用户。
+   */
+  private async refreshDiffPatch(diffId: string, cached: string): Promise<string> {
+    let patch: string;
+    try {
+      patch = await this.requireClient().pendingDiffPatch(diffId);
+    } catch {
+      return cached;
+    }
+    if (patch !== cached) {
+      const gate = this.state.gate;
+      if (gate?.kind === "diff" && gate.diffId === diffId) {
+        this.update({ gate: { ...gate, patch } });
+      }
+    }
+    return patch;
+  }
+
   private async handleGateInput(text: string): Promise<void> {
     const gate = this.state.gate;
     if (!gate) {
       return;
     }
     if (gate.kind === "diff") {
-      if (text === "1") {
-        try {
-          await this.requireClient().acceptPendingDiff(gate.diffId);
-          this.commit(`accepted ${gate.diffId}`, "success");
-        } catch (error) {
-          this.reportError(error);
+      if (text === "1" || text === "2") {
+        const fresh = await this.refreshDiffPatch(gate.diffId, gate.patch);
+        if (fresh !== gate.patch) {
+          // 门开着的时候审批单元被就地刷新过：先让人看到新内容，不替他做判定。
+          this.commit(
+            "the approval unit changed since this gate opened - review the refreshed diff, then confirm again",
+            "warning",
+          );
+          return;
         }
-        this.update({
-          gate: null,
-          pendingDiffId: null,
-          pendingDiffRunId: null,
-        });
-        await this.finishDiffDecision(gate.runId);
-        return;
-      }
-      if (text === "2") {
         try {
-          await this.requireClient().rejectPendingDiff(gate.diffId);
-          this.commit(`rejected ${gate.diffId}`, "warning");
+          if (text === "1") {
+            await this.requireClient().acceptPendingDiff(gate.diffId);
+            this.commit(`accepted ${gate.diffId}`, "success");
+          } else {
+            await this.requireClient().rejectPendingDiff(gate.diffId);
+            this.commit(`rejected ${gate.diffId}`, "warning");
+          }
         } catch (error) {
           this.reportError(error);
         }
@@ -1120,7 +1152,8 @@ export class TuiController {
         return;
       }
       if (text === "3") {
-        this.commit(redactSecrets(gate.patch), "dim");
+        const fresh = await this.refreshDiffPatch(gate.diffId, gate.patch);
+        this.commit(redactSecrets(fresh), "dim");
         return;
       }
       this.commit("choose 1 accept, 2 reject, 3 view diff, or Esc later", "dim");
@@ -1218,6 +1251,9 @@ export class TuiController {
       case "/retry":
         await this.recoverRun(false);
         return;
+      case "/cancel":
+        await this.cancelBlockingRun(parsed.argument);
+        return;
       case "/diff":
         if (this.state.pendingDiffId) {
           await this.openDiffGate(
@@ -1297,7 +1333,11 @@ export class TuiController {
   }
 
   private async recoverRun(resume: boolean): Promise<void> {
-    const runId = this.state.runId ?? this.state.lastRunId;
+    // 当前会话没有 run 可恢复时，退回到"挡着工作区的那条 run"：串行门禁是
+    // 工作区级的，用户换了会话也照样被它挡住，只报"no run to recover"等于把
+    // 出路藏起来（2026-10-19 实测：409 让看 /status，而 /status 当时不显示它）。
+    const runId =
+      this.state.runId ?? this.state.lastRunId ?? (await this.blockingRunId());
     if (!runId) {
       this.commit("no run to recover", "dim");
       return;
@@ -1343,6 +1383,45 @@ export class TuiController {
     if (this.state.pendingDiffId) {
       this.commit(`pending diff: ${this.state.pendingDiffId} (/diff)`, "dim");
     }
+    const blocking = await this.blockingRun();
+    if (blocking) {
+      this.commit(
+        `blocking run: ${blocking.run_id} (${blocking.status}) - /continue to resume, /cancel to abandon`,
+        "warning",
+      );
+    }
+  }
+
+  /** 串行门禁的权威判定在 daemon；这里只读取"谁挡着"，用于展示与给出路。 */
+  private async blockingRun(): Promise<AgentRun | null> {
+    try {
+      const runs = await this.requireClient().listRuns(20);
+      return (
+        runs.find((run) => BLOCKING_RUN_STATUSES.has(run.status ?? "")) ?? null
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  private async blockingRunId(): Promise<string | null> {
+    return (await this.blockingRun())?.run_id ?? null;
+  }
+
+  /** `/cancel [run_id]`：放弃挡着工作区的 run（没给 id 时取当前会话或工作区那条）。 */
+  private async cancelBlockingRun(argument: string): Promise<void> {
+    const target =
+      argument.trim() || this.state.runId || (await this.blockingRunId());
+    if (!target) {
+      this.commit("no run to cancel", "dim");
+      return;
+    }
+    try {
+      const run = await this.requireClient().cancelRun(target);
+      this.commit(`cancelling ${target} (${run.status})`, "warning");
+    } catch (error) {
+      this.reportError(error);
+    }
   }
 }
 
@@ -1355,6 +1434,7 @@ const HELP_LINES = [
   "/status          workspace, model, run and context status",
   "/continue        resume an unfinished run",
   "/retry           retry a failed run",
+  "/cancel [id]     abandon the run blocking this workspace",
   "/diff            reopen the pending diff approval",
   "/model [id]      choose a model for this session",
   "/context         show context usage",

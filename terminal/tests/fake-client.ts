@@ -25,6 +25,8 @@ export interface FakeClientOptions {
   pendingDiffVisibleAfter?: number;
   failStreamOnce?: boolean;
   threads?: ThreadRecord[];
+  /** Runs the daemon would report as occupying the workspace's serial gate. */
+  blockingRuns?: AgentRun[];
 }
 
 export class FakeClient implements ClientLike {
@@ -32,13 +34,14 @@ export class FakeClient implements ClientLike {
   private current: AgentRun;
   private events: Record<string, AgentEvent[]>;
   private question: PendingQuestion | null;
-  private patch: string;
+  patch: string;
   pendingDiffs: PendingDiffSummary[];
   private pendingDiffListOverride: PendingDiffSummary[] | undefined;
   private pendingDiffVisibleAfter: number | undefined;
   private pendingDiffListCalls = 0;
   private failStreamOnce: boolean;
   threads: ThreadRecord[];
+  blockingRuns: AgentRun[];
   messages: Record<string, MessageRecord[]>;
   started: Array<[string, string]> = [];
   models: Array<ModelSelection | null> = [];
@@ -79,6 +82,7 @@ export class FakeClient implements ClientLike {
         updated_at: "2026-10-16T10:00:00",
       },
     ];
+    this.blockingRuns = options.blockingRuns ?? [];
     this.messages = {
       thread_1: [
         { role: "user", content: "hello" },
@@ -116,10 +120,18 @@ export class FakeClient implements ClientLike {
   }
 
   async getRun(runId: string): Promise<AgentRun> {
+    const blocking = this.blockingRuns.find((run) => run.run_id === runId);
+    if (blocking) {
+      return { ...blocking };
+    }
     if (this.runs.length > 0) {
       this.current = { ...this.runs.shift()! };
     }
     return { ...this.current, run_id: runId };
+  }
+
+  async listRuns(limit = 20): Promise<AgentRun[]> {
+    return this.blockingRuns.slice(0, limit).map((run) => ({ ...run }));
   }
 
   async listEvents(runId: string, after = 0): Promise<AgentEvent[]> {

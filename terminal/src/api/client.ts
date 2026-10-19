@@ -69,6 +69,10 @@ export class DaemonClient {
     );
   }
 
+  async listRuns(limit = 20): Promise<AgentRun[]> {
+    return this.request<AgentRun[]>("GET", `/api/agent/runs?limit=${limit}`);
+  }
+
   async listEvents(runId: string, after = 0): Promise<AgentEvent[]> {
     return this.request<AgentEvent[]>(
       "GET",

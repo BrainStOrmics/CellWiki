@@ -67,7 +67,7 @@ viewport 内窗口化显示，`PgUp`/`PgDn` 半屏滚动、`Ctrl+Home`/`Ctrl+End
 保留终端原生选择）。备用屏没有终端原生 scrollback，`Cmd+F` 等
 终端搜索不可用；需要主屏 scrollback 时用 `cellwiki-tui --classic` 或设置
 `CELLWIKI_TUI_CLASSIC=1` 退回经典渲染。界面支持 `/` 命令（`/help` `/new`
-`/resume` `/clear` `/status` `/continue` `/retry` `/diff` `/model`
+`/resume` `/clear` `/status` `/continue` `/retry` `/cancel` `/diff` `/model`
 `/context` `/quit`）、内联提问与 pending diff 数字键审批、`@` 工作区文件
 补全、`Esc` 打断、忙时 `Enter` 排队。`/resume` 打开可搜索的会话选择器
 （输入过滤，`↑`/`↓` 移动，`Enter` 恢复，`Esc` 取消）；对话中用户消息显示

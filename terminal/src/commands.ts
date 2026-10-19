@@ -7,6 +7,7 @@ export const COMMANDS = [
   "/status",
   "/continue",
   "/retry",
+  "/cancel",
   "/diff",
   "/model",
   "/context",
