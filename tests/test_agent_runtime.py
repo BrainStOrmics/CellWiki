@@ -2226,6 +2226,104 @@ def test_auto_version_excludes_local_credentials(tmp_path: Path):
         manager.close()
 
 
+class _StubRootClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _StubAgentModel:
+    """只提供看门狗要断的那条连接，用于在测试里观察断连与轮换。"""
+
+    def __init__(self) -> None:
+        self.root_client = _StubRootClient()
+
+
+def test_forced_close_at_segment_end_rotates_built_agent(tmp_path: Path):
+    """回归：看门狗断连后流"正常结束"时，段尾也必须轮换已断的图。
+
+    取消升级到看门狗断连后，这段流可能正常结束（取消门在安全事件边界命中时，
+    ``_execute_bound`` 的兜底 except 轮不到），``_take_forced_close`` 就没人调用。
+    不轮换的话 ``_built_adapter`` 继续缓存挂着已 close() client 的图，后续每个 run
+    都拿旧图发请求、以 APIConnectionError 失败，直到 daemon 重启（2026-10-19 实测）。
+    """
+
+    repo = _prepared_workspace(tmp_path)
+    adapter = BlockingAdapter()
+    manager = AgentRuntimeManager(repo, adapter=adapter)
+    try:
+        started = manager.start(
+            thread_id="t_forced_close_rotate",
+            message="写点东西",
+            context=_context("t_forced_close_rotate"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.RUNNING})
+        # 模拟图路径：缓存图与模型句柄都在，随后看门狗断开这条连接。
+        manager._built_adapter = object()
+        manager._built_adapter_key = ("default", "deepseek-flash")
+        model = _StubAgentModel()
+        manager._agent_model = model
+        manager._on_stream_watchdog_expire(started.run_id, escalated=True)
+        assert model.root_client.closed is True
+
+        adapter.release.set()  # 让这段流正常结束，而不是抛错
+        _wait_for_status(
+            manager,
+            started.run_id,
+            {
+                AgentRunStatus.SUCCEEDED,
+                AgentRunStatus.FAILED,
+                AgentRunStatus.UNFINISHED,
+                AgentRunStatus.CANCELLED,
+            },
+        )
+        deadline = time.monotonic() + WAIT_TIMEOUT
+        while time.monotonic() < deadline and manager._built_adapter is not None:
+            time.sleep(0.02)
+
+        assert manager._built_adapter is None, "段尾必须丢掉已断连的图"
+        assert manager._built_adapter_key is None
+    finally:
+        manager.close()
+
+
+def test_auto_version_survives_ignored_local_credentials(tmp_path: Path):
+    """回归：工作区脚手架忽略 .env 时，自动收口不得被 ignored 检查打回。
+
+    新工作区的 .gitignore 自带 ``.env`` 规则（workspace.py 的脚手架内容）。
+    字面量排除项 ``:(exclude).env`` 会命中 ``git add`` 对显式点名 ignored 文件
+    的检查，让整条 add fatal、收口失败、run 落 unfinished。排除项必须是
+    ``:(exclude,glob)**/.env`` 这类 glob 形态。
+    """
+
+    repo = _prepared_workspace(tmp_path)
+    (repo / ".env").write_text("OPENAI_API_KEY=sk-secret-test\n", encoding="utf-8")
+
+    class WriterWithoutCommit:
+        def execute(self, *, thread_id, message, context) -> Any:
+            (repo / "note.md").write_text("note", encoding="utf-8")
+            yield RuntimeSignal(
+                type=AgentEventType.MESSAGE_DELTA, message="写好了", data={}
+            )
+
+    manager = AgentRuntimeManager(repo, adapter=WriterWithoutCommit())
+    try:
+        started = manager.start(
+            thread_id="t_autoversion_ignored_env",
+            message="写但不提交",
+            context=_context("t_autoversion_ignored_env"),
+        )
+        _wait_for_status(manager, started.run_id, {AgentRunStatus.SUCCEEDED})
+        diff = _wait_for_diff(manager, started.run_id)[0]
+        assert "note.md" in diff.files
+        assert ".env" not in diff.files
+        assert "sk-secret-test" not in manager.pending_diff_patch(diff.diff_id)
+    finally:
+        manager.close()
+
+
 def test_auto_version_failure_marks_run_unfinished(tmp_path: Path):
     """自动收口不可行（index 被锁）时 run 落 unfinished，而不是 SUCCEEDED 带脏区。"""
     repo = _prepared_workspace(tmp_path)

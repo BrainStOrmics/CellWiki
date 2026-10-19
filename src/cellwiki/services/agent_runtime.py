@@ -226,13 +226,16 @@ _SYSTEM_MAINTAINED_FILES = frozenset(
 # 删除/改名旧路径"必现 fatal（pathspec 已不匹配任何文件，2026-09-18 事故
 # 根因），只有整树 pathspec 能收口该状态；Git ≥2.0 的 ``git add -- <pathspec>``
 # 默认即 -A 语义（含删除），白名单无需放行 -A。
+#
+# 凭据排除项必须写成 ``glob`` + ``**/`` 形态：字面量排除项（``:(exclude).env``）
+# 会命中 ``git add`` 对显式点名 ignored 文件的检查，而新工作区脚手架的
+# .gitignore 本就忽略 ``.env``，于是整条 add fatal、收口失败、每个 run 落
+# unfinished。``glob`` 形态不触发该检查，``**/`` 同时覆盖根级与嵌套凭据文件。
 _VERSION_EXCLUDE_PATHSPEC = tuple(
     f":(exclude){name}" for name in sorted(_SYSTEM_MAINTAINED_FILES)
 ) + (
-    ":(exclude).env",
-    ":(exclude).env.*",
-    ":(exclude)**/.env",
-    ":(exclude)**/.env.*",
+    ":(exclude,glob)**/.env",
+    ":(exclude,glob)**/.env.*",
 )
 
 
@@ -1981,7 +1984,21 @@ class AgentRuntimeManager:
             if self._running_run_id == run_id:
                 self._running_run_id = None
             self._cancellations.pop(run_id, None)
-            self._forced_closes.pop(run_id, None)
+            forced_close = self._forced_closes.pop(run_id, None)
+        if forced_close is not None:
+            # 看门狗断连后这段流可能是"正常结束"而不是抛错（取消门在安全事件边界
+            # 命中时走的就是这条：_consume_stream 直接 break，_execute_bound 的
+            # 兜底 except 轮不到）。这里不轮换，图里就永远挂着已被 close() 的
+            # client，之后每个 run 都复用坏图、以 APIConnectionError 失败，直到
+            # daemon 重启（2026-10-19 实测：取消一次后所有 run 全部 Connection
+            # error，重启 daemon 即恢复）。轮换是幂等的：抛错路径已轮换过时这条
+            # 记录早被 _take_forced_close 取走。
+            logger.warning(
+                "rotating the built agent after a forced close for run %s (%s)",
+                run_id,
+                forced_close,
+            )
+            self._rotate_agent_after_forced_close()
         # 段尾兜底发布与代判同属收尾：持同一把收尾锁，避免准入判定在这个
         # 窗口里读到"终态已写、本 run 单元尚未发布"的中间态。
         with self._finalize_lock:
