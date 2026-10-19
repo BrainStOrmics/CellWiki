@@ -89,6 +89,7 @@ class ModelCatalogService:
             lambda entry: CredentialStore(self.root, entry=entry)
         )
         self._lock = threading.RLock()
+        self._legacy_sync_checked = False
 
     # ------------------------------------------------------------------
     # 加载 / 保存
@@ -115,7 +116,7 @@ class ModelCatalogService:
             raise ModelCatalogError(
                 f"model provider catalog at {self.catalog_path} is invalid: {error}"
             ) from None
-        return self._repair_locked(catalog)
+        return self._sync_legacy_locked(self._repair_locked(catalog))
 
     def _repair_locked(self, catalog: ProviderCatalog) -> ProviderCatalog:
         """语义修复：悬空的 default_selection 指向已不存在的供应商/模型时清除。"""
@@ -172,6 +173,90 @@ class ModelCatalogService:
             ),
             providers=[provider],
         )
+
+    def _sync_legacy_locked(self, catalog: ProviderCatalog) -> ProviderCatalog:
+        """Re-align the `.env`-imported legacy provider with a newer `.env`.
+
+        目录存在后 `.env` 的修改默认被忽略，实测两次造成"换了 key 仍用旧
+        key"的计费失败。进程内首次加载时，若 `.env` 比目录文件更新，则用
+        `.env` 的**显式非空**字段覆盖 source=legacy 条目；ProviderManager
+        的修改（目录更新）不被覆盖。每进程只检查一次，不做运行中热加载。
+        """
+        if self._legacy_sync_checked:
+            return catalog
+        self._legacy_sync_checked = True
+        provider = next(
+            (item for item in catalog.providers if item.source == "legacy"), None
+        )
+        if provider is None:
+            return catalog
+        environment = EnvironmentSettingsService(self.root)
+        try:
+            if environment.env_path.stat().st_mtime <= self.catalog_path.stat().st_mtime:
+                return catalog
+        except OSError:
+            return catalog
+        snapshot = environment.provider_import_snapshot()
+        updates: dict[str, Any] = {}
+        base_url = (snapshot.get("base_url") or "").strip()
+        if base_url and base_url != provider.base_url:
+            updates["base_url"] = base_url
+        protocol = (snapshot.get("protocol") or "").strip()
+        if protocol and protocol != provider.protocol:
+            updates["protocol"] = protocol
+        model = (snapshot.get("model") or "").strip()
+        if model:
+            max_tokens = _optional_positive_int(
+                snapshot.get("max_input_tokens", ""), label="OPENAI_MAX_INPUT_TOKENS"
+            )
+            current = next((item for item in provider.models if item.id == model), None)
+            if current is None:
+                updates["models"] = [
+                    ProviderModel(id=model, max_input_tokens=max_tokens)
+                ]
+            elif max_tokens is not None and current.max_input_tokens != max_tokens:
+                updates["models"] = [
+                    item.model_copy(update={"max_input_tokens": max_tokens})
+                    if item.id == model
+                    else item
+                    for item in provider.models
+                ]
+        api_key = (snapshot.get("api_key") or "").strip()
+        key_changed = bool(api_key) and api_key != self._read_secret(provider.id)
+        if not updates and not key_changed:
+            return catalog
+        if key_changed:
+            self._write_secret(provider.id, api_key)
+        if not updates:
+            return catalog
+        updated_provider = provider.model_copy(update=updates)
+        default_selection = catalog.default_selection
+        if (
+            "models" in updates
+            and default_selection is not None
+            and default_selection.provider_id == provider.id
+            and not any(
+                item.id == default_selection.model_id
+                for item in updated_provider.models
+            )
+            and model
+        ):
+            # .env 换了模型：跟随 legacy 供应商的默认选择一并更新，
+            # 否则悬空的 default_selection 会在下一次 repair 中被清空。
+            default_selection = ModelSelection(
+                provider_id=provider.id, model_id=model
+            )
+        updated = catalog.model_copy(
+            update={
+                "providers": [
+                    updated_provider if item.id == provider.id else item
+                    for item in catalog.providers
+                ],
+                "default_selection": default_selection,
+            }
+        )
+        self._save_locked(updated)
+        return updated
 
     # ------------------------------------------------------------------
     # 密钥（永不进入目录文档与 API 响应）

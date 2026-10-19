@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -331,6 +333,138 @@ def test_deleted_legacy_provider_stays_deleted(
         credential_factory=lambda entry: FakeSecretEntry(secrets, entry),
     )
     assert fresh.public_view()["providers"] == []
+
+
+def _legacy_env_text(*, key: str, model: str, base_url: str, max_tokens: str = "") -> str:
+    lines = [
+        f"OPENAI_API_KEY={key}",
+        f"OPENAI_BASE_URL={base_url}",
+        f"OPENAI_MODEL={model}",
+        "OPENAI_API_PROTOCOL=responses",
+    ]
+    if max_tokens:
+        lines.append(f"OPENAI_MAX_INPUT_TOKENS={max_tokens}")
+    return "\n".join(lines) + "\n"
+
+
+def _shift_mtime(path: Path, *, seconds: float) -> None:
+    """把 mtime 平移固定秒数，构造"谁更新"的确定性判据。"""
+    stamp = time.time() + seconds
+    os.utime(path, (stamp, stamp))
+
+
+def test_legacy_provider_syncs_from_newer_env(
+    tmp_path: Path, secrets: dict[str, str]
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        _legacy_env_text(
+            key="sk-old",
+            model="qwen3.6-plus",
+            base_url="https://old.example.com/v1",
+            max_tokens="131072",
+        ),
+        encoding="utf-8",
+    )
+    factory = lambda entry: FakeSecretEntry(secrets, entry)  # noqa: E731
+    service = ModelCatalogService(
+        tmp_path, prefer_system_store=True, credential_factory=factory
+    )
+    assert service.public_view()["providers"][0]["base_url"] == (
+        "https://old.example.com/v1"
+    )
+    assert secrets[f"provider.{LEGACY_PROVIDER_ID}"] == "sk-old"
+
+    # 用户编辑 .env（换 key、换模型），.env 比目录文件更新。
+    env_path.write_text(
+        _legacy_env_text(
+            key="sk-new",
+            model="qwen3.7-plus",
+            base_url="https://new.example.com/v1",
+            max_tokens="65536",
+        ),
+        encoding="utf-8",
+    )
+    _shift_mtime(service.catalog_path, seconds=-10)
+
+    fresh = ModelCatalogService(
+        tmp_path, prefer_system_store=True, credential_factory=factory
+    )
+    provider = fresh.public_view()["providers"][0]
+    assert provider["base_url"] == "https://new.example.com/v1"
+    assert provider["protocol"] == "responses"
+    assert provider["models"][0]["id"] == "qwen3.7-plus"
+    assert provider["models"][0]["max_input_tokens"] == 65_536
+    assert secrets[f"provider.{LEGACY_PROVIDER_ID}"] == "sk-new"
+    resolved = fresh.resolve()
+    assert resolved is not None
+    assert resolved.api_key == "sk-new"
+    assert resolved.model_id == "qwen3.7-plus"
+
+
+def test_legacy_sync_does_not_clobber_newer_catalog(
+    tmp_path: Path, secrets: dict[str, str]
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        _legacy_env_text(
+            key="sk-env",
+            model="qwen3.6-plus",
+            base_url="https://env.example.com/v1",
+        ),
+        encoding="utf-8",
+    )
+    factory = lambda entry: FakeSecretEntry(secrets, entry)  # noqa: E731
+    service = ModelCatalogService(
+        tmp_path, prefer_system_store=True, credential_factory=factory
+    )
+    # ProviderManager 修改（目录更新晚于 .env）。
+    service.update_provider(
+        LEGACY_PROVIDER_ID,
+        base_url="https://ui.example.com/v1",
+        api_key="sk-ui",
+    )
+    _shift_mtime(env_path, seconds=-10)
+
+    fresh = ModelCatalogService(
+        tmp_path, prefer_system_store=True, credential_factory=factory
+    )
+    provider = fresh.public_view()["providers"][0]
+    assert provider["base_url"] == "https://ui.example.com/v1"
+    resolved = fresh.resolve()
+    assert resolved is not None
+    assert resolved.api_key == "sk-ui"
+
+
+def test_legacy_sync_noop_when_env_matches(
+    tmp_path: Path, secrets: dict[str, str]
+) -> None:
+    env_path = tmp_path / ".env"
+    env_path.write_text(
+        _legacy_env_text(
+            key="sk-same",
+            model="qwen3.6-plus",
+            base_url="https://same.example.com/v1",
+        ),
+        encoding="utf-8",
+    )
+    factory = lambda entry: FakeSecretEntry(secrets, entry)  # noqa: E731
+    service = ModelCatalogService(
+        tmp_path, prefer_system_store=True, credential_factory=factory
+    )
+    assert service.public_view()["providers"][0]["base_url"] == (
+        "https://same.example.com/v1"
+    )
+    _shift_mtime(service.catalog_path, seconds=-10)
+    before = service.catalog_path.stat().st_mtime_ns
+
+    fresh = ModelCatalogService(
+        tmp_path, prefer_system_store=True, credential_factory=factory
+    )
+    assert fresh.public_view()["providers"][0]["base_url"] == (
+        "https://same.example.com/v1"
+    )
+    assert fresh.catalog_path.stat().st_mtime_ns == before
 
 
 # ---------------------------------------------------------------------------
