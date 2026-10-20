@@ -19,9 +19,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
 import shlex
 import subprocess
 import sys
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -112,7 +116,10 @@ _PS_FORBIDDEN_TOKENS = (
     "sync-",
     "wait-",
 )
-_PS_FORBIDDEN_SEPARATORS = (";", "|", ">", "&", "`n", "`r", "&&", "||")
+# 管道符单独处理：每个管道段的首个 token 都必须命中只读动词白名单。
+_PS_FORBIDDEN_SEPARATORS = (";", ">", "&", "`n", "`r", "&&", "||")
+# 脚本块、子表达式与静态方法调用可以绕过动词白名单，按子串直接拒绝。
+_PS_FORBIDDEN_SUBSTRINGS = ("$(", "::", "{", "}")
 
 
 # 工具清单由 domain/agent_tools.py 的注册表派生——它是"Agent 能干什么"的
@@ -317,15 +324,112 @@ def _normalize_newlines(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+def _atomic_write_bytes(target: Path, data: bytes) -> None:
+    """Replace a file atomically via a same-directory temp file."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent)
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _split_brace_alternatives(body: str) -> list[str]:
+    """Split a brace body on top-level commas, keeping nested groups intact."""
+    alternatives: list[str] = []
+    current: list[str] = []
+    depth = 0
+    for char in body:
+        if char == "{":
+            depth += 1
+        elif char == "}":
+            depth = max(0, depth - 1)
+        if char == "," and depth == 0:
+            alternatives.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    alternatives.append("".join(current))
+    return alternatives
+
+
+def _expand_braces(pattern: str, limit: int = 32) -> list[str]:
+    """Expand simple {a,b} alternatives; non-comma groups stay literal."""
+    start = pattern.find("{")
+    while start != -1:
+        depth = 0
+        end = -1
+        for index in range(start, len(pattern)):
+            if pattern[index] == "{":
+                depth += 1
+            elif pattern[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = index
+                    break
+        if end == -1:
+            break
+        alternatives = _split_brace_alternatives(pattern[start + 1 : end])
+        if len(alternatives) > 1:
+            expanded: list[str] = []
+            for alternative in alternatives:
+                expanded.extend(
+                    _expand_braces(
+                        pattern[:start] + alternative + pattern[end + 1 :], limit
+                    )
+                )
+                if len(expanded) >= limit:
+                    return expanded[:limit]
+            return expanded
+        start = pattern.find("{", end + 1)
+    return [pattern]
+
+
+def _normalize_glob_pattern(pattern: str) -> str:
+    """Normalize a user glob so a trailing '**' also matches files."""
+    normalized = pattern.strip().replace("\\", "/")
+    if normalized in ("", "."):
+        return "*"
+    normalized = normalized.rstrip("/")
+    if normalized == "**":
+        return "**/*"
+    if normalized.endswith("/**"):
+        return normalized + "/*"
+    return normalized
+
+
+def _glob_pattern_is_unsafe(pattern: str) -> bool:
+    """Reject absolute, drive-qualified, and parent-traversal glob patterns."""
+    normalized = pattern.replace("\\", "/")
+    if normalized.startswith("/"):
+        return True
+    if re.match(r"^[A-Za-z]:", normalized):
+        return True
+    return ".." in normalized.split("/")
+
+
 def _read_workspace_text(
     root: Path | None,
     target: Path,
     *,
     offset: int = 0,
     length: int = 0,
+    start_line: int = 0,
+    end_line: int = 0,
     attachment: bool = False,
 ) -> dict[str, Any]:
-    """Read UTF-8 text with char-based range support, output caps, and budget."""
+    """Read UTF-8 text with char or 1-based line ranges, output caps, and budget."""
     global _ATTACHMENT_READ_CHARS
     try:
         data = target.read_bytes()
@@ -340,10 +444,35 @@ def _read_workspace_text(
         return {"error": "file is not valid UTF-8 text", "path": _rel_or_name(root, target)}
     text = _normalize_newlines(data.decode("utf-8", errors="replace"))
     total = len(text)
-    start = min(total, max(0, int(offset or 0)))
-    end = total
-    if length and int(length) > 0:
-        end = min(total, start + int(length))
+    total_lines: int | None = None
+    returned_start_line: int | None = None
+    returned_end_line: int | None = None
+    requested_start_line = int(start_line or 0)
+    requested_end_line = int(end_line or 0)
+    if requested_start_line > 0 or requested_end_line > 0:
+        lines = text.splitlines(keepends=True)
+        total_lines = len(lines)
+        first = max(1, requested_start_line)
+        last = (
+            min(total_lines, requested_end_line)
+            if requested_end_line > 0
+            else total_lines
+        )
+        if total_lines == 0 or last < first:
+            start = 0
+            end = 0
+            returned_start_line = first
+            returned_end_line = first - 1
+        else:
+            start = sum(len(line) for line in lines[: first - 1])
+            end = start + sum(len(line) for line in lines[first - 1 : last])
+            returned_start_line = first
+            returned_end_line = last
+    else:
+        start = min(total, max(0, int(offset or 0)))
+        end = total
+        if length and int(length) > 0:
+            end = min(total, start + int(length))
     if end < start:
         end = start
     sliced = text[start:end]
@@ -360,10 +489,22 @@ def _read_workspace_text(
             sliced = sliced[:remaining]
     if len(sliced) > MAX_TOOL_OUTPUT:
         sliced = sliced[:MAX_TOOL_OUTPUT]
+    if (
+        total_lines is not None
+        and returned_start_line is not None
+        and returned_end_line is not None
+    ):
+        span = sliced.count("\n")
+        if sliced and not sliced.endswith("\n"):
+            span += 1
+        if span <= 0:
+            returned_end_line = returned_start_line - 1
+        else:
+            returned_end_line = min(returned_end_line, returned_start_line + span - 1)
     if attachment:
         _ATTACHMENT_READ_CHARS += len(sliced)
     next_offset = start + len(sliced)
-    return {
+    payload: dict[str, Any] = {
         "path": _rel_or_name(root, target),
         "content": sliced,
         "offset": start,
@@ -371,6 +512,11 @@ def _read_workspace_text(
         "truncated": next_offset < total,
         "total_chars": total,
     }
+    if total_lines is not None:
+        payload["start_line"] = returned_start_line
+        payload["end_line"] = returned_end_line
+        payload["total_lines"] = total_lines
+    return payload
 
 
 
@@ -379,7 +525,13 @@ def build_attachment_tools() -> list[BaseTool]:
     """Provide thread-scoped read of uploaded attachments (temporary Agent context)."""
 
     @tool("read_attachment")
-    def read_attachment(attachment_id: str, offset: int = 0, length: int = 0) -> str:
+    def read_attachment(
+        attachment_id: str,
+        offset: int = 0,
+        length: int = 0,
+        start_line: int = 0,
+        end_line: int = 0,
+    ) -> str:
         """Read one thread-scoped attachment as UTF-8 text (alias of read_file with
         the same range/budget semantics)."""
         resolver = _ATTACHMENT_RESOLVER
@@ -397,6 +549,8 @@ def build_attachment_tools() -> list[BaseTool]:
                 target,
                 offset=offset,
                 length=length,
+                start_line=start_line,
+                end_line=end_line,
                 attachment=True,
             )
         )
@@ -430,11 +584,18 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
     """
 
     root = Path(project_root).resolve()
+    file_write_lock = threading.Lock()
 
     @tool("read_file")
-    def read_file(path: str, offset: int = 0, length: int = 0) -> str:
-        """Read a UTF-8 text file inside the workspace; supports char-based range
-        reads (offset/length), structured errors, and a per-run attachment budget."""
+    def read_file(
+        path: str,
+        offset: int = 0,
+        length: int = 0,
+        start_line: int = 0,
+        end_line: int = 0,
+    ) -> str:
+        """Read a UTF-8 text file inside the workspace; supports char-based
+        offset/length and 1-based inclusive start_line/end_line ranges."""
         try:
             target = validate_workspace_path(root, path)
         except PathGuardError as error:
@@ -452,6 +613,8 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
                 target,
                 offset=offset,
                 length=length,
+                start_line=start_line,
+                end_line=end_line,
                 attachment=attachment,
             )
         )
@@ -471,8 +634,8 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
         if len(data) > MAX_WRITE_BYTES:
             return _tool_json({"error": f"content exceeds the {MAX_WRITE_BYTES}-byte limit"})
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(data)
+            with file_write_lock:
+                _atomic_write_bytes(target, data)
         except OSError as error:
             return _tool_json({"error": f"write failed: {error}"})
         return _tool_json({"ok": True, "path": target.relative_to(root).as_posix(), "bytes": len(data)})
@@ -486,21 +649,26 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             return _tool_json({"error": str(error)})
         if _is_agent_read_only_file(target, root):
             return _tool_json({"error": "system-owned file is not writable", "path": _rel_or_name(root, target)})
-        if not target.is_file():
-            return _tool_json({"error": "file_not_found", "path": target.relative_to(root).as_posix()})
-        content = _read_text_safely(target, MAX_READ_BYTES)
         if not old_string:
             return _tool_json({"error": "old_string must not be empty"})
-        count = content.count(old_string)
-        if count == 0:
-            return _tool_json({"error": "old_string not found"})
-        if count > 1:
-            return _tool_json({"error": "old_string is ambiguous; include more context"})
-        updated = content.replace(old_string, new_string, 1)
-        if len(updated.encode("utf-8")) > MAX_WRITE_BYTES:
-            return _tool_json({"error": f"result exceeds the {MAX_WRITE_BYTES}-byte limit"})
-        target.write_text(updated, encoding="utf-8", newline="")
-        return _tool_json({"ok": True, "path": target.relative_to(root).as_posix(), "bytes": len(updated.encode("utf-8"))})
+        try:
+            with file_write_lock:
+                if not target.is_file():
+                    return _tool_json({"error": "file_not_found", "path": target.relative_to(root).as_posix()})
+                content = _read_text_safely(target, MAX_READ_BYTES)
+                count = content.count(old_string)
+                if count == 0:
+                    return _tool_json({"error": "old_string not found"})
+                if count > 1:
+                    return _tool_json({"error": "old_string is ambiguous; include more context"})
+                updated = content.replace(old_string, new_string, 1)
+                encoded = updated.encode("utf-8")
+                if len(encoded) > MAX_WRITE_BYTES:
+                    return _tool_json({"error": f"result exceeds the {MAX_WRITE_BYTES}-byte limit"})
+                _atomic_write_bytes(target, encoded)
+        except (OSError, ValueError) as error:
+            return _tool_json({"error": f"edit failed: {error}"})
+        return _tool_json({"ok": True, "path": target.relative_to(root).as_posix(), "bytes": len(encoded)})
 
     @tool("delete_file")
     def delete_file(path: str) -> str:
@@ -511,10 +679,11 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             return _tool_json({"error": str(error)})
         if _is_agent_read_only_file(target, root):
             return _tool_json({"error": "system-owned file is not writable", "path": _rel_or_name(root, target)})
-        if not target.is_file():
-            return _tool_json({"error": "file_not_found", "path": path})
         try:
-            target.unlink()
+            with file_write_lock:
+                if not target.is_file():
+                    return _tool_json({"error": "file_not_found", "path": path})
+                target.unlink()
         except OSError as error:
             return _tool_json({"error": f"delete failed: {error}"})
         return _tool_json({"ok": True, "path": target.relative_to(root).as_posix()})
@@ -529,13 +698,14 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             return _tool_json({"error": str(error)})
         if _is_agent_read_only_file(source, root) or _is_agent_read_only_file(target, root):
             return _tool_json({"error": "system-owned file is not writable", "path": _rel_or_name(root, source)})
-        if not source.is_file():
-            return _tool_json({"error": "file_not_found", "path": path})
         if target == source:
             return _tool_json({"error": "new_path must differ from path"})
         try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            source.replace(target)
+            with file_write_lock:
+                if not source.is_file():
+                    return _tool_json({"error": "file_not_found", "path": path})
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source.replace(target)
         except OSError as error:
             return _tool_json({"error": f"rename failed: {error}"})
         return _tool_json(
@@ -547,7 +717,16 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
 
     @tool("glob")
     def glob(pattern: str, folder: str = ".") -> str:
-        """List workspace files matching a glob pattern (e.g. **/*.md); excludes .git."""
+        """List workspace files matching a glob pattern (e.g. **/*.md);
+        a trailing ** matches every file below it and simple {a,b} expands."""
+        if not (pattern or "").strip():
+            return _tool_json({"error": "pattern must not be empty"})
+        patterns = [
+            _normalize_glob_pattern(item) for item in _expand_braces(pattern.strip())
+        ]
+        for item in patterns:
+            if _glob_pattern_is_unsafe(item):
+                return _tool_json({"error": "pattern must stay inside the workspace"})
         base = root
         if (folder or ".") != ".":
             try:
@@ -555,16 +734,34 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             except PathGuardError as error:
                 return _tool_json({"error": str(error)})
         results: list[str] = []
-        for candidate in sorted(base.rglob(pattern)) if base.is_dir() else []:
-            if not candidate.is_file():
-                continue
-            rel = candidate.relative_to(root).as_posix()
-            if ".git/" in f"/{rel}":
-                continue
-            results.append(rel)
+        seen: set[str] = set()
+        directories_matched = 0
+        for glob_pattern in patterns:
+            if not base.is_dir():
+                break
+            for candidate in sorted(base.rglob(glob_pattern)):
+                if not candidate.is_file():
+                    directories_matched += 1
+                    continue
+                rel = candidate.relative_to(root).as_posix()
+                if ".git/" in f"/{rel}" or rel in seen:
+                    continue
+                seen.add(rel)
+                results.append(rel)
+                if len(results) >= MAX_GLOB_RESULTS:
+                    break
             if len(results) >= MAX_GLOB_RESULTS:
                 break
-        return _tool_json({"results": results, "truncated": len(results) >= MAX_GLOB_RESULTS})
+        payload: dict[str, Any] = {
+            "results": results,
+            "truncated": len(results) >= MAX_GLOB_RESULTS,
+        }
+        if not results and directories_matched:
+            payload["directories_matched"] = directories_matched
+            payload["hint"] = (
+                "glob returns files only; use run_powershell Get-ChildItem for directories"
+            )
+        return _tool_json(payload)
 
     @tool("grep")
     def grep(
@@ -626,7 +823,8 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
 
     @tool("run_powershell")
     def run_powershell(command: str) -> str:
-        """Run a read-only PowerShell examine command inside the workspace (Get-* only)."""
+        """Run a read-only PowerShell command inside the workspace; pipelines are
+        allowed only when every segment starts with an allowlisted read-only verb."""
         cleaned = command.strip()
         if not cleaned:
             return _tool_json({"error": "empty command"})
@@ -634,6 +832,9 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
         for separator in _PS_FORBIDDEN_SEPARATORS:
             if separator in lowered:
                 return _tool_json({"error": f"forbidden separator '{separator.strip()}'"})
+        for token in _PS_FORBIDDEN_SUBSTRINGS:
+            if token in lowered:
+                return _tool_json({"error": f"forbidden PowerShell token '{token}'"})
         for token in _PS_FORBIDDEN_TOKENS:
             if f" {token} " in lowered or lowered.startswith(f"{token} ") or lowered.endswith(f" {token}"):
                 return _tool_json({"error": f"forbidden PowerShell token '{token.strip()}'"})
@@ -643,9 +844,20 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
             return _tool_json({"error": f"cannot parse command: {error}"})
         if not tokens:
             return _tool_json({"error": "empty command"})
-        verb = tokens[0].lower()
-        if not verb.startswith(_PS_EXAMINE_VERBS):
-            return _tool_json({"error": f"verb '{tokens[0]}' is not on the read-only whitelist"})
+        segments: list[list[str]] = [[]]
+        for token in tokens:
+            if token == "|":
+                segments.append([])
+            else:
+                segments[-1].append(token)
+        if any(not segment for segment in segments):
+            return _tool_json({"error": "empty pipeline segment"})
+        for segment in segments:
+            verb = segment[0].lower()
+            if not verb.startswith(_PS_EXAMINE_VERBS):
+                return _tool_json(
+                    {"error": f"verb '{segment[0]}' is not on the read-only whitelist"}
+                )
         executable = "powershell.exe" if sys.platform == "win32" else "pwsh"
         try:
             completed = subprocess.run(

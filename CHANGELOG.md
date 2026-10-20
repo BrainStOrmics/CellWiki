@@ -45,6 +45,19 @@
 
 ### Changed
 
+- Agent 运行预算与工具步数解耦：新增 `AGENT_MAX_MODEL_CALLS`（1–5000），
+  设置后作为新 run 的模型调用上限；未设置时回退旧的
+  `AGENT_MAX_TOOL_STEPS`。显式请求的 `budget.max_model_calls` 仍最优先。
+- 工作区文件工具加固：`write_file`/`edit_file` 改为同目录临时文件 + 原子
+  替换，`write_file`/`edit_file`/`delete_file`/`rename_file` 在同一工具集内
+  串行执行；写失败保留旧内容且不残留 `.tmp`。
+- `glob` 语义修正：尾部 `**` 现在匹配该目录下全部文件，支持简单
+  `{a,b}` 展开，拒绝绝对路径/盘符/`..`；仅命中目录时返回提示。
+- `read_file` / `read_attachment` 新增 1-based `start_line`/`end_line`
+  行区间，返回实际行范围与 `total_lines`；字符 `offset`/`length` 保持兼容。
+- `run_powershell` 允许只读管道：每个管道段的首个 token 必须命中只读动词
+  白名单；脚本块 `{}`、子表达式 `$(`、静态方法调用 `::` 与链式操作符
+  继续拒绝。
 - 终端客户端 `/new` 现在清空屏幕并开始新会话：清空 transcript、重置
   thread/run/usage/queue 状态并回到 `run idle`（旧会话仍可用 `/resume`
   找回）；`/clear` 保持只清视图的语义。

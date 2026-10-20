@@ -387,3 +387,170 @@ def test_lint_knowledge_base_scopes_to_run_changed_pages(tmp_path: Path):
     assert report["status"] == "failed"
     assert report["scope"]["changed_pages_only"] is True
     assert report["error_count"] >= 1
+
+
+# ---------------------------------------------------------------------------
+# 运行时与工具语义加固（2026-10-20）
+# ---------------------------------------------------------------------------
+
+
+def test_read_file_line_range_is_one_based_and_inclusive(tmp_path: Path):
+    root = _workspace(tmp_path)
+    (root / "notes.md").write_text("line1\nline2\nline3\nline4\n", encoding="utf-8")
+    tools = _tools(root)
+    payload = json.loads(
+        tools["read_file"].invoke(
+            {"path": "notes.md", "start_line": 2, "end_line": 3}
+        )
+    )
+    assert payload["content"] == "line2\nline3\n"
+    assert payload["start_line"] == 2
+    assert payload["end_line"] == 3
+    assert payload["total_lines"] == 4
+
+
+def test_read_file_line_range_clamps_past_eof(tmp_path: Path):
+    root = _workspace(tmp_path)
+    (root / "notes.md").write_text("only\n", encoding="utf-8")
+    tools = _tools(root)
+    payload = json.loads(
+        tools["read_file"].invoke({"path": "notes.md", "start_line": 5})
+    )
+    assert payload["content"] == ""
+    assert payload["start_line"] == 5
+    assert payload["end_line"] == 4
+    assert payload["total_lines"] == 1
+
+
+def test_glob_trailing_double_star_lists_files(tmp_path: Path):
+    root = _workspace(tmp_path)
+    paper = root / "raw" / "paper"
+    paper.mkdir(parents=True)
+    (paper / "x.md").write_text("x", encoding="utf-8")
+    payload = json.loads(_tools(root)["glob"].invoke({"pattern": "raw/**"}))
+    assert "raw/paper/x.md" in payload["results"]
+
+
+def test_glob_brace_expansion_returns_union(tmp_path: Path):
+    root = _workspace(tmp_path)
+    markers = root / "wiki" / "markers"
+    markers.mkdir()
+    (markers / "m.md").write_text("m", encoding="utf-8")
+    payload = json.loads(
+        _tools(root)["glob"].invoke(
+            {"pattern": "wiki/{cell_types,markers}/*.md"}
+        )
+    )
+    assert "wiki/cell_types/alpha-cell.md" in payload["results"]
+    assert "wiki/markers/m.md" in payload["results"]
+
+
+def test_glob_rejects_parent_traversal(tmp_path: Path):
+    root = _workspace(tmp_path)
+    payload = json.loads(_tools(root)["glob"].invoke({"pattern": "../*.md"}))
+    assert "must stay inside the workspace" in payload["error"]
+
+
+def test_glob_directory_only_match_returns_hint(tmp_path: Path):
+    root = _workspace(tmp_path)
+    (root / "raw" / "paper").mkdir(parents=True)
+    payload = json.loads(_tools(root)["glob"].invoke({"pattern": "raw/*"}))
+    assert payload["results"] == []
+    assert payload["directories_matched"] >= 1
+    assert "Get-ChildItem" in payload["hint"]
+
+
+def test_write_file_keeps_old_content_when_atomic_replace_fails(
+    tmp_path: Path, monkeypatch
+):
+    root = _workspace(tmp_path)
+    target = root / "wiki" / "atomic.md"
+    target.write_text("old", encoding="utf-8")
+
+    def failing_replace(source, destination):  # noqa: ANN001
+        raise OSError("replace failed")
+
+    monkeypatch.setattr("cellwiki.agent.executor.os.replace", failing_replace)
+    payload = json.loads(
+        _tools(root)["write_file"].invoke(
+            {"path": "wiki/atomic.md", "content": "new"}
+        )
+    )
+    assert "write failed" in payload["error"]
+    assert target.read_text(encoding="utf-8") == "old"
+    assert not list((root / "wiki").glob("*.tmp"))
+
+
+def test_concurrent_edits_to_same_file_keep_all_changes(tmp_path: Path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    root = _workspace(tmp_path)
+    target = root / "wiki" / "shared.md"
+    target.write_text(
+        "".join(f"## section {index:02d}\nvalue-{index:02d}\n" for index in range(12)),
+        encoding="utf-8",
+    )
+    tools = _tools(root)
+
+    def edit(index: int) -> dict:
+        return json.loads(
+            tools["edit_file"].invoke(
+                {
+                    "path": "wiki/shared.md",
+                    "old_string": f"value-{index:02d}",
+                    "new_string": f"changed-{index:02d}",
+                }
+            )
+        )
+
+    with ThreadPoolExecutor(max_workers=12) as pool:
+        results = list(pool.map(edit, range(12)))
+
+    assert all(result.get("ok") for result in results)
+    text = target.read_text(encoding="utf-8")
+    for index in range(12):
+        assert f"changed-{index:02d}" in text
+        assert f"value-{index:02d}" not in text
+
+
+def test_run_powershell_allows_read_only_pipeline(tmp_path: Path, monkeypatch):
+    from subprocess import CompletedProcess
+
+    root = _workspace(tmp_path)
+    tools = _tools(root)
+    calls: list[list[str]] = []
+
+    def fake_run(args, **kwargs):  # noqa: ANN001
+        calls.append(args)
+        return CompletedProcess(args, 0, "name\n", "")
+
+    monkeypatch.setattr("cellwiki.agent.executor.subprocess.run", fake_run)
+    payload = json.loads(
+        tools["run_powershell"].invoke(
+            {
+                "command": (
+                    "Get-ChildItem -Recurse raw -File "
+                    "| Select-Object FullName, Length"
+                )
+            }
+        )
+    )
+    assert "error" not in payload
+    assert payload["returncode"] == 0
+    assert calls
+
+
+def test_run_powershell_rejects_unsafe_pipeline_segments(tmp_path: Path):
+    tools = _tools(_workspace(tmp_path))
+    commands = (
+        "Get-ChildItem | Remove-Item -Recurse",
+        "Get-ChildItem | ForEach-Object { Remove-Item $_ }",
+        "Get-ChildItem |",
+        "| Select-Object Name",
+        "Get-ChildItem | Select-Object @{Name='x';Expression={$_.Name}}",
+        "Get-ChildItem | Invoke-Expression",
+        "Get-Item x | Select-Object Name || Select-Object Name",
+    )
+    for command in commands:
+        payload = json.loads(tools["run_powershell"].invoke({"command": command}))
+        assert "error" in payload, command

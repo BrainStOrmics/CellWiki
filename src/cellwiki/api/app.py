@@ -232,7 +232,8 @@ class AgentRunRequest(BaseModel):
     # 幂等提交键。重试同一次提交（网络抖动/重复点击）带上同一个
     # request_id，服务端命中既有 run 并原样返回；省略则每次提交都新建 run。
     request_id: str | None = Field(default=None, max_length=128)
-    # 省略即 None -> 运行时回退 settings（AGENT_MAX_TOOL_STEPS / AGENT_RUN_MAX_SECONDS）。
+    # 省略即 None -> 运行时回退 settings（AGENT_MAX_MODEL_CALLS，
+    # 未设置时再回退 AGENT_MAX_TOOL_STEPS / AGENT_RUN_MAX_SECONDS）。
     # 曾写成 default_factory=RunBudget，把 100/7200 硬编码进 API 边界，配置覆盖成为死路径。
     budget: RunBudget | None = None                               # 运行预算
     # 供应商目录选择（provider_id + model_id）。缺省 = 目录默认选择，目录

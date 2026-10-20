@@ -1502,8 +1502,13 @@ class AgentRuntimeManager:
         self._retry_failed_maintenance()
         run_id = _new_run_id()
         snapshot = self._git_snapshot()
+        configured_model_call_budget = (
+            settings.agent_max_model_calls
+            if settings.agent_max_model_calls is not None
+            else settings.agent_max_tool_steps
+        )
         budget = budget or RunBudget(
-            max_model_calls=settings.agent_max_tool_steps,
+            max_model_calls=configured_model_call_budget,
             max_runtime_seconds=max(settings.agent_run_max_seconds, MAX_RUN_SECONDS_FLOOR),
         )
         effective_model_name = (model_name if model_name is not None else settings.openai_model) or ""

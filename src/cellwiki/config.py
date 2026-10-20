@@ -129,8 +129,11 @@ class Settings(BaseSettings):
     auto_accept_pending_diffs: bool = False
 
     # ---- 工作区版 Agent 运行时设置 ----
-    # 单次 run 的最大工具步数；超限进入 unfinished 状态
+    # 兼容旧配置：未显式设置 AGENT_MAX_MODEL_CALLS 时，模型调用预算回退到该值。
+    # 历史字段名保留了 "tool_steps"，但运行时一直用它作为模型调用上限。
     agent_max_tool_steps: int = Field(default=100, ge=1, le=500)
+    # 单次 run 的模型调用上限；None = 回退 AGENT_MAX_TOOL_STEPS。
+    agent_max_model_calls: int | None = Field(default=None, ge=1, le=5000)
     # 单次 run 的墙钟超时（秒），防止模型调用卡死
     agent_run_max_seconds: int = Field(default=7200, ge=60, le=86_400)
     # ---- 活性看门狗 ----

@@ -89,7 +89,8 @@ Available tools (the complete whitelist; nothing else exists):
   each logical change with a short -m message. The runtime collects your
   commits into a pending diff for the user to accept or reject, and
   auto-commits anything you leave uncommitted when the run ends.
-- Diagnose: run_powershell executes read-only Get-* commands only.
+- Diagnose: run_powershell executes read-only commands; pipelines are allowed only
+  when every segment starts with an allowlisted read-only verb.
   lint_knowledge_base returns the deterministic quality report for the pages
   changed in this run; keep L0 at zero before finishing - read-only.
 - Ingest registered sources directly: read schema.md from the workspace root,

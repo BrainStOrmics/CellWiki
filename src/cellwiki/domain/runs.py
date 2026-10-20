@@ -79,7 +79,7 @@ class AgentEventType(str, Enum):
 # ---- 运行预算 ----
 # 每次智能体运行的资源预算，防止无限执行
 class RunBudget(ContractModel):
-    max_model_calls: int = Field(default=100, ge=1)       # 最大模型调用次数（默认对齐 AGENT_MAX_TOOL_STEPS）
+    max_model_calls: int = Field(default=100, ge=1)       # 最大模型调用次数（默认来自运行时 Settings）
     max_runtime_seconds: int = Field(default=7200, ge=1)  # 最大运行时间（秒）（默认对齐 AGENT_RUN_MAX_SECONDS）
     max_retries: int = Field(default=3, ge=0)             # 最大重试次数
 

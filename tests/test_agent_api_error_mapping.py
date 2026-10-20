@@ -288,6 +288,7 @@ def test_run_budget_falls_back_to_settings_when_the_request_omits_it(
 ):
     """请求不带 budget 时必须读 settings；此前 default_factory=RunBudget 硬编码 100/7200。"""
     monkeypatch.setattr(settings, "agent_max_tool_steps", 7)
+    monkeypatch.setattr(settings, "agent_max_model_calls", None)
     monkeypatch.setattr(settings, "agent_run_max_seconds", 600)
     manager = AgentRuntimeManager(tmp_path, adapter=_ScriptedAdapter())
     try:
@@ -299,6 +300,21 @@ def test_run_budget_falls_back_to_settings_when_the_request_omits_it(
         budget = started.json()["budget"]
         assert budget["max_model_calls"] == 7
         assert budget["max_runtime_seconds"] == 600
+    finally:
+        manager.close()
+
+
+def test_run_budget_prefers_agent_max_model_calls(tmp_path: Path, monkeypatch):
+    """AGENT_MAX_MODEL_CALLS 与工具步数解耦后必须优先于旧的回退值。"""
+    monkeypatch.setattr(settings, "agent_max_tool_steps", 7)
+    monkeypatch.setattr(settings, "agent_max_model_calls", 1234)
+    manager = AgentRuntimeManager(tmp_path, adapter=_ScriptedAdapter())
+    try:
+        client = TestClient(create_app(tmp_path, agent_runtime=manager))
+        started = client.post("/api/agent/runs", json={"message": "model budget"})
+
+        assert started.status_code == 202, started.text
+        assert started.json()["budget"]["max_model_calls"] == 1234
     finally:
         manager.close()
 
