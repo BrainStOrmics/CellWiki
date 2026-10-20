@@ -118,6 +118,13 @@
 
 ### Fixed
 
+- 上下文压缩预算与切分加固：模型未声明窗口时仍使用 `65_536` fallback，但压缩
+  阈值固定为 `32_536`、retained 自动钳制为 `8_536`；长 assistant/tool 链按完整
+  消息组切分，达到阈值先静默 microcompact 旧工具结果，仍超限时支持 summary-only，
+  摘要输入超限按组裁剪并有限重试，压缩后重新估算 `post_tokens` 并继续收缩。
+  桌面 ContextUsage 与 TUI `/context` 显示服务端实际窗口、阈值、retained 和
+  `configured|fallback` 来源；压缩事件补齐前后 token、tail/group、边界、forced、
+  窗口来源与 `ptl_attempts`。
 - 终端客户端修复审批门在 run 结束后未自动弹出：runtime 先写 run 终态再发布
   pending diff，客户端此前只重试一次 500ms，发布超窗时审批门被静默丢弃。
   现在 run 终态路径对 pending diff 做有界轮询（6 次 × 600ms，含按 id 状态

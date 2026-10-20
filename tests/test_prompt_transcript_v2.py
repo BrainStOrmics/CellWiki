@@ -523,6 +523,8 @@ def test_cache_policy_defaults_and_override():
     assert responses.model_input_tokens == 65_536
     assert responses.effective_context_limit == 65_536
     assert responses.compact_threshold == 32_536
+    assert responses.retained_tokens == 8_536
+    assert responses.summary_input_tokens == 45_536
 
     gateway = resolve_prompt_cache_policy(
         protocol="responses",
@@ -564,6 +566,7 @@ def test_cache_policy_defaults_and_override():
     assert configured.input_window_source == "configured"
     assert configured.effective_context_limit == 128_000
     assert configured.compact_threshold == 95_000
+    assert configured.retained_tokens == 32_768
 
     off = resolve_prompt_cache_policy(
         protocol="anthropic",
@@ -668,6 +671,67 @@ def test_local_compaction_persists_boundary_and_events(tmp_path: Path) -> None:
         manager.close()
 
 
+def test_microcompact_updates_tool_result_without_changing_epoch(tmp_path: Path) -> None:
+    from cellwiki.services.model_transcript import PRUNED_TOOL_PLACEHOLDER
+
+    manager = _manager(tmp_path, _TranscriptModel())
+    run = AgentRun(
+        run_id="run_microcompact",
+        thread_id="thread_microcompact",
+        input_message="ingest",
+        transcript_version=2,
+    )
+    try:
+        manager.store.create_run(run)
+        manager.store.bootstrap_model_transcript(
+            run.thread_id, exclude_run_id=run.run_id
+        )
+        manager.store.append_model_message(
+            thread_id=run.thread_id,
+            run_id=run.run_id,
+            kind="tool_result",
+            role="tool",
+            content={
+                "text": "large source " * 100,
+                "tool_call_id": "call_1",
+                "name": "read_file",
+            },
+            message_key="tool:call_1",
+            tool_call_id="call_1",
+            name="read_file",
+        )
+        signal = RuntimeSignal(
+            type=AgentEventType.PROGRESS,
+            message="Context tool results compacted.",
+            data={
+                "_internal_kind": "context_microcompact",
+                "pre_tokens": 80_000,
+                "post_tokens": 20_000,
+                "threshold": 32_536,
+                "replacements": [
+                    {
+                        "tool_call_id": "call_1",
+                        "name": "read_file",
+                        "text": PRUNED_TOOL_PLACEHOLDER,
+                    }
+                ],
+            },
+        )
+
+        manager._persist_microcompact(run.run_id, run.thread_id, signal)
+
+        records = manager.store.list_model_messages(run.thread_id)
+        assert records[0]["content"]["text"] == PRUNED_TOOL_PLACEHOLDER
+        assert records[0]["tool_call_id"] == "call_1"
+        assert manager.store.current_transcript_epoch(run.thread_id) == 0
+        assert all(
+            event.type != AgentEventType.PROGRESS
+            for event in manager.store.list_events(run.run_id)
+        )
+    finally:
+        manager.close()
+
+
 class _SummaryModel:
     """Minimal stand-in for the coordinator used by middleware unit tests."""
 
@@ -726,6 +790,205 @@ def test_compaction_middleware_triggers_above_threshold_with_measured_floor():
     # 摘要调用确实发生且带受控标签
     (_, config), = model.calls[:1]
     assert "cellwiki:summarizer" in (config or {}).get("tags", [])
+
+
+def test_compaction_middleware_handles_long_tool_chain_without_another_user_turn():
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from cellwiki.agent.compaction import (
+        SUMMARY_MESSAGE_ID,
+        CellWikiCompactionMiddleware,
+    )
+
+    model = _SummaryModel()
+    middleware = CellWikiCompactionMiddleware(
+        model=model,
+        threshold=400,
+        retained_tokens=180,
+        summary_output_tokens=100,
+        summary_input_tokens=2_000,
+        effective_context_limit=2_000,
+        window_source="fallback",
+        baseline_provider=lambda _thread: 600,
+    )
+    messages = [HumanMessage(content="ingest")]
+    for index in range(6):
+        call_id = f"call_{index}"
+        messages.extend(
+            [
+                AIMessage(
+                    content="working " * 40,
+                    tool_calls=[
+                        {
+                            "id": call_id,
+                            "name": "read_file",
+                            "args": {"path": f"raw/{index}.md"},
+                        }
+                    ],
+                ),
+                ToolMessage(
+                    content="source " * 40,
+                    tool_call_id=call_id,
+                    name="read_file",
+                ),
+            ]
+        )
+
+    result = middleware.before_model(
+        {"messages": messages},
+        types.SimpleNamespace(context=types.SimpleNamespace(thread_id="thread_long")),
+    )
+
+    assert result is not None
+    replacement = result["messages"]
+    assert any(getattr(message, "id", None) == SUMMARY_MESSAGE_ID for message in replacement)
+    tail = replacement[2:]
+    if tail:
+        assert not isinstance(tail[0], ToolMessage)
+
+
+def test_before_model_microcompacts_when_clearing_old_results_is_enough():
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from cellwiki.agent.compaction import CellWikiCompactionMiddleware
+
+    middleware = CellWikiCompactionMiddleware(
+        model=_SummaryModel(),
+        threshold=2_800,
+        retained_tokens=300,
+        summary_output_tokens=100,
+        summary_input_tokens=3_500,
+        microcompact_min_replacements=1,
+        effective_context_limit=4_000,
+        window_source="fallback",
+        baseline_provider=lambda _thread: 4_000,
+    )
+    messages = [HumanMessage(content="ingest")]
+    for index in range(8):
+        messages.extend(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": f"c{index}",
+                            "name": "read_file",
+                            "args": {"path": f"{index}.md"},
+                        }
+                    ],
+                ),
+                ToolMessage(
+                    content="source " * 200,
+                    tool_call_id=f"c{index}",
+                    name="read_file",
+                ),
+            ]
+        )
+    emitted: list[dict[str, Any]] = []
+    runtime = types.SimpleNamespace(
+        context=types.SimpleNamespace(thread_id="thread_micro"),
+        stream_writer=emitted.append,
+    )
+
+    result = middleware.before_model({"messages": messages}, runtime)
+
+    assert result is not None
+    replacement = result["messages"]
+    assert not any(
+        getattr(message, "id", None) == "compaction-summary"
+        for message in replacement
+    )
+    tool_results = [message for message in replacement if isinstance(message, ToolMessage)]
+    assert tool_results[0].content == "[Old tool result content cleared]"
+    assert emitted[0]["kind"] == "context_microcompact"
+    assert len(emitted[0]["replacements"]) == 3
+
+
+def test_compaction_summary_prompt_stays_bounded_and_drops_old_groups():
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from cellwiki.agent.compaction import CellWikiCompactionMiddleware
+
+    middleware = CellWikiCompactionMiddleware(
+        model=_SummaryModel(),
+        threshold=1_000,
+        retained_tokens=100,
+        summary_output_tokens=100,
+        summary_input_tokens=600,
+        effective_context_limit=1_500,
+        window_source="fallback",
+    )
+    messages = [HumanMessage(content="old objective " * 100)]
+    for index in range(5):
+        messages.extend(
+            [
+                AIMessage(content=f"assistant {index} " * 100),
+                ToolMessage(
+                    content=f"result {index} " * 200,
+                    tool_call_id=f"c{index}",
+                    name="read_file",
+                ),
+            ]
+        )
+
+    prompt = middleware._summary_prompt_for_budget(
+        messages,
+        None,
+        aggressive=False,
+        shorter=False,
+    )
+
+    assert middleware._prompt_tokens(prompt) <= 900
+    assert "old objective" not in prompt
+
+
+def test_compaction_shrinks_post_compact_tail_below_threshold():
+    from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+    from cellwiki.agent.compaction import CellWikiCompactionMiddleware
+
+    middleware = CellWikiCompactionMiddleware(
+        model=_SummaryModel("## Objective\n- continue"),
+        threshold=220,
+        retained_tokens=1_000,
+        summary_output_tokens=100,
+        summary_input_tokens=2_000,
+        effective_context_limit=1_000,
+        window_source="fallback",
+    )
+    messages = [HumanMessage(content="ingest")]
+    for index in range(5):
+        messages.extend(
+            [
+                AIMessage(
+                    content="analysis " * 100,
+                    tool_calls=[
+                        {
+                            "id": f"c{index}",
+                            "name": "read_file",
+                            "args": {"path": f"{index}.md"},
+                        }
+                    ],
+                ),
+                ToolMessage(
+                    content="evidence " * 100,
+                    tool_call_id=f"c{index}",
+                    name="read_file",
+                ),
+            ]
+        )
+
+    outcome = middleware._compact_now(
+        messages,
+        reason="threshold",
+        watermark=800,
+        failure_key="thread_shrink",
+        compaction_id="cmp_shrink",
+    )
+
+    assert outcome.post_tokens < middleware.threshold
+    assert outcome.forced is True
+    assert all(not isinstance(message, ToolMessage) for message in outcome.tail[:1])
 
 
 def test_compaction_middleware_stays_quiet_below_threshold():

@@ -132,6 +132,7 @@ def prompt_cache_policy_for_spec(spec: ResolvedModelSpec) -> PromptCachePolicy:
         request_overrides=spec.request_overrides,
         model_input_tokens=spec.max_input_tokens,
         context_max_tokens=settings.agent_context_max_tokens,
+        retained_tokens=settings.agent_context_retained_tokens,
     )
 
 
@@ -145,6 +146,7 @@ def prompt_cache_policy_for_settings(
         request_overrides={},
         model_input_tokens=configuration.openai_max_input_tokens,
         context_max_tokens=configuration.agent_context_max_tokens,
+        retained_tokens=configuration.agent_context_retained_tokens,
     )
 
 
@@ -794,7 +796,27 @@ def build_wiki_agent(
                 threshold=(
                     cache_policy.compact_threshold if cache_policy else 1_024
                 ),
-                retained_tokens=settings.agent_context_retained_tokens,
+                retained_tokens=(
+                    cache_policy.retained_tokens
+                    if cache_policy
+                    else settings.agent_context_retained_tokens
+                ),
+                summary_output_tokens=(
+                    cache_policy.summary_output_tokens
+                    if cache_policy
+                    else 20_000
+                ),
+                summary_input_tokens=(
+                    cache_policy.summary_input_tokens
+                    if cache_policy
+                    else 380_000
+                ),
+                effective_context_limit=(
+                    cache_policy.effective_context_limit if cache_policy else 0
+                ),
+                window_source=(
+                    cache_policy.input_window_source if cache_policy else "fallback"
+                ),
                 provider_native=bool(
                     cache_policy and cache_policy.provider_native_compaction
                 ),

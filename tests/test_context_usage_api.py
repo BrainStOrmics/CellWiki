@@ -64,6 +64,11 @@ def test_context_usage_separates_messages_from_injection(tmp_path: Path):
     assert sections["tools"] > 0
     assert sections["system_prompt"] > 0
     assert payload["estimated_tokens"] == sum(sections.values())
+    assert payload["input_window_source"] == "fallback"
+    assert payload["model_input_tokens"] == 65_536
+    assert payload["effective_context_limit"] == 65_536
+    assert payload["compaction_threshold"] == 32_536
+    assert payload["retained_tokens"] == 8_536
 
 
 def test_context_usage_has_no_measured_total_before_the_first_call(tmp_path: Path):

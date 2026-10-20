@@ -25,6 +25,7 @@ Contract (2026-09-22 alignment work; see the accepted design proposal):
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
 import logging
 import uuid
 from typing import Any
@@ -41,6 +42,10 @@ from langchain_core.messages.modifier import RemoveMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langgraph.types import Command
 
+from cellwiki.services.model_transcript import (
+    PRUNED_TOOL_PLACEHOLDER,
+    PRUNE_PROTECTED_TOOLS,
+)
 from cellwiki.services.prompt_layers import calibration_ratio, summarize_excerpts
 
 logger = logging.getLogger(__name__)
@@ -50,9 +55,54 @@ SUMMARIZER_TAG = "cellwiki:summarizer"
 SUMMARIZER_ROLE = "summarizer"
 SUMMARY_MAX_OUTPUT_TOKENS = 20_000
 SUMMARY_INPUT_SOFT_LIMIT = 380_000
+SUMMARY_PTL_ATTEMPTS = 3
 COMPACTION_FAILURE_LIMIT = 3
 SUMMARY_MESSAGE_ID = "compaction-summary"
 SUMMARY_MESSAGE_PREFIX = "[Compacted context]"
+SUMMARY_RESUME_INSTRUCTION = (
+    "Resume from the Next steps section. Do not restart completed discovery "
+    "unless the summary explicitly marks it incomplete."
+)
+MICROCOMPACT_KEEP_RECENT = 5
+MICROCOMPACT_MIN_CHARS = 100
+MICROCOMPACT_MIN_REPLACEMENTS = 20
+POST_COMPACT_TOOL_RESULT_CHAR_LIMIT = 12_000
+
+
+@dataclass(frozen=True)
+class MessageGroup:
+    """One indivisible prompt group used for safe compaction boundaries."""
+
+    start: int
+    end: int
+    tokens: float
+
+
+@dataclass(frozen=True)
+class MicrocompactReplacement:
+    """One tool result rewritten to the stable placeholder."""
+
+    tool_call_id: str
+    name: str
+    text: str
+
+
+@dataclass(frozen=True)
+class CompactionOutcome:
+    """Result of one full summary compaction."""
+
+    messages: list[BaseMessage]
+    tail: list[BaseMessage]
+    summary: str
+    source: str
+    usage: dict[str, int]
+    boundary_type: str
+    forced: bool
+    pre_tokens: int
+    post_tokens: int
+    tail_tokens: int
+    retained_groups: int
+    ptl_attempts: int
 
 SUMMARY_SYSTEM_PROMPT = (
     "You compact an agent conversation into a structured handoff summary. "
@@ -231,55 +281,64 @@ def current_watermark(messages: list[BaseMessage]) -> int:
     return count_tokens_approximately(messages, use_usage_metadata_scaling=True)
 
 
+def message_groups(
+    messages: list[BaseMessage],
+    *,
+    calibration: float = 1.0,
+) -> list[MessageGroup]:
+    """Group a message chain without splitting tool calls from their results.
+
+    Every non-tool message starts a group; all immediately following tool results
+    stay in that group. A leading orphan tool result is retained in the first
+    group so it can never become the start of a safe tail.
+    """
+
+    if not messages:
+        return []
+    boundaries = [
+        index for index, message in enumerate(messages) if not isinstance(message, ToolMessage)
+    ]
+    if not boundaries or boundaries[0] != 0:
+        boundaries.insert(0, 0)
+    groups: list[MessageGroup] = []
+    for position, start in enumerate(boundaries):
+        end = boundaries[position + 1] if position + 1 < len(boundaries) else len(messages)
+        tokens = sum(
+            count_tokens_approximately([messages[index]])
+            for index in range(start, end)
+        ) * max(0.01, calibration)
+        groups.append(MessageGroup(start=start, end=end, tokens=tokens))
+    return groups
+
+
 def find_tail_start(
     messages: list[BaseMessage],
     retained_tokens: int,
     *,
     calibration: float = 1.0,
 ) -> int:
-    """Pick a turn-boundary split that never orphans a tool result.
+    """Pick the newest complete message groups that fit the retained budget.
 
-    Walks back accumulating approximate tokens (each record's estimate scaled by
-    the measured/estimated calibration ratio, preserving the measured-first
-    accounting contract) until the retained budget is reached, then snaps to the
-    nearest user message at or before that point. A ToolMessage can never be the
-    first message of the tail; 0 means no prefix can be split off.
+    Assistant messages and their following tool results are one indivisible
+    group. The tail may therefore start with an assistant message, but never
+    with an orphan tool result. Zero means either the whole history fits or no
+    complete group fits; callers that already crossed the watermark treat zero
+    as a summary-only compaction.
     """
 
     if not messages:
         return 0
+    groups = message_groups(messages, calibration=calibration)
     used = 0.0
     start = len(messages)
-    for index in range(len(messages) - 1, -1, -1):
-        used += count_tokens_approximately([messages[index]]) * max(0.01, calibration)
-        if used > retained_tokens and start != len(messages):
+    for group in reversed(groups):
+        if used + group.tokens > retained_tokens:
+            if start == len(messages):
+                return 0
             break
-        start = index
-    # 向前吸附到最近的 user 边界：向后吸附会让 tail 超出预算、且常常一路退到
-    # 0（等于无法切分）。取"预算位之后的第一个 user"，tail 只会更小不会更大。
-    forward = next(
-        (
-            index
-            for index in range(start, len(messages))
-            if isinstance(messages[index], HumanMessage)
-        ),
-        None,
-    )
-    if forward is None:
-        backward = next(
-            (
-                index
-                for index in range(start, -1, -1)
-                if isinstance(messages[index], HumanMessage)
-            ),
-            None,
-        )
-        start = backward if backward is not None else 0
-    else:
-        start = forward
-    while start < len(messages) and isinstance(messages[start], ToolMessage):
-        start += 1
-    return start
+        start = group.start
+        used += group.tokens
+    return start if start > 0 else 0
 
 
 def build_compacted_messages(
@@ -293,10 +352,96 @@ def build_compacted_messages(
 
     tail_start = find_tail_start(messages, retained_tokens, calibration=calibration)
     summary_message = HumanMessage(
-        id=SUMMARY_MESSAGE_ID, content=f"{SUMMARY_MESSAGE_PREFIX}\n{summary}"
+        id=SUMMARY_MESSAGE_ID,
+        content=(
+            f"{SUMMARY_MESSAGE_PREFIX}\n{SUMMARY_RESUME_INSTRUCTION}\n\n{summary}"
+        ),
     )
-    tail = list(messages[tail_start:])
+    tail = list(messages[tail_start:]) if tail_start > 0 else []
     return [RemoveMessage(id=REMOVE_ALL_MESSAGES), summary_message, *tail], tail
+
+
+def estimate_messages_tokens(
+    messages: list[BaseMessage],
+    *,
+    calibration: float = 1.0,
+) -> int:
+    """Estimate a rewritten message view with the measured/estimated ratio."""
+
+    if not messages:
+        return 0
+    return int(
+        round(
+            count_tokens_approximately(messages, use_usage_metadata_scaling=False)
+            * max(0.01, calibration)
+        )
+    )
+
+
+def microcompact_messages(
+    messages: list[BaseMessage],
+    *,
+    keep_recent: int = MICROCOMPACT_KEEP_RECENT,
+    min_replacements: int = 1,
+) -> tuple[list[BaseMessage], list[MicrocompactReplacement]]:
+    """Clear old tool results without changing message count or call pairing."""
+
+    tool_indices = [
+        index for index, message in enumerate(messages) if isinstance(message, ToolMessage)
+    ]
+    candidates = [
+        index
+        for index in tool_indices
+        if str(getattr(messages[index], "name", "") or "") not in PRUNE_PROTECTED_TOOLS
+    ]
+    to_clear = candidates[:-keep_recent] if keep_recent > 0 else candidates
+    if not to_clear:
+        return messages, []
+    compacted = list(messages)
+    replacements: list[MicrocompactReplacement] = []
+    for index in to_clear:
+        message = messages[index]
+        if not isinstance(message, ToolMessage) or len(_text_of(message)) <= MICROCOMPACT_MIN_CHARS:
+            continue
+        if _text_of(message) == PRUNED_TOOL_PLACEHOLDER:
+            continue
+        compacted[index] = message.model_copy(update={"content": PRUNED_TOOL_PLACEHOLDER})
+        replacements.append(
+            MicrocompactReplacement(
+                tool_call_id=str(getattr(message, "tool_call_id", "") or ""),
+                name=str(getattr(message, "name", "") or "tool"),
+                text=PRUNED_TOOL_PLACEHOLDER,
+            )
+        )
+    if len(replacements) < max(1, min_replacements):
+        return messages, []
+    return compacted, replacements
+
+
+def bound_post_compact_tool_results(
+    messages: list[BaseMessage],
+    *,
+    limit: int = POST_COMPACT_TOOL_RESULT_CHAR_LIMIT,
+) -> list[BaseMessage]:
+    """Keep recent tool context useful without letting it consume the whole tail."""
+
+    bounded = list(messages)
+    for index, message in enumerate(messages):
+        if not isinstance(message, ToolMessage):
+            continue
+        text = _text_of(message)
+        if len(text) <= limit:
+            continue
+        head = max(0, int(limit * 0.75))
+        tail = max(0, limit - head)
+        replacement = (
+            f"{text[:head]}\n\n"
+            f"[tool result trimmed for compaction tail: {len(text)} chars total; "
+            f"full result remains in the run audit]\n\n"
+            f"{text[-tail:] if tail else ''}"
+        )
+        bounded[index] = message.model_copy(update={"content": replacement})
+    return bounded
 
 
 def serialize_tail_records(tail: list[BaseMessage]) -> list[dict[str, Any]]:
@@ -356,14 +501,22 @@ def serialize_tail_records(tail: list[BaseMessage]) -> list[dict[str, Any]]:
 def latest_summary_text(messages: list[BaseMessage]) -> str | None:
     """Find the most recent compaction summary carried in the message list."""
 
+    def summary_body(text: str) -> str:
+        return (
+            text.removeprefix(SUMMARY_MESSAGE_PREFIX)
+            .strip()
+            .removeprefix(SUMMARY_RESUME_INSTRUCTION)
+            .strip()
+        )
+
     for message in messages:
         if getattr(message, "id", None) == SUMMARY_MESSAGE_ID:
             text = _text_of(message)
             if text:
-                return text
+                return summary_body(text)
         text = _text_of(message)
         if text.startswith(SUMMARY_MESSAGE_PREFIX):
-            return text
+            return summary_body(text)
     return None
 
 
@@ -397,6 +550,11 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
         model: Any,
         threshold: int,
         retained_tokens: int,
+        summary_output_tokens: int = SUMMARY_MAX_OUTPUT_TOKENS,
+        summary_input_tokens: int = SUMMARY_INPUT_SOFT_LIMIT,
+        microcompact_min_replacements: int = MICROCOMPACT_MIN_REPLACEMENTS,
+        effective_context_limit: int = 0,
+        window_source: str = "fallback",
         provider_native: bool = False,
         baseline_provider: Any = None,
     ) -> None:
@@ -404,6 +562,14 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
         self.model = model
         self.threshold = threshold
         self.retained_tokens = retained_tokens
+        self.summary_output_tokens = max(1_024, summary_output_tokens)
+        self.summary_input_tokens = max(
+            1_024,
+            min(SUMMARY_INPUT_SOFT_LIMIT, summary_input_tokens),
+        )
+        self.microcompact_min_replacements = max(1, microcompact_min_replacements)
+        self.effective_context_limit = effective_context_limit
+        self.window_source = window_source
         self.provider_native = provider_native
         # Optional callable(thread_id) -> last measured prompt tokens. The graph
         # state only carries usage metadata for AI messages produced inside the
@@ -419,7 +585,7 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
     def _invoke_summarizer(self, prompt: str) -> Any:
         bound: Any = self.model
         try:
-            bound = self.model.bind(max_tokens=SUMMARY_MAX_OUTPUT_TOKENS)
+            bound = self.model.bind(max_tokens=self.summary_output_tokens)
         except Exception:  # noqa: BLE001 - model may not support binding limits
             logger.debug("summarizer max_tokens binding unsupported", exc_info=True)
         return bound.invoke(
@@ -433,21 +599,88 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
             },
         )
 
+    def _summary_prompt_for_budget(
+        self,
+        messages: list[BaseMessage],
+        previous: str | None,
+        *,
+        aggressive: bool,
+        shorter: bool,
+    ) -> str:
+        """Keep the summarizer prompt within the model's remaining input budget."""
+
+        working = list(messages)
+        prompt = summary_prompt_text(
+            working,
+            previous,
+            aggressive=aggressive,
+            shorter=shorter,
+        )
+        while self._prompt_tokens(prompt) > self.summary_input_tokens:
+            groups = message_groups(working)
+            if len(groups) <= 1:
+                break
+            working = working[groups[0].end :]
+            prompt = summary_prompt_text(
+                working,
+                previous,
+                aggressive=aggressive,
+                shorter=shorter,
+            )
+        if self._prompt_tokens(prompt) > self.summary_input_tokens:
+            prompt = summary_prompt_text(
+                working,
+                previous,
+                aggressive=True,
+                shorter=shorter,
+            )
+        if self._prompt_tokens(prompt) > self.summary_input_tokens:
+            opening = "<conversation>\n"
+            start = prompt.find(opening)
+            end = prompt.find("</conversation>", start + len(opening))
+            if start >= 0 and end >= 0:
+                prefix = prompt[: start + len(opening)]
+                suffix = prompt[end:]
+                room = max(
+                    200,
+                    self.summary_input_tokens * 4 - len(prefix) - len(suffix),
+                )
+                body = _serialize_for_summary(working, aggressive=True)
+                if len(body) > room:
+                    head = room // 4
+                    tail = max(0, room - head)
+                    body = (
+                        f"{body[:head]}\n[...older summary input omitted...]\n"
+                        f"{body[-tail:] if tail else ''}"
+                    )
+                prompt = f"{prefix}{body}{suffix}"
+        return prompt
+
+    @staticmethod
+    def _prompt_tokens(prompt: str) -> int:
+        return max(1, len(prompt) // 4)
+
     def _summarize(
         self,
         messages: list[BaseMessage],
         previous: str | None,
         failure_key: str,
-    ) -> tuple[str, str, dict[str, int]]:
-        """Return (summary, source, usage); source is "llm" or "deterministic"."""
+    ) -> tuple[str, str, dict[str, int], int]:
+        """Return (summary, source, usage, prompt-too-long attempts)."""
 
         failures = self._failure_counts.get(failure_key, 0)
+        ptl_attempts = 0
         if failures < COMPACTION_FAILURE_LIMIT:
+            working = list(messages)
             aggressive = False
             shorter = False
-            for attempt in (1, 2):
-                prompt = summary_prompt_text(
-                    messages, previous, aggressive=aggressive, shorter=shorter
+            transient_retry = False
+            for attempt in range(1, SUMMARY_PTL_ATTEMPTS + 1):
+                prompt = self._summary_prompt_for_budget(
+                    working,
+                    previous,
+                    aggressive=aggressive,
+                    shorter=shorter,
                 )
                 try:
                     response = self._invoke_summarizer(prompt)
@@ -455,10 +688,15 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
                     logger.warning(
                         "summarizer call failed (attempt %d): %s", attempt, error
                     )
-                    if attempt == 1:
-                        # 瞬时错误（超时、5xx、网络）原样重试一次；溢出错误则
-                        # 在重试前把输入视图降级为激进剪枝。
-                        aggressive = aggressive or is_overflow_error(error)
+                    if is_overflow_error(error):
+                        ptl_attempts += 1
+                        groups = message_groups(working)
+                        if len(groups) > 1 and attempt < SUMMARY_PTL_ATTEMPTS:
+                            working = working[groups[0].end :]
+                            aggressive = True
+                            continue
+                    if not transient_retry and attempt < SUMMARY_PTL_ATTEMPTS:
+                        transient_retry = True
                         continue
                     break
                 text = _text_of(response).strip()
@@ -469,18 +707,23 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
                 usage = _usage_of(response)
                 if text and stop_reason not in _TRUNCATION_REASONS:
                     self._failure_counts.pop(failure_key, None)
-                    return text, "llm", usage
+                    return text, "llm", usage, ptl_attempts
                 logger.warning(
                     "summarizer output unusable (attempt %d, stop_reason=%s, chars=%d)",
                     attempt,
                     stop_reason or "?",
                     len(text),
                 )
-                if attempt == 1:
+                if attempt < SUMMARY_PTL_ATTEMPTS:
                     shorter = stop_reason in _TRUNCATION_REASONS
                     aggressive = aggressive or is_overflow_error(
                         RuntimeError(stop_reason or "empty")
                     )
+                    if aggressive:
+                        ptl_attempts += 1
+                        groups = message_groups(working)
+                        if len(groups) > 1:
+                            working = working[groups[0].end :]
                     continue
                 break
             self._failure_counts[failure_key] = failures + 1
@@ -489,11 +732,17 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
                 failures + 1,
             )
         excerpts = [f"{getattr(m, 'type', '?')}: {_text_of(m)[:400]}" for m in messages]
-        return summarize_excerpts(excerpts), "deterministic", {}
+        summary = summarize_excerpts(excerpts) or "## Objective\n- Continue the active run."
+        return summary, "deterministic", {}, ptl_attempts
 
     # -- helpers ---------------------------------------------------------
 
-    def _emit_compaction_signal(self, payload: dict[str, Any], runtime: Any = None) -> None:
+    def _emit_custom_signal(
+        self,
+        kind: str,
+        payload: dict[str, Any],
+        runtime: Any = None,
+    ) -> None:
         writer = getattr(runtime, "stream_writer", None)
         if writer is None:
             try:
@@ -504,9 +753,12 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
                 logger.debug("custom stream writer unavailable", exc_info=True)
                 return
         try:
-            writer({"kind": "context_compaction", **payload})
+            writer({"kind": kind, **payload})
         except Exception:  # noqa: BLE001 - the custom channel is best-effort
             logger.debug("custom stream write failed", exc_info=True)
+
+    def _emit_compaction_signal(self, payload: dict[str, Any], runtime: Any = None) -> None:
+        self._emit_custom_signal("context_compaction", payload, runtime)
 
     def _thread_id(self, runtime: Any) -> str:
         context = getattr(runtime, "context", None)
@@ -538,32 +790,32 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
         failure_key: str,
         compaction_id: str,
         runtime: Any = None,
-    ) -> tuple[list[BaseMessage], list[BaseMessage], str, str, dict[str, int]]:
-        previous = latest_summary_text(messages)
-        summary, source, usage = self._summarize(messages, previous, failure_key)
+    ) -> CompactionOutcome:
         calibration = summarize_calibration(watermark, messages)
-        if not summary.strip():
-            # 兜底也产不出可用的摘要：放弃本次压缩，不写 boundary。
-            self._emit_compaction_signal(
-                {
-                    "phase": "completed",
-                    "compaction_id": compaction_id,
-                    "reason": reason,
-                    "summary_source": "none",
-                    "changed": False,
-                    "retained_messages": 0,
-                    "estimated_tokens": watermark,
-                    "threshold": self.threshold,
-                },
-                runtime,
-            )
-            return [], [], "", "none", usage
-        new_messages, tail = build_compacted_messages(
+        previous = latest_summary_text(messages)
+        summary, source, usage, ptl_attempts = self._summarize(
             messages,
+            previous,
+            failure_key,
+        )
+        working, _replacements = microcompact_messages(messages)
+        working = bound_post_compact_tool_results(working)
+        new_messages, tail = build_compacted_messages(
+            working,
             summary,
             retained_tokens=self.retained_tokens,
             calibration=calibration,
         )
+        new_messages, tail = self._shrink_post_compact(
+            new_messages,
+            tail,
+            calibration=calibration,
+        )
+        tail_tokens = estimate_messages_tokens(tail, calibration=calibration)
+        post_tokens = estimate_messages_tokens(new_messages[1:], calibration=calibration)
+        groups = message_groups(tail, calibration=calibration)
+        boundary_type = self._boundary_type(tail)
+        forced = not tail and len(message_groups(messages)) > 1
         self._emit_compaction_signal(
             {
                 "phase": "completed",
@@ -574,20 +826,81 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
                 "summary_usage": usage,
                 "tail": serialize_tail_records(tail),
                 "retained_messages": len(tail),
+                "retained_groups": len(groups),
+                "boundary_type": boundary_type,
+                "forced": forced,
+                "pre_tokens": watermark,
+                "post_tokens": post_tokens,
+                "tail_tokens": tail_tokens,
                 "estimated_tokens": watermark,
                 "threshold": self.threshold,
+                "effective_context_limit": self.effective_context_limit,
+                "window_source": self.window_source,
+                "ptl_attempts": ptl_attempts,
             },
             runtime,
         )
-        return new_messages, tail, summary, source, usage
-
-    def _can_split(self, messages: list[BaseMessage], *, calibration: float = 1.0) -> bool:
-        return (
-            find_tail_start(
-                messages, self.retained_tokens, calibration=calibration
-            )
-            > 0
+        return CompactionOutcome(
+            messages=new_messages,
+            tail=tail,
+            summary=summary,
+            source=source,
+            usage=usage,
+            boundary_type=boundary_type,
+            forced=forced,
+            pre_tokens=watermark,
+            post_tokens=post_tokens,
+            tail_tokens=tail_tokens,
+            retained_groups=len(groups),
+            ptl_attempts=ptl_attempts,
         )
+
+    def _shrink_post_compact(
+        self,
+        messages: list[BaseMessage],
+        tail: list[BaseMessage],
+        *,
+        calibration: float,
+    ) -> tuple[list[BaseMessage], list[BaseMessage]]:
+        """Drop whole tail groups, then cap the summary, until post < threshold."""
+
+        summary_message = messages[1]
+        current_tail = list(tail)
+        while current_tail:
+            candidate = [messages[0], summary_message, *current_tail]
+            if estimate_messages_tokens(candidate[1:], calibration=calibration) < self.threshold:
+                return candidate, current_tail
+            groups = message_groups(current_tail, calibration=calibration)
+            if len(groups) <= 1:
+                current_tail = []
+                break
+            current_tail = current_tail[groups[1].start :]
+        candidate = [messages[0], summary_message]
+        if estimate_messages_tokens(candidate[1:], calibration=calibration) >= self.threshold:
+            max_chars = max(
+                512,
+                int((self.threshold * 4) / max(0.01, calibration)) - 128,
+            )
+            content = _text_of(summary_message)
+            if len(content) > max_chars:
+                content = content[:max_chars] + "\n[summary truncated to fit context budget]"
+                summary_message = summary_message.model_copy(update={"content": content})
+        return [messages[0], summary_message], []
+
+    @staticmethod
+    def _boundary_type(tail: list[BaseMessage]) -> str:
+        if not tail:
+            return "summary_only"
+        first = tail[0]
+        if isinstance(first, ToolMessage):
+            return "invalid_tool_tail"
+        if isinstance(first, AIMessage) and getattr(first, "tool_calls", None):
+            return "assistant_group"
+        if isinstance(first, AIMessage):
+            return "assistant"
+        if isinstance(first, HumanMessage):
+            return "user"
+        return "message_group"
 
     # -- middleware hooks ------------------------------------------------
 
@@ -598,26 +911,55 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
         watermark = max(current_watermark(messages), self._baseline_floor(runtime))
         if watermark <= self.threshold:
             return None
-        if not self._can_split(messages):
-            logger.info(
-                "compaction skipped: retained tail would consume the whole history "
-                "(watermark=%d threshold=%d)",
-                watermark,
-                self.threshold,
+        calibration = summarize_calibration(watermark, messages)
+        compacted, replacements = microcompact_messages(
+            messages,
+            min_replacements=self.microcompact_min_replacements,
+        )
+        if replacements:
+            microcompact_tokens = estimate_messages_tokens(
+                compacted,
+                calibration=calibration,
             )
-            return None
+            if microcompact_tokens < self.threshold:
+                self._emit_custom_signal(
+                    "context_microcompact",
+                    {
+                        "pre_tokens": watermark,
+                        "post_tokens": microcompact_tokens,
+                        "replacements": [
+                            {
+                                "tool_call_id": replacement.tool_call_id,
+                                "name": replacement.name,
+                                "text": replacement.text,
+                            }
+                            for replacement in replacements
+                        ],
+                        "threshold": self.threshold,
+                    },
+                    runtime,
+                )
+                return {
+                    "messages": [
+                        RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                        *compacted,
+                    ]
+                }
         compaction_id = f"cmp_{uuid.uuid4().hex}"
         self._emit_compaction_signal(
             {
                 "phase": "started",
                 "compaction_id": compaction_id,
                 "reason": "threshold",
+                "pre_tokens": watermark,
                 "estimated_tokens": watermark,
                 "threshold": self.threshold,
+                "effective_context_limit": self.effective_context_limit,
+                "window_source": self.window_source,
             },
             runtime,
         )
-        new_messages, _tail, summary, _source, _usage = self._compact_now(
+        outcome = self._compact_now(
             messages,
             reason="threshold",
             watermark=watermark,
@@ -625,9 +967,9 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
             compaction_id=compaction_id,
             runtime=runtime,
         )
-        if not summary:
+        if not outcome.messages:
             return None
-        return {"messages": new_messages}
+        return {"messages": outcome.messages}
 
     async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
         return self.before_model(state, runtime)
@@ -643,11 +985,14 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
                 "phase": "started",
                 "compaction_id": compaction_id,
                 "reason": "overflow",
+                "pre_tokens": watermark,
                 "estimated_tokens": watermark,
                 "threshold": self.threshold,
+                "effective_context_limit": self.effective_context_limit,
+                "window_source": self.window_source,
             }
         )
-        new_messages, tail, _summary, _source, _usage = self._compact_now(
+        outcome = self._compact_now(
             messages,
             reason="overflow",
             watermark=watermark,
@@ -655,10 +1000,10 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
             compaction_id=compaction_id,
             runtime=request.runtime,
         )
-        logger.info("compact-after-overflow retry (retained=%d)", len(tail))
-        if not new_messages:
+        logger.info("compact-after-overflow retry (retained=%d)", len(outcome.tail))
+        if not outcome.messages:
             return None, []
-        return request.override(messages=new_messages[1:]), tail
+        return request.override(messages=outcome.messages[1:]), outcome.tail
 
     def wrap_model_call(self, request: Any, handler: Any) -> Any:
         try:
@@ -692,11 +1037,14 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
                     "phase": "started",
                     "compaction_id": compaction_id,
                     "reason": "overflow",
+                    "pre_tokens": watermark,
                     "estimated_tokens": watermark,
                     "threshold": self.threshold,
+                    "effective_context_limit": self.effective_context_limit,
+                    "window_source": self.window_source,
                 }
             )
-            new_messages, tail, _summary, _source, _usage = self._compact_now(
+            outcome = self._compact_now(
                 messages,
                 reason="overflow",
                 watermark=watermark,
@@ -704,8 +1052,10 @@ class CellWikiCompactionMiddleware(AgentMiddleware):
                 compaction_id=compaction_id,
                 runtime=request.runtime,
             )
-            logger.info("compact-after-overflow retry (retained=%d)", len(tail))
-            retry_request = request.override(messages=new_messages[1:])
+            logger.info("compact-after-overflow retry (retained=%d)", len(outcome.tail))
+            if not outcome.messages:
+                raise error
+            retry_request = request.override(messages=outcome.messages[1:])
             try:
                 response = await handler(retry_request)
             except Exception:  # noqa: BLE001 - the original overflow wins
@@ -727,11 +1077,16 @@ __all__ = [
     "SUMMARY_MESSAGE_ID",
     "SUMMARY_MESSAGE_PREFIX",
     "CellWikiCompactionMiddleware",
+    "CompactionOutcome",
+    "bound_post_compact_tool_results",
     "build_compacted_messages",
     "current_watermark",
+    "estimate_messages_tokens",
     "find_tail_start",
     "is_overflow_error",
     "latest_summary_text",
+    "message_groups",
+    "microcompact_messages",
     "serialize_tail_records",
     "summary_prompt_text",
 ]

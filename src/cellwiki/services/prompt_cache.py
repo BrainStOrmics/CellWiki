@@ -18,6 +18,9 @@ FALLBACK_MODEL_INPUT_TOKENS = 65_536
 # 压缩预留：摘要输出 20,000 + 缓冲 13,000。绝对值、不随窗口缩放——
 # 与业界通用 Agent（Claude Code 20K 输出 + 13K 缓冲）同口径。
 COMPACTION_RESERVE_TOKENS = 33_000
+SUMMARY_OUTPUT_TOKENS = 20_000
+POST_COMPACT_SAFETY_TOKENS = 4_000
+DEFAULT_RETAINED_TOKENS = 32_768
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,9 @@ class PromptCachePolicy:
     model_input_tokens: int
     input_window_source: Literal["configured", "fallback"]
     effective_context_limit: int
+    retained_tokens: int = 8_536
+    summary_output_tokens: int = SUMMARY_OUTPUT_TOKENS
+    summary_input_tokens: int = 45_536
 
     @property
     def tool_result_breakpoints(self) -> int:
@@ -79,6 +85,7 @@ def resolve_prompt_cache_policy(
     model_input_tokens: int | None = None,
     fallback_input_tokens: int = FALLBACK_MODEL_INPUT_TOKENS,
     context_max_tokens: int = 512_000,
+    retained_tokens: int = DEFAULT_RETAINED_TOKENS,
 ) -> PromptCachePolicy:
     """Resolve cache mode and the single compaction threshold for one run.
 
@@ -122,6 +129,15 @@ def resolve_prompt_cache_policy(
     # 绝对值预留：窗口 − 33K（20K 摘要输出 + 13K 缓冲）。下限 1,024 只防御
     # 极小窗口把阈值压成负数。最小档 200K 下阈值为 167K。
     compact_threshold = max(1_024, int(effective_limit - COMPACTION_RESERVE_TOKENS))
+    summary_output_tokens = SUMMARY_OUTPUT_TOKENS
+    summary_input_tokens = max(1_024, effective_limit - summary_output_tokens)
+    # post-compact prompt = summary + retained tail。tail 必须给摘要输出和下一次
+    # 调用的安全缓冲留出空间；窗口很小时自动退化为 summary-only。
+    retained_cap = max(
+        0,
+        compact_threshold - summary_output_tokens - POST_COMPACT_SAFETY_TOKENS,
+    )
+    resolved_retained_tokens = max(0, min(retained_tokens, retained_cap))
 
     native_compaction = (
         mode != "off"
@@ -145,13 +161,19 @@ def resolve_prompt_cache_policy(
         model_input_tokens=resolved_input_window,
         input_window_source=input_window_source,
         effective_context_limit=effective_limit,
+        retained_tokens=resolved_retained_tokens,
+        summary_output_tokens=summary_output_tokens,
+        summary_input_tokens=summary_input_tokens,
     )
 
 
 __all__ = [
     "COMPACTION_RESERVE_TOKENS",
     "CacheMode",
+    "DEFAULT_RETAINED_TOKENS",
     "FALLBACK_MODEL_INPUT_TOKENS",
+    "POST_COMPACT_SAFETY_TOKENS",
     "PromptCachePolicy",
+    "SUMMARY_OUTPUT_TOKENS",
     "resolve_prompt_cache_policy",
 ]

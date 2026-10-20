@@ -18,6 +18,11 @@ const usage: AgentContextUsage = {
   estimated_tokens: 120_000,
   sections: { messages: 90_000, injection: 20_000, tools: 6_000, system_prompt: 4_000 },
   avg_cache_hit_rate: 0.846,
+  model_input_tokens: 1_000_000,
+  input_window_source: "configured",
+  effective_context_limit: 512_000,
+  compaction_threshold: 479_000,
+  retained_tokens: 32_768,
 };
 
 let usageResponse: AgentContextUsage = usage;
@@ -120,22 +125,41 @@ describe("ContextUsage", () => {
     ]);
     expect(screen.getByText("平均缓存命中率")).toBeVisible();
     expect(screen.getByText("84.6%")).toBeVisible();
+    expect(screen.getByText("压缩保留尾部")).toBeVisible();
+    expect(screen.getByText("32.8K")).toBeVisible();
+    expect(screen.getByText("configured")).toBeVisible();
   });
 
-  it("模型窗口比设置上限小时，上限跟着模型走", async () => {
-    catalogResponse = {
-      ...catalogResponse,
-      providers: [
-        {
-          ...catalogResponse.providers[0],
-          models: [{ id: "model-a1", enabled: true, max_input_tokens: 128_000 }],
-        },
-      ],
+  it("上限使用服务端解析后的 effective_context_limit", async () => {
+    usageResponse = {
+      ...usage,
+      model_input_tokens: 128_000,
+      effective_context_limit: 128_000,
+      compaction_threshold: 95_000,
     };
     renderUsage();
     await openPopover();
 
     expect(await screen.findByText("158K/128K（100%）", {}, { timeout: 3000 })).toBeVisible();
+  });
+
+  it("模型窗口未声明时显示真实 fallback 与压缩阈值", async () => {
+    usageResponse = {
+      ...usage,
+      model_input_tokens: 65_536,
+      input_window_source: "fallback",
+      effective_context_limit: 65_536,
+      compaction_threshold: 32_536,
+      retained_tokens: 8_536,
+    };
+    renderUsage();
+    await openPopover();
+
+    expect(await screen.findByText("158K/65.5K（100%）", {}, { timeout: 3000 })).toBeVisible();
+    expect(screen.getByText("32.5K")).toBeVisible();
+    expect(screen.getByText("8.5K")).toBeVisible();
+    expect(screen.getByText("fallback")).toBeVisible();
+    expect(screen.getByText("模型窗口未声明，使用 65.5K 安全回退")).toBeVisible();
   });
 
   it("还没跑过模型：不编造已用值，也没有\"其他\"行", async () => {

@@ -7,6 +7,9 @@ import { DaemonRequestError } from "../src/api/client";
 import type { AgentRun } from "../src/api/types";
 import {
   filterThreads,
+  formatCompactionEvent,
+  formatContextDetail,
+  formatContextLabel,
   formatRunSummary,
   TuiController,
 } from "../src/controller";
@@ -14,6 +17,35 @@ import { DaemonVersionMismatch } from "../src/daemon/discovery";
 import { FakeClient } from "./fake-client";
 
 const noSleep = async (): Promise<void> => undefined;
+
+describe("context compaction labels", () => {
+  it("uses the server-resolved fallback window and threshold", () => {
+    const usage = {
+      thread_id: "thread_1",
+      used_tokens: 158_000,
+      model_input_tokens: 65_536,
+      input_window_source: "fallback" as const,
+      effective_context_limit: 65_536,
+      compaction_threshold: 32_536,
+      retained_tokens: 8_536,
+    };
+
+    expect(formatContextLabel(usage)).toBe("ctx 158k/65.5k");
+    expect(formatContextDetail(usage)).toBe(
+      "158k / 65.5k · compact 32.5k · fallback 65.5k · retain 8.5k",
+    );
+  });
+
+  it("shows pre/post tokens and the safe boundary type", () => {
+    expect(
+      formatCompactionEvent({
+        pre_tokens: 240_644,
+        post_tokens: 18_200,
+        boundary_type: "assistant_group",
+      }),
+    ).toBe("context compacted 240.6k -> 18.2k (assistant group)");
+  });
+});
 
 function controllerFor(client: FakeClient): TuiController {
   const workspace = mkdtempSync(join(tmpdir(), "cellwiki-tui-"));

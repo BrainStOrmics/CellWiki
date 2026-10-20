@@ -675,6 +675,7 @@ textarea:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px;
 .context-usage-label { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .context-usage-value { color: var(--text); font-variant-numeric: tabular-nums; }
 .context-usage-foot { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--border-soft); color: var(--text-3); font-size: 11px; }
+.context-usage-warning { margin-top: 7px; color: var(--warning, #b7791f); font-size: 11px; line-height: 1.35; }
 .compose-tool-button, .compose-actions > button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 50%; color: var(--muted); background: transparent; }
 .compose-tool-button:hover, .compose-actions > button:hover { color: var(--text); background: var(--bg-hover); }
 .compose-tool-button:disabled, .compose-actions > button:disabled { cursor: default; opacity: 0.3; }

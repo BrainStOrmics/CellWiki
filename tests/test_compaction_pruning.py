@@ -15,11 +15,14 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from cellwiki.agent.compaction import (
     SUMMARY_MESSAGE_PREFIX,
+    bound_post_compact_tool_results,
     build_compacted_messages,
     find_tail_start,
     is_overflow_error,
     latest_summary_text,
+    microcompact_messages,
 )
+from cellwiki.services.prompt_cache import resolve_prompt_cache_policy
 from cellwiki.services.model_transcript import (
     PRUNED_TOOL_PLACEHOLDER,
     TOOL_RESULT_CHAR_THRESHOLD,
@@ -163,7 +166,7 @@ def test_tail_split_never_starts_with_a_tool_message():
         AIMessage(content="a2"),
         ToolMessage(content="t2", tool_call_id="c2", name="grep"),
     ]
-    start = find_tail_start(messages, retained_tokens=1)
+    start = find_tail_start(messages, retained_tokens=20)
     assert start > 0
     assert not isinstance(messages[start], ToolMessage)
 
@@ -171,6 +174,51 @@ def test_tail_split_never_starts_with_a_tool_message():
 def test_tail_split_at_zero_when_everything_fits():
     messages = [HumanMessage(content="q"), AIMessage(content="a")]
     assert find_tail_start(messages, retained_tokens=1_000_000) == 0
+
+
+def test_tail_split_uses_assistant_tool_groups_without_a_later_user_message():
+    messages = [
+        HumanMessage(content="ingest"),
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "c1", "name": "read_file", "args": {"path": "a.md"}}],
+        ),
+        ToolMessage(content="first result " * 100, tool_call_id="c1", name="read_file"),
+        AIMessage(
+            content="",
+            tool_calls=[{"id": "c2", "name": "read_file", "args": {"path": "b.md"}}],
+        ),
+        ToolMessage(content="second result " * 100, tool_call_id="c2", name="read_file"),
+    ]
+
+    start = find_tail_start(messages, retained_tokens=500)
+
+    assert start == 3
+    assert isinstance(messages[start], AIMessage)
+    assert [getattr(message, "tool_call_id", None) for message in messages[start + 1 :]] == [
+        "c2"
+    ]
+
+
+def test_tail_split_keeps_parallel_tool_results_with_their_assistant_call():
+    messages = [
+        HumanMessage(content="ingest"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {"id": "c1", "name": "read_file", "args": {"path": "a.md"}},
+                {"id": "c2", "name": "read_file", "args": {"path": "b.md"}},
+            ],
+        ),
+        ToolMessage(content="a" * 400, tool_call_id="c1", name="read_file"),
+        ToolMessage(content="b" * 400, tool_call_id="c2", name="read_file"),
+        AIMessage(content="finished"),
+    ]
+
+    start = find_tail_start(messages, retained_tokens=30)
+
+    assert start == 4
+    assert messages[start].content == "finished"
 
 
 def test_summary_message_round_trips_through_latest_summary_text():
@@ -183,7 +231,123 @@ def test_summary_message_round_trips_through_latest_summary_text():
     assert latest_summary_text(replacement) is not None
     # 迭代合并的输入就是上一个摘要的原文
     assert "keep" in (latest_summary_text(replacement) or "")
-    assert tail == messages
+    assert tail == []
+
+
+def test_microcompact_clears_only_old_tool_results_and_preserves_pairing():
+    messages = [HumanMessage(content="ingest")]
+    for index in range(8):
+        call_id = f"c{index}"
+        messages.extend(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": call_id,
+                            "name": "read_file",
+                            "args": {"path": f"{index}.md"},
+                        }
+                    ],
+                ),
+                ToolMessage(
+                    content=f"payload {index} " * 50,
+                    tool_call_id=call_id,
+                    name="read_file",
+                ),
+            ]
+        )
+
+    compacted, replacements = microcompact_messages(messages, keep_recent=3)
+
+    assert len(compacted) == len(messages)
+    assert len(replacements) == 5
+    assert [message.tool_call_id for message in compacted if isinstance(message, ToolMessage)] == [
+        f"c{index}" for index in range(8)
+    ]
+    tool_contents = [
+        message.content for message in compacted if isinstance(message, ToolMessage)
+    ]
+    assert tool_contents[:5] == [PRUNED_TOOL_PLACEHOLDER] * 5
+    assert tool_contents[-3:] != [PRUNED_TOOL_PLACEHOLDER] * 3
+
+
+def test_microcompact_waits_for_a_minimum_batch():
+    messages = [HumanMessage(content="ingest")]
+    for index in range(8):
+        call_id = f"c{index}"
+        messages.extend(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": call_id,
+                            "name": "read_file",
+                            "args": {"path": f"{index}.md"},
+                        }
+                    ],
+                ),
+                ToolMessage(
+                    content="payload " * 50,
+                    tool_call_id=call_id,
+                    name="read_file",
+                ),
+            ]
+        )
+
+    compacted, replacements = microcompact_messages(
+        messages,
+        keep_recent=3,
+        min_replacements=20,
+    )
+
+    assert compacted is messages
+    assert replacements == []
+
+
+def test_post_compact_tail_bounds_a_large_recent_read_and_keeps_the_group():
+    messages = [
+        HumanMessage(content="ingest"),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "id": "c1",
+                    "name": "read_file",
+                    "args": {"path": "raw/paper.md"},
+                }
+            ],
+        ),
+        ToolMessage(
+            content="HEAD " + ("evidence " * 5_000) + " TAIL",
+            tool_call_id="c1",
+            name="read_file",
+        ),
+    ]
+
+    bounded = bound_post_compact_tool_results(messages)
+    tool_result = bounded[2]
+
+    assert isinstance(tool_result, ToolMessage)
+    assert len(str(tool_result.content)) < len(str(messages[2].content))
+    assert "trimmed for compaction tail" in str(tool_result.content)
+    start = find_tail_start(bounded, retained_tokens=3_065)
+    assert start == 1
+    assert not isinstance(bounded[start], ToolMessage)
+
+
+def test_fallback_policy_clamps_retained_below_threshold_and_summary_budget():
+    policy = resolve_prompt_cache_policy(
+        protocol="responses",
+        model_id="deepseek-flash-v4.1",
+        base_url="https://example.invalid/v1",
+    )
+
+    assert policy.compact_threshold == 32_536
+    assert policy.summary_output_tokens == 20_000
+    assert policy.retained_tokens == 8_536
+    assert policy.summary_input_tokens == 45_536
 
 # -- stream hygiene ---------------------------------------------------------
 
@@ -269,6 +433,7 @@ def test_custom_compaction_signals_become_started_and_completed() -> None:
     )
     assert [s.type for s in started] == [AgentEventType.CONTEXT_COMPACTION_STARTED]
     assert started[0].data["mode"] == "local"
+    assert started[0].data["compaction_id"] == "cmp_1"
     assert started[0].data["reason"] == "threshold"
 
     completed = _signals_from_stream_item(
@@ -284,14 +449,58 @@ def test_custom_compaction_signals_become_started_and_completed() -> None:
                 "summary": "## Objective\n- keep",
                 "tail": [],
                 "retained_messages": 0,
+                "retained_groups": 0,
+                "boundary_type": "summary_only",
+                "forced": True,
+                "pre_tokens": 500_000,
+                "post_tokens": 9_000,
+                "tail_tokens": 0,
                 "estimated_tokens": 500_000,
                 "threshold": 479_000,
+                "effective_context_limit": 512_000,
+                "window_source": "configured",
+                "ptl_attempts": 1,
             },
         )
     )
     assert [s.type for s in completed] == [AgentEventType.CONTEXT_COMPACTION_COMPLETED]
+    assert completed[0].data["compaction_id"] == "cmp_1"
     assert completed[0].data["summary_source"] == "llm"
     assert completed[0].data["summary"].startswith("## Objective")
+    assert completed[0].data["post_tokens"] == 9_000
+    assert completed[0].data["boundary_type"] == "summary_only"
+    assert completed[0].data["forced"] is True
+    assert completed[0].data["window_source"] == "configured"
+    assert completed[0].data["ptl_attempts"] == 1
+
+
+def test_microcompact_signal_is_internal_and_carries_replacements() -> None:
+    from cellwiki.domain.runs import AgentEventType
+    from cellwiki.services.agent_runtime import _signals_from_stream_item
+
+    signals = _signals_from_stream_item(
+        (
+            (),
+            "custom",
+            {
+                "kind": "context_microcompact",
+                "pre_tokens": 80_000,
+                "post_tokens": 20_000,
+                "threshold": 32_536,
+                "replacements": [
+                    {
+                        "tool_call_id": "call_1",
+                        "name": "read_file",
+                        "text": PRUNED_TOOL_PLACEHOLDER,
+                    }
+                ],
+            },
+        )
+    )
+
+    assert [signal.type for signal in signals] == [AgentEventType.PROGRESS]
+    assert signals[0].data["_internal_kind"] == "context_microcompact"
+    assert signals[0].data["replacements"][0]["tool_call_id"] == "call_1"
 
 
 def test_two_compactions_in_one_run_get_distinct_dedup_keys() -> None:

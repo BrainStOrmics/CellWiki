@@ -947,7 +947,24 @@ def _signals_from_stream_item(
     if name == "custom":
         # 压缩中间件的水位通知：runtime 是唯一写者，这里把它转成压缩事件信号，
         # 并在 completed 时携带 summary + retained tail，由消费循环落库。
-        if not isinstance(payload, dict) or payload.get("kind") != "context_compaction":
+        if not isinstance(payload, dict):
+            return responses
+        if payload.get("kind") == "context_microcompact":
+            responses.append(
+                RuntimeSignal(
+                    type=AgentEventType.PROGRESS,
+                    message="Context tool results compacted.",
+                    data={
+                        "_internal_kind": "context_microcompact",
+                        "pre_tokens": int(payload.get("pre_tokens") or 0),
+                        "post_tokens": int(payload.get("post_tokens") or 0),
+                        "threshold": int(payload.get("threshold") or 0),
+                        "replacements": payload.get("replacements") or [],
+                    },
+                )
+            )
+            return responses
+        if payload.get("kind") != "context_compaction":
             return responses
         phase = str(payload.get("phase") or "")
         if phase == "started":
@@ -957,9 +974,15 @@ def _signals_from_stream_item(
                     message="Compacting context.",
                     data={
                         "mode": "local",
+                        "compaction_id": str(payload.get("compaction_id") or ""),
                         "reason": str(payload.get("reason") or "threshold"),
+                        "pre_tokens": int(payload.get("pre_tokens") or 0),
                         "estimated_tokens": int(payload.get("estimated_tokens") or 0),
                         "threshold": int(payload.get("threshold") or 0),
+                        "effective_context_limit": int(
+                            payload.get("effective_context_limit") or 0
+                        ),
+                        "window_source": str(payload.get("window_source") or "fallback"),
                     },
                 )
             )
@@ -971,6 +994,7 @@ def _signals_from_stream_item(
                     message="Context compacted.",
                     data={
                         "mode": "local",
+                        "compaction_id": str(payload.get("compaction_id") or ""),
                         "changed": bool(payload.get("changed", True)),
                         "reason": str(payload.get("reason") or "threshold"),
                         "summary_source": str(payload.get("summary_source") or "llm"),
@@ -978,8 +1002,21 @@ def _signals_from_stream_item(
                         "summary_usage": payload.get("summary_usage") or {},
                         "tail": payload.get("tail") or [],
                         "retained_messages": int(payload.get("retained_messages") or 0),
+                        "retained_groups": int(payload.get("retained_groups") or 0),
+                        "boundary_type": str(
+                            payload.get("boundary_type") or "message_group"
+                        ),
+                        "forced": bool(payload.get("forced", False)),
+                        "pre_tokens": int(payload.get("pre_tokens") or 0),
+                        "post_tokens": int(payload.get("post_tokens") or 0),
+                        "tail_tokens": int(payload.get("tail_tokens") or 0),
                         "estimated_tokens": int(payload.get("estimated_tokens") or 0),
                         "threshold": int(payload.get("threshold") or 0),
+                        "effective_context_limit": int(
+                            payload.get("effective_context_limit") or 0
+                        ),
+                        "window_source": str(payload.get("window_source") or "fallback"),
+                        "ptl_attempts": int(payload.get("ptl_attempts") or 0),
                     },
                 )
             )
@@ -2213,6 +2250,12 @@ class AgentRuntimeManager:
             key: int(round(value * ratio)) for key, value in estimates.items()
         }
         summary = self.store.thread_usage_summary(thread_id)
+        runs = self.store.list_runs(thread_id=thread_id, limit=1)
+        policy = (
+            self._cache_policy_for_run(runs[0])
+            if runs
+            else prompt_cache_policy_for_settings()
+        )
         return {
             "thread_id": thread_id,
             "used_tokens": last_input_tokens + last_output_tokens,
@@ -2221,6 +2264,11 @@ class AgentRuntimeManager:
             "estimated_tokens": sum(sections.values()),
             "sections": sections,
             "avg_cache_hit_rate": summary["avg_cache_hit_rate"],
+            "model_input_tokens": policy.model_input_tokens,
+            "input_window_source": policy.input_window_source,
+            "effective_context_limit": policy.effective_context_limit,
+            "compaction_threshold": policy.compact_threshold,
+            "retained_tokens": policy.retained_tokens,
         }
 
     def _append_context_compaction_started(
@@ -2900,6 +2948,65 @@ class AgentRuntimeManager:
                     [{"message_id": message_id, "content": rewritten}],
                 )
 
+    def _persist_microcompact(
+        self,
+        run_id: str,
+        thread_id: str,
+        signal: RuntimeSignal,
+    ) -> None:
+        """Persist silent tool-result clearing without creating a new epoch."""
+
+        data = signal.data or {}
+        replacements = data.get("replacements")
+        if not isinstance(replacements, list) or not replacements:
+            return
+        by_call_id = {
+            str(record.get("tool_call_id") or ""): record
+            for record in self.store.list_model_messages(thread_id)
+            if str(record.get("kind") or "") == "tool_result"
+            and str(record.get("tool_call_id") or "")
+        }
+        updates: list[dict[str, Any]] = []
+        for replacement in replacements:
+            if not isinstance(replacement, dict):
+                continue
+            call_id = str(replacement.get("tool_call_id") or "")
+            record = by_call_id.get(call_id)
+            if record is None:
+                continue
+            content = record.get("content")
+            copied = dict(content) if isinstance(content, dict) else {}
+            copied["text"] = str(
+                replacement.get("text") or "[Old tool result content cleared]"
+            )
+            updates.append(
+                {
+                    "message_id": record.get("message_id"),
+                    "content": copied,
+                }
+            )
+        if not updates:
+            return
+        self.store.replace_thread_model_messages(thread_id, updates)
+        with suppress(Exception):
+            self.store.upsert_span(
+                AgentSpan(
+                    span_id=f"microcompact:{run_id}:{uuid.uuid4().hex[:8]}",
+                    run_id=run_id,
+                    kind="compaction",
+                    name="microcompact",
+                    status="completed",
+                    started_at=datetime.now(UTC),
+                    finished_at=datetime.now(UTC),
+                    input_tokens=int(data.get("pre_tokens") or 0),
+                    output_tokens=int(data.get("post_tokens") or 0),
+                    data={
+                        "replaced_tool_results": len(updates),
+                        "threshold": int(data.get("threshold") or 0),
+                    },
+                )
+            )
+
     def _persist_local_compaction(
         self,
         run_id: str,
@@ -3138,6 +3245,13 @@ class AgentRuntimeManager:
                 saw_any_signal = True
                 for signal in signals:
                     steps_at_end = steps
+                    if (
+                        signal.type == AgentEventType.PROGRESS
+                        and str((signal.data or {}).get("_internal_kind") or "")
+                        == "context_microcompact"
+                    ):
+                        self._persist_microcompact(run_id, thread_id, signal)
+                        continue
                     if signal.model_message:
                         self._persist_model_message(
                             run_id, thread_id, signal.model_message
@@ -3291,21 +3405,58 @@ class AgentRuntimeManager:
                         epoch = self.store.current_transcript_epoch(thread_id)
                         data = {
                             "mode": "local",
-                            "changed": bool((signal.data or {}).get("changed", True)),
                             "reason": str((signal.data or {}).get("reason") or "threshold"),
-                            "summary_source": str(
-                                (signal.data or {}).get("summary_source") or "llm"
-                            ),
                             "compaction_id": (signal.data or {}).get("compaction_id"),
                             "estimated_tokens": int(
                                 (signal.data or {}).get("estimated_tokens") or 0
                             ),
                             "threshold": int((signal.data or {}).get("threshold") or 0),
-                            "retained_messages": int(
-                                (signal.data or {}).get("retained_messages") or 0
+                            "pre_tokens": int(
+                                (signal.data or {}).get("pre_tokens") or 0
+                            ),
+                            "effective_context_limit": int(
+                                (signal.data or {}).get("effective_context_limit") or 0
+                            ),
+                            "window_source": str(
+                                (signal.data or {}).get("window_source")
+                                or "fallback"
                             ),
                             "generation": epoch,
                         }
+                        if signal.type == AgentEventType.CONTEXT_COMPACTION_COMPLETED:
+                            data.update(
+                                {
+                                    "changed": bool(
+                                        (signal.data or {}).get("changed", True)
+                                    ),
+                                    "summary_source": str(
+                                        (signal.data or {}).get("summary_source")
+                                        or "llm"
+                                    ),
+                                    "post_tokens": int(
+                                        (signal.data or {}).get("post_tokens") or 0
+                                    ),
+                                    "tail_tokens": int(
+                                        (signal.data or {}).get("tail_tokens") or 0
+                                    ),
+                                    "retained_groups": int(
+                                        (signal.data or {}).get("retained_groups") or 0
+                                    ),
+                                    "boundary_type": str(
+                                        (signal.data or {}).get("boundary_type")
+                                        or "message_group"
+                                    ),
+                                    "forced": bool(
+                                        (signal.data or {}).get("forced", False)
+                                    ),
+                                    "ptl_attempts": int(
+                                        (signal.data or {}).get("ptl_attempts") or 0
+                                    ),
+                                    "retained_messages": int(
+                                        (signal.data or {}).get("retained_messages") or 0
+                                    ),
+                                }
+                            )
                         summary_usage = (signal.data or {}).get("summary_usage")
                         if isinstance(summary_usage, dict) and summary_usage:
                             data["summary_usage"] = {

@@ -137,6 +137,7 @@ export interface TuiState {
   queue: string[];
   transcript: TranscriptLine[];
   contextLabel: string;
+  contextDetail: string;
   usageLabel: string;
   error: string | null;
   versionMismatch: DaemonVersionMismatch | null;
@@ -231,6 +232,7 @@ export class TuiController {
       queue: [],
       transcript: [],
       contextLabel: "",
+      contextDetail: "",
       usageLabel: "",
       error: null,
       versionMismatch: null,
@@ -673,14 +675,17 @@ export class TuiController {
   private async refreshContext(): Promise<void> {
     const threadId = this.state.threadId;
     if (!threadId) {
-      this.update({ contextLabel: "" });
+      this.update({ contextLabel: "", contextDetail: "" });
       return;
     }
     try {
       const usage = await this.requireClient().contextUsage(threadId);
-      this.update({ contextLabel: formatContextLabel(usage) });
+      this.update({
+        contextLabel: formatContextLabel(usage),
+        contextDetail: formatContextDetail(usage),
+      });
     } catch {
-      this.update({ contextLabel: "" });
+      this.update({ contextLabel: "", contextDetail: "" });
     }
   }
 
@@ -927,7 +932,7 @@ export class TuiController {
         this.commit("... compacting context", "dim");
         return false;
       case "context_compaction_completed":
-        this.commit("... context compaction finished", "dim");
+        this.commit(`... ${formatCompactionEvent(data)}`, "dim");
         return false;
       case "progress":
         this.commit(`... ${message || "working"}`, "dim");
@@ -1260,6 +1265,7 @@ export class TuiController {
           threadId: null,
           threadTitle: "",
           contextLabel: "",
+          contextDetail: "",
           transcript: [],
           runId: null,
           lastRunId: null,
@@ -1319,7 +1325,7 @@ export class TuiController {
         return;
       case "/context": {
         await this.refreshContext();
-        this.commit(`context: ${this.state.contextLabel || "unknown"}`, "dim");
+        this.commit(`context: ${this.state.contextDetail || "unknown"}`, "dim");
         return;
       }
       case "/quit":
@@ -1499,7 +1505,56 @@ export function formatModelLabel(catalog: ModelCatalog): string {
 
 export function formatContextLabel(usage: ContextUsage): string {
   const used = usage.used_tokens ?? 0;
-  return used > 0 ? `ctx ${Math.round(used / 1000)}k` : "";
+  if (used <= 0) {
+    return "";
+  }
+  const cap = usage.effective_context_limit;
+  return cap && cap > 0
+    ? `ctx ${formatShortTokens(used)}/${formatShortTokens(cap)}`
+    : `ctx ${formatShortTokens(used)}`;
+}
+
+export function formatContextDetail(usage: ContextUsage): string {
+  const parts: string[] = [];
+  const used = usage.used_tokens ?? 0;
+  const cap = usage.effective_context_limit;
+  parts.push(
+    cap && cap > 0
+      ? `${formatShortTokens(used)} / ${formatShortTokens(cap)}`
+      : formatShortTokens(used),
+  );
+  if (usage.compaction_threshold) {
+    parts.push(`compact ${formatShortTokens(usage.compaction_threshold)}`);
+  }
+  if (usage.input_window_source === "fallback") {
+    parts.push(`fallback ${formatShortTokens(usage.model_input_tokens ?? cap ?? 0)}`);
+  }
+  if (usage.retained_tokens) {
+    parts.push(`retain ${formatShortTokens(usage.retained_tokens)}`);
+  }
+  return parts.join(" · ");
+}
+
+export function formatCompactionEvent(data: Record<string, unknown>): string {
+  const pre = Number(data.pre_tokens ?? data.estimated_tokens ?? 0);
+  const post = Number(data.post_tokens ?? 0);
+  const boundary = String(data.boundary_type ?? "");
+  if (pre > 0 && post > 0) {
+    const label = boundary ? ` (${boundary.replaceAll("_", " ")})` : "";
+    return `context compacted ${formatShortTokens(pre)} -> ${formatShortTokens(post)}${label}`;
+  }
+  return "context compaction finished";
+}
+
+function formatShortTokens(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) {
+    return "0";
+  }
+  if (value < 1_000) {
+    return String(Math.round(value));
+  }
+  const thousands = value / 1_000;
+  return `${Number.isInteger(thousands) ? thousands : thousands.toFixed(1)}k`;
 }
 
 export function formatRunSummary(run: AgentRun): string {

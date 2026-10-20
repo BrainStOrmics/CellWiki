@@ -339,6 +339,11 @@ export type AgentContextUsage = {
     system_prompt: number;
   };
   avg_cache_hit_rate: number;
+  model_input_tokens: number;
+  input_window_source: "configured" | "fallback";
+  effective_context_limit: number;
+  compaction_threshold: number;
+  retained_tokens: number;
 };
 
 export type AgentThreadEntry = {

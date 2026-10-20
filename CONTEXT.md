@@ -71,33 +71,51 @@ runtime 在 pending diff 前调用同一入口，旧页面在被本次 run 修�
   模型可见消息（user、run_context、assistant、tool_call、tool_result、
   compaction）；与 UI `agent_messages` 分离，是 v2 prompt 的唯一历史来源。
 - **模型输入窗口（declared model input window）**：供应商模型条目的
-  `max_input_tokens` 或 legacy `OPENAI_MAX_INPUT_TOKENS`；不按模型名推断。
-  未声明时使用单一保守 fallback，实际预算取
-  `min(AGENT_CONTEXT_MAX_TOKENS, 声明窗口或 fallback)`。全局上限可在设置页
-  按 `200K / 400K / 512K / 1M` 四档调整，保存后重启生效。
+  `max_input_tokens` 或 legacy `OPENAI_MAX_INPUT_TOKENS`；不按模型名、URL
+  或历史成功请求推断。未声明时使用单一保守 fallback `65_536`，实际有效窗口取
+  `min(AGENT_CONTEXT_MAX_TOKENS, 声明窗口或 fallback)`，并记录来源
+  `configured|fallback`。`AGENT_CONTEXT_MAX_TOKENS` 是全局上限，不得在模型
+  未声明窗口时被显示成模型真实窗口；桌面设置页提供
+  `200K / 400K / 512K / 1M` 四档，保存后重启生效。
+- **prompt 消息组（message group）**：一条非 tool 消息及紧邻其后的全部
+  `ToolMessage` 是不可拆分的压缩单元；assistant `tool_calls` 不得与其结果分离。
+  保留尾部的切点只能落在完整消息组之前，尾部可以以 assistant 消息开始，但
+  绝不能以孤立的 `ToolMessage` 开始。
 - **compaction boundary**：最新一条 `kind=compaction` 的模型消息；prompt loader
   只加载该 boundary 及其后的消息，之前的记录保留用于审计但不进入当前 prompt。
 - **上下文压缩事件**：`context_compaction_started` 与
   `context_compaction_completed` 持久化事件，供 Agent 时间线显示“正在压缩”
-  和“已压缩/未触发压缩”；2026-09-22 起事件另带 `reason`（threshold/overflow）、
-  `summary_source`（llm/deterministic/none）、`generation` 与 `summary_usage`，
-  仍不暴露摘要正文、保留尾部正文或 provider opaque item。
-- **压缩计量（compaction accounting）**：触发判定优先 provider 实测 prompt
-  token，固定估算兜底且计入 assistant `tool_calls` 参数 JSON；保留窗口按
-  实测/估算比值（钳制 0.5–4.0）折算后累计，使标称窗口接近真实 token 预算。
-  压缩阈值 = 有效窗口 − 33,000 预留（摘要输出 20K + 缓冲 13K，绝对值，
-  不随窗口缩放）。
+  和“已压缩”；事件带 `reason`（threshold/overflow）、`summary_source`
+  （llm/deterministic/none）、`generation`、`summary_usage`、`pre_tokens`、
+  `post_tokens`、`tail_tokens`、`retained_groups`、`boundary_type`、`forced`、
+  `window_source` 与 `ptl_attempts`，仍不暴露摘要正文、保留尾部正文或 provider
+  opaque item。
+- **压缩预算与计量（compaction accounting）**：触发判定优先 provider 实测
+  prompt token，固定估算兜底且计入 assistant `tool_calls` 参数 JSON；消息组代价
+  按实测/估算比值（钳制 0.5–4.0）折算。压缩阈值 =
+  `有效窗口 − 33_000`（摘要输出 20K + 缓冲 13K，绝对值，不随窗口缩放）。
+  实际 retained 由
+  `min(配置 retained, 阈值 − 20K 摘要输出 − 4K 安全缓冲)` 派生，因此 fallback
+  窗口下阈值 `32_536`、retained `8_536`，不会再出现 retained 大于阈值；摘要
+  输入预算为有效窗口扣除摘要输出预算。以上阈值、retained、有效窗口和来源由
+  `PromptCachePolicy` 单点解析，API/UI 不重复计算。
 - **压缩决策者与写入者**：`CellWikiCompactionMiddleware` 是压缩**决策**的
   唯一所有者（每次模型调用前检查水位，run 内可多次压缩）；runtime 是模型
-  转录的唯一**写入者**（把摘要与保留尾部落成新的 compaction boundary）。
-  受控摘要调用带 `cellwiki:summarizer` 标签，不进旁白、最终回答、事件与转录。
+  转录的唯一**写入者**。达到阈值时先尝试批量 microcompact 最近 5 条之外的旧
+  工具结果；若已降到阈值以下，只静默持久化内容替换，不创建 transcript epoch，
+  也不调用摘要模型。仍需压缩时按完整消息组生成摘要；无可用 tail 时允许
+  summary-only。摘要输入超限时按完整组丢弃最旧输入并有限重试；压缩后重新计量，
+  仍超限时继续裁 tail group 或缩短摘要。受控摘要调用带 `cellwiki:summarizer`
+  标签，不进旁白、最终回答、事件与转录。
 - **工具输出剪枝（tool-output pruning）**：①写入时预览化——单条工具结果超过
   50,000 字符（或一轮合计超过 200,000 字符）时，全文落
   `data/runtime/tool-results/<run_id>/`，转录只留约 2,000 字符预览与取回路径，
-  从第一次发送起生效；②冷点剪枝——run 开始距上一条 assistant 消息超过 60
+  从第一次发送起生效；②冷点剪枝——run 开始距最近一次实际模型请求超过 60
   分钟时，把最近 5 条之外的旧结果替换为恒定占位符
-  `[Old tool result content cleared]`（`ask_user_question` 保护、≤100 字符
-  跳过、集合只增不减）。剪枝只改内容、不动消息数量与配对顺序，且不进 UI 事件。
+  `[Old tool result content cleared]`；③压力 microcompact——run 内 watermark
+  达到压缩阈值且至少有 20 条可清理结果时，先执行同一内容替换。三条路径都保护
+  `ask_user_question`、跳过 ≤100 字符结果、保持消息数量/顺序/配对 ID，并不得
+  频繁改写热缓存前缀。
 - **promote**：用户经 ask_user_question 同意后，把附件提升为 raw/<source_id>/ 正式源
   （原件 + 提取文本 + meta.json），登记 data/runtime/sources/<source_id>.json，并提交 git。
 - **schema.md**：用户拥有的工作区页面提取契约；Agent 只读。lint 解析一个

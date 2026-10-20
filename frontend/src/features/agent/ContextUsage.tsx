@@ -86,10 +86,15 @@ export function ContextUsage({ threadId }: { threadId: string | null }) {
   });
 
   const data = usage.data;
-  const cap = effectiveContextCap(
-    settings.data?.agent_context_max_tokens,
-    modelInputTokensFor(catalog.data, selectedModel ?? catalog.data?.default_selection ?? null),
-  );
+  const cap =
+    data?.effective_context_limit ??
+    effectiveContextCap(
+      settings.data?.agent_context_max_tokens,
+      modelInputTokensFor(
+        catalog.data,
+        selectedModel ?? catalog.data?.default_selection ?? null,
+      ),
+    );
   const used = data?.used_tokens ?? 0;
   const answer = data?.last_output_tokens ?? 0;
   const estimated = data?.estimated_tokens ?? 0;
@@ -160,6 +165,36 @@ export function ContextUsage({ threadId }: { threadId: string | null }) {
               {formatShare(data?.avg_cache_hit_rate ?? 0)}
             </span>
           </div>
+          {data?.compaction_threshold ? (
+            <div className="context-usage-foot">
+              <span>{t("context.compactionThreshold")}</span>
+              <span className="context-usage-value">
+                {formatTokens(data.compaction_threshold)}
+              </span>
+            </div>
+          ) : null}
+          {data?.retained_tokens !== undefined ? (
+            <div className="context-usage-foot">
+              <span>{t("context.retainedTail")}</span>
+              <span className="context-usage-value">
+                {formatTokens(data.retained_tokens)}
+              </span>
+            </div>
+          ) : null}
+          {data?.input_window_source ? (
+            <div className="context-usage-foot">
+              <span>{t("context.windowSource")}</span>
+              <span className="context-usage-value">{data.input_window_source}</span>
+            </div>
+          ) : null}
+          {data?.input_window_source === "fallback" ? (
+            <div className="context-usage-warning" role="status">
+              {t("context.windowFallback").replace(
+                "{tokens}",
+                formatTokens(data.model_input_tokens),
+              )}
+            </div>
+          ) : null}
         </div>
       )}
     </div>

@@ -101,4 +101,9 @@ export interface ContextUsage {
   last_input_tokens?: number;
   last_output_tokens?: number;
   estimated_tokens?: number;
+  model_input_tokens?: number;
+  input_window_source?: "configured" | "fallback";
+  effective_context_limit?: number;
+  compaction_threshold?: number;
+  retained_tokens?: number;
 }
