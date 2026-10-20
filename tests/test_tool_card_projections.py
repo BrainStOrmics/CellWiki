@@ -104,6 +104,17 @@ def test_attachment_identifiers_are_projected_for_the_attachment_cards():
     assert display["title"] == "att_123"
 
 
+def test_line_range_reads_are_projected_for_the_read_cards():
+    display = _tool_args_display(
+        "read_file",
+        {"path": "raw/p.md", "start_line": 101, "end_line": 200},
+    )
+
+    assert display is not None
+    assert display["start_line"] == 101
+    assert display["end_line"] == 200
+
+
 def test_lint_report_keeps_its_verdict_even_though_the_body_is_truncated():
     report = {
         "status": "passed_with_warnings",

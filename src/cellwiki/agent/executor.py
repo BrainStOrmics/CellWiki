@@ -813,7 +813,8 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
 
     @tool("git", args_schema=_GitArgs)
     def git(args: list[str]) -> str:
-        """Run a whitelisted git action (status/diff/log/add/commit/revert) inside the workspace."""
+        """Run a whitelisted git action (status/diff/log/add/commit/revert) inside
+        the workspace; git add requires explicit paths and rejects -A."""
         if not args:
             return _tool_json({"error": "no git arguments provided"})
         try:

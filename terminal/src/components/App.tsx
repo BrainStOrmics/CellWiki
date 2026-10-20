@@ -53,7 +53,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
   const streaming = Boolean(liveState.streaming || liveState.reasoning);
   const state = useThrottledSnapshot(
     liveState,
-    immediate || !streaming ? 0 : 100,
+    immediate || !streaming ? 0 : liveState.streaming ? 100 : 250,
   );
   const { exit } = useApp();
   const size = useTerminalSize(viewport);

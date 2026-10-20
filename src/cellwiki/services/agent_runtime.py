@@ -693,8 +693,9 @@ def _tool_args_display(tool_name: str, args: Any) -> dict[str, Any] | None:
     raw_args = parsed.get("args")
     if isinstance(raw_args, list):
         picks["args"] = [str(item)[:120] for item in raw_args][:8]
-    # read_file range reads need the char offset so the card can number lines.
-    for key in ("offset", "length"):
+    # read_file range reads need the char offset or line range so the card can
+    # number lines.
+    for key in ("offset", "length", "start_line", "end_line"):
         value = parsed.get(key)
         if isinstance(value, int) and value > 0:
             picks[key] = value
