@@ -132,6 +132,59 @@ describe("App", () => {
     unmount();
   });
 
+  it("locks the composer while a diff gate is pending", async () => {
+    const client = new FakeClient(
+      [
+        {
+          run_id: "run_1",
+          thread_id: "thread_1",
+          status: "waiting_approval",
+          pending_diff_id: "diff_1",
+        },
+        { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },
+      ],
+      {
+        events: {
+          run_1: [
+            {
+              run_id: "run_1",
+              sequence: 1,
+              type: "run_status",
+              data: { status: "waiting_approval" },
+            },
+          ],
+        },
+      },
+    );
+    const controller = new TuiController("/tmp/cellwiki-app-test", {
+      clientFactory: async () => client,
+      sleep: noSleep,
+    });
+    const { stdin, lastFrame, unmount } = render(
+      <App
+        controller={controller}
+        mode="fullscreen"
+        viewport={{ rows: 20, columns: 70 }}
+      />,
+    );
+    await waitFor(() => controller.state.connected);
+    await controller.submit("edit");
+    await waitFor(() => lastFrame()?.includes("Pending diff diff_1") ?? false);
+    await waitFor(
+      () => lastFrame()?.includes("waiting for your decision") ?? false,
+    );
+
+    stdin.write("abc");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(lastFrame() ?? "").not.toContain("❯ abc");
+
+    stdin.write("1");
+    await waitFor(() => client.accepted.includes("diff_1"));
+    await waitFor(() => !(lastFrame() ?? "").includes("Pending diff diff_1"));
+    expect(lastFrame() ?? "").toContain("❯ ");
+    unmount();
+  });
+
   it("runs a fully typed slash command on the first Enter", async () => {
     const client = new FakeClient([
       { run_id: "run_1", thread_id: "thread_1", status: "succeeded" },

@@ -13,7 +13,7 @@ export const SPINNER_FRAMES = [
   "⠏",
 ] as const;
 
-export function useSpinnerFrame(busy: boolean): string {
+export function useSpinnerFrame(busy: boolean, intervalMs = 200): string {
   const [frame, setFrame] = useState(0);
   useEffect(() => {
     if (!busy) {
@@ -21,8 +21,8 @@ export function useSpinnerFrame(busy: boolean): string {
     }
     const timer = setInterval(() => {
       setFrame((value) => value + 1);
-    }, 200);
+    }, Math.max(50, intervalMs));
     return () => clearInterval(timer);
-  }, [busy]);
+  }, [busy, intervalMs]);
   return SPINNER_FRAMES[frame % SPINNER_FRAMES.length] ?? SPINNER_FRAMES[0];
 }

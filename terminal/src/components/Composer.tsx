@@ -15,6 +15,8 @@ export interface ComposerProps {
   onSubmitted?: () => void;
   onValueChange?: (value: string) => void;
   onScroll?: (delta: number) => void;
+  disabled?: boolean;
+  disabledHint?: string;
   theme: Theme;
 }
 
@@ -44,6 +46,8 @@ export function Composer({
   onSubmitted,
   onValueChange,
   onScroll,
+  disabled = false,
+  disabledHint = "waiting for your decision…",
   theme,
 }: ComposerProps) {
   const [value, setValue] = useState("");
@@ -64,14 +68,14 @@ export function Composer({
   const gate = state.gate;
   const slashMatches = useMemo(
     () =>
-      !gate && value.startsWith("/") && !value.includes(" ")
+      !disabled && !gate && value.startsWith("/") && !value.includes(" ")
         ? filterCommands(value)
         : [],
-    [gate, value],
+    [disabled, gate, value],
   );
   const mention = useMemo(
-    () => (!gate ? activeMention(value) : null),
-    [gate, value],
+    () => (!disabled && !gate ? activeMention(value) : null),
+    [disabled, gate, value],
   );
   const mentionMatches = useMemo(
     () => (mention ? controller.mentionCandidates(mention.query) : []),
@@ -86,7 +90,7 @@ export function Composer({
         ? "mention"
         : null;
 
-  const lines = value.split("\n");
+  const lines = disabled ? [""] : value.split("\n");
   const extraLines = Math.max(0, lines.length - 1);
   const visibleExtraLines = Math.min(extraLines, 2);
   const overflowLine = extraLines > visibleExtraLines ? 1 : 0;
@@ -181,6 +185,16 @@ export function Composer({
   };
 
   useInput((input, key) => {
+    if (disabled) {
+      if (key.escape) {
+        void controller.escape();
+        return;
+      }
+      if (input === "1" || input === "2" || input === "3") {
+        void controller.submit(input);
+      }
+      return;
+    }
     if (key.escape) {
       void controller.escape();
       return;
@@ -297,9 +311,9 @@ export function Composer({
   const titleText = showTitle ? ` ${title} ` : "";
   const bottomBorder = `╰${"─".repeat(Math.max(0, width - 2))}╯`;
   const prompt = "❯ ";
-  const promptColor = gate ? theme.tokens.warning : theme.tokens.claude;
+  const promptColor = disabled || gate ? theme.tokens.warning : theme.tokens.claude;
   const firstLine = truncateToWidth(
-    lines[0] ?? "",
+    disabled ? disabledHint : lines[0] ?? "",
     Math.max(1, innerWidth - displayWidth(prompt) - 1),
   );
   const firstPad = Math.max(
@@ -350,16 +364,17 @@ export function Composer({
         <Text color={theme.tokens.claude}>{"│ "}</Text>
         <Text color={promptColor}>{prompt}</Text>
         <Text>{firstLine}</Text>
-        <Text color={theme.tokens.inactive}>▌</Text>
+        {disabled ? null : <Text color={theme.tokens.inactive}>▌</Text>}
         <Text color={theme.tokens.claude}>
           {" ".repeat(firstPad)}
           {" │"}
         </Text>
       </Text>
-      {lines
-        .slice(1, 1 + visibleExtraLines)
-        .map((line, index) => framedRow(`... ${line}`, `line-${index}`))}
-      {overflowLine > 0
+      {!disabled &&
+        lines
+          .slice(1, 1 + visibleExtraLines)
+          .map((line, index) => framedRow(`... ${line}`, `line-${index}`))}
+      {!disabled && overflowLine > 0
         ? framedRow(
             `... (+${extraLines - visibleExtraLines} more lines)`,
             "overflow",

@@ -45,6 +45,9 @@
 
 ### Changed
 
+- 终端 fullscreen 降噪与审批输入锁：流式增量合并为最多 10fps，spinner 降为
+  1s 且在审批/回滚阅读时暂停；滚动离开底部后冻结当前视图并提示新增行数；
+  diff 审批期间 composer 只响应 `1`/`2`/`3`/`Esc`，草稿保留到审批结束。
 - Agent 运行预算与工具步数解耦：新增 `AGENT_MAX_MODEL_CALLS`（1–5000），
   设置后作为新 run 的模型调用上限；未设置时回退旧的
   `AGENT_MAX_TOOL_STEPS`。显式请求的 `budget.max_model_calls` 仍最优先。

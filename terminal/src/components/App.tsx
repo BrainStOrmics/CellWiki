@@ -12,11 +12,13 @@ import type { TuiController } from "../controller";
 import { useSpinnerFrame } from "../render/spinner";
 import { padToWidth, truncateToWidth } from "../render/text";
 import { useTerminalSize, type TerminalSize } from "../render/use-terminal-size";
+import { useThrottledSnapshot } from "../render/use-throttled-snapshot";
 import {
   buildLiveLines,
   gateLayout,
   toVisualLines,
   windowLines,
+  type VisualLine,
 } from "../render/viewport";
 import { Composer } from "./Composer";
 import { GateView } from "./GateView";
@@ -38,15 +40,29 @@ export interface AppProps {
 }
 
 export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
-  const state = useSyncExternalStore(
+  const liveState = useSyncExternalStore(
     controller.subscribe,
     controller.getSnapshot,
+  );
+  const immediate =
+    !liveState.connected ||
+    liveState.gate !== null ||
+    liveState.picker !== null ||
+    liveState.versionMismatch !== null ||
+    liveState.exitRequested;
+  const streaming = Boolean(liveState.streaming || liveState.reasoning);
+  const state = useThrottledSnapshot(
+    liveState,
+    immediate || !streaming ? 0 : 100,
   );
   const { exit } = useApp();
   const size = useTerminalSize(viewport);
   const busy = state.runId !== null || state.tools.length > 0;
-  const spinner = useSpinnerFrame(mode === "fullscreen" && busy);
   const [scrollOffset, setScrollOffset] = useState(0);
+  const spinner = useSpinnerFrame(
+    mode === "fullscreen" && busy && !state.gate && scrollOffset === 0,
+    mode === "fullscreen" ? 1000 : 200,
+  );
   const [composerRows, setComposerRows] = useState(1);
   const [composerText, setComposerText] = useState("");
   const handleComposerRows = useCallback(
@@ -111,9 +127,20 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
       state.theme,
     ],
   );
+  const [frozenLines, setFrozenLines] = useState<VisualLine[] | null>(null);
+  useEffect(() => {
+    if (scrollOffset > 0 && frozenLines === null) {
+      setFrozenLines(allLines);
+      return;
+    }
+    if (scrollOffset === 0 && frozenLines !== null) {
+      setFrozenLines(null);
+    }
+  }, [scrollOffset, frozenLines, allLines]);
+  const displayLines = frozenLines ?? allLines;
   const maxOffset = Math.max(
     0,
-    allLines.length - Math.max(1, transcriptRows - 1),
+    displayLines.length - Math.max(1, transcriptRows - 1),
   );
   const offset = Math.min(scrollOffset, maxOffset);
 
@@ -242,6 +269,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
           state={state}
           width={size.columns}
           onValueChange={setComposerText}
+          disabled={state.gate?.kind === "diff"}
           theme={state.theme}
         />
         <StatusBar state={state} width={size.columns} theme={state.theme} />
@@ -251,9 +279,12 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
 
   const showHint = offset > 0;
   const windowRows = showHint ? Math.max(1, transcriptRows - 1) : transcriptRows;
-  const view = windowLines(allLines, windowRows, offset);
+  const view = windowLines(displayLines, windowRows, offset);
   const padding = Math.max(0, windowRows - view.lines.length);
-  const hintText = `↓ ${offset} newer line${offset === 1 ? "" : "s"} · PgDn or Ctrl+End to follow`;
+  const newLineCount = Math.max(0, allLines.length - displayLines.length);
+  const hintText = `${
+    newLineCount > 0 ? `+${newLineCount} new · ` : ""
+  }↓ ${offset} newer line${offset === 1 ? "" : "s"} · PgDn or Ctrl+End to follow`;
 
   return (
     <Box flexDirection="column" height={size.rows}>
@@ -329,6 +360,7 @@ export function App({ controller, mode = "fullscreen", viewport }: AppProps) {
           onSubmitted={handleSubmitted}
           onValueChange={setComposerText}
           onScroll={handleScroll}
+          disabled={state.gate?.kind === "diff"}
           theme={state.theme}
         />
       </Box>
