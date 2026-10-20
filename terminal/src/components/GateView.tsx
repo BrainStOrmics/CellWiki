@@ -92,9 +92,23 @@ export function GateView({
 
   const safePatch = redactSecrets(gate.patch);
   const lines = safePatch.split("\n");
-  const preview = lines.slice(0, Math.max(0, previewLines));
-  const files = diffFiles(safePatch);
+  const blocks = patchBlocks(safePatch);
+  const scaffoldBlocks = blocks.filter((block) => SCAFFOLD_FILES.has(block.path));
+  const contentBlocks = blocks.filter((block) => !SCAFFOLD_FILES.has(block.path));
+  const orderedLines = blocks.length
+    ? contentBlocks.flatMap((block) => block.lines)
+    : lines;
+  const preview = orderedLines.slice(0, Math.max(0, previewLines));
+  const files = blocks.length
+    ? [...contentBlocks, ...scaffoldBlocks].map((block) => block.path)
+    : diffFiles(safePatch);
   const [added, removed] = diffCounts(safePatch);
+  const scaffoldNote =
+    scaffoldBlocks.length > 0
+      ? ` · scaffold ${scaffoldBlocks.length} file${
+          scaffoldBlocks.length === 1 ? "" : "s"
+        } hidden from preview`
+      : "";
   return (
     <Box flexDirection="column" marginTop={marginTop}>
       <Text bold color={theme.tokens.claude}>
@@ -105,7 +119,7 @@ export function GateView({
           {truncateToWidth(
             `files: ${files.slice(0, 6).join(", ")}${
               files.length > 6 ? ` … (+${files.length - 6})` : ""
-            }`,
+            }${scaffoldNote}`,
             width,
           )}
         </Text>
@@ -130,6 +144,31 @@ export function GateView({
       <Text bold>1 accept · 2 reject · 3 view full diff · Esc later</Text>
     </Box>
   );
+}
+
+const SCAFFOLD_FILES = new Set([
+  ".gitignore",
+  "audit_report.md",
+  "log.md",
+  "overview.md",
+  "statistics.md",
+]);
+
+function patchBlocks(patch: string): Array<{ path: string; lines: string[] }> {
+  const blocks: Array<{ path: string; lines: string[] }> = [];
+  let current: { path: string; lines: string[] } | null = null;
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("diff --git ")) {
+      const parts = line.split(" ");
+      const raw = parts[3] ?? "";
+      const path = raw.startsWith("b/") ? raw.slice(2) : raw;
+      current = { path, lines: [line] };
+      blocks.push(current);
+      continue;
+    }
+    current?.lines.push(line);
+  }
+  return blocks;
 }
 
 function diffFiles(patch: string): string[] {

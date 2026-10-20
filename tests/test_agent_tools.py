@@ -9,7 +9,10 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 from cellwiki.agent.executor import build_workspace_tools
 from cellwiki.agent.tools import build_lint_tools
@@ -72,6 +75,86 @@ def test_edit_file_rejects_ambiguous_or_missing_target(tmp_path: Path):
         tools["edit_file"].invoke({"path": "wiki/cell_types/alpha-cell.md", "old_string": "NOPE", "new_string": "X"})
     )
     assert "not found" in missing["error"]
+
+
+def test_write_file_returns_frontmatter_warnings(tmp_path: Path):
+    root = _workspace(tmp_path)
+    tools = _tools(root)
+    content = """---
+standard_name: alpha_cell
+display_name: Alpha Cell
+evidence_tier: 4
+references:
+- paper_id: paper_a
+- paper_id: paper_b
+source_count: 1
+---
+
+# Alpha Cell
+
+| Marker | Type | Evidence | Source |
+| --- | --- | --- | --- |
+| FOXP3 | positive | Tier 5 | paper_a |
+"""
+    payload = json.loads(
+        tools["write_file"].invoke(
+            {"path": "wiki/cell_types/alpha-warning.md", "content": content}
+        )
+    )
+
+    assert payload["ok"] is True
+    assert any("evidence_tier" in warning for warning in payload["warnings"])
+    assert any("source_count" in warning for warning in payload["warnings"])
+
+
+def test_edit_file_returns_warnings_and_nearest_line(tmp_path: Path):
+    root = _workspace(tmp_path)
+    target = root / "wiki" / "cell_types" / "alpha-cell.md"
+    target.write_text(
+        """---
+standard_name: alpha_cell
+display_name: Alpha Cell
+evidence_tier: 4
+references:
+- paper_id: paper_a
+source_count: 1
+---
+
+# Alpha Cell
+
+## Markers
+
+| Marker | Type | Evidence | Source |
+| --- | --- | --- | --- |
+| FOXP3 | positive | Tier 5 | paper_a |
+""",
+        encoding="utf-8",
+    )
+    tools = _tools(root)
+    edited = json.loads(
+        tools["edit_file"].invoke(
+            {
+                "path": "wiki/cell_types/alpha-cell.md",
+                "old_string": "display_name: Alpha Cell",
+                "new_string": "display_name: Alpha Cells",
+            }
+        )
+    )
+    assert edited["ok"] is True
+    assert any("evidence_tier" in warning for warning in edited["warnings"])
+
+    missing = json.loads(
+        tools["edit_file"].invoke(
+            {
+                "path": "wiki/cell_types/alpha-cell.md",
+                "old_string": "Tier 6 | paper_a",
+                "new_string": "Tier 5 | paper_a",
+            }
+        )
+    )
+    assert missing["error"] == "old_string not found"
+    assert missing["nearest_line"] >= 1
+    assert "Tier 5" in missing["nearest_text"]
 
 
 def test_glob_lists_markdown_files(tmp_path: Path):
@@ -538,6 +621,20 @@ def test_run_powershell_allows_read_only_pipeline(tmp_path: Path, monkeypatch):
     assert "error" not in payload
     assert payload["returncode"] == 0
     assert calls
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="requires Windows PowerShell")
+def test_run_powershell_executes_a_real_read_only_pipeline(tmp_path: Path):
+    root = _workspace(tmp_path)
+    payload = json.loads(
+        _tools(root)["run_powershell"].invoke(
+            {"command": "Get-ChildItem -File | Select-Object Name"}
+        )
+    )
+
+    assert "error" not in payload
+    assert payload["returncode"] == 0
+    assert "README.md" in payload["stdout"]
 
 
 def test_run_powershell_rejects_unsafe_pipeline_segments(tmp_path: Path):

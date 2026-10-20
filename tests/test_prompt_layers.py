@@ -28,6 +28,12 @@ def test_layer_a_defaults_to_the_static_registry_baseline():
     assert "pending diff" in LAYER_A_TEXT
     assert "ingest_sources" not in LAYER_A_TEXT
     assert "raw/<source_id>/" in LAYER_A_TEXT
+    assert "multiple write_file calls in the same assistant turn" in LAYER_A_TEXT
+    assert re.search(
+        r"batch independent reads and writes in the\s+same assistant turn",
+        LAYER_A_TEXT,
+    )
+    assert "before each tool call" not in LAYER_A_TEXT
 
 
 def test_layer_a_and_boundary_reminder_follow_the_memory_switch():

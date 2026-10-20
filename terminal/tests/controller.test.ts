@@ -81,6 +81,47 @@ describe("TuiController", () => {
     expect(client.started).toEqual([["thread_new", "hi"]]);
   });
 
+  it("coalesces reasoning deltas while preserving the final cursor", async () => {
+    const reasoning = "r".repeat(240);
+    const events = [
+      ...Array.from({ length: 240 }, (_, index) => ({
+        run_id: "run_1",
+        sequence: index + 1,
+        type: "reasoning_delta" as const,
+        message: "r",
+      })),
+      {
+        run_id: "run_1",
+        sequence: 241,
+        type: "final_response" as const,
+        message: "done",
+      },
+    ];
+    const client = new FakeClient(
+      [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],
+      { events: { run_1: events } },
+    );
+    const controller = controllerFor(client);
+    await controller.connect();
+    const snapshots: string[] = [];
+    let updatesAfterSubmit = 0;
+    const unsubscribe = controller.subscribe(() => {
+      updatesAfterSubmit += 1;
+      snapshots.push(controller.state.reasoning);
+    });
+
+    await controller.submit("hi");
+    expect(await controller.waitIdle()).toBe(true);
+    unsubscribe();
+
+    expect(snapshots).toContain(reasoning);
+    expect(controller.state.cursor).toBe(241);
+    expect(updatesAfterSubmit).toBeLessThan(events.length / 2);
+    expect(
+      controller.state.transcript.some((line) => line.text === "done"),
+    ).toBe(true);
+  });
+
   it("starts a new conversation on connect", async () => {
     const client = new FakeClient(
       [{ run_id: "run_1", thread_id: "thread_1", status: "succeeded" }],

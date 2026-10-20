@@ -189,6 +189,9 @@ export class TuiController {
   private abortController: AbortController | null = null;
   private fileCache: string[] | null = null;
   private modelCatalog: ModelCatalog | null = null;
+  private reasoningBuffer = "";
+  private reasoningTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingCursor = 0;
   private readonly env: NodeJS.ProcessEnv;
   private readonly themeStore: ThemeStore;
 
@@ -682,6 +685,7 @@ export class TuiController {
   }
 
   private async startMessage(message: string): Promise<void> {
+    this.flushReasoning();
     try {
       const client = this.requireClient();
       let threadId = this.state.threadId;
@@ -784,6 +788,7 @@ export class TuiController {
         this.commit("SSE unavailable; falling back to polling", "dim");
       }
     } finally {
+      this.flushReasoning();
       this.abortController = null;
     }
     return false;
@@ -803,6 +808,8 @@ export class TuiController {
     } catch (error) {
       this.reportError(error);
       return false;
+    } finally {
+      this.flushReasoning();
     }
     if (!TERMINAL_STATUSES.has(run.status)) {
       await this.sleep(500);
@@ -826,21 +833,21 @@ export class TuiController {
   }
 
   private async applyEvent(event: AgentEvent): Promise<boolean> {
-    this.update({ cursor: Math.max(this.state.cursor, event.sequence) });
     const message = event.message ?? "";
     const data = event.data ?? {};
+    if (event.type === "reasoning_delta") {
+      this.pendingCursor = Math.max(this.pendingCursor, event.sequence);
+      if (message) {
+        this.reasoningBuffer += message;
+        this.scheduleReasoningFlush();
+      }
+      return false;
+    }
+    this.flushReasoning();
+    this.update({ cursor: Math.max(this.state.cursor, event.sequence) });
     switch (event.type) {
       case "message_delta":
         this.update({ streaming: this.state.streaming + message });
-        return false;
-      case "reasoning_delta":
-        if (message) {
-          const reasoning = `${this.state.reasoning}${message}`;
-          this.update({
-            reasoning:
-              reasoning.length > 4_000 ? reasoning.slice(-4_000) : reasoning,
-          });
-        }
         return false;
       case "final_response": {
         const answer =
@@ -933,6 +940,38 @@ export class TuiController {
     }
   }
 
+  private scheduleReasoningFlush(): void {
+    if (this.reasoningTimer) {
+      return;
+    }
+    this.reasoningTimer = setTimeout(() => {
+      this.reasoningTimer = null;
+      this.flushReasoning();
+    }, 100);
+  }
+
+  private flushReasoning(): void {
+    if (this.reasoningTimer) {
+      clearTimeout(this.reasoningTimer);
+      this.reasoningTimer = null;
+    }
+    const cursor = Math.max(this.state.cursor, this.pendingCursor);
+    this.pendingCursor = 0;
+    if (!this.reasoningBuffer) {
+      if (cursor !== this.state.cursor) {
+        this.update({ cursor });
+      }
+      return;
+    }
+    const message = this.reasoningBuffer;
+    this.reasoningBuffer = "";
+    const reasoning = `${this.state.reasoning}${message}`;
+    this.update({
+      reasoning: reasoning.length > 4_000 ? reasoning.slice(-4_000) : reasoning,
+      ...(cursor !== this.state.cursor ? { cursor } : {}),
+    });
+  }
+
   private async openGateFromRun(run: AgentRun): Promise<boolean> {
     if (run.status === "waiting_confirmation") {
       const question = await this.requireClient().getQuestion(run.run_id);
@@ -961,6 +1000,7 @@ export class TuiController {
   }
 
   private async completeRun(run: AgentRun): Promise<void> {
+    this.flushReasoning();
     this.update({
       runId: null,
       runStatus: run.status,

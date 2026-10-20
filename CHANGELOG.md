@@ -49,6 +49,15 @@
   4fps，spinner 降为 1s 且在审批/回滚阅读时暂停；滚动离开底部后冻结当前
   视图并提示新增行数；diff 审批期间 composer 只响应 `1`/`2`/`3`/`Esc`，
   草稿保留到审批结束；`read_file` 工具卡显示实际行区间。
+- `write_file` / `edit_file` 写入 wiki 页面后即时返回 frontmatter 提示：
+  `evidence_tier` 与正文最大 Tier 不一致、`source_count` 与去重来源数不一致
+  时返回 `warnings`，但不自动改文件；`edit_file` 未命中时返回最近行提示。
+- Agent 提示词要求多个独立页面在同一轮批量写入，并在同一轮批量读取独立
+  文件；同时移除“每次工具调用前都要一行进度”的冲突指令。`pending diff`
+  首屏预览隐藏系统脚手架文件，仅保留内容变更，按 `3` 仍可查看完整 diff。
+- TUI controller 将 `reasoning_delta` 按 100ms 窗口合并后再更新 store，
+  非 reasoning 事件、SSE 结束、轮询结束与 run 收尾都会 flush，避免长
+  reasoning 流造成大量重复渲染；Windows 真实只读 PowerShell 管道已有回归覆盖。
 - Agent 运行预算与工具步数解耦：新增 `AGENT_MAX_MODEL_CALLS`（1–5000），
   设置后作为新 run 的模型调用上限；未设置时回退旧的
   `AGENT_MAX_TOOL_STEPS`。显式请求的 `budget.max_model_calls` 仍最优先。

@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
@@ -29,6 +30,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
+import yaml
 from langchain_core.tools import BaseTool, tool
 from pydantic import BaseModel, Field
 
@@ -120,6 +122,9 @@ _PS_FORBIDDEN_TOKENS = (
 _PS_FORBIDDEN_SEPARATORS = (";", ">", "&", "`n", "`r", "&&", "||")
 # 脚本块、子表达式与静态方法调用可以绕过动词白名单，按子串直接拒绝。
 _PS_FORBIDDEN_SUBSTRINGS = ("$(", "::", "{", "}")
+
+_EVIDENCE_TIER_PATTERN = re.compile(r"\bTier\s+([1-5])\b")
+_WIKI_PAGE_KINDS = frozenset({"cell_types", "marker_genes", "tissues", "diseases"})
 
 
 # 工具清单由 domain/agent_tools.py 的注册表派生——它是"Agent 能干什么"的
@@ -419,6 +424,111 @@ def _glob_pattern_is_unsafe(pattern: str) -> bool:
     return ".." in normalized.split("/")
 
 
+def _wiki_page_warnings(root: Path, target: Path, text: str) -> list[str]:
+    """Return immediate frontmatter warnings for a workspace wiki page.
+
+    These are advisory only: the file is written unchanged, and the same rules
+    remain enforced by ``lint_knowledge_base``.
+    """
+    try:
+        rel = target.relative_to(root)
+    except ValueError:
+        return []
+    if (
+        len(rel.parts) < 3
+        or rel.parts[0] != "wiki"
+        or rel.parts[1] not in _WIKI_PAGE_KINDS
+        or target.suffix.lower() != ".md"
+        or not text.startswith("---")
+    ):
+        return []
+    closing = text.find("\n---", 3)
+    if closing < 0:
+        return []
+    try:
+        frontmatter = yaml.safe_load(text[4:closing])
+    except yaml.YAMLError:
+        return []
+    if not isinstance(frontmatter, dict):
+        return []
+    body = text[closing + 4 :]
+    warnings: list[str] = []
+
+    tiers = [int(match.group(1)) for match in _EVIDENCE_TIER_PATTERN.finditer(body)]
+    declared_tier = frontmatter.get("evidence_tier")
+    if (
+        tiers
+        and isinstance(declared_tier, int)
+        and not isinstance(declared_tier, bool)
+        and declared_tier != max(tiers)
+    ):
+        warnings.append(
+            f"evidence_tier is {declared_tier} but body claims include "
+            f"Tier {max(tiers)}; set evidence_tier: {max(tiers)}"
+        )
+
+    declared_count = frontmatter.get("source_count")
+    if (
+        isinstance(declared_count, int)
+        and not isinstance(declared_count, bool)
+        and ("references" in frontmatter or "sources" in frontmatter)
+    ):
+        source_ids: set[str] = set()
+        references = frontmatter.get("references")
+        if isinstance(references, list):
+            for reference in references:
+                source_id = (
+                    reference.get("paper_id")
+                    if isinstance(reference, dict)
+                    else reference
+                )
+                if source_id:
+                    source_ids.add(str(source_id))
+        sources = frontmatter.get("sources")
+        if isinstance(sources, list):
+            for source in sources:
+                source_id = (
+                    source.get("paper_id") or source.get("source_id")
+                    if isinstance(source, dict)
+                    else source
+                )
+                if source_id:
+                    source_ids.add(str(source_id))
+        if declared_count != len(source_ids):
+            warnings.append(
+                f"source_count is {declared_count} but declares "
+                f"{len(source_ids)} distinct sources"
+            )
+    return warnings
+
+
+def _nearest_line(text: str, needle: str) -> tuple[int, str] | None:
+    """Best-effort line hint for a failed edit_file match."""
+    lines = text.splitlines()
+    if not lines or not needle:
+        return None
+    needle_first = needle.splitlines()[0] if needle.splitlines() else needle
+    for index, line in enumerate(lines, start=1):
+        if needle_first and needle_first.casefold() in line.casefold():
+            return index, line
+    needle_words = set(re.findall(r"[A-Za-z0-9_]+", needle_first.casefold()))
+    best_line = 0
+    best_score: tuple[int, float] = (0, 0.0)
+    for index, line in enumerate(lines, start=1):
+        line_words = set(re.findall(r"[A-Za-z0-9_]+", line.casefold()))
+        overlap = len(needle_words & line_words)
+        ratio = difflib.SequenceMatcher(
+            None, needle_first.casefold(), line.casefold()
+        ).ratio()
+        score = (overlap, ratio)
+        if score > best_score:
+            best_score = score
+            best_line = index
+    if best_line and (best_score[0] > 0 or best_score[1] >= 0.5):
+        return best_line, lines[best_line - 1]
+    return None
+
+
 def _read_workspace_text(
     root: Path | None,
     target: Path,
@@ -638,7 +748,15 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
                 _atomic_write_bytes(target, data)
         except OSError as error:
             return _tool_json({"error": f"write failed: {error}"})
-        return _tool_json({"ok": True, "path": target.relative_to(root).as_posix(), "bytes": len(data)})
+        payload: dict[str, Any] = {
+            "ok": True,
+            "path": target.relative_to(root).as_posix(),
+            "bytes": len(data),
+        }
+        warnings = _wiki_page_warnings(root, target, content)
+        if warnings:
+            payload["warnings"] = warnings
+        return _tool_json(payload)
 
     @tool("edit_file")
     def edit_file(path: str, old_string: str, new_string: str) -> str:
@@ -658,7 +776,12 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
                 content = _read_text_safely(target, MAX_READ_BYTES)
                 count = content.count(old_string)
                 if count == 0:
-                    return _tool_json({"error": "old_string not found"})
+                    error_payload: dict[str, Any] = {"error": "old_string not found"}
+                    nearest = _nearest_line(content, old_string)
+                    if nearest is not None:
+                        error_payload["nearest_line"] = nearest[0]
+                        error_payload["nearest_text"] = nearest[1][:200]
+                    return _tool_json(error_payload)
                 if count > 1:
                     return _tool_json({"error": "old_string is ambiguous; include more context"})
                 updated = content.replace(old_string, new_string, 1)
@@ -668,7 +791,15 @@ def build_workspace_tools(project_root: Path) -> list[BaseTool]:
                 _atomic_write_bytes(target, encoded)
         except (OSError, ValueError) as error:
             return _tool_json({"error": f"edit failed: {error}"})
-        return _tool_json({"ok": True, "path": target.relative_to(root).as_posix(), "bytes": len(encoded)})
+        payload: dict[str, Any] = {
+            "ok": True,
+            "path": target.relative_to(root).as_posix(),
+            "bytes": len(encoded),
+        }
+        warnings = _wiki_page_warnings(root, target, updated)
+        if warnings:
+            payload["warnings"] = warnings
+        return _tool_json(payload)
 
     @tool("delete_file")
     def delete_file(path: str) -> str:
