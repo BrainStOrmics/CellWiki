@@ -149,20 +149,34 @@ class AnnotationSupportService:
             if database.exists():
                 connection = sqlite3.connect(database.as_uri() + "?mode=rw", uri=True, timeout=0)
                 connection.execute("BEGIN IMMEDIATE")
-                active = connection.execute(
-                    "SELECT 1 FROM agent_runs WHERE status NOT IN ('succeeded','rejected','failed','cancelled') LIMIT 1"
-                ).fetchone()
-                pending = connection.execute("SELECT 1 FROM pending_diffs WHERE status='pending' LIMIT 1").fetchone()
-                if active or pending:
-                    raise AnnotationUnavailable("KNOWLEDGE_BUSY")
-                resolved = connection.execute("SELECT status, payload FROM pending_diffs").fetchall()
-                if any(
-                    status in {"accepted", "rejected"}
-                    and json.loads(payload).get("data", {}).get("maintenance", {}).get("status") != "ok"
-                    for status, payload in resolved
-                ):
-                    raise AnnotationUnavailable("KNOWLEDGE_BUSY")
-                self._assert_no_unapproved_run_leftovers(connection)
+                tables = {
+                    row[0]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )
+                }
+                # 第一个 Agent run 之前，运行库只有 Alembic 基线表：缺表等价于
+                # 还没有 run 与审批单元，而不是查询故障（建表需要写锁，此刻被
+                # 本事务持有，所以这里看不到表就说明此刻确实没有这些行）。
+                if "agent_runs" in tables:
+                    active = connection.execute(
+                        "SELECT 1 FROM agent_runs WHERE status NOT IN ('succeeded','rejected','failed','cancelled') LIMIT 1"
+                    ).fetchone()
+                    if active:
+                        raise AnnotationUnavailable("KNOWLEDGE_BUSY")
+                if "pending_diffs" in tables:
+                    pending = connection.execute("SELECT 1 FROM pending_diffs WHERE status='pending' LIMIT 1").fetchone()
+                    if pending:
+                        raise AnnotationUnavailable("KNOWLEDGE_BUSY")
+                    resolved = connection.execute("SELECT status, payload FROM pending_diffs").fetchall()
+                    if any(
+                        status in {"accepted", "rejected"}
+                        and json.loads(payload).get("data", {}).get("maintenance", {}).get("status") != "ok"
+                        for status, payload in resolved
+                    ):
+                        raise AnnotationUnavailable("KNOWLEDGE_BUSY")
+                if "agent_runs" in tables:
+                    self._assert_no_unapproved_run_leftovers(connection, tables)
             toplevel = self._git("rev-parse", "--show-toplevel").decode().strip()
             if Path(toplevel).resolve() != self.root:
                 raise AnnotationUnavailable()
@@ -177,7 +191,9 @@ class AnnotationSupportService:
                 connection.rollback()
                 connection.close()
 
-    def _assert_no_unapproved_run_leftovers(self, connection: sqlite3.Connection) -> None:
+    def _assert_no_unapproved_run_leftovers(
+        self, connection: sqlite3.Connection, tables: set[str]
+    ) -> None:
         """Block when a failed/cancelled run left committed knowledge unapproved.
 
         Each such run's approved tip is where its last resolved unit landed; its
@@ -195,11 +211,13 @@ class AnnotationSupportService:
             if run["status"] not in {"failed", "cancelled"}:
                 continue
             baseline = run.get("snapshot_commit")
-            last_unit = connection.execute(
-                "SELECT status, payload FROM pending_diffs WHERE run_id=? "
-                "ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                (run_id,),
-            ).fetchone()
+            last_unit = None
+            if "pending_diffs" in tables:
+                last_unit = connection.execute(
+                    "SELECT status, payload FROM pending_diffs WHERE run_id=? "
+                    "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                    (run_id,),
+                ).fetchone()
             if last_unit:
                 unit = json.loads(last_unit[1])
                 maintenance = unit.get("data", {}).get("maintenance", {})

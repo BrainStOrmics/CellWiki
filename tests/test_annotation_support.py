@@ -241,6 +241,44 @@ def test_database_writer_blocks_capture(workspace):
             query(workspace)
 
 
+def alembic_only_database(workspace: Path) -> Path:
+    """A runtime database with only the Alembic baseline tables."""
+    database = workspace / "data/runtime/cellwiki.db"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE agent_runs (run_id TEXT PRIMARY KEY, thread_id TEXT NOT NULL, "
+            "status TEXT NOT NULL, payload TEXT NOT NULL, updated_at TEXT NOT NULL)"
+        )
+        connection.execute(
+            "CREATE TABLE agent_events (run_id TEXT NOT NULL, sequence INTEGER NOT NULL, "
+            "event_id TEXT NOT NULL UNIQUE, payload TEXT NOT NULL, "
+            "PRIMARY KEY(run_id, sequence))"
+        )
+    return database
+
+
+def test_alembic_only_runtime_database_does_not_block(workspace):
+    alembic_only_database(workspace)
+    assert query(workspace).status == "matched"
+
+
+def test_alembic_only_runtime_database_still_blocks_unapproved_leftovers(workspace):
+    database = alembic_only_database(workspace)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "INSERT INTO agent_runs (run_id,thread_id,status,payload,updated_at) VALUES (?,?,?,?,?)",
+            ("r1", "t1", "failed",
+             json.dumps({"status": "failed", "snapshot_commit": git(workspace, "rev-parse", "HEAD")}),
+             "2026-10-12"),
+        )
+    (workspace / "wiki/cell_types/cd4_cell.md").write_text(page(markers="[CD4]"), encoding="utf-8")
+    git(workspace, "add", "wiki")
+    git(workspace, "commit", "-m", "unapproved")
+    with pytest.raises(AnnotationUnavailable, match="KNOWLEDGE_BUSY"):
+        query(workspace)
+
+
 def test_auth_is_separate_and_does_not_initialize_runtime(workspace, monkeypatch):
     def forbidden(*args, **kwargs):
         raise AssertionError("Annotation must not construct AgentRuntimeManager")
