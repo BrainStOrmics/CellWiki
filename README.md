@@ -25,12 +25,12 @@ Agentic CellWiki 是一个本地优先的科学 Wiki：**你选定的工作目�
 ### TUI 最小启动（Linux）
 
 前置工具为 Git、[uv](https://docs.astral.sh/uv/) 和 Node.js 22+。首次部署必须使用
-`codex/cellwiki-rebuild` 分支。
+`main` 分支。
 
 1. **取得源码并安装 CLI 与 TUI。**
 
    ```bash
-   git clone -b codex/cellwiki-rebuild https://github.com/BrainStOrmics/CellWiki.git
+   git clone -b main https://github.com/BrainStOrmics/CellWiki.git
    cd CellWiki
    uv python install 3.12
    uv tool install "$PWD"

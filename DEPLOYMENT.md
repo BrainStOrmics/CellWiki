@@ -8,8 +8,7 @@ CellWiki 提供三种受支持的部署方式：
 | TUI | Linux | 终端客户端，可从源码部署到注释接口 |
 | TUI | Windows | 终端客户端，与 Linux 共用同一套运行时 |
 
-当前分支为 `codex/cellwiki-rebuild`。`main` 上的 `schema.md` 仍是旧格式，缺少
-`yaml cellwiki-schema` 块，会导致 schema 门禁失败。
+当前部署分支为 `main`，该分支提供与新版 `schema.md` 配套的完整实现。
 
 ## Windows 桌面端
 
@@ -19,10 +18,10 @@ NSIS 安装包。
 1. **准备构建环境。** 需要 Windows 10/11、Git、[uv](https://docs.astral.sh/uv/)、
    Python 3.12、Node.js 22+、Rust stable 和 Tauri 的 Windows 构建依赖。
 
-2. **取得当前分支。**
+2. **取得 `main` 分支。**
 
    ```powershell
-   git clone -b codex/cellwiki-rebuild https://github.com/BrainStOrmics/CellWiki.git
+   git clone -b main https://github.com/BrainStOrmics/CellWiki.git
    Set-Location .\CellWiki
    ```
 
@@ -96,11 +95,11 @@ NSIS 安装包。
    如果发行版已经提供 Node.js 22+，可跳过 NodeSource 两行；其他发行版可用 nvm
    或 nodejs.org 安装。`poppler-utils` 用于把 PDF 转成可读文本。
 
-2. **取得当前分支。**
+2. **取得 `main` 分支。**
 
    ```bash
    cd "$HOME"
-   git clone -b codex/cellwiki-rebuild https://github.com/BrainStOrmics/CellWiki.git
+   git clone -b main https://github.com/BrainStOrmics/CellWiki.git
    cd "$HOME/CellWiki"
    ```
 
