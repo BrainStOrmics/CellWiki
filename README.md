@@ -67,6 +67,19 @@ cellwiki
 `cellwiki` 无子命令时把界面交给终端客户端，daemon 缺失会自动拉起。终端同样需要知识库
 根目录里有 `schema.md`。常用命令与按键见 [终端使用](#终端使用)。
 
+终端不提供供应商设置界面，模型配置写在知识库根目录的 `.env` 里：
+
+```dotenv
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=https://your-provider/v1
+OPENAI_MODEL=your-model-id
+OPENAI_API_PROTOCOL=chat_completions
+```
+
+协议可取 `chat_completions`、`responses` 或 `anthropic`；daemon 首次使用时把它自动导入为
+默认供应商。终端只读知识库自己的 `.env`，桌面端保存的供应商配置不会自动带过来。
+启动后直接输入问题即可，`/model` 切模型，审批用 `1`/`2`/`3`，`/quit` 退出。
+
 ## 工作区结构
 
 选定目录后由系统初始化，你不需要手工建：
