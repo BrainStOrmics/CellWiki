@@ -34,6 +34,22 @@ cellwiki daemon status --workspace D:\kb     # 输出 JSON 里的 port
 python scripts\annotation_smoke.py --workspace D:\kb
 ```
 
+```bash
+# 1) 部署方配好令牌并启动 daemon
+export CELLWIKI_ANNOTATION_API_TOKEN="<长随机串>"
+cellwiki serve --workspace /srv/kb --detach
+
+# 2) 问端口
+cellwiki daemon status --workspace /srv/kb     # 输出 JSON 里的 port
+
+# 3) 自检是否接通（PASS/FAIL 清单）
+python3 scripts/annotation_smoke.py --workspace /srv/kb
+```
+
+令牌也可以写进工作区根目录的 `.env`（`CELLWIKI_ANNOTATION_API_TOKEN=<长随机串>`，该文件
+已被 `.gitignore` 排除），daemon 会以工作区为工作目录读取它；改完后用
+`cellwiki daemon restart --workspace <工作区>` 让新令牌生效。
+
 端口也可以直接从发现文件读：`%XDG_RUNTIME_DIR%\cellwiki\daemon\<workspace-hash>\daemon.json`
 （Windows 上通常回退到 `~\.cellwiki\daemon\<workspace-hash>\daemon.json`），其中
 `port` 字段是监听端口。打包桌面形态的 sidecar 使用随机端口且不写发现文件，这时

@@ -11,141 +11,70 @@ Agentic CellWiki 是一个本地优先的科学 Wiki：**你选定的工作目�
 > 模型供应商（OpenAI 兼容协议或原生 Anthropic）；处理敏感或未发表资料前，请先阅读
 > [安全说明](SECURITY.md)。
 
-## 部署与使用
+## 快速开始
 
-系统提供两个入口：**桌面端只支持 Windows**，**TUI 支持 Windows 与 Linux**。两者操作同一批
-知识库，凭据与工作区各自独立配置。
+系统提供两个入口：**桌面端只支持 Windows**，**TUI 支持 Windows 与 Linux**。
+完整安装、构建和接口开放步骤见 [部署指南](DEPLOYMENT.md)。
 
-### 桌面端（仅 Windows）
+| 入口 | 平台 | 指南 |
+| --- | --- | --- |
+| 桌面端 | Windows | [构建与安装](DEPLOYMENT.md#windows-桌面端) |
+| TUI | Linux | [Linux 完整 1–10 步](DEPLOYMENT.md#linux-tui) |
+| TUI | Windows | [Windows TUI](DEPLOYMENT.md#windows-tui) |
 
-桌面端以 Tauri + NSIS 发布，仓库当前只构建 Windows 安装包，不提供 Linux 桌面端。
-安装后不需要再装 Python、Node.js 或 Rust。
+### TUI 最小启动（Linux）
 
-1. **准备运行环境**。Windows 10/11，并安装 Git（工作区需要 `git init` 与版本记录）。
+前置工具为 Git、[uv](https://docs.astral.sh/uv/) 和 Node.js 22+。首次部署必须使用
+`codex/cellwiki-rebuild` 分支。
 
-2. **取得安装包**。当前没有公开发布页，按
-   [Windows 桌面端构建（Beta）](#windows-桌面端构建beta) 生成 NSIS 安装包，或使用已有的
-   `Agentic CellWiki_<版本>_x64-setup.exe`。
+1. **取得源码并安装 CLI 与 TUI。**
 
-3. **安装并启动**。双击安装包按向导完成安装（当前用户安装），从开始菜单启动
-   Agentic CellWiki。安装包尚未签名，Windows 可能提示 SmartScreen。
-
-4. **选择知识库目录**。左下角齿轮「设置」→「工作区」→「选择文件夹…」→ 选中目录 →
-   「切换并使用」→ 按提示**重启应用**。默认工作区不是你选的目录，这一步必做。
-   目录会被初始化成 git 仓库，包含 `wiki/`、`raw/` 和六个根级 Markdown 文件。
-
-5. **放入页面契约**。把本仓库根目录的 [`schema.md`](schema.md) 复制到知识库根目录：
-
-   ```powershell
-   Copy-Item <仓库路径>\schema.md D:\KB\my-kb\schema.md
+   ```bash
+   git clone -b codex/cellwiki-rebuild https://github.com/BrainStOrmics/CellWiki.git
+   cd CellWiki
+   uv python install 3.12
+   uv tool install "$PWD"
+   cd terminal
+   npm ci
+   npm run build
+   npm link
+   cd ..
    ```
 
-   `schema.md` 规定 Agent 能创建哪些页面、页面长什么样。它归你所有，Agent 只能读不能改；
-   缺少它时 schema 门禁会拦住新页面的发布，所以这一步不能省。
+2. **建立知识库并复制页面契约。** `schema.md` 由用户自己放入工作目录：
 
-6. **配置模型**。「设置」→「模型服务」→「新建供应商」，填 Base URL、API 协议、模型名和
-   API Key，「获取可用模型」或手动「添加模型」，「保存供应商」后把它「设为默认」，
-   再「测试连接」确认连通。可配置多个供应商，对话框里可随时切换当前模型。
+   ```bash
+   mkdir -p "$HOME/kb/my-kb"
+   cp schema.md "$HOME/kb/my-kb/schema.md"
+   ```
 
-7. **提问或投料**。右侧「CewiPilot」面板里直接提问，或点「添加附件」上传 pdf/md/txt。
-   Agent 会在需要确认时提问；附件经你同意后晋升为 `raw/<source_id>/` 正式源，随后按
-   `schema.md` 的模板读取该源并生成 Wiki 页面。
+3. **配置模型。** TUI 从知识库根目录的 `.env` 读取供应商配置：
 
-8. **审批 diff**。Agent 的每次改动都先成为待确认单元。左侧「资源管理器」面板底部的
-   「待审 Diff」里逐条查看补丁，「接受」或「拒绝」。接受后系统自动重建
-   `overview.md`/`statistics.md` 并追加 `log.md`/`audit_report.md`。
+   ```dotenv
+   OPENAI_API_KEY=...
+   OPENAI_BASE_URL=https://your-provider/v1
+   OPENAI_MODEL=your-model-id
+   OPENAI_API_PROTOCOL=chat_completions
+   ```
 
-完整目录结构见 [工作区结构](#工作区结构)。
+   把文件保存为 `~/kb/my-kb/.env`，并限制权限：
 
-### TUI（Windows / Linux）
+   ```bash
+   chmod 600 "$HOME/kb/my-kb/.env"
+   ```
 
-TUI 是跨平台终端客户端，Windows 与 Linux 命令相同，只有路径写法不同。它不需要桌面端。
+4. **启动 TUI。**
 
-#### 前置条件
+   ```bash
+   cd "$HOME/kb/my-kb"
+   cellwiki
+   ```
 
-- Windows 10/11 或 Linux。
-- Python 3.12 与 [uv](https://docs.astral.sh/uv/)（daemon 与 Agent 运行时）。
-- Node.js 22+（[nodejs.org](https://nodejs.org/) 或发行版包管理器）。
-- Git（工作区需要 `git init` 与版本记录）。
+   首次启动会自动初始化 git、`wiki/`、`raw/` 和根级维护文件。TUI 没有附件上传，
+   需要手工把来源放进 `raw/<source_id>/`；完整投料、审批和注释接口步骤见
+   [Linux TUI 部署](DEPLOYMENT.md#linux-tui)。
 
-#### Windows（PowerShell）
-
-```powershell
-# Python 3.12（可交给 uv 管理）
-uv python install 3.12
-
-# CellWiki CLI
-uv tool install D:\path\to\CellWiki
-
-# 终端客户端
-Set-Location D:\path\to\CellWiki\terminal
-npm ci
-npm run build
-npm link
-
-# 启动
-Set-Location D:\KB\my-kb
-cellwiki
-```
-
-若 `cellwiki` 不在 PATH，执行 `uv tool update-shell` 后重开终端。
-
-#### Linux（bash）
-
-```bash
-# Python 3.12（可交给 uv 管理）
-uv python install 3.12
-
-# CellWiki CLI
-uv tool install /path/to/CellWiki
-
-# 终端客户端
-cd /path/to/CellWiki/terminal
-npm ci
-npm run build
-npm link
-
-# 启动
-cd /path/to/knowledge-base
-cellwiki
-```
-
-Linux 不提供桌面端，请使用本节入口。
-
-#### 首次配置
-
-知识库根目录同样需要 `schema.md`：
-
-```powershell
-# Windows
-Copy-Item D:\path\to\CellWiki\schema.md D:\KB\my-kb\schema.md
-```
-
-```bash
-# Linux
-cp /path/to/CellWiki/schema.md /path/to/knowledge-base/schema.md
-```
-
-终端没有供应商设置界面，模型配置写在知识库根目录的 `.env` 里。桌面端保存的配置不会带过来；
-`.env` 已被工作区 `.gitignore` 排除，不会进入 git：
-
-```dotenv
-OPENAI_API_KEY=...
-OPENAI_BASE_URL=https://your-provider/v1
-OPENAI_MODEL=your-model-id
-OPENAI_API_PROTOCOL=chat_completions
-```
-
-协议可取 `chat_completions`、`responses` 或 `anthropic`；daemon 首次使用时自动导入为默认供应商。
-
-#### 启动与审批
-
-- `cellwiki` 无子命令时把界面交给 TUI，daemon 缺失会自动拉起。
-- 启动后直接输入问题；`/model` 切模型，`/resume` 恢复历史会话，`/quit` 退出（daemon 继续运行）。
-- 待确认 diff 用 `1` 接受、`2` 拒绝、`3` 查看完整 diff、`Esc` 稍后。
-- Windows 经典控制台显示异常时，用 `cellwiki-tui --classic` 或设置 `CELLWIKI_TUI_CLASSIC=1`。
-
-完整命令与按键见 [TUI 命令与按键](#tui-命令与按键)。
+完整 TUI 命令与按键见 [TUI 命令与按键](#tui-命令与按键)。
 
 ## 工作区结构
 
@@ -286,32 +215,11 @@ npm run build
 终端客户端另有 `npm run typecheck` 与 `npm test`（见 [terminal/README.md](terminal/README.md)）。
 本机 `.env` 若设置 `AUTO_ACCEPT_PENDING_DIFFS=true`，会改变待确认 diff 的测试预期。
 
-## Windows 桌面端构建（Beta）
-
-发布版由 Tauri 启动打包的 Python sidecar，不要求最终用户安装源码、Python、Node.js 或 Rust。
-当前没有公开下载页，安装包按下面的命令从源码构建（产物在
-`frontend/src-tauri/target/release/bundle/nsis/`）：
-
-```powershell
-uv sync --extra desktop
-Set-Location frontend
-npm ci
-Set-Location ..
-uv run python scripts/build_sidecar.py
-uv run python scripts/smoke_packaged_sidecar.py
-Set-Location frontend
-npm run desktop:build -- --bundles nsis
-```
-
-产物为 `Agentic CellWiki_<版本>_x64-setup.exe`，双击即可安装。
-
-当前安装包尚未签名，Windows 可能显示 SmartScreen 警告；发布前应完成后端测试、前端测试与构建、
-打包 sidecar 健康检查以及干净 Windows 环境安装验收。版本号以仓库根目录的 `VERSION` 为唯一来源。
-
 ## 公开文档
 
 - [领域词汇与约束](CONTEXT.md)
 - [贡献与开发指南](CONTRIBUTING.md)
 - [安全假设、数据隐私与漏洞报告](SECURITY.md)
 - [版本变化](CHANGELOG.md)
+- [部署指南](DEPLOYMENT.md)
 - [注释证据接口接入说明](ANNOTATION_API.md)
