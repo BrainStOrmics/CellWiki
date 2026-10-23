@@ -20,6 +20,9 @@ cd /path/to/knowledge-base
 cellwiki
 ```
 
+Windows 用 PowerShell 执行同样三条命令，只需把占位路径换成 `D:\path\to\CellWiki` 这类写法；
+完整步骤见根目录 README 的「TUI（Windows / Linux）」一节。
+
 `cellwiki`（Python 包）无子命令时会查找 `cellwiki-tui` 并交接；未安装时提示
 先执行上面的 `npm link`。daemon 由 Python 的 `cellwiki serve` 提供，TS 客户端
 只消费发现文件与 Product API。
